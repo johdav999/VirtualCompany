@@ -1,0 +1,437 @@
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+@@ -599,3 +599,88 @@ public sealed class FinanceSeedAnomaly : ICompanyOwnedEntity
+         return trimmed;
+     }
+ }
++
++public sealed class FinanceSimulationStepLog : ICompanyOwnedEntity
++{
++    private FinanceSimulationStepLog()
++    {
++    }
++
++    public FinanceSimulationStepLog(
++        Guid id,
++        Guid companyId,
++        Guid runId,
++        int stepNumber,
++        DateTime windowStartUtc,
++        DateTime windowEndUtc,
++        int executionStepHours,
++        int totalHoursProcessed,
++        bool isAccelerated,
++        int transactionsGenerated,
++        int invoicesGenerated,
++        int billsGenerated,
++        int recurringExpenseInstancesGenerated,
++        int eventsEmitted,
++        DateTime? createdUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (runId == Guid.Empty)
++        {
++            throw new ArgumentException("RunId is required.", nameof(runId));
++        }
++
++        if (stepNumber <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(stepNumber), "Step number must be positive.");
++        }
++
++        if (executionStepHours <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(executionStepHours), "Execution step hours must be positive.");
++        }
++
++        if (totalHoursProcessed <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(totalHoursProcessed), "Total processed hours must be positive.");
++        }
++
++        var normalizedWindowStartUtc = EntityTimestampNormalizer.NormalizeUtc(windowStartUtc, nameof(windowStartUtc));
++        var normalizedWindowEndUtc = EntityTimestampNormalizer.NormalizeUtc(windowEndUtc, nameof(windowEndUtc));
++        if (normalizedWindowEndUtc <= normalizedWindowStartUtc)
++        {
++            throw new ArgumentException("Window end must be after window start.", nameof(windowEndUtc));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        RunId = runId;
++        StepNumber = stepNumber;
++        WindowStartUtc = normalizedWindowStartUtc;
++        WindowEndUtc = normalizedWindowEndUtc;
++        ExecutionStepHours = executionStepHours;
++        TotalHoursProcessed = totalHoursProcessed;
++        IsAccelerated = isAccelerated;
++        TransactionsGenerated = Math.Max(0, transactionsGenerated);
++        InvoicesGenerated = Math.Max(0, invoicesGenerated);
++        BillsGenerated = Math.Max(0, billsGenerated);
++        RecurringExpenseInstancesGenerated = Math.Max(0, recurringExpenseInstancesGenerated);
++        EventsEmitted = Math.Max(0, eventsEmitted);
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? normalizedWindowEndUtc, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid RunId { get; private set; }
++    public int StepNumber { get; private set; }
++    public DateTime WindowStartUtc { get; private set; }
++    public DateTime WindowEndUtc { get; private set; }
++    public int ExecutionStepHours { get; private set; }
++    public int TotalHoursProcessed { get; private set; }
++    public bool IsAccelerated { get; private set; }
++    public int TransactionsGenerated { get; private set; }
++    public int InvoicesGenerated { get; private set; }
++    public int BillsGenerated { get; private set; }
++    public int RecurringExpenseInstancesGenerated { get; private set; }
++    public int EventsEmitted { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 3333333..4444444 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -81,6 +81,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<FinanceBalance> FinanceBalances => Set<FinanceBalance>();
+     public DbSet<FinancePolicyConfiguration> FinancePolicyConfigurations => Set<FinancePolicyConfiguration>();
+     public DbSet<FinanceSeedAnomaly> FinanceSeedAnomalies => Set<FinanceSeedAnomaly>();
++    public DbSet<FinanceSimulationStepLog> FinanceSimulationStepLogs => Set<FinanceSimulationStepLog>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+@@ -134,7 +135,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is FinanceBalance ||
+                 entry.Entity is FinanceCounterparty ||
+                 entry.Entity is FinancePolicyConfiguration ||
+-                entry.Entity is FinanceSeedAnomaly)
++                entry.Entity is FinanceSeedAnomaly ||
++                entry.Entity is FinanceSimulationStepLog)
+             .Select(entry =>
+             {
+                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
+@@ -264,5 +266,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 CurrentCompanyId.HasValue && policy.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<FinanceSeedAnomaly>()
+             .HasQueryFilter(anomaly =>
++                CurrentCompanyId.HasValue && anomaly.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceSimulationStepLog>()
++            .HasQueryFilter(log =>
+                 CurrentCompanyId.HasValue && anomaly.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 4444444..5555555 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -266,8 +266,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FinanceSeedAnomaly>()
+             .HasQueryFilter(anomaly =>
+                 CurrentCompanyId.HasValue && anomaly.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<FinanceSimulationStepLog>()
+             .HasQueryFilter(log =>
+-                CurrentCompanyId.HasValue && anomaly.CompanyId == CurrentCompanyId.Value);
++                CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 6666666..7777777 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -3000,6 +3000,32 @@ internal sealed class FinanceSeedAnomalyConfiguration : IEntityTypeConfiguration
+     }
+ }
+ 
++internal sealed class FinanceSimulationStepLogConfiguration : IEntityTypeConfiguration<FinanceSimulationStepLog>
++{
++    public void Configure(EntityTypeBuilder<FinanceSimulationStepLog> builder)
++    {
++        builder.ToTable("finance_simulation_step_logs");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.RunId).HasColumnName("run_id").IsRequired();
++        builder.Property(x => x.StepNumber).HasColumnName("step_number").IsRequired();
++        builder.Property(x => x.WindowStartUtc).HasColumnName("window_start_at").IsRequired();
++        builder.Property(x => x.WindowEndUtc).HasColumnName("window_end_at").IsRequired();
++        builder.Property(x => x.ExecutionStepHours).HasColumnName("execution_step_hours").IsRequired();
++        builder.Property(x => x.TotalHoursProcessed).HasColumnName("total_hours_processed").IsRequired();
++        builder.Property(x => x.IsAccelerated).HasColumnName("is_accelerated").IsRequired();
++        builder.Property(x => x.TransactionsGenerated).HasColumnName("transactions_generated").IsRequired();
++        builder.Property(x => x.InvoicesGenerated).HasColumnName("invoices_generated").IsRequired();
++        builder.Property(x => x.BillsGenerated).HasColumnName("bills_generated").IsRequired();
++        builder.Property(x => x.RecurringExpenseInstancesGenerated).HasColumnName("recurring_expense_instances_generated").IsRequired();
++        builder.Property(x => x.EventsEmitted).HasColumnName("events_emitted").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.HasIndex(x => new { x.CompanyId, x.RunId, x.StepNumber }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.WindowEndUtc });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal static class ActiveProviderConstraint
+ {
+     // EF model configuration is provider-agnostic here; the expression is valid for SQL Server and SQLite.
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs
+index 8888888..9999999 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs
+@@ -74,6 +74,7 @@ public sealed class CompanySimulationService : ICompanySimulationService
+             1,
+             _options.MaxStepHours);
+         var targetUtc = previousUtc.AddHours(totalHoursProcessed);
++        var simulationRunId = Guid.NewGuid();
+         var simulationContext = await CreateSimulationContextAsync(company, state, cancellationToken);
+ 
+         var logs = new List<SimulationExecutionLogDto>();
+@@ -83,6 +84,7 @@ public sealed class CompanySimulationService : ICompanySimulationService
+         var recurringExpenseInstancesGenerated = 0;
+         var eventsEmitted = 0;
+         var cursorUtc = previousUtc;
++        var stepNumber = 0;
+ 
+         if (_dbContext.Database.IsRelational())
+         {
+@@ -90,7 +92,17 @@ public sealed class CompanySimulationService : ICompanySimulationService
+             while (cursorUtc < targetUtc)
+             {
+                 var stepEndUtc = cursorUtc.AddHours(Math.Min(executionStepHours, (int)Math.Ceiling((targetUtc - cursorUtc).TotalHours)));
+-                var step = await AdvanceWindowAsync(company, state, simulationContext, cursorUtc, stepEndUtc, cancellationToken);
++                stepNumber++;
++                var step = await AdvanceWindowAsync(
++                    company,
++                    state,
++                    simulationContext,
++                    simulationRunId,
++                    stepNumber,
++                    totalHoursProcessed,
++                    executionStepHours,
++                    command.Accelerated,
++                    cursorUtc,
++                    stepEndUtc, cancellationToken);
+ 
+                 logs.Add(step);
+                 transactionsGenerated += step.TransactionsGenerated;
+@@ -111,7 +123,17 @@ public sealed class CompanySimulationService : ICompanySimulationService
+             while (cursorUtc < targetUtc)
+             {
+                 var stepEndUtc = cursorUtc.AddHours(Math.Min(executionStepHours, (int)Math.Ceiling((targetUtc - cursorUtc).TotalHours)));
+-                var step = await AdvanceWindowAsync(company, state, simulationContext, cursorUtc, stepEndUtc, cancellationToken);
++                stepNumber++;
++                var step = await AdvanceWindowAsync(
++                    company,
++                    state,
++                    simulationContext,
++                    simulationRunId,
++                    stepNumber,
++                    totalHoursProcessed,
++                    executionStepHours,
++                    command.Accelerated,
++                    cursorUtc,
++                    stepEndUtc, cancellationToken);
+ 
+                 logs.Add(step);
+                 transactionsGenerated += step.TransactionsGenerated;
+@@ -164,6 +186,10 @@ public sealed class CompanySimulationService : ICompanySimulationService
+         Company company,
+         CompanySimulationState state,
+         SimulationContext context,
++        Guid runId,
++        int stepNumber,
++        int totalHoursProcessed,
++        int executionStepHours,
++        bool accelerated,
+         DateTime windowStartUtc,
+         DateTime windowEndUtc,
+         CancellationToken cancellationToken)
+@@ -270,8 +296,7 @@ public sealed class CompanySimulationService : ICompanySimulationService
+                         rule.Name,
+                         NextExternalReference("SIM-BILL", state),
+                         createdUtc: disbursementUtc);
+-                    _dbContext.FinanceTransactions.Add(payment with { });
+-                    payment = new FinanceTransaction(payment.Id, payment.CompanyId, payment.AccountId, payment.CounterpartyId, payment.InvoiceId, payment.BillId, payment.TransactionUtc, payment.TransactionType, payment.Amount, payment.Currency, payment.Description, payment.ExternalReference, payment.DocumentId, disbursementUtc);
++                    _dbContext.FinanceTransactions.Add(payment);
+                     transactionCount++;
+                 }
+             }
+@@ -296,12 +321,33 @@ public sealed class CompanySimulationService : ICompanySimulationService
+             department: "finance",
+             createdUtc: windowEndUtc);
+         _dbContext.ActivityEvents.Add(summaryEvent);
++
+         eventCount++;
++        _dbContext.FinanceSimulationStepLogs.Add(
++            new FinanceSimulationStepLog(
++                Guid.NewGuid(),
++                company.Id,
++                runId,
++                stepNumber,
++                windowStartUtc,
++                windowEndUtc,
++                executionStepHours,
++                totalHoursProcessed,
++                accelerated,
++                transactionCount,
++                invoiceCount,
++                billCount,
++                recurringExpenseCount,
++                eventCount,
++                createdUtc: windowEndUtc));
+ 
+         using var logScope = _logger.BeginScope(ExecutionLogScope.ForBackground($"finance-simulation:{company.Id:N}", company.Id));
+         _logger.LogInformation(
+-            "Finance simulation step completed for company {CompanyId}. Range {WindowStartUtc} - {WindowEndUtc}. Transactions {TransactionsGenerated}. Invoices {InvoicesGenerated}. Bills {BillsGenerated}. Recurring expense instances {RecurringExpenseInstancesGenerated}. Events {EventsEmitted}.",
++            "Finance simulation step completed for company {CompanyId}. Run {RunId}. Step {StepNumber}. Range {WindowStartUtc} - {WindowEndUtc}. Transactions {TransactionsGenerated}. Invoices {InvoicesGenerated}. Bills {BillsGenerated}. Recurring expense instances {RecurringExpenseInstancesGenerated}. Events {EventsEmitted}.",
+             company.Id,
++            runId,
++            stepNumber,
+             windowStartUtc,
+             windowEndUtc,
+             transactionCount,
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSimulationServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSimulationServiceTests.cs
+index aaaaaaa..bbbbbbb 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSimulationServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSimulationServiceTests.cs
+@@ -58,6 +58,10 @@ public sealed class FinanceSimulationServiceTests
+             .Where(x => x.CompanyId == companyId)
+             .ToArrayAsync();
+         var activityEvents = await dbContext.ActivityEvents
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.StepNumber)
++            .ToArrayAsync();
++        var simulationLogs = await dbContext.FinanceSimulationStepLogs
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId && x.EventType == "finance.simulation.progressed")
+             .OrderBy(x => x.OccurredUtc)
+@@ -67,7 +71,9 @@ public sealed class FinanceSimulationServiceTests
+         Assert.NotEmpty(transactions);
+         Assert.NotEmpty(invoices);
+         Assert.NotEmpty(bills);
++        Assert.Equal(result.Logs.Count, simulationLogs.Length);
+         Assert.Equal(result.EventsEmitted, activityEvents.Length);
++        Assert.Single(simulationLogs.Select(x => x.RunId).Distinct());
+         Assert.All(transactions, transaction =>
+         {
+             Assert.InRange(transaction.TransactionUtc, initialClock.SimulatedUtc, result.CurrentUtc);
+@@ -86,6 +92,21 @@ public sealed class FinanceSimulationServiceTests
+             Assert.Equal(companyId.ToString(), activityEvent.SourceMetadata["companyId"]?.GetValue<string>());
+             Assert.Equal(1, activityEvent.SourceMetadata["eventsEmitted"]?.GetValue<int>());
+         });
++        Assert.All(simulationLogs, log =>
++        {
++            Assert.Equal(companyId, log.CompanyId);
++            Assert.InRange(log.WindowStartUtc, initialClock.SimulatedUtc, result.CurrentUtc);
++            Assert.InRange(log.WindowEndUtc, initialClock.SimulatedUtc, result.CurrentUtc);
++            Assert.InRange(log.CreatedUtc, initialClock.SimulatedUtc, result.CurrentUtc);
++            Assert.True(log.WindowEndUtc > log.WindowStartUtc);
++            Assert.True(log.StepNumber > 0);
++            Assert.Equal(72, log.TotalHoursProcessed);
++            Assert.Equal(24, log.ExecutionStepHours);
++            Assert.True(log.IsAccelerated);
++            Assert.True(log.EventsEmitted > 0);
++        });
++        Assert.Equal(
++            Enumerable.Range(1, simulationLogs.Length),
++            simulationLogs.Select(x => x.StepNumber));
+     }
+ 
+     [Fact]
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSimulationServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSimulationServiceTests.cs
+index bbbbbbb..ccccccc 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSimulationServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSimulationServiceTests.cs
+@@ -56,16 +56,16 @@ public sealed class FinanceSimulationServiceTests
+         var bills = await dbContext.FinanceBills
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+             .ToArrayAsync();
+-        var activityEvents = await dbContext.ActivityEvents
++        var simulationLogs = await dbContext.FinanceSimulationStepLogs
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+-            .OrderBy(x => x.StepNumber)
++            .OrderBy(x => x.StepNumber)
+             .ToArrayAsync();
+-        var simulationLogs = await dbContext.FinanceSimulationStepLogs
++        var activityEvents = await dbContext.ActivityEvents
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId && x.EventType == "finance.simulation.progressed")
+             .OrderBy(x => x.OccurredUtc)
+             .ToArrayAsync();
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416173000_AddFinanceSimulationStepLogs.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416173000_AddFinanceSimulationStepLogs.cs
+new file mode 100644
+index 0000000..ddddddd
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416173000_AddFinanceSimulationStepLogs.cs
+@@ -0,0 +1,58 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddFinanceSimulationStepLogs : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "finance_simulation_step_logs",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    run_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    step_number = table.Column<int>(type: "int", nullable: false),
++                    window_start_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    window_end_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    execution_step_hours = table.Column<int>(type: "int", nullable: false),
++                    total_hours_processed = table.Column<int>(type: "int", nullable: false),
++                    is_accelerated = table.Column<bool>(type: "bit", nullable: false),
++                    transactions_generated = table.Column<int>(type: "int", nullable: false),
++                    invoices_generated = table.Column<int>(type: "int", nullable: false),
++                    bills_generated = table.Column<int>(type: "int", nullable: false),
++                    recurring_expense_instances_generated = table.Column<int>(type: "int", nullable: false),
++                    events_emitted = table.Column<int>(type: "int", nullable: false),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_simulation_step_logs", x => x.id);
++                    table.ForeignKey(
++                        name: "FK_finance_simulation_step_logs_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_simulation_step_logs_company_id_run_id_step_number",
++                table: "finance_simulation_step_logs",
++                columns: new[] { "company_id", "run_id", "step_number" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_simulation_step_logs_company_id_window_end_at",
++                table: "finance_simulation_step_logs",
++                columns: new[] { "company_id", "window_end_at" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "finance_simulation_step_logs");
++        }
++    }
++}
++END_OF_PATCH

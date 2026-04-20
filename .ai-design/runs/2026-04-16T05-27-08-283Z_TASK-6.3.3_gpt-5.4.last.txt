@@ -1,0 +1,1328 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+new file mode 100644
+index 0000000..6ccf6d2
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -0,0 +1,91 @@
++namespace VirtualCompany.Application.Finance;
++
++public sealed record UpdateFinanceInvoiceApprovalStatusCommand(
++    Guid CompanyId,
++    Guid InvoiceId,
++    string Status);
++
++public sealed record UpdateFinanceTransactionCategoryCommand(
++    Guid CompanyId,
++    Guid TransactionId,
++    string Category);
++
++public sealed record GetFinancePolicyConfigurationQuery(
++    Guid CompanyId);
++
++public sealed record UpsertFinancePolicyConfigurationCommand(
++    Guid CompanyId,
++    FinancePolicyConfigurationDto Configuration);
++
++public sealed record FinanceInvoiceDto(
++    Guid Id,
++    Guid CounterpartyId,
++    string CounterpartyName,
++    string InvoiceNumber,
++    DateTime IssuedUtc,
++    DateTime DueUtc,
++    decimal Amount,
++    string Currency,
++    string Status);
++
++public sealed record FinanceTransactionDto(
++    Guid Id,
++    Guid AccountId,
++    string AccountName,
++    Guid? CounterpartyId,
++    string? CounterpartyName,
++    Guid? InvoiceId,
++    DateTime TransactionUtc,
++    string TransactionType,
++    decimal Amount,
++    string Currency,
++    string Description,
++    string ExternalReference);
++
++public sealed record FinancePolicyConfigurationDto(
++    Guid CompanyId,
++    string ApprovalCurrency,
++    decimal InvoiceApprovalThreshold,
++    decimal BillApprovalThreshold,
++    bool RequireCounterpartyForTransactions,
++    decimal AnomalyDetectionLowerBound,
++    decimal AnomalyDetectionUpperBound,
++    int CashRunwayWarningThresholdDays,
++    int CashRunwayCriticalThresholdDays);
++
++public interface IFinanceCommandService
++{
++    Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
++        UpdateFinanceInvoiceApprovalStatusCommand command,
++        CancellationToken cancellationToken);
++
++    Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(
++        UpdateFinanceTransactionCategoryCommand command,
++        CancellationToken cancellationToken);
++}
++
++public interface IFinancePolicyConfigurationService
++{
++    Task<FinancePolicyConfigurationDto> GetPolicyConfigurationAsync(
++        GetFinancePolicyConfigurationQuery query,
++        CancellationToken cancellationToken);
++
++    Task<FinancePolicyConfigurationDto> UpsertPolicyConfigurationAsync(
++        UpsertFinancePolicyConfigurationCommand command,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+new file mode 100644
+index 0000000..c3b48e4
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+@@ -0,0 +1,391 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class FinanceAccount : ICompanyOwnedEntity
++{
++    private FinanceAccount()
++    {
++    }
++
++    public FinanceAccount(
++        Guid id,
++        Guid companyId,
++        string code,
++        string name,
++        string accountType,
++        string currency,
++        decimal openingBalance,
++        DateTime openedUtc)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (id == Guid.Empty)
++        {
++            id = Guid.NewGuid();
++        }
++
++        Id = id;
++        CompanyId = companyId;
++        Code = NormalizeRequired(code, nameof(code), 32);
++        Name = NormalizeRequired(name, nameof(name), 160);
++        AccountType = NormalizeRequired(accountType, nameof(accountType), 64);
++        Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
++        OpeningBalance = openingBalance;
++        OpenedUtc = openedUtc;
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string Code { get; private set; } = null!;
++    public string Name { get; private set; } = null!;
++    public string AccountType { get; private set; } = null!;
++    public string Currency { get; private set; } = null!;
++    public decimal OpeningBalance { get; private set; }
++    public DateTime OpenedUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
++
++public sealed class FinanceCounterparty : ICompanyOwnedEntity
++{
++    private FinanceCounterparty()
++    {
++    }
++
++    public FinanceCounterparty(Guid id, Guid companyId, string name, string counterpartyType, string? email = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (id == Guid.Empty)
++        {
++            id = Guid.NewGuid();
++        }
++
++        Id = id;
++        CompanyId = companyId;
++        Name = NormalizeRequired(name, nameof(name), 200);
++        CounterpartyType = NormalizeRequired(counterpartyType, nameof(counterpartyType), 64);
++        Email = NormalizeOptional(email, nameof(email), 256);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string Name { get; private set; } = null!;
++    public string CounterpartyType { get; private set; } = null!;
++    public string? Email { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
++    public ICollection<FinanceInvoice> Invoices { get; } = new List<FinanceInvoice>();
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
++
++public sealed class FinanceTransaction : ICompanyOwnedEntity
++{
++    private FinanceTransaction()
++    {
++    }
++
++    public FinanceTransaction(
++        Guid id,
++        Guid companyId,
++        Guid accountId,
++        Guid? counterpartyId,
++        Guid? invoiceId,
++        DateTime transactionUtc,
++        string transactionType,
++        decimal amount,
++        string currency,
++        string description,
++        string externalReference)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (accountId == Guid.Empty)
++        {
++            throw new ArgumentException("AccountId is required.", nameof(accountId));
++        }
++
++        if (counterpartyId == Guid.Empty)
++        {
++            throw new ArgumentException("CounterpartyId cannot be empty.", nameof(counterpartyId));
++        }
++
++        if (invoiceId == Guid.Empty)
++        {
++            throw new ArgumentException("InvoiceId cannot be empty.", nameof(invoiceId));
++        }
++
++        if (id == Guid.Empty)
++        {
++            id = Guid.NewGuid();
++        }
++
++        Id = id;
++        CompanyId = companyId;
++        AccountId = accountId;
++        CounterpartyId = counterpartyId;
++        InvoiceId = invoiceId;
++        TransactionUtc = transactionUtc;
++        TransactionType = NormalizeRequired(transactionType, nameof(transactionType), 64);
++        Amount = amount;
++        Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
++        Description = NormalizeRequired(description, nameof(description), 500);
++        ExternalReference = NormalizeRequired(externalReference, nameof(externalReference), 100);
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid AccountId { get; private set; }
++    public Guid? CounterpartyId { get; private set; }
++    public Guid? InvoiceId { get; private set; }
++    public DateTime TransactionUtc { get; private set; }
++    public string TransactionType { get; private set; } = null!;
++    public decimal Amount { get; private set; }
++    public string Currency { get; private set; } = null!;
++    public string Description { get; private set; } = null!;
++    public string ExternalReference { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FinanceAccount Account { get; private set; } = null!;
++    public FinanceCounterparty? Counterparty { get; private set; }
++    public FinanceInvoice? Invoice { get; private set; }
++
++    public void ChangeCategory(string category)
++    {
++        TransactionType = NormalizeRequired(category, nameof(category), 64);
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
++
++public sealed class FinanceInvoice : ICompanyOwnedEntity
++{
++    private FinanceInvoice()
++    {
++    }
++
++    public FinanceInvoice(Guid id, Guid companyId, Guid counterpartyId, string invoiceNumber, DateTime issuedUtc, DateTime dueUtc, decimal amount, string currency, string status)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (counterpartyId == Guid.Empty)
++        {
++            throw new ArgumentException("CounterpartyId is required.", nameof(counterpartyId));
++        }
++
++        if (id == Guid.Empty)
++        {
++            id = Guid.NewGuid();
++        }
++
++        Id = id;
++        CompanyId = companyId;
++        CounterpartyId = counterpartyId;
++        InvoiceNumber = NormalizeRequired(invoiceNumber, nameof(invoiceNumber), 64);
++        IssuedUtc = issuedUtc;
++        DueUtc = dueUtc;
++        Amount = amount;
++        Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
++        Status = NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid CounterpartyId { get; private set; }
++    public string InvoiceNumber { get; private set; } = null!;
++    public DateTime IssuedUtc { get; private set; }
++    public DateTime DueUtc { get; private set; }
++    public decimal Amount { get; private set; }
++    public string Currency { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FinanceCounterparty Counterparty { get; private set; } = null!;
++    public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
++
++    public void ChangeApprovalStatus(string status)
++    {
++        var normalized = NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        if (!IsValidApprovalStatusTransition(Status, normalized))
++        {
++            throw new InvalidOperationException($"Invoice status cannot transition from '{Status}' to '{normalized}'.");
++        }
++
++        Status = normalized;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static bool IsValidApprovalStatusTransition(string current, string next) =>
++        (current.ToLowerInvariant(), next) is ("open" or "pending" or "pending_approval", "approved" or "rejected") or ("approved", "paid" or "void") or ("rejected", "open" or "void");
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
++
++public sealed class FinancePolicyConfiguration : ICompanyOwnedEntity
++{
++    private FinancePolicyConfiguration()
++    {
++    }
++
++    public FinancePolicyConfiguration(
++        Guid id,
++        Guid companyId,
++        string approvalCurrency,
++        decimal invoiceApprovalThreshold,
++        decimal billApprovalThreshold,
++        bool requireCounterpartyForTransactions,
++        decimal anomalyDetectionLowerBound = -10000m,
++        decimal anomalyDetectionUpperBound = 10000m,
++        int cashRunwayWarningThresholdDays = 90,
++        int cashRunwayCriticalThresholdDays = 30)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        ValidateControls(
++            invoiceApprovalThreshold,
++            billApprovalThreshold,
++            anomalyDetectionLowerBound,
++            anomalyDetectionUpperBound,
++            cashRunwayWarningThresholdDays,
++            cashRunwayCriticalThresholdDays);
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        ApprovalCurrency = NormalizeRequired(approvalCurrency, nameof(approvalCurrency), 3).ToUpperInvariant();
++        InvoiceApprovalThreshold = invoiceApprovalThreshold;
++        BillApprovalThreshold = billApprovalThreshold;
++        RequireCounterpartyForTransactions = requireCounterpartyForTransactions;
++        AnomalyDetectionLowerBound = anomalyDetectionLowerBound;
++        AnomalyDetectionUpperBound = anomalyDetectionUpperBound;
++        CashRunwayWarningThresholdDays = cashRunwayWarningThresholdDays;
++        CashRunwayCriticalThresholdDays = cashRunwayCriticalThresholdDays;
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string ApprovalCurrency { get; private set; } = null!;
++    public decimal InvoiceApprovalThreshold { get; private set; }
++    public decimal BillApprovalThreshold { get; private set; }
++    public bool RequireCounterpartyForTransactions { get; private set; }
++    public decimal AnomalyDetectionLowerBound { get; private set; }
++    public decimal AnomalyDetectionUpperBound { get; private set; }
++    public int CashRunwayWarningThresholdDays { get; private set; }
++    public int CashRunwayCriticalThresholdDays { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    public void Update(
++        string approvalCurrency,
++        decimal invoiceApprovalThreshold,
++        decimal billApprovalThreshold,
++        bool requireCounterpartyForTransactions,
++        decimal anomalyDetectionLowerBound,
++        decimal anomalyDetectionUpperBound,
++        int cashRunwayWarningThresholdDays,
++        int cashRunwayCriticalThresholdDays)
++    {
++        ValidateControls(
++            invoiceApprovalThreshold,
++            billApprovalThreshold,
++            anomalyDetectionLowerBound,
++            anomalyDetectionUpperBound,
++            cashRunwayWarningThresholdDays,
++            cashRunwayCriticalThresholdDays);
++
++        ApprovalCurrency = NormalizeRequired(approvalCurrency, nameof(approvalCurrency), 3).ToUpperInvariant();
++        InvoiceApprovalThreshold = invoiceApprovalThreshold;
++        BillApprovalThreshold = billApprovalThreshold;
++        RequireCounterpartyForTransactions = requireCounterpartyForTransactions;
++        AnomalyDetectionLowerBound = anomalyDetectionLowerBound;
++        AnomalyDetectionUpperBound = anomalyDetectionUpperBound;
++        CashRunwayWarningThresholdDays = cashRunwayWarningThresholdDays;
++        CashRunwayCriticalThresholdDays = cashRunwayCriticalThresholdDays;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static void ValidateControls(
++        decimal invoiceApprovalThreshold,
++        decimal billApprovalThreshold,
++        decimal anomalyDetectionLowerBound,
++        decimal anomalyDetectionUpperBound,
++        int cashRunwayWarningThresholdDays,
++        int cashRunwayCriticalThresholdDays)
++    {
++        if (invoiceApprovalThreshold < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(invoiceApprovalThreshold), "Invoice approval threshold cannot be negative.");
++        }
++
++        if (billApprovalThreshold < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(billApprovalThreshold), "Bill approval threshold cannot be negative.");
++        }
++
++        if (anomalyDetectionLowerBound >= anomalyDetectionUpperBound)
++        {
++            throw new ArgumentException("Anomaly detection lower bound must be less than upper bound.", nameof(anomalyDetectionLowerBound));
++        }
++
++        if (cashRunwayCriticalThresholdDays <= 0 || cashRunwayWarningThresholdDays <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(cashRunwayWarningThresholdDays), "Cash runway thresholds must be positive.");
++        }
++
++        if (cashRunwayCriticalThresholdDays > cashRunwayWarningThresholdDays)
++        {
++            throw new ArgumentException("Cash runway critical threshold cannot exceed warning threshold.", nameof(cashRunwayCriticalThresholdDays));
++        }
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 73136ec..4c247ac 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -20,6 +20,7 @@ using VirtualCompany.Application.ExecutionExceptions;
+ using VirtualCompany.Application.Escalations;
+ using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Finance;
+ using VirtualCompany.Application.Insights;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Tasks;
+@@ -39,6 +40,7 @@ using VirtualCompany.Infrastructure.Authorization;
+ using VirtualCompany.Infrastructure.Context;
+ using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Documents;
++using VirtualCompany.Infrastructure.Finance;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Memory;
+ using VirtualCompany.Infrastructure.Observability;
+@@ -286,6 +288,8 @@ public static class DependencyInjection
+         services.AddScoped<IMobileSummaryService, CompanyMobileSummaryService>();
+         services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
+         services.AddSingleton<IExecutiveCockpitDashboardCacheInvalidator>(provider => (IExecutiveCockpitDashboardCacheInvalidator)provider.GetRequiredService<IExecutiveCockpitDashboardCache>());
++        services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
++        services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
+         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+new file mode 100644
+index 0000000..599c148
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -0,0 +1,225 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFinancePolicyConfigurationService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
++
++    public CompanyFinanceCommandService(VirtualCompanyDbContext dbContext)
++        : this(dbContext, null)
++    {
++    }
++
++    public CompanyFinanceCommandService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor? companyContextAccessor)
++    {
++        _dbContext = dbContext;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public async Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
++        UpdateFinanceInvoiceApprovalStatusCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        if (command.InvoiceId == Guid.Empty)
++        {
++            throw new ArgumentException("Invoice id is required.", nameof(command));
++        }
++
++        var invoice = await _dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .Include(x => x.Counterparty)
++            .SingleOrDefaultAsync(x => x.Id == command.InvoiceId, cancellationToken);
++
++        EnsureRecordTenant(invoice, command.CompanyId, "invoice");
++        await EnsureInvoiceApprovalLimitAsync(invoice!, command.Status, cancellationToken);
++        invoice!.ChangeApprovalStatus(command.Status);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return MapInvoice(invoice);
++    }
++
++    public async Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(
++        UpdateFinanceTransactionCategoryCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        if (command.TransactionId == Guid.Empty)
++        {
++            throw new ArgumentException("Transaction id is required.", nameof(command));
++        }
++
++        var transaction = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .Include(x => x.Account)
++            .Include(x => x.Counterparty)
++            .SingleOrDefaultAsync(x => x.Id == command.TransactionId, cancellationToken);
++
++        EnsureRecordTenant(transaction, command.CompanyId, "transaction");
++        transaction!.ChangeCategory(command.Category);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return MapTransaction(transaction);
++    }
++
++    public async Task<FinancePolicyConfigurationDto> GetPolicyConfigurationAsync(
++        GetFinancePolicyConfigurationQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++
++        var configuration = await _dbContext.FinancePolicyConfigurations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId, cancellationToken);
++
++        return configuration is null
++            ? CreateDefaultPolicy(query.CompanyId)
++            : MapPolicy(configuration);
++    }
++
++    public async Task<FinancePolicyConfigurationDto> UpsertPolicyConfigurationAsync(
++        UpsertFinancePolicyConfigurationCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        if (command.Configuration.CompanyId != command.CompanyId)
++        {
++            throw new UnauthorizedAccessException("Finance policy writes are scoped to the active company context.");
++        }
++
++        var configuration = await _dbContext.FinancePolicyConfigurations
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId, cancellationToken);
++
++        if (configuration is null)
++        {
++            configuration = new FinancePolicyConfiguration(
++                Guid.NewGuid(),
++                command.CompanyId,
++                command.Configuration.ApprovalCurrency,
++                command.Configuration.InvoiceApprovalThreshold,
++                command.Configuration.BillApprovalThreshold,
++                command.Configuration.RequireCounterpartyForTransactions,
++                command.Configuration.AnomalyDetectionLowerBound,
++                command.Configuration.AnomalyDetectionUpperBound,
++                command.Configuration.CashRunwayWarningThresholdDays,
++                command.Configuration.CashRunwayCriticalThresholdDays);
++
++            _dbContext.FinancePolicyConfigurations.Add(configuration);
++        }
++        else
++        {
++            configuration.Update(
++                command.Configuration.ApprovalCurrency,
++                command.Configuration.InvoiceApprovalThreshold,
++                command.Configuration.BillApprovalThreshold,
++                command.Configuration.RequireCounterpartyForTransactions,
++                command.Configuration.AnomalyDetectionLowerBound,
++                command.Configuration.AnomalyDetectionUpperBound,
++                command.Configuration.CashRunwayWarningThresholdDays,
++                command.Configuration.CashRunwayCriticalThresholdDays);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapPolicy(configuration);
++    }
++
++    private void EnsureTenant(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++
++        if (_companyContextAccessor?.CompanyId is Guid currentCompanyId && currentCompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException("Finance writes are scoped to the active company context.");
++        }
++    }
++
++    private async Task EnsureInvoiceApprovalLimitAsync(
++        FinanceInvoice invoice,
++        string status,
++        CancellationToken cancellationToken)
++    {
++        if (!string.Equals(status?.Trim(), "approved", StringComparison.OrdinalIgnoreCase))
++        {
++            return;
++        }
++
++        var policy = await _dbContext.FinancePolicyConfigurations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == invoice.CompanyId, cancellationToken);
++
++        var approvalCurrency = policy?.ApprovalCurrency ?? "USD";
++        if (!string.Equals(invoice.Currency, approvalCurrency, StringComparison.OrdinalIgnoreCase))
++        {
++            throw new InvalidOperationException($"Invoice currency '{invoice.Currency}' does not match approval policy currency '{approvalCurrency}'.");
++        }
++
++        var approvalThreshold = policy?.InvoiceApprovalThreshold ?? 10000m;
++        if (invoice.Amount > approvalThreshold)
++        {
++            throw new InvalidOperationException($"Invoice amount {invoice.Amount} exceeds the approval threshold {approvalThreshold}.");
++        }
++    }
++
++    private static void EnsureRecordTenant(ICompanyOwnedEntity? entity, Guid companyId, string recordName)
++    {
++        if (entity is null)
++        {
++            throw new KeyNotFoundException($"Finance {recordName} was not found.");
++        }
++
++        if (entity.CompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException($"Finance {recordName} belongs to a different company.");
++        }
++    }
++
++    private static FinanceInvoiceDto MapInvoice(FinanceInvoice invoice) =>
++        new(
++            invoice.Id,
++            invoice.CounterpartyId,
++            invoice.Counterparty.Name,
++            invoice.InvoiceNumber,
++            invoice.IssuedUtc,
++            invoice.DueUtc,
++            invoice.Amount,
++            invoice.Currency,
++            invoice.Status);
++
++    private static FinanceTransactionDto MapTransaction(FinanceTransaction transaction) =>
++        new(
++            transaction.Id,
++            transaction.AccountId,
++            transaction.Account.Name,
++            transaction.CounterpartyId,
++            transaction.Counterparty?.Name,
++            transaction.InvoiceId,
++            transaction.TransactionUtc,
++            transaction.TransactionType,
++            transaction.Amount,
++            transaction.Currency,
++            transaction.Description,
++            transaction.ExternalReference);
++
++    private static FinancePolicyConfigurationDto MapPolicy(FinancePolicyConfiguration configuration) =>
++        new(
++            configuration.CompanyId,
++            configuration.ApprovalCurrency,
++            configuration.InvoiceApprovalThreshold,
++            configuration.BillApprovalThreshold,
++            configuration.RequireCounterpartyForTransactions,
++            configuration.AnomalyDetectionLowerBound,
++            configuration.AnomalyDetectionUpperBound,
++            configuration.CashRunwayWarningThresholdDays,
++            configuration.CashRunwayCriticalThresholdDays);
++
++    private static FinancePolicyConfigurationDto CreateDefaultPolicy(Guid companyId) =>
++        new(
++            companyId,
++            "USD",
++            10000m,
++            5000m,
++            true,
++            -10000m,
++            10000m,
++            90,
++            30);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index feffa79..f1477ad 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -2489,6 +2489,152 @@ internal sealed class InsightAcknowledgmentConfiguration : IEntityTypeConfigurat
+     }
+ }
+ 
++internal sealed class FinanceAccountConfiguration : IEntityTypeConfiguration<FinanceAccount>
++{
++    public void Configure(EntityTypeBuilder<FinanceAccount> builder)
++    {
++        builder.ToTable("finance_accounts");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.Code).HasColumnName("code").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(160).IsRequired();
++        builder.Property(x => x.AccountType).HasColumnName("account_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
++        builder.Property(x => x.OpeningBalance).HasColumnName("opening_balance").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.OpenedUtc).HasColumnName("opened_at").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.Code }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.AccountType });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasMany(x => x.Transactions).WithOne(x => x.Account).HasForeignKey(x => new { x.CompanyId, x.AccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class FinanceCounterpartyConfiguration : IEntityTypeConfiguration<FinanceCounterparty>
++{
++    public void Configure(EntityTypeBuilder<FinanceCounterparty> builder)
++    {
++        builder.ToTable("finance_counterparties");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.CounterpartyType).HasColumnName("counterparty_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Email).HasColumnName("email").HasMaxLength(256);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.Name });
++        builder.HasIndex(x => new { x.CompanyId, x.CounterpartyType });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class FinanceInvoiceConfiguration : IEntityTypeConfiguration<FinanceInvoice>
++{
++    public void Configure(EntityTypeBuilder<FinanceInvoice> builder)
++    {
++        builder.ToTable("finance_invoices");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.CounterpartyId).HasColumnName("counterparty_id").IsRequired();
++        builder.Property(x => x.InvoiceNumber).HasColumnName("invoice_number").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.IssuedUtc).HasColumnName("issued_at").IsRequired();
++        builder.Property(x => x.DueUtc).HasColumnName("due_at").IsRequired();
++        builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.InvoiceNumber }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.DueUtc });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Counterparty).WithMany(x => x.Invoices).HasForeignKey(x => new { x.CompanyId, x.CounterpartyId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
++        builder.HasMany(x => x.Transactions).WithOne(x => x.Invoice).HasForeignKey(x => new { x.CompanyId, x.InvoiceId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class FinanceTransactionConfiguration : IEntityTypeConfiguration<FinanceTransaction>
++{
++    public void Configure(EntityTypeBuilder<FinanceTransaction> builder)
++    {
++        builder.ToTable("finance_transactions");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.AccountId).HasColumnName("account_id").IsRequired();
++        builder.Property(x => x.CounterpartyId).HasColumnName("counterparty_id");
++        builder.Property(x => x.InvoiceId).HasColumnName("invoice_id");
++        builder.Property(x => x.TransactionUtc).HasColumnName("transaction_at").IsRequired();
++        builder.Property(x => x.TransactionType).HasColumnName("transaction_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
++        builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(500).IsRequired();
++        builder.Property(x => x.ExternalReference).HasColumnName("external_reference").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.AccountId, x.TransactionUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.CounterpartyId, x.TransactionUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.ExternalReference }).IsUnique();
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Counterparty).WithMany(x => x.Transactions).HasForeignKey(x => new { x.CompanyId, x.CounterpartyId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class FinancePolicyConfigurationConfiguration : IEntityTypeConfiguration<FinancePolicyConfiguration>
++{
++    public void Configure(EntityTypeBuilder<FinancePolicyConfiguration> builder)
++    {
++        builder.ToTable("finance_policy_configurations");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ApprovalCurrency).HasColumnName("approval_currency").HasMaxLength(3).IsRequired();
++        builder.Property(x => x.InvoiceApprovalThreshold).HasColumnName("invoice_approval_threshold").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.BillApprovalThreshold).HasColumnName("bill_approval_threshold").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.RequireCounterpartyForTransactions).HasColumnName("require_counterparty_for_transactions").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.AnomalyDetectionLowerBound).HasColumnName("anomaly_detection_lower_bound").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.AnomalyDetectionUpperBound).HasColumnName("anomaly_detection_upper_bound").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.CashRunwayWarningThresholdDays).HasColumnName("cash_runway_warning_threshold_days").IsRequired();
++        builder.Property(x => x.CashRunwayCriticalThresholdDays).HasColumnName("cash_runway_critical_threshold_days").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => x.CompanyId).IsUnique();
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal static class ActiveProviderConstraint
+ {
+     // EF model configuration is provider-agnostic here; the expression is valid for SQL Server and SQLite.
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index ab83d28..d666691 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -72,6 +72,11 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<InsightAcknowledgment> InsightAcknowledgments => Set<InsightAcknowledgment>();
+     public DbSet<DashboardDepartmentConfig> DashboardDepartmentConfigs => Set<DashboardDepartmentConfig>();
+     public DbSet<DashboardWidgetConfig> DashboardWidgetConfigs => Set<DashboardWidgetConfig>();
++    public DbSet<FinanceAccount> FinanceAccounts => Set<FinanceAccount>();
++    public DbSet<FinanceTransaction> FinanceTransactions => Set<FinanceTransaction>();
++    public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();
++    public DbSet<FinanceCounterparty> FinanceCounterparties => Set<FinanceCounterparty>();
++    public DbSet<FinancePolicyConfiguration> FinancePolicyConfigurations => Set<FinancePolicyConfiguration>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+ 
+@@ -113,7 +118,12 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is TenantBriefingDefault ||
+                 entry.Entity is DashboardDepartmentConfig ||
+                 entry.Entity is DashboardWidgetConfig ||
+-                entry.Entity is Alert)
++                entry.Entity is Alert ||
++                entry.Entity is FinanceAccount ||
++                entry.Entity is FinanceTransaction ||
++                entry.Entity is FinanceInvoice ||
++                entry.Entity is FinanceCounterparty ||
++                entry.Entity is FinancePolicyConfiguration)
+             .Select(entry =>
+             {
+                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
+@@ -257,5 +267,20 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<InsightAcknowledgment>()
+             .HasQueryFilter(acknowledgment =>
+                 CurrentCompanyId.HasValue && acknowledgment.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceAccount>()
++            .HasQueryFilter(account =>
++                CurrentCompanyId.HasValue && account.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceTransaction>()
++            .HasQueryFilter(transaction =>
++                CurrentCompanyId.HasValue && transaction.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceInvoice>()
++            .HasQueryFilter(invoice =>
++                CurrentCompanyId.HasValue && invoice.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceCounterparty>()
++            .HasQueryFilter(counterparty =>
++                CurrentCompanyId.HasValue && counterparty.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinancePolicyConfiguration>()
++            .HasQueryFilter(policy =>
++                CurrentCompanyId.HasValue && policy.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
+new file mode 100644
+index 0000000..af3691f
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
+@@ -0,0 +1,288 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceCommandServiceTests
++{
++    [Fact]
++    public async Task Update_invoice_approval_status_succeeds_for_authorized_tenant()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedFinanceWriteScenario(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++        var result = await service.UpdateInvoiceApprovalStatusAsync(
++            new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, "approved"),
++            CancellationToken.None);
++
++        Assert.Equal("approved", result.Status);
++        Assert.Equal("approved", await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceId).Select(x => x.Status).SingleAsync());
++    }
++
++    [Fact]
++    public async Task Update_transaction_category_succeeds_for_authorized_tenant()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedFinanceWriteScenario(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++        var result = await service.UpdateTransactionCategoryAsync(
++            new UpdateFinanceTransactionCategoryCommand(companyId, seed.TransactionId, "software_subscriptions"),
++            CancellationToken.None);
++
++        Assert.Equal("software_subscriptions", result.TransactionType);
++        Assert.Equal("software_subscriptions", await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());
++    }
++
++    [Fact]
++    public async Task Finance_writes_reject_records_from_another_tenant()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyAId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seedB = SeedFinanceWriteScenario(dbContext, companyBId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++
++        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
++            service.UpdateInvoiceApprovalStatusAsync(
++                new UpdateFinanceInvoiceApprovalStatusCommand(companyAId, seedB.InvoiceId, "approved"),
++                CancellationToken.None));
++        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
++            service.UpdateTransactionCategoryAsync(
++                new UpdateFinanceTransactionCategoryCommand(companyAId, seedB.TransactionId, "software_subscriptions"),
++                CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task Finance_writes_reject_mismatched_tenant_context()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyAId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedFinanceWriteScenario(dbContext, companyAId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++
++        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
++            service.UpdateInvoiceApprovalStatusAsync(
++                new UpdateFinanceInvoiceApprovalStatusCommand(companyBId, seed.InvoiceId, "approved"),
++                CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task Finance_writes_reject_invalid_invoice_status_transition()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedFinanceWriteScenario(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++        await service.UpdateInvoiceApprovalStatusAsync(
++            new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, "approved"),
++            CancellationToken.None);
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() =>
++            service.UpdateInvoiceApprovalStatusAsync(
++                new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, "open"),
++                CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task Finance_writes_reject_invoice_approval_above_policy_limit()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedFinanceWriteScenario(dbContext, companyId);
++        dbContext.FinancePolicyConfigurations.Add(new FinancePolicyConfiguration(
++            Guid.NewGuid(),
++            companyId,
++            "USD",
++            100m,
++            7500m,
++            true,
++            -2500m,
++            15000m,
++            120,
++            45));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() =>
++            service.UpdateInvoiceApprovalStatusAsync(
++                new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, "approved"),
++                CancellationToken.None));
++        Assert.Equal("open", await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceId).Select(x => x.Status).SingleAsync());
++    }
++
++    [Fact]
++    public async Task Policy_configuration_is_persisted_and_retrieved_as_typed_configuration()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        dbContext.Companies.Add(new Company(companyId, "Policy Company"));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++        var saved = await service.UpsertPolicyConfigurationAsync(
++            new UpsertFinancePolicyConfigurationCommand(
++                companyId,
++                new FinancePolicyConfigurationDto(
++                    companyId,
++                    "eur",
++                    12500m,
++                    7500m,
++                    true,
++                    -2500m,
++                    15000m,
++                    120,
++                    45)),
++            CancellationToken.None);
++
++        var retrieved = await service.GetPolicyConfigurationAsync(
++            new GetFinancePolicyConfigurationQuery(companyId),
++            CancellationToken.None);
++
++        Assert.Equal("EUR", saved.ApprovalCurrency);
++        Assert.Equal(saved, retrieved);
++        Assert.Equal(1, await dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
++    }
++
++    [Fact]
++    public async Task Policy_configuration_rejects_invalid_control_bounds()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        dbContext.Companies.Add(new Company(companyId, "Invalid Policy Company"));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++
++        await Assert.ThrowsAsync<ArgumentException>(() =>
++            service.UpsertPolicyConfigurationAsync(
++                new UpsertFinancePolicyConfigurationCommand(
++                    companyId,
++                    new FinancePolicyConfigurationDto(
++                        companyId,
++                        "USD",
++                        12500m,
++                        7500m,
++                        true,
++                        15000m,
++                        -2500m,
++                        120,
++                        45)),
++                CancellationToken.None));
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection, ICompanyContextAccessor accessor) =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options,
++            accessor);
++
++    private static FinanceWriteSeed SeedFinanceWriteScenario(VirtualCompanyDbContext dbContext, Guid companyId)
++    {
++        var accountId = Guid.NewGuid();
++        var counterpartyId = Guid.NewGuid();
++        var invoiceId = Guid.NewGuid();
++        var transactionId = Guid.NewGuid();
++
++        dbContext.Companies.Add(new Company(companyId, $"Finance Write Company {companyId:N}"));
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            accountId,
++            companyId,
++            "1000",
++            "Operating Cash",
++            "asset",
++            "USD",
++            1000m,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.FinanceCounterparties.Add(new FinanceCounterparty(
++            counterpartyId,
++            companyId,
++            "Customer",
++            "customer",
++            "customer@example.com"));
++        dbContext.FinanceInvoices.Add(new FinanceInvoice(
++            invoiceId,
++            companyId,
++            counterpartyId,
++            $"INV-{invoiceId:N}"[..16],
++            new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 2, 2, 0, 0, 0, DateTimeKind.Utc),
++            2000m,
++            "USD",
++            "open"));
++        dbContext.FinanceTransactions.Add(new FinanceTransaction(
++            transactionId,
++            companyId,
++            accountId,
++            counterpartyId,
++            invoiceId,
++            new DateTime(2026, 1, 3, 0, 0, 0, DateTimeKind.Utc),
++            "customer_payment",
++            2000m,
++            "USD",
++            "Customer payment",
++            $"PAY-{transactionId:N}"[..20]));
++
++        return new FinanceWriteSeed(invoiceId, transactionId);
++    }
++
++    private sealed record FinanceWriteSeed(Guid InvoiceId, Guid TransactionId);
++
++    private sealed class TestCompanyContextAccessor : ICompanyContextAccessor
++    {
++        public TestCompanyContextAccessor(Guid companyId)
++        {
++            CompanyId = companyId;
++        }
++
++        public Guid? CompanyId { get; private set; }
++        public Guid? UserId { get; private set; }
++        public bool IsResolved => Membership is not null;
++        public ResolvedCompanyMembershipContext? Membership { get; private set; }
++
++        public void SetCompanyId(Guid? companyId)
++        {
++            CompanyId = companyId;
++            Membership = null;
++            UserId = null;
++        }
++
++        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext)
++        {
++            Membership = companyContext;
++            CompanyId = companyContext?.CompanyId;
++            UserId = companyContext?.UserId;
++        }
++    }
++}
+END_OF_PATCH

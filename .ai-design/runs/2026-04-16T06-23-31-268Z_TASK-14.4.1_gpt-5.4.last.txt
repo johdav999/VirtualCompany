@@ -1,0 +1,688 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 8b96c4e..8d56e6b 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -1,3 +1,5 @@
++using VirtualCompany.Application.Agents;
++
+ namespace VirtualCompany.Application.Finance;
+ 
+ public sealed record GetFinanceCashBalanceQuery(
+@@ -150,6 +152,34 @@ public sealed record FinancePolicyConfigurationDto(
+     decimal AutoApprovalLimit,
+     bool RequireReceiptForExpenses);
+ 
++public sealed record FinanceTransactionCategoryRecommendationDto(
++    Guid TransactionId,
++    string RecommendedCategory,
++    decimal Confidence);
++
++public sealed record FinanceInvoiceApprovalRecommendationDto(
++    Guid InvoiceId,
++    string RecommendedStatus,
++    decimal Confidence);
++
++public interface IFinanceToolProvider
++{
++    Task<FinanceCashBalanceDto> GetCashBalanceAsync(GetFinanceCashBalanceQuery query, CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<FinanceTransactionDto>> GetTransactionsAsync(GetFinanceTransactionsQuery query, CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<FinanceInvoiceDto>> GetInvoicesAsync(GetFinanceInvoicesQuery query, CancellationToken cancellationToken);
++
++    Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(GetFinanceMonthlyProfitAndLossQuery query, CancellationToken cancellationToken);
++
++    Task<FinanceTransactionCategoryRecommendationDto> RecommendTransactionCategoryAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken);
++
++    Task<FinanceInvoiceApprovalRecommendationDto> RecommendInvoiceApprovalDecisionAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken);
++
++    Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(UpdateFinanceTransactionCategoryCommand command, CancellationToken cancellationToken);
++
++    Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(UpdateFinanceInvoiceApprovalStatusCommand command, CancellationToken cancellationToken);
++}
++
+ public interface IFinanceCommandService
+ {
+     Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 9238f33..a62a00e 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
+ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection.Extensions;
+ using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Activity;
+ using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Application.Alerts;
+@@ -75,6 +76,13 @@ public static class DependencyInjection
+         services.AddOptions<CompanyOutboxDispatcherOptions>()
+             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
+ 
++        services.AddOptions<FinanceToolProviderOptions>()
++            .Bind(configuration.GetSection(FinanceToolProviderOptions.SectionName))
++            .PostConfigure(options =>
++            {
++                options.Provider = string.IsNullOrWhiteSpace(options.Provider) ? FinanceToolProviderOptions.InternalProvider : options.Provider.Trim();
++            });
++
+         services.AddOptions<RedisExecutionCoordinationOptions>()
+             .Bind(configuration.GetSection(RedisExecutionCoordinationOptions.SectionName))
+             .Validate(
+@@ -292,9 +300,23 @@ public static class DependencyInjection
+         services.AddScoped<IMobileSummaryService, CompanyMobileSummaryService>();
+         services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
+         services.AddSingleton<IExecutiveCockpitDashboardCacheInvalidator>(provider => (IExecutiveCockpitDashboardCacheInvalidator)provider.GetRequiredService<IExecutiveCockpitDashboardCache>());
++        services.AddScoped<InternalFinanceToolProvider>();
++        services.AddScoped<MockFinanceToolProvider>();
+         services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
+         services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
++        services.AddScoped<IFinanceToolProvider>(provider =>
++        {
++            var options = provider.GetRequiredService<IOptions<FinanceToolProviderOptions>>().Value;
++            return options.Provider.Equals(FinanceToolProviderOptions.MockProvider, StringComparison.OrdinalIgnoreCase)
++                ? provider.GetRequiredService<MockFinanceToolProvider>()
++                : provider.GetRequiredService<InternalFinanceToolProvider>();
++        });
+         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
+         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
+         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
+diff --git a/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs b/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
+index 621667b..cc4be28 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
+@@ -15,16 +15,14 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+     private readonly ICompanyTaskCommandService _taskCommandService;
+     private readonly IApprovalRequestService _approvalRequestService;
+     private readonly ICompanyKnowledgeSearchService _knowledgeSearchService;
+-    private readonly IFinanceReadService _financeReadService;
+-    private readonly IFinanceCommandService _financeCommandService;
++    private readonly IFinanceToolProvider _financeToolProvider;
+ 
+     public InternalCompanyToolContract(
+         ICompanyTaskQueryService taskQueryService,
+         ICompanyTaskCommandService taskCommandService,
+         IApprovalRequestService approvalRequestService,
+         ICompanyKnowledgeSearchService knowledgeSearchService,
+-        IFinanceReadService financeReadService,
+-        IFinanceCommandService financeCommandService)
++        IFinanceToolProvider financeToolProvider)
+     {
+         _taskQueryService = taskQueryService;
+         _taskCommandService = taskCommandService;
+@@ -32,8 +30,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+         _approvalRequestService = approvalRequestService;
+         _knowledgeSearchService = knowledgeSearchService;
+-        _financeReadService = financeReadService;
+-        _financeCommandService = financeCommandService;
++        _financeToolProvider = financeToolProvider;
+     }
+ 
+     public async Task<InternalToolExecutionResponse> ExecuteAsync(
+@@ -62,8 +59,8 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+                 "list_uncategorized_transactions" => await ExecuteListUncategorizedTransactionsAsync(request, cancellationToken),
+                 "list_invoices_awaiting_approval" => await ExecuteListInvoicesAwaitingApprovalAsync(request, cancellationToken),
+                 "get_profit_and_loss_summary" => await ExecuteGetProfitAndLossSummaryAsync(request, cancellationToken),
+-                "recommend_transaction_category" => ExecuteRecommendTransactionCategory(request),
+-                "recommend_invoice_approval_decision" => ExecuteRecommendInvoiceApprovalDecision(request),
++                "recommend_transaction_category" => await ExecuteRecommendTransactionCategoryAsync(request, cancellationToken),
++                "recommend_invoice_approval_decision" => await ExecuteRecommendInvoiceApprovalDecisionAsync(request, cancellationToken),
+                 "categorize_transaction" => await ExecuteCategorizeTransactionAsync(request, cancellationToken),
+                 "approve_invoice" => await ExecuteApproveInvoiceAsync(request, cancellationToken),
+                 _ => Failed("unsupported_internal_tool", "The requested internal tool is not available.")
+@@ -253,7 +250,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             return actionFailure;
+         }
+ 
+-        var balance = await _financeReadService.GetCashBalanceAsync(
++        var balance = await _financeToolProvider.GetCashBalanceAsync(
+             new GetFinanceCashBalanceQuery(request.CompanyId, ReadDateTime(request.Payload, "asOfUtc")),
+             cancellationToken);
+ 
+@@ -266,7 +263,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+                 ["currency"] = JsonValue.Create(balance.Currency),
+                 ["asOfUtc"] = JsonValue.Create(balance.AsOfUtc)
+             },
+-            Metadata(request, "finance_read_service"));
++            Metadata(request, "finance_tool_provider"));
+     }
+ 
+     private async Task<InternalToolExecutionResponse> ExecuteListTransactionsAsync(
+@@ -278,7 +275,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             return actionFailure;
+         }
+ 
+-        var transactions = await _financeReadService.GetTransactionsAsync(
++        var transactions = await _financeToolProvider.GetTransactionsAsync(
+             new GetFinanceTransactionsQuery(
+                 request.CompanyId,
+                 ReadDateTime(request.Payload, "startUtc"),
+@@ -293,7 +290,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+                 ["transactions"] = Serialize(transactions),
+                 ["count"] = JsonValue.Create(transactions.Count)
+             },
+-            Metadata(request, "finance_read_service"));
++            Metadata(request, "finance_tool_provider"));
+     }
+ 
+     private async Task<InternalToolExecutionResponse> ExecuteListUncategorizedTransactionsAsync(
+@@ -305,7 +302,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             return actionFailure;
+         }
+ 
+-        var transactions = await _financeReadService.GetTransactionsAsync(
++        var transactions = await _financeToolProvider.GetTransactionsAsync(
+             new GetFinanceTransactionsQuery(
+                 request.CompanyId,
+                 ReadDateTime(request.Payload, "startUtc"),
+@@ -327,7 +324,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+                 ["transactions"] = Serialize(uncategorized),
+                 ["count"] = JsonValue.Create(uncategorized.Count)
+             },
+-            Metadata(request, "finance_read_service"));
++            Metadata(request, "finance_tool_provider"));
+     }
+ 
+     private async Task<InternalToolExecutionResponse> ExecuteListInvoicesAwaitingApprovalAsync(
+@@ -339,7 +336,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             return actionFailure;
+         }
+ 
+-        var invoices = await _financeReadService.GetInvoicesAsync(
++        var invoices = await _financeToolProvider.GetInvoicesAsync(
+             new GetFinanceInvoicesQuery(
+                 request.CompanyId,
+                 ReadDateTime(request.Payload, "startUtc"),
+@@ -361,7 +358,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+                 ["invoices"] = Serialize(awaitingApproval),
+                 ["count"] = JsonValue.Create(awaitingApproval.Count)
+             },
+-            Metadata(request, "finance_read_service"));
++            Metadata(request, "finance_tool_provider"));
+     }
+ 
+     private async Task<InternalToolExecutionResponse> ExecuteGetProfitAndLossSummaryAsync(
+@@ -373,7 +370,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             return actionFailure;
+         }
+ 
+-        var summary = await _financeReadService.GetMonthlyProfitAndLossAsync(
++        var summary = await _financeToolProvider.GetMonthlyProfitAndLossAsync(
+             new GetFinanceMonthlyProfitAndLossQuery(
+                 request.CompanyId,
+                 ReadInt(request.Payload, "year") ?? DateTime.UtcNow.Year,
+@@ -390,10 +387,10 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+                 ["netResult"] = JsonValue.Create(summary.NetResult),
+                 ["currency"] = JsonValue.Create(summary.Currency)
+             },
+-            Metadata(request, "finance_read_service"));
++            Metadata(request, "finance_tool_provider"));
+     }
+ 
+-    private static InternalToolExecutionResponse ExecuteRecommendTransactionCategory(InternalToolExecutionRequest request)
++    private async Task<InternalToolExecutionResponse> ExecuteRecommendTransactionCategoryAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken)
+     {
+         if (!EnsureAction(request, ToolActionType.Recommend, out var actionFailure))
+         {
+@@ -407,22 +404,21 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             return Failed("transaction_id_required", "A transaction id is required to recommend a category.");
+         }
+ 
+-        var recommendedCategory = ReadString(request.Payload, "candidateCategory") ?? "review_required";
++        var recommendation = await _financeToolProvider.RecommendTransactionCategoryAsync(request, cancellationToken);
+         return InternalToolExecutionResponse.Succeeded(
+             "Transaction category recommendation was prepared.",
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["recommendation"] = new JsonObject
+                 {
+-                    ["transactionId"] = JsonValue.Create(transactionId.Value),
+-                    ["recommendedCategory"] = JsonValue.Create(recommendedCategory),
+-                    ["confidence"] = JsonValue.Create(0.75m)
++                    ["transactionId"] = JsonValue.Create(recommendation.TransactionId),
++                    ["recommendedCategory"] = JsonValue.Create(recommendation.RecommendedCategory),
++                    ["confidence"] = JsonValue.Create(recommendation.Confidence)
+                 }
+             },
+-            Metadata(request, "finance_recommendation_service"));
++            Metadata(request, "finance_tool_provider"));
+     }
+ 
+-    private static InternalToolExecutionResponse ExecuteRecommendInvoiceApprovalDecision(InternalToolExecutionRequest request)
++    private async Task<InternalToolExecutionResponse> ExecuteRecommendInvoiceApprovalDecisionAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken)
+     {
+         if (!EnsureAction(request, ToolActionType.Recommend, out var actionFailure))
+         {
+@@ -436,21 +432,20 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             return Failed("invoice_id_required", "An invoice id is required to recommend an approval decision.");
+         }
+ 
+-        var recommendedStatus = ReadString(request.Payload, "candidateStatus") ?? "approved";
++        var recommendation = await _financeToolProvider.RecommendInvoiceApprovalDecisionAsync(request, cancellationToken);
+         return InternalToolExecutionResponse.Succeeded(
+             "Invoice approval recommendation was prepared.",
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["recommendation"] = new JsonObject
+                 {
+-                    ["invoiceId"] = JsonValue.Create(invoiceId.Value),
+-                    ["recommendedStatus"] = JsonValue.Create(recommendedStatus),
+-                    ["confidence"] = JsonValue.Create(0.75m)
++                    ["invoiceId"] = JsonValue.Create(recommendation.InvoiceId),
++                    ["recommendedStatus"] = JsonValue.Create(recommendation.RecommendedStatus),
++                    ["confidence"] = JsonValue.Create(recommendation.Confidence)
+                 }
+             },
+-            Metadata(request, "finance_recommendation_service"));
++            Metadata(request, "finance_tool_provider"));
+     }
+ 
+     private async Task<InternalToolExecutionResponse> ExecuteCategorizeTransactionAsync(
+@@ -468,7 +463,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             return Failed("transaction_category_required", "A transaction id and category are required.");
+         }
+ 
+-        var transaction = await _financeCommandService.UpdateTransactionCategoryAsync(
++        var transaction = await _financeToolProvider.UpdateTransactionCategoryAsync(
+             new UpdateFinanceTransactionCategoryCommand(request.CompanyId, transactionId.Value, category),
+             cancellationToken);
+ 
+@@ -481,7 +476,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+                 ["transactionId"] = JsonValue.Create(transaction.Id),
+                 ["category"] = JsonValue.Create(transaction.TransactionType)
+             },
+-            Metadata(request, "finance_command_service"));
++            Metadata(request, "finance_tool_provider"));
+     }
+ 
+     private async Task<InternalToolExecutionResponse> ExecuteApproveInvoiceAsync(
+@@ -499,7 +494,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             return Failed("invoice_id_required", "An invoice id is required to approve an invoice.");
+         }
+ 
+-        var invoice = await _financeCommandService.UpdateInvoiceApprovalStatusAsync(
++        var invoice = await _financeToolProvider.UpdateInvoiceApprovalStatusAsync(
+             new UpdateFinanceInvoiceApprovalStatusCommand(request.CompanyId, invoiceId.Value, status),
+             cancellationToken);
+ 
+@@ -512,7 +507,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+                 ["invoiceId"] = JsonValue.Create(invoice.Id),
+                 ["status"] = JsonValue.Create(invoice.Status)
+             },
+-            Metadata(request, "finance_command_service"));
++            Metadata(request, "finance_tool_provider"));
+     }
+ 
+     private static bool EnsureAction(
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceToolProviders.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceToolProviders.cs
+new file mode 100644
+index 0000000..6d21c42
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceToolProviders.cs
+@@ -0,0 +1,216 @@
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Finance;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class FinanceToolProviderOptions
++{
++    public const string SectionName = "FinanceTools";
++    public const string InternalProvider = "internal";
++    public const string MockProvider = "mock";
++
++    public string Provider { get; set; } = InternalProvider;
++}
++
++public sealed class InternalFinanceToolProvider : IFinanceToolProvider
++{
++    private readonly IFinanceReadService _readService;
++    private readonly IFinanceCommandService _commandService;
++
++    public InternalFinanceToolProvider(
++        IFinanceReadService readService,
++        IFinanceCommandService commandService)
++    {
++        _readService = readService;
++        _commandService = commandService;
++    }
++
++    public Task<FinanceCashBalanceDto> GetCashBalanceAsync(
++        GetFinanceCashBalanceQuery query,
++        CancellationToken cancellationToken) =>
++        _readService.GetCashBalanceAsync(query, cancellationToken);
++
++    public Task<IReadOnlyList<FinanceTransactionDto>> GetTransactionsAsync(
++        GetFinanceTransactionsQuery query,
++        CancellationToken cancellationToken) =>
++        _readService.GetTransactionsAsync(query, cancellationToken);
++
++    public Task<IReadOnlyList<FinanceInvoiceDto>> GetInvoicesAsync(
++        GetFinanceInvoicesQuery query,
++        CancellationToken cancellationToken) =>
++        _readService.GetInvoicesAsync(query, cancellationToken);
++
++    public Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(
++        GetFinanceMonthlyProfitAndLossQuery query,
++        CancellationToken cancellationToken) =>
++        _readService.GetMonthlyProfitAndLossAsync(query, cancellationToken);
++
++    public Task<FinanceTransactionCategoryRecommendationDto> RecommendTransactionCategoryAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        var transactionId = ReadGuid(request.Payload, "transactionId")!.Value;
++        var category = ReadString(request.Payload, "candidateCategory") ?? "review_required";
++        return Task.FromResult(new FinanceTransactionCategoryRecommendationDto(transactionId, category, 0.75m));
++    }
++
++    public Task<FinanceInvoiceApprovalRecommendationDto> RecommendInvoiceApprovalDecisionAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        var invoiceId = ReadGuid(request.Payload, "invoiceId")!.Value;
++        var status = ReadString(request.Payload, "candidateStatus") ?? "approved";
++        return Task.FromResult(new FinanceInvoiceApprovalRecommendationDto(invoiceId, status, 0.75m));
++    }
++
++    public Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(
++        UpdateFinanceTransactionCategoryCommand command,
++        CancellationToken cancellationToken) =>
++        _commandService.UpdateTransactionCategoryAsync(command, cancellationToken);
++
++    public Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
++        UpdateFinanceInvoiceApprovalStatusCommand command,
++        CancellationToken cancellationToken) =>
++        _commandService.UpdateInvoiceApprovalStatusAsync(command, cancellationToken);
++
++    private static string? ReadString(IReadOnlyDictionary<string, System.Text.Json.Nodes.JsonNode?> payload, string key)
++    {
++        if (!payload.TryGetValue(key, out var node) || node is not System.Text.Json.Nodes.JsonValue value)
++        {
++            return null;
++        }
++
++        return value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text)
++            ? text.Trim()
++            : null;
++    }
++
++    private static Guid? ReadGuid(IReadOnlyDictionary<string, System.Text.Json.Nodes.JsonNode?> payload, string key)
++    {
++        if (!payload.TryGetValue(key, out var node) || node is not System.Text.Json.Nodes.JsonValue value)
++        {
++            return null;
++        }
++
++        if (value.TryGetValue<Guid>(out var guid) && guid != Guid.Empty)
++        {
++            return guid;
++        }
++
++        return value.TryGetValue<string>(out var text) && Guid.TryParse(text, out guid) && guid != Guid.Empty
++            ? guid
++            : null;
++    }
++}
++
++public sealed class MockFinanceToolProvider : IFinanceToolProvider
++{
++    private static readonly DateTime DefaultAsOfUtc = new(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc);
++    private static readonly Guid CashAccountId = Guid.Parse("10000000-0000-0000-0000-000000000001");
++    private static readonly Guid TransactionId = Guid.Parse("20000000-0000-0000-0000-000000000001");
++    private static readonly Guid RevenueTransactionId = Guid.Parse("20000000-0000-0000-0000-000000000002");
++    private static readonly Guid CounterpartyId = Guid.Parse("30000000-0000-0000-0000-000000000001");
++    private static readonly Guid InvoiceId = Guid.Parse("40000000-0000-0000-0000-000000000001");
++
++    public Task<FinanceCashBalanceDto> GetCashBalanceAsync(
++        GetFinanceCashBalanceQuery query,
++        CancellationToken cancellationToken)
++    {
++        var asOfUtc = query.AsOfUtc ?? DefaultAsOfUtc;
++        return Task.FromResult(new FinanceCashBalanceDto(
++            query.CompanyId,
++            asOfUtc,
++            125000m,
++            "USD",
++            [
++                new FinanceAccountBalanceDto(
++                    CashAccountId,
++                    "1000",
++                    "Mock Operating Cash",
++                    "asset",
++                    125000m,
++                    "USD",
++                    asOfUtc)
++            ]));
++    }
++
++    public Task<IReadOnlyList<FinanceTransactionDto>> GetTransactionsAsync(
++        GetFinanceTransactionsQuery query,
++        CancellationToken cancellationToken)
++    {
++        IReadOnlyList<FinanceTransactionDto> transactions =
++        [
++            new FinanceTransactionDto(
++                TransactionId,
++                CashAccountId,
++                "Mock Operating Cash",
++                CounterpartyId,
++                "Mock Vendor",
++                null,
++                null,
++                DefaultAsOfUtc.AddDays(-1),
++                "uncategorized",
++                -250m,
++                "USD",
++                "Mock cloud tools",
++                "mock-txn-001",
++                null),
++            new FinanceTransactionDto(
++                RevenueTransactionId,
++                CashAccountId,
++                "Mock Operating Cash",
++                CounterpartyId,
++                "Mock Customer",
++                InvoiceId,
++                null,
++                DefaultAsOfUtc.AddDays(-2),
++                "revenue",
++                1500m,
++                "USD",
++                "Mock subscription revenue",
++                "mock-txn-002",
++                null)
++        ];
++
++        return Task.FromResult(transactions);
++    }
++
++    public Task<IReadOnlyList<FinanceInvoiceDto>> GetInvoicesAsync(
++        GetFinanceInvoicesQuery query,
++        CancellationToken cancellationToken)
++    {
++        IReadOnlyList<FinanceInvoiceDto> invoices =
++        [
++            new FinanceInvoiceDto(
++                InvoiceId,
++                CounterpartyId,
++                "Mock Customer",
++                "MOCK-INV-001",
++                DefaultAsOfUtc.AddDays(-15),
++                DefaultAsOfUtc.AddDays(15),
++                1500m,
++                "USD",
++                "awaiting_approval",
++                null)
++        ];
++
++        return Task.FromResult(invoices);
++    }
++
++    public Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(
++        GetFinanceMonthlyProfitAndLossQuery query,
++        CancellationToken cancellationToken)
++    {
++        var periodStartUtc = new DateTime(query.Year, query.Month, 1, 0, 0, 0, DateTimeKind.Utc);
++        return Task.FromResult(new FinanceMonthlyProfitAndLossDto(
++            query.CompanyId,
++            query.Year,
++            query.Month,
++            periodStartUtc,
++            periodStartUtc.AddMonths(1),
++            25000m,
++            8500m,
++            16500m,
++            "USD"));
++    }
++
++    public Task<FinanceTransactionCategoryRecommendationDto> RecommendTransactionCategoryAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        var transactionId = ReadGuid(request.Payload, "transactionId") ?? TransactionId;
++        var category = ReadString(request.Payload, "candidateCategory") ?? "software";
++        return Task.FromResult(new FinanceTransactionCategoryRecommendationDto(transactionId, category, 0.8m));
++    }
++
++    public Task<FinanceInvoiceApprovalRecommendationDto> RecommendInvoiceApprovalDecisionAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        var invoiceId = ReadGuid(request.Payload, "invoiceId") ?? InvoiceId;
++        var status = ReadString(request.Payload, "candidateStatus") ?? "approved";
++        return Task.FromResult(new FinanceInvoiceApprovalRecommendationDto(invoiceId, status, 0.8m));
++    }
++
++    public Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(
++        UpdateFinanceTransactionCategoryCommand command,
++        CancellationToken cancellationToken) =>
++        Task.FromResult(new FinanceTransactionDto(
++            command.TransactionId,
++            CashAccountId,
++            "Mock Operating Cash",
++            CounterpartyId,
++            "Mock Vendor",
++            null,
++            null,
++            DefaultAsOfUtc,
++            command.Category,
++            -250m,
++            "USD",
++            "Mock categorized transaction",
++            "mock-txn-001",
++            null));
++
++    public Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
++        UpdateFinanceInvoiceApprovalStatusCommand command,
++        CancellationToken cancellationToken) =>
++        Task.FromResult(new FinanceInvoiceDto(
++            command.InvoiceId,
++            CounterpartyId,
++            "Mock Customer",
++            "MOCK-INV-001",
++            DefaultAsOfUtc.AddDays(-15),
++            DefaultAsOfUtc.AddDays(15),
++            1500m,
++            "USD",
++            command.Status,
++            null));
++
++    private static string? ReadString(IReadOnlyDictionary<string, System.Text.Json.Nodes.JsonNode?> payload, string key)
++    {
++        if (!payload.TryGetValue(key, out var node) || node is not System.Text.Json.Nodes.JsonValue value)
++        {
++            return null;
++        }
++
++        return value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text)
++            ? text.Trim()
++            : null;
++    }
++
++    private static Guid? ReadGuid(IReadOnlyDictionary<string, System.Text.Json.Nodes.JsonNode?> payload, string key)
++    {
++        if (!payload.TryGetValue(key, out var node) || node is not System.Text.Json.Nodes.JsonValue value)
++        {
++            return null;
++        }
++
++        if (value.TryGetValue<Guid>(out var guid) && guid != Guid.Empty)
++        {
++            return guid;
++        }
++
++        return value.TryGetValue<string>(out var text) && Guid.TryParse(text, out guid) && guid != Guid.Empty
++            ? guid
++            : null;
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceToolProviderBoundaryTests.cs b/tests/VirtualCompany.Api.Tests/FinanceToolProviderBoundaryTests.cs
+new file mode 100644
+index 0000000..63ee60b
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceToolProviderBoundaryTests.cs
+@@ -0,0 +1,52 @@
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceToolProviderBoundaryTests
++{
++    [Fact]
++    public void Orchestration_tool_contract_does_not_depend_on_internal_finance_services()
++    {
++        var repositoryRoot = FindRepositoryRoot();
++        var checkedFiles = Directory
++            .EnumerateFiles(Path.Combine(repositoryRoot, "src", "VirtualCompany.Application", "Orchestration"), "*.cs", SearchOption.AllDirectories)
++            .Concat(
++            [
++                Path.Combine(repositoryRoot, "src", "VirtualCompany.Infrastructure", "Companies", "InternalCompanyToolContract.cs")
++            ])
++            .ToArray();
++
++        Assert.NotEmpty(checkedFiles);
++
++        foreach (var file in checkedFiles)
++        {
++            var source = File.ReadAllText(file);
++            Assert.DoesNotContain("IFinanceReadService", source, StringComparison.Ordinal);
++            Assert.DoesNotContain("IFinanceCommandService", source, StringComparison.Ordinal);
++            Assert.DoesNotContain("CompanyFinanceReadService", source, StringComparison.Ordinal);
++            Assert.DoesNotContain("CompanyFinanceCommandService", source, StringComparison.Ordinal);
++            Assert.DoesNotContain("VirtualCompany.Domain.Entities", source, StringComparison.Ordinal);
++        }
++    }
++
++    [Fact]
++    public void Finance_tool_provider_contract_exposes_all_registered_finance_operations()
++    {
++        var providerMethods = typeof(VirtualCompany.Application.Finance.IFinanceToolProvider)
++            .GetMethods()
++            .Select(method => method.Name)
++            .ToHashSet(StringComparer.Ordinal);
++
++        Assert.Contains("GetCashBalanceAsync", providerMethods);
++        Assert.Contains("GetTransactionsAsync", providerMethods);
++        Assert.Contains("GetInvoicesAsync", providerMethods);
++        Assert.Contains("GetMonthlyProfitAndLossAsync", providerMethods);
++        Assert.Contains("RecommendTransactionCategoryAsync", providerMethods);
++        Assert.Contains("RecommendInvoiceApprovalDecisionAsync", providerMethods);
++        Assert.Contains("UpdateTransactionCategoryAsync", providerMethods);
++        Assert.Contains("UpdateInvoiceApprovalStatusAsync", providerMethods);
++    }
++
++    private static string FindRepositoryRoot()
++    {
++        var directory = new DirectoryInfo(AppContext.BaseDirectory);
++        while (directory is not null && !Directory.Exists(Path.Combine(directory.FullName, "src")))
++        {
++            directory = directory.Parent;
++        }
++
++        return directory?.FullName ?? throw new DirectoryNotFoundException("Could not locate repository root.");
++    }
++}
+END_OF_PATCH

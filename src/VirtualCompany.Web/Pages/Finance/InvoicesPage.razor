@@ -1,0 +1,241 @@
+@page "/finance/invoices"
+@page "/finance/invoices/{InvoiceId:guid}"
+@inherits FinancePageBase
+
+<PageTitle>Invoices</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Invoices"
+    Description="Track invoice review queues and collection workflows inside the active company."
+    LoadingMessage="Loading invoices workspace...">
+    <div class="row g-4 align-items-start">
+        <div class="col-lg-7">
+            <div class="wizard-card wizard-card--compact">
+                <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
+                    <div>
+                        <h2 class="h5 mb-1">Invoice list</h2>
+                        <p class="text-body-secondary mb-0">Approval status, supplier context, and selection all follow the route.</p>
+                    </div>
+                    <span class="badge text-bg-light">@Invoices.Count item@(Invoices.Count == 1 ? string.Empty : "s")</span>
+                </div>
+
+                <FinanceDataState
+                    IsLoading="@IsListLoading"
+                    IsEmpty="@IsListEmpty"
+                    ErrorMessage="@ListErrorMessage"
+                    LoadingTitle="Loading invoices"
+                    LoadingMessage="Fetching tenant-scoped invoices."
+                    EmptyTitle="No invoices available"
+                    EmptyMessage="The active company does not currently have invoice records to review."
+                    OnRetry="@ReloadAsync">
+                    <div class="list-group">
+                        @foreach (var invoice in Invoices)
+                        {
+                            <a class="@GetInvoiceListItemClass(invoice.Id)" href="@BuildInvoiceHref(invoice.Id)">
+                                <div class="d-flex w-100 justify-content-between gap-3">
+                                    <div>
+                                        <strong>@invoice.InvoiceNumber</strong>
+                                        <div class="text-body-secondary small mt-1">Supplier: @invoice.CounterpartyName</div>
+                                        <div class="small mt-2">Issued @FormatDate(invoice.IssuedUtc) | Due @FormatDate(invoice.DueUtc)</div>
+                                    </div>
+                                    <div class="text-end">
+                                        <div class="fw-semibold">@FormatCurrency(invoice.Amount, invoice.Currency)</div>
+                                        <div class="mt-2"><span class="badge text-bg-light">@FormatLabel(invoice.Status)</span></div>
+                                    </div>
+                                </div>
+                            </a>
+                        }
+                    </div>
+                </FinanceDataState>
+            </div>
+        </div>
+
+        <div class="col-lg-5">
+            <div class="wizard-card wizard-card--compact">
+                @if (IsDetailLoading)
+                {
+                    <FinanceLoadingState Title="Loading invoice detail" Message="Resolving the selected invoice from the route." />
+                }
+                else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
+                {
+                    <FinanceErrorState Title="Invoice detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                }
+                else if (SelectedInvoice is null)
+                {
+                    <FinanceEmptyState Title="No invoice selected" Message="Select an invoice to open the detail panel route." />
+                }
+                else
+                {
+                    <h2 class="h5">Invoice detail</h2>
+                    <dl class="mb-4">
+                        <dt>Invoice</dt>
+                        <dd>@SelectedInvoice.InvoiceNumber</dd>
+                        <dt>Supplier</dt>
+                        <dd>@SelectedInvoice.CounterpartyName</dd>
+                    </dl>
+
+                    <h3 class="h6">Approval status</h3>
+                    <form class="mb-4" @onsubmit="HandleStatusSaveAsync" @onsubmit:preventDefault="true">
+                        <label class="form-label" for="invoice-status-input">Status</label>
+                        <select id="invoice-status-input" class="form-select" @bind="EditableStatus" disabled="@(!CanChangeInvoiceApprovalStatus || IsSavingStatus)">
+                            @foreach (var option in EditableStatusOptions)
+                            {
+                                <option value="@option">@FormatLabel(option)</option>
+                            }
+                        </select>
+                        @if (!string.IsNullOrWhiteSpace(StatusValidationMessage))
+                        {
+                            <div class="text-danger small mt-1">@StatusValidationMessage</div>
+                        }
+                        <div class="form-text">@(CanChangeInvoiceApprovalStatus ? "Invoice status updates run through the existing finance review workflow." : "Finance approval access is required to update invoice status.")</div>
+                        <div class="dashboard-actions mt-3">
+                            <button class="btn btn-primary" type="submit" disabled="@(!CanChangeInvoiceApprovalStatus || IsSavingStatus)">Save status</button>
+                        </div>
+                    </form>
+
+                    <dl class="mb-4">
+                        <dt>Status</dt>
+                        <dd><span class="badge text-bg-light">@FormatLabel(SelectedInvoice.Status)</span></dd>
+                        <dt>Amount</dt>
+                        <dd>@FormatCurrency(SelectedInvoice.Amount, SelectedInvoice.Currency)</dd>
+                        <dt>Issued</dt>
+                        <dd>@FormatDate(SelectedInvoice.IssuedUtc)</dd>
+                        <dt>Due</dt>
+                        <dd>@FormatDate(SelectedInvoice.DueUtc)</dd>
+                    </dl>
+                    @if (!string.IsNullOrWhiteSpace(StatusSaveMessage))
+                    {
+                        <div class="alert alert-success" role="status">@StatusSaveMessage</div>
+                    }
+
+                    <h3 class="h6">Workflow context</h3>
+                    @if (SelectedInvoice.WorkflowContext is null)
+                    {
+                        <p class="text-body-secondary">No linked review workflow metadata is available for this invoice yet.</p>
+                    }
+                    else
+                    {
+                        <div class="alert alert-light mb-4" role="status">
+                            <dl class="mb-0">
+                                <dt>Review workflow</dt>
+                                <dd>
+                                    @if (SelectedInvoice.WorkflowContext.CanNavigateToWorkflow && SelectedInvoice.WorkflowContext.WorkflowInstanceId is Guid workflowInstanceId)
+                                    {
+                                        <a href="@BuildWorkflowHref(workflowInstanceId)">@SelectedInvoice.WorkflowContext.WorkflowName</a>
+                                    }
+                                    else
+                                    {
+                                        @SelectedInvoice.WorkflowContext.WorkflowName
+                                    }
+                                </dd>
+                                <dt>Review status</dt>
+                                <dd>@FormatLabel(SelectedInvoice.WorkflowContext.ReviewTaskStatus)</dd>
+                                <dt>Classification</dt>
+                                <dd>@FormatLabel(SelectedInvoice.WorkflowContext.Classification)</dd>
+                                <dt>Risk level</dt>
+                                <dd>@FormatLabel(SelectedInvoice.WorkflowContext.RiskLevel)</dd>
+                                <dt>Recommended action</dt>
+                                <dd>@FormatLabel(SelectedInvoice.WorkflowContext.RecommendedAction)</dd>
+                                <dt>Approval status</dt>
+                                <dd>@(string.IsNullOrWhiteSpace(SelectedInvoice.WorkflowContext.ApprovalStatus) ? "Not required" : FormatLabel(SelectedInvoice.WorkflowContext.ApprovalStatus))</dd>
+                                <dt>Approver</dt>
+                                <dd>@(string.IsNullOrWhiteSpace(SelectedInvoice.WorkflowContext.ApprovalAssigneeSummary) ? "n/a" : SelectedInvoice.WorkflowContext.ApprovalAssigneeSummary)</dd>
+                                <dt>Approval request</dt>
+                                <dd>
+                                    @if (SelectedInvoice.WorkflowContext.CanNavigateToApproval && SelectedInvoice.WorkflowContext.ApprovalRequestId is Guid approvalRequestId)
+                                    {
+                                        <a href="@BuildApprovalHref(approvalRequestId)">Open approval request</a>
+                                    }
+                                    else
+                                    {
+                                        @("n/a")
+                                    }
+                                </dd>
+                            </dl>
+                        </div>
+                        <p class="text-body-secondary mb-4">@SelectedInvoice.WorkflowContext.Rationale</p>
+                    }
+
+                    <h3 class="h6">Recommendation details</h3>
+                    @if (InvoiceWorkflowPresentation.ResolveRecommendationDetails(SelectedInvoice) is { } recommendationDetails)
+                    {
+                        <dl class="mb-4">
+                            <dt>Classification</dt>
+                            <dd>@FormatLabel(recommendationDetails.Classification)</dd>
+                            <dt>Risk</dt>
+                            <dd>@FormatLabel(recommendationDetails.Risk)</dd>
+                            <dt>Rationale summary</dt>
+                            <dd>@recommendationDetails.RationaleSummary</dd>
+                            <dt>Confidence</dt>
+                            <dd>@FormatConfidence(recommendationDetails.Confidence)</dd>
+                            <dt>Recommended action</dt>
+                            <dd>@FormatLabel(recommendationDetails.RecommendedAction)</dd>
+                            <dt>Current workflow status</dt>
+                            <dd>@FormatLabel(recommendationDetails.CurrentWorkflowStatus)</dd>
+                        </dl>
+                    }
+                    else
+                    {
+                        <p class="text-body-secondary mb-4">No recommendation details available yet.</p>
+                    }
+
+                    <h3 class="h6">Workflow history</h3>
+                    @if (InvoiceWorkflowPresentation.NormalizeWorkflowHistory(SelectedInvoice.WorkflowHistory) is { Count: > 0 } workflowHistory)
+                    {
+                        <div class="list-group list-group-flush mb-4">
+                            @foreach (var entry in workflowHistory)
+                            {
+                                var auditHref = BuildAuditHref(entry.RelatedAuditId);
+                                var approvalHref = BuildApprovalHref(entry.RelatedApprovalId);
+                                <div class="list-group-item px-0">
+                                    <div class="d-flex justify-content-between gap-3">
+                                        <div>
+                                            <div class="fw-semibold">@entry.EventType</div>
+                                            <div class="small text-body-secondary">@FormatActorOrSource(entry.ActorOrSourceDisplayName)</div>
+                                        </div>
+                                        <div class="small text-body-secondary text-end">@FormatDateTime(entry.OccurredAtUtc)</div>
+                                    </div>
+                                    @if (!string.IsNullOrWhiteSpace(auditHref) || !string.IsNullOrWhiteSpace(approvalHref))
+                                    {
+                                        <div class="small mt-2">
+                                            @if (!string.IsNullOrWhiteSpace(auditHref))
+                                            {
+                                                <a href="@auditHref">Audit detail</a>
+                                            }
+                                            @if (!string.IsNullOrWhiteSpace(auditHref) && !string.IsNullOrWhiteSpace(approvalHref))
+                                            {
+                                                <span class="text-body-secondary"> | </span>
+                                            }
+                                            @if (!string.IsNullOrWhiteSpace(approvalHref))
+                                            {
+                                                <a href="@approvalHref">Approval detail</a>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="text-body-secondary mb-4">No workflow history available yet.</p>
+                    }
+
+                    <h3 class="h6">Linked document</h3>
+                    <FinanceLinkedResourceState
+                        Availability="@SelectedInvoice.LinkedDocument.Availability"
+                        Message="@SelectedInvoice.LinkedDocument.Message"
+                        ResourceTitle="@SelectedInvoice.LinkedDocument.Document?.Title"
+                        SecondaryText="@SelectedInvoice.LinkedDocument.Document?.OriginalFileName"
+                        TypeText="@SelectedInvoice.LinkedDocument.Document?.ContentType"
+                        CanNavigate="@SelectedInvoice.LinkedDocument.CanNavigate"
+                        NavigateHref="@(SelectedInvoice.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedInvoice.LinkedDocument.Document.Id))"
+                        ActionText="Open linked document" />
+                }
+            </div>
+        </div>
+    </div>
+</FinancePageLayout>

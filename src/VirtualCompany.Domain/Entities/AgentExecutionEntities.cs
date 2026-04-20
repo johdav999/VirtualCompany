@@ -6,7 +6,9 @@ namespace VirtualCompany.Domain.Entities;
 public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
 {
     private const int ToolNameMaxLength = 100;
+    private const int ToolVersionMaxLength = 32;
     private const int ScopeMaxLength = 100;
+    private const int DenialReasonMaxLength = 512;
 
     private ToolExecutionAttempt()
     {
@@ -24,7 +26,8 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
         Guid? workflowInstanceId = null,
         string? correlationId = null,
         DateTime? startedAtUtc = null,
-        DateTime? completedAtUtc = null)
+        DateTime? completedAtUtc = null,
+        string? toolVersion = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -52,6 +55,7 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
         CompanyId = companyId;
         AgentId = agentId;
         ToolName = NormalizeRequired(toolName, nameof(toolName), ToolNameMaxLength);
+        ToolVersion = NormalizeOptional(toolVersion, nameof(toolVersion), ToolVersionMaxLength) ?? "1.0.0";
         ActionType = actionType;
         Scope = NormalizeOptional(scope, nameof(scope), ScopeMaxLength);
         TaskId = taskId;
@@ -71,6 +75,7 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
     public Guid CompanyId { get; private set; }
     public Guid AgentId { get; private set; }
     public string ToolName { get; private set; } = null!;
+    public string ToolVersion { get; private set; } = "1.0.0";
     public ToolActionType ActionType { get; private set; }
     public string? Scope { get; private set; }
     public Guid? TaskId { get; private set; }
@@ -81,6 +86,7 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
     public Dictionary<string, JsonNode?> RequestPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> PolicyDecision { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> ResultPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+    public string? DenialReason { get; private set; }
     public DateTime StartedUtc { get; private set; }
     public DateTime? CompletedUtc { get; private set; }
     public DateTime CreatedUtc { get; private set; }
@@ -88,13 +94,25 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
     public DateTime? ExecutedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
 
-    public void MarkDenied(IDictionary<string, JsonNode?>? policyDecision, IDictionary<string, JsonNode?>? resultPayload = null, DateTime? completedAtUtc = null)
+    public void MarkDenied(IDictionary<string, JsonNode?>? policyDecision, IDictionary<string, JsonNode?>? resultPayload = null, DateTime? completedAtUtc = null, string? denialReason = null)
     {
         Status = ToolExecutionStatus.Denied;
         PolicyDecision = CloneNodes(policyDecision);
         ResultPayload = CloneNodes(resultPayload);
+        DenialReason = NormalizeOptional(denialReason, nameof(denialReason), DenialReasonMaxLength);
         ApprovalRequestId = null;
         CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
+        UpdatedUtc = CompletedUtc.Value;
+    }
+
+    public void MarkRejected(IDictionary<string, JsonNode?>? policyDecision, IDictionary<string, JsonNode?>? resultPayload = null, DateTime? completedAtUtc = null, string? denialReason = null)
+    {
+        Status = ToolExecutionStatus.Rejected;
+        PolicyDecision = CloneNodes(policyDecision);
+        ResultPayload = CloneNodes(resultPayload);
+        DenialReason = NormalizeOptional(denialReason, nameof(denialReason), DenialReasonMaxLength);
+        CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
+        ExecutedUtc = null;
         UpdatedUtc = CompletedUtc.Value;
     }
 
@@ -113,6 +131,7 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
         ApprovalRequestId = approvalRequestId;
         PolicyDecision = CloneNodes(policyDecision);
         ResultPayload = CloneNodes(resultPayload);
+        DenialReason = null;
         CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
         UpdatedUtc = CompletedUtc.Value;
     }
@@ -125,6 +144,7 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
         Status = ToolExecutionStatus.Executed;
         PolicyDecision = CloneNodes(policyDecision);
         ResultPayload = CloneNodes(resultPayload);
+        DenialReason = null;
         CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
         ExecutedUtc = CompletedUtc;
         UpdatedUtc = ExecutedUtc.Value;

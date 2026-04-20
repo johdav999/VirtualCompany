@@ -50,6 +50,12 @@ public sealed record AgentWorkloadSummaryDto(
     string HealthStatus,
     string Summary);
 
+public sealed record AgentConfigurationSettingsDto(
+    int PersonaVersion,
+    int WorkflowVersion,
+    Dictionary<string, JsonNode?> Persona,
+    Dictionary<string, JsonNode?> WorkflowCapabilities);
+
 public sealed record AgentRosterItemDto(
     Guid Id,
     Guid CompanyId,
@@ -62,6 +68,8 @@ public sealed record AgentRosterItemDto(
     string? AvatarUrl,
     string Personality,
     string AutonomyLevel,
+    Dictionary<string, JsonNode?> RoleMetadata,
+    Dictionary<string, JsonNode?> WorkflowCapabilities,
     AgentWorkloadSummaryDto WorkloadSummary,
     string? ProfileRoute);
 
@@ -237,6 +245,7 @@ public sealed record AgentProfileViewDto(
     string Personality,
     string? RoleBrief,
     string AutonomyLevel,
+    AgentConfigurationSettingsDto Configuration,
     Dictionary<string, JsonNode?> Objectives,
     Dictionary<string, JsonNode?> Kpis,
     Dictionary<string, JsonNode?> ToolPermissions,
@@ -275,6 +284,7 @@ public sealed record AgentOperatingProfileDto(
     string Status,
     string? AvatarUrl,
     string? RoleBrief,
+    AgentConfigurationSettingsDto Configuration,
     Dictionary<string, JsonNode?> Objectives,
     Dictionary<string, JsonNode?> Kpis,
     Dictionary<string, JsonNode?> ToolPermissions,

@@ -1,0 +1,652 @@
+using System.Net;
+using System.Net.Http.Json;
+using Bunit;
+using Bunit.TestDoubles;
+using Microsoft.Extensions.DependencyInjection;
+using VirtualCompany.Web.Pages.Finance;
+using VirtualCompany.Web.Services;
+using Xunit;
+
+namespace VirtualCompany.Api.Tests;
+
+public sealed class InvoiceReviewWorkbenchPageTests
+{
+    [Fact]
+    public void Invoice_reviews_route_loads_review_rows_from_finance_api()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+        var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
+        var review = CreateReviewListItem(invoiceId);
+
+        using var harness = CreateInvoiceReviewsHarness(companyId, [review]);
+        harness.Navigation.NavigateTo($"http://localhost/finance/reviews?companyId={companyId:D}");
+
+        var cut = RenderInvoiceReviewsPage(harness, companyId);
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.Contains("INV-24051", cut.Markup);
+            Assert.Contains("Contoso Supplies", cut.Markup);
+            Assert.Contains("15420.50", cut.Markup);
+            Assert.Contains("USD", cut.Markup);
+            Assert.Contains("High", cut.Markup);
+            Assert.Contains("Awaiting approval", cut.Markup);
+            Assert.Contains("91%", cut.Markup.Replace(" ", string.Empty));
+            Assert.Contains($"limit=200", harness.LastFinanceRequestQuery);
+        });
+    }
+
+    [Fact]
+    public void Invoice_reviews_page_initializes_filters_from_query_parameters_and_requests_matching_data()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+
+        using var harness = CreateInvoiceReviewsHarness(companyId, [CreateReviewListItem()]);
+        harness.Navigation.NavigateTo($"http://localhost/finance/reviews?companyId={companyId:D}&status=pending_approval&supplier=Contoso%20Supplies&riskLevel=high&outcome=request_human_approval");
+
+        var cut = RenderInvoiceReviewsPage(
+            harness,
+            companyId,
+            status: "pending_approval",
+            supplier: "Contoso Supplies",
+            riskLevel: "high",
+            outcome: "request_human_approval");
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.Contains("INV-24051", cut.Markup);
+            Assert.Contains("status=pending_approval", harness.LastFinanceRequestQuery);
+            Assert.Contains("supplier=Contoso%20Supplies", harness.LastFinanceRequestQuery);
+            Assert.Contains("riskLevel=high", harness.LastFinanceRequestQuery);
+            Assert.Contains("outcome=request_human_approval", harness.LastFinanceRequestQuery);
+        });
+    }
+
+    [Fact]
+    public void Invoice_reviews_page_updates_query_string_when_all_filters_change()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+
+        using var harness = CreateInvoiceReviewsHarness(companyId, []);
+        harness.Navigation.NavigateTo($"http://localhost/finance/reviews?companyId={companyId:D}");
+
+        var cut = RenderInvoiceReviewsPage(harness, companyId);
+
+        cut.WaitForAssertion(() => Assert.Contains("No invoice reviews matched the active filters", cut.Markup));
+
+        cut.Find("#invoice-review-status").Change("pending_approval");
+        cut.WaitForAssertion(() => Assert.Contains("status=pending_approval", harness.Navigation.Uri));
+
+        cut.Find("#invoice-review-supplier").Change("Northwind Labs");
+        cut.WaitForAssertion(() => Assert.Contains($"supplier={Uri.EscapeDataString("Northwind Labs")}", harness.Navigation.Uri));
+
+        cut.Find("#invoice-review-risk").Change("critical");
+        cut.WaitForAssertion(() => Assert.Contains("riskLevel=critical", harness.Navigation.Uri));
+
+        cut.Find("#invoice-review-outcome").Change("reject");
+        cut.WaitForAssertion(() =>
+        {
+            Assert.Contains($"companyId={companyId:D}", harness.Navigation.Uri);
+            Assert.Contains("status=pending_approval", harness.Navigation.Uri);
+            Assert.Contains($"supplier={Uri.EscapeDataString("Northwind Labs")}", harness.Navigation.Uri);
+            Assert.Contains("riskLevel=critical", harness.Navigation.Uri);
+            Assert.Contains("outcome=reject", harness.Navigation.Uri);
+        });
+    }
+
+    [Fact]
+    public void Invoice_reviews_page_shows_loading_state_while_reviews_are_requested()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+        var pending = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var harness = CreateInvoiceReviewsHarness(
+            companyId,
+            financeHandler: (_, _) => pending.Task);
+
+        harness.Navigation.NavigateTo($"http://localhost/finance/reviews?companyId={companyId:D}");
+
+        var cut = RenderInvoiceReviewsPage(harness, companyId);
+
+        cut.WaitForAssertion(() => Assert.Contains("Loading invoice reviews", cut.Markup));
+
+        pending.SetResult(CreateJsonResponse<IReadOnlyList<FinanceInvoiceReviewListItemResponse>>([]));
+
+        cut.WaitForAssertion(() => Assert.Contains("No invoice reviews matched the active filters", cut.Markup));
+    }
+
+    [Fact]
+    public void Invoice_reviews_page_surfaces_api_errors()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+
+        using var harness = CreateInvoiceReviewsHarness(
+            companyId,
+            financeHandler: (_, _) => Task.FromResult(CreateProblemResponse(HttpStatusCode.BadGateway, "Finance review feed failed.")));
+
+        harness.Navigation.NavigateTo($"http://localhost/finance/reviews?companyId={companyId:D}");
+
+        var cut = RenderInvoiceReviewsPage(harness, companyId);
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.Contains("Invoice reviews are unavailable", cut.Markup);
+            Assert.Contains("Finance review feed failed.", cut.Markup);
+        });
+    }
+
+    [Fact]
+    public void Invoice_reviews_page_builds_detail_row_links_that_preserve_current_filters()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+        var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
+
+        using var harness = CreateInvoiceReviewsHarness(companyId, [CreateReviewListItem(invoiceId)]);
+        harness.Navigation.NavigateTo($"http://localhost/finance/reviews?companyId={companyId:D}&status=pending_approval&supplier=Contoso%20Supplies&riskLevel=high&outcome=request_human_approval");
+
+        var cut = RenderInvoiceReviewsPage(
+            harness,
+            companyId,
+            status: "pending_approval",
+            supplier: "Contoso Supplies",
+            riskLevel: "high",
+            outcome: "request_human_approval");
+
+        cut.WaitForAssertion(() =>
+        {
+            var href = cut.Find("tbody a").GetAttribute("href");
+            Assert.Equal(
+                $"/finance/reviews/{invoiceId:D}?companyId={companyId:D}&status=pending_approval&supplier=Contoso%20Supplies&riskLevel=high&outcome=request_human_approval",
+                href);
+        });
+    }
+
+    [Fact]
+    public void Invoice_review_detail_page_renders_recommendation_result_and_related_links()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+        var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
+        var relatedApprovalId = Guid.Parse("7edb1408-42d4-4a79-9aa2-3a2d2c84da3f");
+        var detail = CreateReviewDetail(invoiceId, relatedApprovalId: relatedApprovalId);
+
+        using var harness = CreateInvoiceReviewDetailHarness(companyId, invoiceId, detail);
+        harness.Navigation.NavigateTo($"http://localhost/finance/reviews/{invoiceId:D}?companyId={companyId:D}&status=pending_approval&supplier=Contoso%20Supplies&riskLevel=high&outcome=request_human_approval");
+
+        var cut = RenderInvoiceReviewDetailPage(
+            harness,
+            companyId,
+            invoiceId,
+            status: "pending_approval",
+            supplier: "Contoso Supplies",
+            riskLevel: "high",
+            outcome: "request_human_approval");
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.Contains("Finance review summary.", cut.Markup);
+            Assert.Contains("Request human approval", cut.Markup);
+            Assert.Contains("91%", cut.Markup.Replace(" ", string.Empty));
+            Assert.Contains("Open source invoice", cut.Markup);
+            Assert.Contains("Open related approval", cut.Markup);
+            Assert.Contains("Back to review list", cut.Markup);
+            Assert.Contains($"/finance/invoices/{invoiceId:D}?companyId={companyId:D}", cut.Markup);
+            Assert.Contains($"/approvals?companyId={companyId:D}&approvalId={relatedApprovalId:D}", cut.Markup);
+            Assert.Contains($"/finance/reviews?companyId={companyId:D}&status=pending_approval&supplier=Contoso%20Supplies&riskLevel=high&outcome=request_human_approval", cut.Markup);
+        });
+    }
+
+    [Fact]
+    public void Invoice_review_detail_page_hides_related_approval_link_when_not_available()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+        var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
+        var detail = CreateReviewDetail(invoiceId, relatedApprovalId: null);
+
+        using var harness = CreateInvoiceReviewDetailHarness(companyId, invoiceId, detail);
+        harness.Navigation.NavigateTo($"http://localhost/finance/reviews/{invoiceId:D}?companyId={companyId:D}");
+
+        var cut = RenderInvoiceReviewDetailPage(harness, companyId, invoiceId);
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.Contains("Open source invoice", cut.Markup);
+            Assert.DoesNotContain("Open related approval", cut.Markup);
+        });
+    }
+
+    [Fact]
+    public void Invoice_review_detail_page_hides_actions_when_review_is_not_actionable()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+        var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
+        var detail = CreateReviewDetail(invoiceId, isActionable: false);
+
+        using var harness = CreateInvoiceReviewDetailHarness(companyId, invoiceId, detail);
+        harness.Navigation.NavigateTo($"http://localhost/finance/reviews/{invoiceId:D}?companyId={companyId:D}");
+
+        var cut = RenderInvoiceReviewDetailPage(harness, companyId, invoiceId);
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.DoesNotContain("Approve", cut.Markup);
+            Assert.DoesNotContain("Reject", cut.Markup);
+            Assert.DoesNotContain("Send for follow-up", cut.Markup);
+        });
+    }
+
+    [Fact]
+    public void Invoice_review_detail_page_shows_loading_state_while_detail_is_requested()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+        var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
+        var pending = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var harness = CreateInvoiceReviewDetailHarness(
+            companyId,
+            invoiceId,
+            financeHandler: (_, _) => pending.Task);
+
+        harness.Navigation.NavigateTo($"http://localhost/finance/reviews/{invoiceId:D}?companyId={companyId:D}");
+
+        var cut = RenderInvoiceReviewDetailPage(harness, companyId, invoiceId);
+
+        cut.WaitForAssertion(() => Assert.Contains("Loading invoice review", cut.Markup));
+
+        pending.SetResult(CreateJsonResponse(CreateReviewDetail(invoiceId)));
+
+        cut.WaitForAssertion(() => Assert.Contains("Finance review summary.", cut.Markup));
+    }
+
+    [Fact]
+    public void Invoice_review_detail_page_shows_empty_state_when_no_review_result_exists()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+        var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
+
+        using var harness = CreateInvoiceReviewDetailHarness(
+            companyId,
+            invoiceId,
+            financeHandler: (_, _) => Task.FromResult(CreateNotFoundResponse()));
+
+        harness.Navigation.NavigateTo($"http://localhost/finance/reviews/{invoiceId:D}?companyId={companyId:D}");
+
+        var cut = RenderInvoiceReviewDetailPage(harness, companyId, invoiceId);
+
+        cut.WaitForAssertion(() => Assert.Contains("No review result available", cut.Markup));
+    }
+
+    [Fact]
+    public void Invoice_review_detail_page_surfaces_api_errors()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+        var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
+
+        using var harness = CreateInvoiceReviewDetailHarness(
+            companyId,
+            invoiceId,
+            financeHandler: (_, _) => Task.FromResult(CreateProblemResponse(HttpStatusCode.BadGateway, "Invoice review lookup failed.")));
+
+        harness.Navigation.NavigateTo($"http://localhost/finance/reviews/{invoiceId:D}?companyId={companyId:D}");
+
+        var cut = RenderInvoiceReviewDetailPage(harness, companyId, invoiceId);
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.Contains("Invoice review unavailable", cut.Markup);
+            Assert.Contains("Invoice review lookup failed.", cut.Markup);
+        });
+    }
+
+    [Fact]
+    public void Invoices_page_renders_recommendation_details_workflow_history_and_deep_links()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+        var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
+        var approvalId = Guid.Parse("7edb1408-42d4-4a79-9aa2-3a2d2c84da3f");
+        var auditId = Guid.Parse("db84057d-2d39-4322-8f57-bf0687cc748e");
+
+        using var harness = CreateInvoicesHarness(
+            companyId,
+            [new FinanceInvoiceResponse
+            {
+                Id = invoiceId,
+                CounterpartyId = Guid.NewGuid(),
+                CounterpartyName = "Contoso Supplies",
+                InvoiceNumber = "INV-24051",
+                IssuedUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
+                DueUtc = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),
+                Amount = 15420.50m,
+                Currency = "USD",
+                Status = "pending_approval"
+            }],
+            new FinanceInvoiceDetailResponse
+            {
+                Id = invoiceId,
+                CounterpartyId = Guid.NewGuid(),
+                CounterpartyName = "Contoso Supplies",
+                InvoiceNumber = "INV-24051",
+                IssuedUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
+                DueUtc = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),
+                Amount = 15420.50m,
+                Currency = "USD",
+                Status = "pending_approval",
+                RecommendationDetails = new FinanceInvoiceRecommendationDetailsResponse
+                {
+                    Classification = "overdue_invoice",
+                    Risk = "high",
+                    RationaleSummary = "Payment terms and due date require finance review.",
+                    Confidence = 0.88m,
+                    RecommendedAction = "request_human_approval",
+                    CurrentWorkflowStatus = "awaiting_approval"
+                },
+                WorkflowHistory =
+                [
+                    new FinanceInvoiceWorkflowHistoryItemResponse
+                    {
+                        EventId = "tool-1",
+                        EventType = "Tool event",
+                        ActorOrSourceDisplayName = "System",
+                        OccurredAtUtc = new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc),
+                        RelatedAuditId = auditId
+                    },
+                    new FinanceInvoiceWorkflowHistoryItemResponse
+                    {
+                        EventId = "approval-1",
+                        EventType = "Approval",
+                        ActorOrSourceDisplayName = "User finance-approver",
+                        OccurredAtUtc = new DateTime(2026, 4, 16, 8, 45, 0, DateTimeKind.Utc),
+                        RelatedApprovalId = approvalId
+                    }
+                ],
+                Permissions = new FinanceActionPermissionsResponse(),
+                LinkedDocument = new FinanceLinkedDocumentAccessResponse { Availability = "none", Message = "No linked document is attached." }
+            });
+
+        harness.Navigation.NavigateTo($"http://localhost/finance/invoices/{invoiceId:D}?companyId={companyId:D}");
+        var cut = harness.Context.RenderComponent<InvoicesPage>(parameters => parameters
+            .Add(x => x.CompanyId, companyId)
+            .Add(x => x.InvoiceId, invoiceId));
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.Contains("Recommendation details", cut.Markup);
+            Assert.Contains("Overdue invoice", cut.Markup);
+            Assert.Contains("Workflow history", cut.Markup);
+            Assert.Contains($"/audit/{auditId:D}?companyId={companyId:D}", cut.Markup);
+            Assert.Contains($"/approvals?companyId={companyId:D}&approvalId={approvalId:D}", cut.Markup);
+        });
+    }
+
+    private static IRenderedComponent<InvoiceReviewsPage> RenderInvoiceReviewsPage(
+        InvoiceReviewsHarness harness,
+        Guid companyId,
+        string? status = null,
+        string? supplier = null,
+        string? riskLevel = null,
+        string? outcome = null) =>
+        harness.Context.RenderComponent<InvoiceReviewsPage>(parameters => parameters
+            .Add(x => x.CompanyId, companyId)
+            .Add(x => x.Status, status)
+            .Add(x => x.Supplier, supplier)
+            .Add(x => x.RiskLevel, riskLevel)
+            .Add(x => x.Outcome, outcome));
+
+    private static IRenderedComponent<InvoiceReviewDetailPage> RenderInvoiceReviewDetailPage(
+        InvoiceReviewDetailHarness harness,
+        Guid companyId,
+        Guid invoiceId,
+        string? status = null,
+        string? supplier = null,
+        string? riskLevel = null,
+        string? outcome = null) =>
+        harness.Context.RenderComponent<InvoiceReviewDetailPage>(parameters => parameters
+            .Add(x => x.CompanyId, companyId)
+            .Add(x => x.InvoiceId, invoiceId)
+            .Add(x => x.Status, status)
+            .Add(x => x.Supplier, supplier)
+            .Add(x => x.RiskLevel, riskLevel)
+            .Add(x => x.Outcome, outcome));
+
+    private static InvoiceReviewsHarness CreateInvoiceReviewsHarness(
+        Guid companyId,
+        IReadOnlyList<FinanceInvoiceReviewListItemResponse>? reviews = null,
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? financeHandler = null,
+        string membershipRole = "owner")
+    {
+        var context = new TestContext();
+        var financeRequests = new List<Uri>();
+
+        context.Services.AddSingleton(new FinanceAccessResolver());
+        context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
+        {
+            return Task.FromResult(request.RequestUri?.AbsolutePath switch
+            {
+                "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
+                _ => CreateNotFoundResponse()
+            });
+        })) { BaseAddress = new Uri("http://localhost/") });
+
+        context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, cancellationToken) =>
+        {
+            if (request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/reviews")
+            {
+                financeRequests.Add(request.RequestUri);
+                if (financeHandler is not null)
+                {
+                    return financeHandler(request, cancellationToken);
+                }
+
+                return Task.FromResult(CreateJsonResponse<IReadOnlyList<FinanceInvoiceReviewListItemResponse>>(reviews ?? []));
+            }
+
+            return Task.FromResult(CreateNotFoundResponse());
+        })) { BaseAddress = new Uri("http://localhost/") });
+
+        return new InvoiceReviewsHarness(context, context.Services.GetRequiredService<FakeNavigationManager>(), financeRequests);
+    }
+
+    private static InvoiceReviewDetailHarness CreateInvoiceReviewDetailHarness(
+        Guid companyId,
+        Guid invoiceId,
+        FinanceInvoiceReviewDetailResponse? detail = null,
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? financeHandler = null,
+        string membershipRole = "owner")
+    {
+        var context = new TestContext();
+
+        context.Services.AddSingleton(new FinanceAccessResolver());
+        context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
+        {
+            return Task.FromResult(request.RequestUri?.AbsolutePath switch
+            {
+                "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
+                _ => CreateNotFoundResponse()
+            });
+        })) { BaseAddress = new Uri("http://localhost/") });
+
+        context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, cancellationToken) =>
+        {
+            if (request.Method == HttpMethod.Get &&
+                request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/reviews/{invoiceId:D}")
+            {
+                if (financeHandler is not null)
+                {
+                    return financeHandler(request, cancellationToken);
+                }
+
+                return Task.FromResult(CreateJsonResponse(detail ?? CreateReviewDetail(invoiceId)));
+            }
+
+            return Task.FromResult(CreateNotFoundResponse());
+        })) { BaseAddress = new Uri("http://localhost/") });
+
+        return new InvoiceReviewDetailHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
+    }
+
+    private static InvoiceReviewDetailHarness CreateInvoicesHarness(
+        Guid companyId,
+        IReadOnlyList<FinanceInvoiceResponse> invoices,
+        FinanceInvoiceDetailResponse detail,
+        string membershipRole = "owner")
+    {
+        var context = new TestContext();
+
+        context.Services.AddSingleton(new FinanceAccessResolver());
+        context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
+        {
+            return Task.FromResult(request.RequestUri?.AbsolutePath switch
+            {
+                "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
+                _ => CreateNotFoundResponse()
+            });
+        })) { BaseAddress = new Uri("http://localhost/") });
+
+        context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
+        {
+            if (request.Method == HttpMethod.Get &&
+                request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/invoices")
+            {
+                return Task.FromResult(CreateJsonResponse<IReadOnlyList<FinanceInvoiceResponse>>(invoices));
+            }
+
+            if (request.Method == HttpMethod.Get &&
+                request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/invoices/{detail.Id:D}")
+            {
+                return Task.FromResult(CreateJsonResponse(detail));
+            }
+
+            return Task.FromResult(CreateNotFoundResponse());
+        })) { BaseAddress = new Uri("http://localhost/") });
+
+        return new InvoiceReviewDetailHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
+    }
+
+    private static FinanceInvoiceReviewListItemResponse CreateReviewListItem(Guid? invoiceId = null) =>
+        new()
+        {
+            Id = invoiceId ?? Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e"),
+            InvoiceNumber = "INV-24051",
+            SupplierName = "Contoso Supplies",
+            Amount = 15420.50m,
+            Currency = "USD",
+            Status = "pending_approval",
+            RiskLevel = "high",
+            RecommendationStatus = "awaiting_approval",
+            RecommendationOutcome = "request_human_approval",
+            Confidence = 0.91m,
+            LastUpdatedUtc = new DateTime(2026, 4, 16, 12, 30, 0, DateTimeKind.Utc)
+        };
+
+    private static FinanceInvoiceReviewDetailResponse CreateReviewDetail(Guid invoiceId, bool isActionable = true, Guid? relatedApprovalId = null) =>
+        new()
+        {
+            Id = invoiceId,
+            InvoiceNumber = "INV-24051",
+            SupplierName = "Contoso Supplies",
+            Amount = 15420.50m,
+            Currency = "USD",
+            Status = isActionable ? "pending_approval" : "open",
+            RiskLevel = "high",
+            RecommendationStatus = isActionable ? "awaiting_approval" : "completed",
+            RecommendationSummary = "Finance review summary.",
+            RecommendedAction = isActionable ? "request_human_approval" : "no_action",
+            Confidence = 0.91m,
+            LastUpdatedUtc = new DateTime(2026, 4, 16, 12, 30, 0, DateTimeKind.Utc),
+            SourceInvoiceId = invoiceId,
+            RelatedApprovalId = relatedApprovalId,
+            Actions = new FinanceInvoiceReviewActionAvailabilityResponse
+            {
+                IsActionable = isActionable,
+                CanApprove = isActionable,
+                CanReject = isActionable,
+                CanSendForFollowUp = isActionable
+            }
+        };
+
+    private static CurrentUserContextViewModel CreateCurrentUserContext(Guid companyId, string membershipRole) =>
+        new()
+        {
+            Memberships =
+            [
+                new CompanyMembershipViewModel
+                {
+                    MembershipId = Guid.NewGuid(),
+                    CompanyId = companyId,
+                    CompanyName = "Contoso Finance",
+                    MembershipRole = membershipRole,
+                    Status = "active"
+                }
+            ],
+            ActiveCompany = new ResolvedCompanyContextViewModel
+            {
+                MembershipId = Guid.NewGuid(),
+                CompanyId = companyId,
+                CompanyName = "Contoso Finance",
+                MembershipRole = membershipRole,
+                Status = "active"
+            }
+        };
+
+    private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>
+        new(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(payload)
+        };
+
+    private static HttpResponseMessage CreateProblemResponse(HttpStatusCode statusCode, string detail) =>
+        new(statusCode)
+        {
+            Content = JsonContent.Create(new { title = "Finance request failed.", detail })
+        };
+
+    private static HttpResponseMessage CreateNotFoundResponse() =>
+        new(HttpStatusCode.NotFound)
+        {
+            Content = JsonContent.Create(new { title = "Not found", detail = "Not found." })
+        };
+
+    private sealed class InvoiceReviewsHarness : IDisposable
+    {
+        public InvoiceReviewsHarness(TestContext context, FakeNavigationManager navigation, IReadOnlyList<Uri> financeRequests)
+        {
+            Context = context;
+            Navigation = navigation;
+            FinanceRequests = financeRequests;
+        }
+
+        public TestContext Context { get; }
+        public FakeNavigationManager Navigation { get; }
+        public IReadOnlyList<Uri> FinanceRequests { get; }
+        public string LastFinanceRequestQuery => FinanceRequests.LastOrDefault()?.Query ?? string.Empty;
+
+        public void Dispose() => Context.Dispose();
+    }
+
+    private sealed class InvoiceReviewDetailHarness : IDisposable
+    {
+        public InvoiceReviewDetailHarness(TestContext context, FakeNavigationManager navigation)
+        {
+            Context = context;
+            Navigation = navigation;
+        }
+
+        public TestContext Context { get; }
+        public FakeNavigationManager Navigation { get; }
+
+        public void Dispose() => Context.Dispose();
+    }
+
+    private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
+
+        public AsyncStubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
+        {
+            _handler = handler;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            _handler(request, cancellationToken);
+    }
+}
+END_OF_PATCH

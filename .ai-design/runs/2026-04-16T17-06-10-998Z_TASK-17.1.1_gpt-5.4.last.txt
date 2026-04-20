@@ -1,0 +1,788 @@
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -8,6 +8,7 @@ var builder = WebApplication.CreateBuilder(args);
+ builder.Services.AddRazorComponents()
+     .AddInteractiveServerComponents();
+ builder.Services.AddHttpContextAccessor();
++builder.Services.AddScoped<FinanceAccessResolver>();
+ 
+ builder.Services.AddScoped(sp =>
+ {
+diff --git a/src/VirtualCompany.Web/_Imports.razor b/src/VirtualCompany.Web/_Imports.razor
+--- a/src/VirtualCompany.Web/_Imports.razor
++++ b/src/VirtualCompany.Web/_Imports.razor
+@@ -5,3 +5,5 @@
+ @using VirtualCompany.Web
+ @using VirtualCompany.Web.Layout
+ @using VirtualCompany.Web.Services
+ @using VirtualCompany.Web.Components
++@using VirtualCompany.Web.Components.Authorization
++@using VirtualCompany.Web.Components.Finance
+diff --git a/src/VirtualCompany.Web/Layout/NavMenu.razor b/src/VirtualCompany.Web/Layout/NavMenu.razor
+--- a/src/VirtualCompany.Web/Layout/NavMenu.razor
++++ b/src/VirtualCompany.Web/Layout/NavMenu.razor
+@@ -1,3 +1,6 @@
++@inject OnboardingApiClient ApiClient
++@inject FinanceAccessResolver FinanceAccessResolver
++
+ <div class="top-row ps-3 navbar navbar-dark">
+     <div class="container-fluid">
+         <a class="navbar-brand" href="">Virtual Company</a>
+@@ -23,6 +26,13 @@
+                 <span class="bi bi-grid-1x2" aria-hidden="true"></span> Dashboard
+             </NavLink>
+         </div>
++        @if (!string.IsNullOrWhiteSpace(financeHref))
++        {
++            <div class="nav-item px-3">
++                <NavLink class="nav-link" href="@financeHref">
++                    <span class="bi bi-cash-stack" aria-hidden="true"></span> Finance
++                </NavLink>
++            </div>
++        }
+         <div class="nav-item px-3">
+             <NavLink class="nav-link" href="agents">
+                 <span class="bi bi-people" aria-hidden="true"></span> Agents
+@@ -57,9 +67,23 @@
+ @code {
+     private bool collapseNavMenu = true;
++    private string? financeHref;
+ 
+     private string? NavMenuCssClass => collapseNavMenu ? "collapse" : null;
+ 
++    protected override async Task OnInitializedAsync()
++    {
++        try
++        {
++            var currentUser = await ApiClient.GetCurrentUserContextAsync();
++            financeHref = FinanceAccessResolver.BuildNavigationHref(currentUser);
++        }
++        catch (OnboardingApiException)
++        {
++            financeHref = null;
++        }
++    }
++
+     private void ToggleNavMenu()
+     {
+         collapseNavMenu = !collapseNavMenu;
+     }
+ }
+diff --git a/src/VirtualCompany.Web/Services/FinanceAccessResolver.cs b/src/VirtualCompany.Web/Services/FinanceAccessResolver.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/FinanceAccessResolver.cs
+@@ -0,0 +1,95 @@
++namespace VirtualCompany.Web.Services;
++
++public enum FinanceAccessStateKind
++{
++    Allowed = 1,
++    Forbidden = 2,
++    CompanySelectionRequired = 3
++}
++
++public sealed record FinanceAccessState(
++    FinanceAccessStateKind Kind,
++    Guid? CompanyId,
++    string? CompanyName,
++    string? MembershipRole,
++    string Message)
++{
++    public bool IsAllowed => Kind == FinanceAccessStateKind.Allowed;
++    public bool IsForbidden => Kind == FinanceAccessStateKind.Forbidden;
++    public bool RequiresCompanySelection => Kind == FinanceAccessStateKind.CompanySelectionRequired;
++
++    public static FinanceAccessState Allowed(Guid companyId, string companyName, string membershipRole) =>
++        new(FinanceAccessStateKind.Allowed, companyId, companyName, membershipRole, string.Empty);
++
++    public static FinanceAccessState Forbidden(string message) =>
++        new(FinanceAccessStateKind.Forbidden, null, null, null, message);
++
++    public static FinanceAccessState CompanySelectionRequired(string message) =>
++        new(FinanceAccessStateKind.CompanySelectionRequired, null, null, null, message);
++}
++
++public sealed class FinanceAccessResolver
++{
++    public FinanceAccessState Resolve(CurrentUserContextViewModel? currentUser, Guid? requestedCompanyId)
++    {
++        var activeMemberships = currentUser?.Memberships
++            .Where(membership => IsActive(membership.Status))
++            .ToList()
++            ?? [];
++
++        if (requestedCompanyId is Guid companyId)
++        {
++            if (currentUser?.ActiveCompany is { } activeCompany &&
++                activeCompany.CompanyId == companyId &&
++                IsActive(activeCompany.Status))
++            {
++                return FinanceAccessState.Allowed(activeCompany.CompanyId, activeCompany.CompanyName, activeCompany.MembershipRole);
++            }
++
++            var requestedMembership = activeMemberships.FirstOrDefault(membership => membership.CompanyId == companyId);
++            return requestedMembership is null
++                ? FinanceAccessState.Forbidden("Finance pages are only available inside a company you can access.")
++                : FinanceAccessState.Allowed(
++                    requestedMembership.CompanyId,
++                    requestedMembership.CompanyName,
++                    requestedMembership.MembershipRole);
++        }
++
++        if (currentUser?.ActiveCompany is { } resolvedCompany && IsActive(resolvedCompany.Status))
++        {
++            return FinanceAccessState.Allowed(
++                resolvedCompany.CompanyId,
++                resolvedCompany.CompanyName,
++                resolvedCompany.MembershipRole);
++        }
++
++        if (activeMemberships.Count == 1)
++        {
++            var membership = activeMemberships[0];
++            return FinanceAccessState.Allowed(
++                membership.CompanyId,
++                membership.CompanyName,
++                membership.MembershipRole);
++        }
++
++        if (activeMemberships.Count > 1)
++        {
++            return FinanceAccessState.CompanySelectionRequired(
++                "Finance pages stay scoped to the active company. Select a company before opening the finance workspace.");
++        }
++
++        return FinanceAccessState.Forbidden("Finance access requires an active company membership.");
++    }
++
++    public bool CanShowNavigation(CurrentUserContextViewModel? currentUser) =>
++        Resolve(currentUser, null).IsAllowed;
++
++    public string? BuildNavigationHref(CurrentUserContextViewModel? currentUser)
++    {
++        var state = Resolve(currentUser, null);
++        return state.IsAllowed
++            ? FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, state.CompanyId)
++            : null;
++    }
++
++    private static bool IsActive(string? status) =>
++        string.Equals(status, "active", StringComparison.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Web/Services/FinanceRoutes.cs b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+@@ -0,0 +1,49 @@
++namespace VirtualCompany.Web.Services;
++
++public sealed record FinanceRouteDefinition(
++    string Title,
++    string Path,
++    string Description)
++{
++    public string BuildPath(Guid? companyId) => FinanceRoutes.WithCompanyContext(Path, companyId);
++}
++
++public static class FinanceRoutes
++{
++    public const string CompanyIdQueryKey = "companyId";
++    public const string Home = "/finance";
++    public const string CashPosition = "/finance/cash-position";
++    public const string Transactions = "/finance/transactions";
++    public const string Invoices = "/finance/invoices";
++    public const string Balances = "/finance/balances";
++    public const string MonthlySummary = "/finance/monthly-summary";
++    public const string Anomalies = "/finance/anomalies";
++
++    public static FinanceRouteDefinition HomePage { get; } =
++        new("Finance", Home, "Open the tenant-scoped finance workspace.");
++
++    public static IReadOnlyList<FinanceRouteDefinition> SectionPages { get; } =
++        [
++            new("Cash position", CashPosition, "Review cash coverage and company liquidity in the active tenant context."),
++            new("Transactions", Transactions, "Inspect transaction activity and categorization work for the selected company."),
++            new("Invoices", Invoices, "Track invoice review and collection workflows inside the active company."),
++            new("Balances", Balances, "Browse account balances with explicit tenant-scoped routing."),
++            new("Monthly summary", MonthlySummary, "Summarize the current month's finance posture for the active company."),
++            new("Anomalies", Anomalies, "Review finance anomalies and follow-up work in the selected tenant.")
++        ];
++
++    public static string WithCompanyContext(string path, Guid? companyId)
++    {
++        if (companyId is not Guid resolvedCompanyId)
++        {
++            return path;
++        }
++
++        var separator = path.Contains('?', StringComparison.Ordinal) ? "&" : "?";
++        return $"{path}{separator}{CompanyIdQueryKey}={resolvedCompanyId}";
++    }
++}
+diff --git a/src/VirtualCompany.Web/Components/Authorization/ForbiddenState.razor b/src/VirtualCompany.Web/Components/Authorization/ForbiddenState.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Authorization/ForbiddenState.razor
+@@ -0,0 +1,21 @@
++<section class="py-4">
++    <h1>@Title</h1>
++    <p class="text-body-secondary mb-3">@Message</p>
++
++    @if (!string.IsNullOrWhiteSpace(ReturnHref))
++    {
++        <a class="btn btn-outline-secondary" href="@ReturnHref">@ReturnText</a>
++    }
++</section>
++
++@code {
++    [Parameter]
++    public string Title { get; set; } = "Forbidden";
++
++    [Parameter]
++    public string Message { get; set; } = "You do not have access to this page.";
++
++    [Parameter] public string? ReturnHref { get; set; }
++
++    [Parameter]
++    public string ReturnText { get; set; } = "Back";
++}
+diff --git a/src/VirtualCompany.Web/Components/Finance/CompanySelectionRequiredState.razor b/src/VirtualCompany.Web/Components/Finance/CompanySelectionRequiredState.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/CompanySelectionRequiredState.razor
+@@ -0,0 +1,16 @@
++<section class="py-4">
++    <h1>Select a company to open Finance</h1>
++    <p class="text-body-secondary mb-3">@Message</p>
++    <a class="btn btn-primary" href="/dashboard">Open dashboard</a>
++</section>
++
++@code {
++    [Parameter]
++    public string Message { get; set; } =
++        "Finance pages stay scoped to the active company. Select a company before opening the finance workspace.";
++}
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor b/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor
+@@ -0,0 +1,42 @@
++<section class="py-4 dashboard-hero">
++    <div class="dashboard-shell">
++        <div class="wizard-card dashboard-summary">
++            <span class="dashboard-kicker">Finance module</span>
++            <h1>@Title</h1>
++            <p class="lead mb-2">@Description</p>
++            <p class="text-body-secondary mb-0">
++                Tenant scope: <strong>@CompanyName</strong>
++                @if (!string.IsNullOrWhiteSpace(MembershipRole))
++                {
++                    <span> | Role: @MembershipRole</span>
++                }
++            </p>
++        </div>
++
++        <div class="wizard-card wizard-card--compact">
++            <div class="dashboard-actions">
++                <a class="btn btn-outline-primary" href="@FinanceHomeHref">Finance home</a>
++                <a class="btn btn-outline-secondary" href="@DashboardHref">Company dashboard</a>
++            </div>
++
++            @if (ChildContent is not null)
++            {
++                <div class="mt-4">
++                    @ChildContent
++                </div>
++            }
++        </div>
++    </div>
++</section>
++
++@code {
++    [Parameter] public string Title { get; set; } = string.Empty;
++    [Parameter] public string Description { get; set; } = string.Empty;
++    [Parameter] public Guid CompanyId { get; set; }
++    [Parameter] public string CompanyName { get; set; } = string.Empty;
++    [Parameter] public string? MembershipRole { get; set; }
++    [Parameter] public RenderFragment? ChildContent { get; set; }
++
++    private string FinanceHomeHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId);
++
++    private string DashboardHref => $"/dashboard?companyId={CompanyId}";
++}
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinancePageLayout.razor b/src/VirtualCompany.Web/Components/Finance/FinancePageLayout.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/FinancePageLayout.razor
+@@ -0,0 +1,44 @@
++@if (IsLoading)
++{
++    <section class="py-4">
++        <h1>@Title</h1>
++        <p class="text-body-secondary mb-0">@LoadingMessage</p>
++    </section>
++}
++else if (AccessState.RequiresCompanySelection)
++{
++    <CompanySelectionRequiredState Message="@AccessState.Message" />
++}
++else if (AccessState.IsForbidden)
++{
++    <ForbiddenState
++        Title="Finance access required"
++        Message="@AccessState.Message"
++        ReturnHref="/dashboard"
++        ReturnText="Back to dashboard" />
++}
++else
++{
++    <FinanceModuleShell
++        Title="@Title"
++        Description="@Description"
++        CompanyId="@AccessState.CompanyId!.Value"
++        CompanyName="@AccessState.CompanyName!"
++        MembershipRole="@AccessState.MembershipRole">
++        @ChildContent
++    </FinanceModuleShell>
++}
++
++@if (!string.IsNullOrWhiteSpace(ErrorMessage))
++{
++    <div class="alert alert-danger mt-3" role="alert">@ErrorMessage</div>
++}
++
++@code {
++    [Parameter] public bool IsLoading { get; set; }
++    [Parameter] public FinanceAccessState AccessState { get; set; } = FinanceAccessState.Forbidden("Finance access is unavailable.");
++    [Parameter] public string Title { get; set; } = string.Empty;
++    [Parameter] public string Description { get; set; } = string.Empty;
++    [Parameter] public string LoadingMessage { get; set; } = "Loading finance workspace...";
++    [Parameter] public string? ErrorMessage { get; set; }
++    [Parameter] public RenderFragment? ChildContent { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePageBase.cs b/src/VirtualCompany.Web/Pages/Finance/FinancePageBase.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePageBase.cs
+@@ -0,0 +1,39 @@
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++
++namespace VirtualCompany.Web.Pages.Finance;
++
++public abstract class FinancePageBase : ComponentBase
++{
++    [Inject] protected OnboardingApiClient ApiClient { get; set; } = default!;
++    [Inject] protected FinanceAccessResolver FinanceAccessResolver { get; set; } = default!;
++    [Inject] protected NavigationManager Navigation { get; set; } = default!;
++
++    [SupplyParameterFromQuery(Name = FinanceRoutes.CompanyIdQueryKey)]
++    public Guid? CompanyId { get; set; }
++
++    protected bool IsLoading { get; private set; } = true;
++    protected string? ErrorMessage { get; private set; }
++    protected FinanceAccessState AccessState { get; private set; } =
++        FinanceAccessState.Forbidden("Finance access is unavailable.");
++
++    protected override async Task OnParametersSetAsync()
++    {
++        IsLoading = true;
++        ErrorMessage = null;
++
++        try
++        {
++            var currentUser = await ApiClient.GetCurrentUserContextAsync();
++            AccessState = FinanceAccessResolver.Resolve(currentUser, CompanyId);
++
++            // Normalize direct finance navigation onto an explicit company-scoped URL.
++            if (AccessState.IsAllowed && CompanyId is null && AccessState.CompanyId is Guid resolvedCompanyId)
++            {
++                Navigation.NavigateTo(Navigation.GetUriWithQueryParameter(FinanceRoutes.CompanyIdQueryKey, resolvedCompanyId), replace: true);
++            }
++        }
++        catch (OnboardingApiException ex)
++        {
++            ErrorMessage = ex.Message;
++            AccessState = FinanceAccessState.Forbidden("Finance is unavailable while the active company context cannot be resolved.");
++        }
++        finally { IsLoading = false; }
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
+@@ -0,0 +1,21 @@
++@page "/finance"
++
++<PageTitle>Finance</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Finance"
++    Description="Open tenant-scoped finance workflows from a single module shell."
++    LoadingMessage="Loading finance workspace...">
++    <div class="template-grid">
++        @foreach (var route in FinanceRoutes.SectionPages)
++        {
++            <a class="template-card text-decoration-none text-reset" href="@route.BuildPath(AccessState.CompanyId)">
++                <strong>@route.Title</strong>
++                <div class="text-body-secondary mt-2">@route.Description</div>
++            </a>
++        }
++    </div>
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
+@@ -0,0 +1,5 @@
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class FinancePage : FinancePageBase
++{
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor b/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor
+@@ -0,0 +1,15 @@
++@page "/finance/cash-position"
++
++<PageTitle>Cash position</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Cash position"
++    Description="Track company cash coverage and liquidity without leaving the active tenant context."
++    LoadingMessage="Loading cash position shell...">
++    <p class="text-body-secondary mb-0">
++        This shell is ready for tenant-scoped cash position data, direct URL navigation, and refresh-safe routing.
++    </p>
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor.cs
+@@ -0,0 +1,5 @@
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class CashPositionPage : FinancePageBase
++{
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor b/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor
+@@ -0,0 +1,15 @@
++@page "/finance/transactions"
++
++<PageTitle>Transactions</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Transactions"
++    Description="Inspect transaction activity and categorization work for the selected company."
++    LoadingMessage="Loading transactions shell...">
++    <p class="text-body-secondary mb-0">
++        This shell reserves the route for tenant-aware transaction review and future finance workflows.
++    </p>
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor.cs
+@@ -0,0 +1,5 @@
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class TransactionsPage : FinancePageBase
++{
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
+@@ -0,0 +1,15 @@
++@page "/finance/invoices"
++
++<PageTitle>Invoices</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Invoices"
++    Description="Track invoice review queues and collection workflows inside the active company."
++    LoadingMessage="Loading invoices shell...">
++    <p class="text-body-secondary mb-0">
++        This shell preserves company-scoped routing for invoice work without introducing finance data dependencies yet.
++    </p>
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
+@@ -0,0 +1,5 @@
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class InvoicesPage : FinancePageBase
++{
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor b/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor
+@@ -0,0 +1,15 @@
++@page "/finance/balances"
++
++<PageTitle>Balances</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Balances"
++    Description="Browse account balances with explicit tenant-scoped routing and module-level navigation."
++    LoadingMessage="Loading balances shell...">
++    <p class="text-body-secondary mb-0">
++        This shell keeps future balance views anchored to the current company context and finance landing page.
++    </p>
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor.cs
+@@ -0,0 +1,5 @@
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class BalancesPage : FinancePageBase
++{
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor b/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor
+@@ -0,0 +1,15 @@
++@page "/finance/monthly-summary"
++
++<PageTitle>Monthly summary</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Monthly summary"
++    Description="Summarize the current month's finance posture inside the active tenant workspace."
++    LoadingMessage="Loading monthly summary shell...">
++    <p class="text-body-secondary mb-0">
++        This shell is ready for tenant-scoped monthly summary composition while keeping finance routing stable.
++    </p>
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor.cs
+@@ -0,0 +1,5 @@
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class MonthlySummaryPage : FinancePageBase
++{
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor b/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor
+@@ -0,0 +1,15 @@
++@page "/finance/anomalies"
++
++<PageTitle>Anomalies</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Anomalies"
++    Description="Review finance anomalies and follow-up work without leaving the selected company context."
++    LoadingMessage="Loading anomalies shell...">
++    <p class="text-body-secondary mb-0">
++        This shell keeps anomaly review tenant-scoped and ready for direct navigation or browser refresh.
++    </p>
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor.cs
+@@ -0,0 +1,5 @@
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class AnomaliesPage : FinancePageBase
++{
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs b/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs
+@@ -0,0 +1,102 @@
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceAccessResolverTests
++{
++    private readonly FinanceAccessResolver _resolver = new();
++
++    [Fact]
++    public void Resolve_uses_active_company_context_for_finance_access()
++    {
++        var companyId = Guid.NewGuid();
++        var currentUser = CreateCurrentUser(
++            memberships: [CreateMembership(companyId, "Company A", "owner", "active")],
++            activeCompany: CreateActiveCompany(companyId, "Company A", "owner", "active"));
++
++        var state = _resolver.Resolve(currentUser, null);
++
++        Assert.True(state.IsAllowed);
++        Assert.Equal(companyId, state.CompanyId);
++        Assert.Equal("Company A", state.CompanyName);
++        Assert.Equal($"/finance?companyId={companyId}", _resolver.BuildNavigationHref(currentUser));
++    }
++
++    [Fact]
++    public void Resolve_allows_single_active_membership_without_preselected_company()
++    {
++        var companyId = Guid.NewGuid();
++        var currentUser = CreateCurrentUser(
++            memberships: [CreateMembership(companyId, "Company A", "finance_approver", "active")],
++            activeCompany: null);
++
++        var state = _resolver.Resolve(currentUser, null);
++
++        Assert.True(state.IsAllowed);
++        Assert.Equal(companyId, state.CompanyId);
++        Assert.Equal("finance_approver", state.MembershipRole);
++    }
++
++    [Fact]
++    public void Resolve_requires_company_selection_when_multiple_active_memberships_exist()
++    {
++        var currentUser = CreateCurrentUser(
++            memberships:
++            [
++                CreateMembership(Guid.NewGuid(), "Company A", "owner", "active"),
++                CreateMembership(Guid.NewGuid(), "Company B", "admin", "active")
++            ],
++            activeCompany: null);
++
++        var state = _resolver.Resolve(currentUser, null);
++
++        Assert.True(state.RequiresCompanySelection);
++        Assert.False(_resolver.CanShowNavigation(currentUser));
++        Assert.Null(_resolver.BuildNavigationHref(currentUser));
++    }
++
++    [Fact]
++    public void Resolve_forbids_requested_company_outside_active_memberships()
++    {
++        var currentUser = CreateCurrentUser(
++            memberships: [CreateMembership(Guid.NewGuid(), "Company A", "employee", "active")],
++            activeCompany: null);
++
++        var state = _resolver.Resolve(currentUser, Guid.NewGuid());
++
++        Assert.True(state.IsForbidden);
++    }
++
++    [Fact]
++    public void Resolve_forbids_finance_access_without_active_membership()
++    {
++        var currentUser = CreateCurrentUser(
++            memberships: [CreateMembership(Guid.NewGuid(), "Company A", "employee", "pending")],
++            activeCompany: null);
++
++        var state = _resolver.Resolve(currentUser, null);
++
++        Assert.True(state.IsForbidden);
++        Assert.False(_resolver.CanShowNavigation(currentUser));
++    }
++
++    private static CurrentUserContextViewModel CreateCurrentUser(
++        List<CompanyMembershipViewModel> memberships,
++        ResolvedCompanyContextViewModel? activeCompany) =>
++        new()
++        {
++            Memberships = memberships,
++            ActiveCompany = activeCompany
++        };
++
++    private static CompanyMembershipViewModel CreateMembership(
++        Guid companyId,
++        string companyName,
++        string role,
++        string status) =>
++        new()
++        {
++            CompanyId = companyId,
++            CompanyName = companyName,
++            MembershipRole = role,
++            Status = status
++        };
++
++    private static ResolvedCompanyContextViewModel CreateActiveCompany(Guid companyId, string companyName, string role, string status) =>
++        new() { CompanyId = companyId, CompanyName = companyName, MembershipRole = role, Status = status };
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
+@@ -0,0 +1,43 @@
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Pages.Finance;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceRouteRegistrationTests
++{
++    [Theory]
++    [InlineData(typeof(FinancePage), FinanceRoutes.Home)]
++    [InlineData(typeof(CashPositionPage), FinanceRoutes.CashPosition)]
++    [InlineData(typeof(TransactionsPage), FinanceRoutes.Transactions)]
++    [InlineData(typeof(InvoicesPage), FinanceRoutes.Invoices)]
++    [InlineData(typeof(BalancesPage), FinanceRoutes.Balances)]
++    [InlineData(typeof(MonthlySummaryPage), FinanceRoutes.MonthlySummary)]
++    [InlineData(typeof(AnomaliesPage), FinanceRoutes.Anomalies)]
++    public void Finance_pages_register_expected_routes(Type componentType, string expectedRoute)
++    {
++        var routes = componentType.GetCustomAttributes(inherit: false)
++            .OfType<RouteAttribute>()
++            .Select(attribute => attribute.Template)
++            .ToArray();
++
++        Assert.Contains(expectedRoute, routes);
++    }
++
++    [Fact]
++    public void Finance_landing_page_defines_required_shell_links()
++    {
++        var routes = FinanceRoutes.SectionPages.Select(route => route.Path).ToArray();
++
++        Assert.Equal(6, routes.Length);
++        Assert.Contains(FinanceRoutes.CashPosition, routes);
++        Assert.Contains(FinanceRoutes.Transactions, routes);
++        Assert.Contains(FinanceRoutes.Invoices, routes);
++        Assert.Contains(FinanceRoutes.Balances, routes);
++        Assert.Contains(FinanceRoutes.MonthlySummary, routes);
++        Assert.Contains(FinanceRoutes.Anomalies, routes);
++    }
++}
+END_OF_PATCH

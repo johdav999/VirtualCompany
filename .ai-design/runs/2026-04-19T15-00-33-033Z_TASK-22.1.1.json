@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-22.1.1",
+  "promptPath": ".ai-design/prompts/TASK-22.1.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-19T15:00:33.033Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-19T15-00-33-033Z_TASK-22.1.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-19T15-00-33-033Z_TASK-22.1.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-19T15:08:28.044Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "es.AddSingleton(new TodayFocusApiClient(\n+            new HttpClient(new AsyncStubHttpMessageHandler((request, cancellationToken) =>\n+            {\n+                return Task.FromResult<HttpResponseMessage>(request.RequestUri?.AbsolutePath switch\n+                {\n+                    \"/api/dashboard/focus\" => new HttpResponseMessage(HttpStatusCode.OK)\n+                    {\n+                        Content = JsonContent.Create(items)\n+                    },\n+                    _ => new HttpResponseMessage(HttpStatusCode.NotFound)\n+                });\n+            }))\n+            {\n+                BaseAddress = new Uri(\"http://localhost/\")\n+            }));\n+\n+        var navigation = context.Services.GetRequiredService<FakeNavigationManager>();\n+        var cut = context.RenderComponent<TodayFocusPanel>(parameters => parameters\n+            .Add(component => component.CompanyId, companyId)\n+            .Add(component => component.UserId, userId));\n+\n+        cut.WaitForAssertion(() =>\n+        {\n+            Assert.Equal(2, cut.FindAll(\"[data-testid='today-focus-card']\").Count);\n+            Assert.Contains(\"Approval required for task\", cut.Markup);\n+            Assert.Contains(\"Resolve blocked task\", cut.Markup);\n+        });\n+\n+        cut.FindAll(\"[data-testid='today-focus-cta']\")[1].Click();\n+\n+        Assert.Equal($\"http://localhost{items[1].NavigationTarget}\", navigation.Uri);\n+    }\n+\n+    private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler\n+    {\n+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;\n+\n+        public AsyncStubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)\n+        {\n+            _handler = handler;\n+        }\n+\n+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>\n+            _handler(request, cancellationToken);\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "TodayFocusApiClient(\n+            new HttpClient(new AsyncStubHttpMessageHandler((request, cancellationToken) =>\n+            {\n+                return Task.FromResult<HttpResponseMessage>(request.RequestUri?.AbsolutePath switch\n+                {\n+                    \"/api/dashboard/focus\" => new HttpResponseMessage(HttpStatusCode.OK)\n+                    {\n+                        Content = JsonContent.Create(items)\n+                    },\n+                    _ => new HttpResponseMessage(HttpStatusCode.NotFound)\n+                });\n+            }))\n+            {\n+                BaseAddress = new Uri(\"http://localhost/\")\n+            }));\n+\n+        var navigation = context.Services.GetRequiredService<FakeNavigationManager>();\n+        var cut = context.RenderComponent<TodayFocusPanel>(parameters => parameters\n+            .Add(component => component.CompanyId, companyId)\n+            .Add(component => component.UserId, userId));\n+\n+        cut.WaitForAssertion(() =>\n+        {\n+            Assert.Equal(2, cut.FindAll(\"[data-testid='today-focus-card']\").Count);\n+            Assert.Contains(\"Approval required for task\", cut.Markup);\n+            Assert.Contains(\"Resolve blocked task\", cut.Markup);\n+        });\n+\n+        cut.FindAll(\"[data-testid='today-focus-cta']\")[1].Click();\n+\n+        Assert.Equal($\"http://localhost{items[1].NavigationTarget}\", navigation.Uri);\n+    }\n+\n+    private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler\n+    {\n+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;\n+\n+        public AsyncStubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)\n+        {\n+            _handler = handler;\n+        }\n+\n+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>\n+            _handler(request, cancellationToken);\n+    }\n+}\nEND_OF_PATCH\ntokens used\n196,475\n",
+  "verbosityMode": "verbose"
+}

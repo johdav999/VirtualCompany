@@ -1,0 +1,341 @@
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -832,28 +832,230 @@ public sealed class InternalFinanceController : ControllerBase
+     private async Task<FinanceSandboxDatasetGenerationResponse?> BuildSandboxDatasetGenerationAsync(
+         Guid companyId,
+         CancellationToken cancellationToken)
+     {
+-        var company = await _dbContext.Companies
++        var companyExists = await _dbContext.Companies
+             .IgnoreQueryFilters()
+-            .SingleAsync(x => x.Id == companyId, cancellationToken);
+-        var clock = await _companySimulationService.GetClockAsync(
+-            new GetCompanySimulationClockQuery(companyId),
+-            cancellationToken);
+-        var runHistory = await BuildSandboxRunHistoryAsync(companyId, cancellationToken);
+-        var currentRun = runHistory.FirstOrDefault();
+-
+-        return new FinanceSandboxSimulationControlsResponse
++            .AnyAsync(x => x.Id == companyId, cancellationToken);
++
++        if (!companyExists)
++        {
++            return null;
++        }
++
++        var transactionCount = await _dbContext.FinanceTransactions
++            .Where(x => x.CompanyId == companyId)
++            .CountAsync(cancellationToken);
++        var invoiceCount = await _dbContext.FinanceInvoices
++            .Where(x => x.CompanyId == companyId)
++            .CountAsync(cancellationToken);
++        var billCount = await _dbContext.FinanceBills
++            .Where(x => x.CompanyId == companyId)
++            .CountAsync(cancellationToken);
++        var balanceCount = await _dbContext.FinanceBalances
++            .Where(x => x.CompanyId == companyId)
++            .CountAsync(cancellationToken);
++        var anomalyCount = await _dbContext.FinanceSeedAnomalies
++            .Where(x => x.CompanyId == companyId)
++            .CountAsync(cancellationToken);
++
++        var lastGeneratedUtc = await _dbContext.AuditEvents
++            .Where(x => x.CompanyId == companyId && x.Action == "finance.sandbox.dataset.generated")
++            .OrderByDescending(x => x.OccurredUtc)
++            .Select(x => (DateTime?)x.OccurredUtc)
++            .FirstOrDefaultAsync(cancellationToken)
++            ?? await _dbContext.FinanceTransactions
++                .Where(x => x.CompanyId == companyId)
++                .OrderByDescending(x => x.CreatedUtc)
++                .Select(x => (DateTime?)x.CreatedUtc)
++                .FirstOrDefaultAsync(cancellationToken)
++            ?? DateTime.UtcNow;
++
++        return new FinanceSandboxDatasetGenerationResponse
++        {
++            ProfileName = "Tenant sandbox dataset",
++            LastGeneratedUtc = lastGeneratedUtc,
++            CoverageSummary = $"{transactionCount} transactions, {invoiceCount} invoices, {billCount} bills, {balanceCount} balances, and {anomalyCount} anomalies are available for sandbox validation.",
++            AvailableProfiles =
++            [
++                "Tenant sandbox dataset",
++                "Tenant sandbox dataset with anomaly validation"
++            ]
++        };
++    }
++
++    private async Task<FinanceSandboxAnomalyInjectionResponse?> BuildSandboxAnomalyInjectionAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var companyExists = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AnyAsync(x => x.Id == companyId, cancellationToken);
++
++        if (!companyExists)
++        {
++            return null;
++        }
++
++        var anomalies = await _dbContext.FinanceSeedAnomalies
++            .Where(x => x.CompanyId == companyId)
++            .OrderByDescending(x => x.CreatedUtc)
++            .ToListAsync(cancellationToken);
++
++        var registryEntries = new List<FinanceSandboxAnomalyRegistryItemResponse>(anomalies.Count);
++        foreach (var anomaly in anomalies)
++        {
++            registryEntries.Add(await BuildSandboxAnomalyRegistryItemAsync(anomaly, cancellationToken));
++        }
++
++        var lastInjectedUtc = anomalies.FirstOrDefault()?.CreatedUtc
++            ?? await _dbContext.AuditEvents
++                .Where(x => x.CompanyId == companyId && x.Action == "finance.sandbox.dataset.generated")
++                .OrderByDescending(x => x.OccurredUtc)
++                .Select(x => (DateTime?)x.OccurredUtc)
++                .FirstOrDefaultAsync(cancellationToken)
++            ?? DateTime.UtcNow;
++
++        return new FinanceSandboxAnomalyInjectionResponse
++        {
++            Mode = "Seed anomaly scenarios",
++            LastInjectedUtc = lastInjectedUtc,
++            Observation = anomalies.Count == 0
++                ? "No anomaly injections have been registered yet. Inject a scenario profile to populate the registry."
++                : $"Tracking {anomalies.Count} sandbox anomaly registration(s) for the active company.",
++            ActiveScenarios = anomalies
++                .Select(x => ResolveSandboxScenarioProfile(x.ScenarioProfile).Name)
++                .Distinct(StringComparer.OrdinalIgnoreCase)
++                .ToArray(),
++            AvailableScenarioProfiles = SandboxScenarioProfiles,
++            RegistryEntries = registryEntries
++        };
++    }
++
++    private async Task<FinanceSandboxAnomalyDetailResponse?> BuildSandboxAnomalyDetailAsync(
++        Guid companyId,
++        Guid anomalyId,
++        CancellationToken cancellationToken)
++    {
++        var anomaly = await _dbContext.FinanceSeedAnomalies
++            .Where(x => x.CompanyId == companyId && x.Id == anomalyId)
++            .SingleOrDefaultAsync(cancellationToken);
++
++        return anomaly is null
++            ? null
++            : await BuildSandboxAnomalyDetailAsync(anomaly, cancellationToken);
++    }
++
++    private async Task<FinanceSandboxAnomalyRegistryItemResponse> BuildSandboxAnomalyRegistryItemAsync(
++        FinanceSeedAnomaly anomaly,
++        CancellationToken cancellationToken)
++    {
++        var profile = ResolveSandboxScenarioProfile(anomaly.ScenarioProfile);
++        var affectedRecord = await ResolveSandboxFinanceRecordAsync(anomaly.CompanyId, anomaly.GetAffectedRecordIds(), cancellationToken);
++
++        return new FinanceSandboxAnomalyRegistryItemResponse
++        {
++            Id = anomaly.Id,
++            Type = anomaly.AnomalyType,
++            Status = "registered",
++            ScenarioProfileCode = profile.Code,
++            ScenarioProfileName = profile.Name,
++            AffectedRecordType = affectedRecord?.RecordType ?? "unknown",
++            AffectedRecordId = affectedRecord?.RecordId,
++            AffectedRecordReference = affectedRecord?.Reference ?? "Unavailable",
++            CreatedUtc = anomaly.CreatedUtc,
++            Messages = BuildSandboxAnomalyMessages(profile, affectedRecord)
++        };
++    }
++
++    private async Task<FinanceSandboxAnomalyDetailResponse> BuildSandboxAnomalyDetailAsync(
++        FinanceSeedAnomaly anomaly,
++        CancellationToken cancellationToken)
++    {
++        var profile = ResolveSandboxScenarioProfile(anomaly.ScenarioProfile);
++        var affectedRecord = await ResolveSandboxFinanceRecordAsync(anomaly.CompanyId, anomaly.GetAffectedRecordIds(), cancellationToken);
++
++        return new FinanceSandboxAnomalyDetailResponse
+         {
+-            ClockMode = clock.Enabled ? "Simulated clock enabled" : "Live clock fallback",
+-            ReferenceUtc = clock.SimulatedUtc,
++            Id = anomaly.Id,
++            Type = anomaly.AnomalyType,
++            Status = "registered",
++            ScenarioProfileCode = profile.Code,
++            ScenarioProfileName = profile.Name,
++            AffectedRecordType = affectedRecord?.RecordType ?? "unknown",
++            AffectedRecordId = affectedRecord?.RecordId,
++            AffectedRecordReference = affectedRecord?.Reference ?? "Unavailable",
++            CreatedUtc = anomaly.CreatedUtc,
++            ExpectedDetectionMetadataJson = anomaly.ExpectedDetectionMetadataJson,
++            Messages = BuildSandboxAnomalyMessages(profile, affectedRecord)
++        };
++    }
++
++    private static FinanceSandboxAnomalyScenarioProfileResponse ResolveSandboxScenarioProfile(string? code) =>
++        SandboxScenarioProfiles.FirstOrDefault(x => string.Equals(x.Code, code?.Trim(), StringComparison.OrdinalIgnoreCase))
++        ?? new FinanceSandboxAnomalyScenarioProfileResponse
++        {
++            Code = NormalizeReviewToken(code) ?? "custom",
++            Name = HumanizeReviewToken(code),
++            Description = "Registers a sandbox anomaly scenario against an existing finance record."
++        };
++
++    private static IReadOnlyList<FinanceSandboxBackendMessageResponse> BuildSandboxAnomalyMessages(
++        FinanceSandboxAnomalyScenarioProfileResponse profile,
++        SandboxFinanceRecordCandidate? affectedRecord)
++    {
++        var messages = new List<FinanceSandboxBackendMessageResponse>
++        {
++            new()
++            {
++                Severity = "info",
++                Code = "sandbox.anomaly.registered",
++                Message = $"Scenario '{profile.Name}' is registered for sandbox review."
++            }
++        };
++
++        if (affectedRecord is null)
++        {
++            messages.Add(new FinanceSandboxBackendMessageResponse
++            {
++                Severity = "warning",
++                Code = "sandbox.anomaly.record_unresolved",
++                Message = "The related finance record could not be resolved from the sandbox registry."
++            });
++        }
++
++        return messages;
++    }
++
++    private async Task<FinanceSandboxSimulationControlsResponse?> BuildSandboxSimulationControlsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var companyExists = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AnyAsync(x => x.Id == companyId, cancellationToken);
++
++        if (!companyExists)
++        {
++            return null;
++        }
++
++        var clock = await _companySimulationService.GetClockAsync(
++            new GetCompanySimulationClockQuery(companyId),
++            cancellationToken);
++        var runHistory = await BuildSandboxRunHistoryAsync(companyId, cancellationToken);
++        var currentRun = runHistory.FirstOrDefault();
++
++        return new FinanceSandboxSimulationControlsResponse
++        {
++            ClockMode = clock.Enabled ? "Simulated clock enabled" : "Live clock fallback",
++            ReferenceUtc = clock.SimulatedUtc,
+             CheckpointLabel = currentRun is null
+                 ? "No simulation run has been recorded for the current sandbox."
+                 : $"{HumanizeReviewToken(currentRun.RunType)} completed {currentRun.AdvancedHours}h with {currentRun.Steps.Count} step(s).",
+             Observation = currentRun is null
+                 ? "Advance simulation time or start a progression run to populate backend status and history."
+                 : currentRun.Messages.FirstOrDefault()?.Message
+                     ?? "The latest simulation run completed without backend messages.",
+             CurrentRun = currentRun,
+             RunHistory = runHistory
+         };
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -262,6 +262,6 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 CurrentCompanyId.HasValue && anomaly.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<FinanceSimulationStepLog>()
+             .HasQueryFilter(log =>
+-                CurrentCompanyId.HasValue && anomaly.CompanyId == CurrentCompanyId.Value);
++                CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+@@ -149,6 +149,73 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+         Assert.Equal(controlsPayload.CurrentRun!.CompletedUtc, controlsPayload.RunHistory[0].CompletedUtc);
+         Assert.NotEmpty(controlsPayload.CurrentRun.Messages);
+     }
++
++    [Fact]
++    public async Task Anomaly_injection_endpoint_returns_detail_metadata_and_related_record_reference()
++    {
++        var seed = await SeedSandboxAdminCompanyAsync();
++        var identity = seed.GetIdentity("owner");
++        using var client = CreateAuthenticatedClient(identity.Subject, identity.Email, identity.DisplayName);
++
++        var injectResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/anomaly-injection",
++            new FinanceSandboxAnomalyInjectionRequest
++            {
++                CompanyId = seed.CompanyId,
++                ScenarioProfileCode = "duplicate_vendor_charge"
++            });
++
++        Assert.Equal(HttpStatusCode.OK, injectResponse.StatusCode);
++
++        var injectedDetail = await injectResponse.Content.ReadFromJsonAsync<FinanceSandboxAnomalyDetailResponse>();
++        Assert.NotNull(injectedDetail);
++        Assert.Equal("duplicate_vendor_charge", injectedDetail!.ScenarioProfileCode);
++        Assert.Equal("Duplicate vendor charge", injectedDetail.ScenarioProfileName);
++        Assert.False(string.IsNullOrWhiteSpace(injectedDetail.AffectedRecordReference));
++        Assert.Contains("scenarioProfileName", injectedDetail.ExpectedDetectionMetadataJson, StringComparison.OrdinalIgnoreCase);
++        Assert.NotEmpty(injectedDetail.Messages);
++
++        var detailResponse = await client.GetAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/anomaly-injection/{injectedDetail.Id}");
++
++        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
++
++        var fetchedDetail = await detailResponse.Content.ReadFromJsonAsync<FinanceSandboxAnomalyDetailResponse>();
++        Assert.NotNull(fetchedDetail);
++        Assert.Equal(injectedDetail.Id, fetchedDetail!.Id);
++        Assert.Equal(injectedDetail.AffectedRecordId, fetchedDetail.AffectedRecordId);
++        Assert.Equal(injectedDetail.AffectedRecordReference, fetchedDetail.AffectedRecordReference);
++
++        var registryResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/anomaly-injection");
++
++        Assert.Equal(HttpStatusCode.OK, registryResponse.StatusCode);
++
++        var registry = await registryResponse.Content.ReadFromJsonAsync<FinanceSandboxAnomalyInjectionResponse>();
++        Assert.NotNull(registry);
++        Assert.Contains(
++            registry!.RegistryEntries,
++            entry => entry.Id == injectedDetail.Id && !string.IsNullOrWhiteSpace(entry.AffectedRecordReference));
++    }
++
++    [Fact]
++    public async Task Simulation_control_endpoints_reject_invalid_hour_increment()
++    {
++        var seed = await SeedSandboxAdminCompanyAsync();
++        var identity = seed.GetIdentity("owner");
++        using var client = CreateAuthenticatedClient(identity.Subject, identity.Email, identity.DisplayName);
++
++        var response = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/simulation-controls/advance",
++            new FinanceSandboxSimulationAdvanceRequest
++            {
++                CompanyId = seed.CompanyId,
++                IncrementHours = 0,
++                ExecutionStepHours = 24,
++                Accelerated = true
++            });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(payload);
++        Assert.Equal("Finance validation failed", payload!.Title);
++        Assert.Contains(nameof(FinanceSandboxSimulationAdvanceRequest.IncrementHours), payload.Errors.Keys);
++        Assert.Contains("positive hour increment", payload.Errors[nameof(FinanceSandboxSimulationAdvanceRequest.IncrementHours)][0], StringComparison.OrdinalIgnoreCase);
++    }
+ 
+     [Fact]
+     public async Task Anomaly_injection_endpoint_returns_profiles_even_when_registry_is_empty()
+END_OF_PATCH

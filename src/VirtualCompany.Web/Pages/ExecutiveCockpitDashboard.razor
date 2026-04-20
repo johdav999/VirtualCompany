@@ -2,8 +2,10 @@
 @using System.Diagnostics.Metrics
 @inject ExecutiveCockpitApiClient ApiClient
 @inject ILogger<ExecutiveCockpitDashboard> Logger
+@inject FinanceApiClient FinanceApiClient
+@inject NavigationManager Navigation
 
-<section class="cockpit-panel">
+<section class="dashboard-detail-stack">
     @if (isLoading)
     {
         <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
@@ -27,277 +29,256 @@
     }
     else
     {
-        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
-            <div class="cockpit-card__header">
-                <div>
-                    <span class="dashboard-kicker">Executive cockpit</span>
-                    <h2 class="h4 mt-2 mb-1">@ResolvedCompanyName</h2>
-                    <p class="text-body-secondary mb-0">Generated @dashboard.GeneratedAtUtc.ToLocalTime():g</p>
-                </div>
-                <div class="dashboard-actions">
-                    <button class="btn btn-outline-secondary" @onclick="RefreshDashboardWidgetsAsync" disabled="@IsAnyWidgetLoading">Refresh cockpit</button>
-                    <a class="btn btn-outline-primary" href="@AgentsPath">Agents</a>
-                    <a class="btn btn-outline-primary" href="@TasksPath">Tasks</a>
-                    <a class="btn btn-outline-primary" href="@WorkflowsPath">Workflows</a>
-                    <a class="btn btn-outline-primary" href="@ApprovalsPath">Approvals</a>
-                </div>
-            </div>
-        </div>
-
-        @if (dashboard.SummaryKpis.Count > 0)
-        {
-            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+        <div class="dashboard-snapshot-grid" data-testid="dashboard-snapshot-grid">
+            <article class="wizard-card wizard-card--compact cockpit-card dashboard-snapshot-panel" data-testid="executive-cockpit-finance-widget">
                 <div class="cockpit-card__header">
                     <div>
-                        <h3 class="h5 mb-1">Summary KPIs</h3>
-                        <p class="text-body-secondary mb-0">Current operating signals for this company.</p>
+                        <h2 class="h5 mb-1">Finance snapshot</h2>
+                        <p class="text-body-secondary mb-0">Cash, runway, and finance entry points for the active company.</p>
                     </div>
-                    <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<List<ExecutiveCockpitSummaryKpiViewModel>>("summary-kpis")' disabled="@IsWidgetLoading("summary-kpis")">Refresh</button>
+                    <div class="cockpit-toolbar">
+                        <button class="btn btn-outline-secondary btn-sm" @onclick="RefreshFinanceSnapshotAsync" disabled="@IsWidgetLoading("finance-snapshot")">Refresh snapshot</button>
+                        @if (dashboard.Finance is not null)
+                        {
+                            <button class="btn btn-outline-secondary btn-sm" @onclick="RefreshFinanceWidgetAsync" disabled="@IsWidgetLoading("finance")">Refresh finance</button>
+                        }
+                    </div>
                 </div>
-                @WidgetStatus("summary-kpis")
-                <div class="cockpit-summary-kpi-grid mt-3">
-                    @foreach (var kpi in dashboard.SummaryKpis)
+                @WidgetStatus("finance-snapshot")
+                <div class="mt-3">
+                    <FinanceSnapshotCard Snapshot="financeSnapshot"
+                                         CompanyId="CompanyId"
+                                         OnActionClick="OnActionClick" />
+                </div>
+
+                @if (dashboard.Finance is not null)
+                {
+                    @WidgetStatus("finance")
+
+                    @if (dashboard.Finance.LowCashAlert is not null)
                     {
-                        <section class="@SummaryKpiCardClass(kpi)" aria-label="@kpi.Label">
-                            <div class="cockpit-summary-kpi__label">@kpi.Label</div>
-                            <strong class="cockpit-summary-kpi__value">@kpi.CurrentValue</strong>
-                            <div class="@SummaryKpiTrendClass(kpi)">
-                                <span aria-hidden="true">@TrendGlyph(kpi.TrendDirection)</span>
-                                <span>@kpi.DeltaText</span>
+                        <section class="wizard-card mt-3" data-testid="executive-cockpit-low-cash-alert">
+                            <div class="cockpit-card__header">
+                                <div>
+                                    <span class="@SeverityBadgeClass(dashboard.Finance.LowCashAlert.Severity)">@dashboard.Finance.LowCashAlert.Severity</span>
+                                    <h4 class="h6 mt-2 mb-1">Low-cash alert</h4>
+                                    <p class="mb-0">@dashboard.Finance.LowCashAlert.Summary</p>
+                                </div>
+                                <a class="btn btn-outline-secondary btn-sm"
+                                   href="@ResolveRoute(dashboard.Finance.LowCashAlert.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId))"
+                                   data-testid="executive-cockpit-low-cash-alert-open-detail"
+                                   @onclick='() => NavigateToAsync(dashboard.Finance.LowCashAlert.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId), "finance", "low-cash-alert")'
+                                   @onclick:preventDefault="true">Open detail</a>
                             </div>
-                            @if (kpi.PreviousValue is not null)
+                            @if (dashboard.Finance.LowCashAlert.ContributingFactors.Count > 0)
                             {
-                                <small class="text-body-secondary">Previous: @kpi.PreviousValue</small>
+                                <ul class="mt-3 mb-0">
+                                    @foreach (var factor in dashboard.Finance.LowCashAlert.ContributingFactors)
+                                    {
+                                        <li>@factor</li>
+                                    }
+                                </ul>
                             }
                         </section>
                     }
-                </div>
+
+                    @if (dashboard.Finance.DeepLinks.Count > 0)
+                    {
+                        <div class="dashboard-actions mt-3">
+                            @foreach (var link in dashboard.Finance.DeepLinks)
+                            {
+                                <a class="btn btn-outline-secondary"
+                                   href="@ResolveRoute(link.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId))"
+                                   data-testid="@($"finance-deep-link-{NormalizeCssToken(link.Key)}")"
+                                   @onclick='() => NavigateToAsync(link.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId), "finance", link.Key, link.Label)'
+                                   @onclick:preventDefault="true">@link.Label</a>
+                            }
+                        </div>
+                    }
+
+                    @if (dashboard.Finance.AvailableActions.Count > 0)
+                    {
+                        <div class="dashboard-actions mt-3">
+                            @foreach (var action in dashboard.Finance.AvailableActions)
+                            {
+                                @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && HasDrillRoute(action.Route))
+                                {
+                                    <a class="btn btn-outline-primary"
+                                       href="@ResolveRoute(action.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId))"
+                                       data-testid="@($"finance-action-{NormalizeCssToken(action.Key)}")"
+                                       @onclick='() => NavigateToAsync(action.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId), "finance", action.Key, action.Label)'
+                                       @onclick:preventDefault="true">@action.Label</a>
+                                }
+                                else
+                                {
+                                    <button class="btn btn-outline-primary"
+                                            type="button"
+                                            data-testid="@($"finance-action-{NormalizeCssToken(action.Key)}")"
+                                            @onclick="() => ExecuteFinanceActionAsync(action)"
+                                            disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
+                                }
+                            }
+                        </div>
+                    }
+                }
+
+                @if (!string.IsNullOrWhiteSpace(financeActionStatusMessage))
+                {
+                    <div class="alert alert-success mt-3 mb-0">@financeActionStatusMessage</div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(financeActionErrorMessage))
+                {
+                    <div class="alert alert-warning mt-3 mb-0">@financeActionErrorMessage</div>
+                }
             </article>
-        }
-        
-        @if (IsInitialSetupEmpty)
-        {
-            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide cockpit-empty-hero">
-                <span class="dashboard-kicker">Initial setup</span>
-                <h3 class="h4 mt-2 mb-2">Build the first operating layer</h3>
-                <p class="text-body-secondary mb-0">Add agents, workflows, and company knowledge so the cockpit can turn workspace activity into approvals, alerts, KPIs, and briefings.</p>
-                <div class="dashboard-actions mt-4">
-                    <a class="btn btn-primary" href="@AgentsPath">Hire your first agent</a>
-                    <a class="btn btn-outline-primary" href="@WorkflowsPath">Set up a workflow</a>
-                    <a class="btn btn-outline-secondary" href="@KnowledgePath">Upload company knowledge</a>
-                </div>
-            </article>
-        }
-        else if (dashboard.EmptyStateFlags.NoAgents || dashboard.EmptyStateFlags.NoWorkflows || dashboard.EmptyStateFlags.NoKnowledge)
-        {
-            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+
+            <article class="wizard-card wizard-card--compact cockpit-card dashboard-snapshot-panel" data-testid="operations-snapshot-panel">
                 <div class="cockpit-card__header">
                     <div>
-                        <h3 class="h5 mb-1">Setup guidance</h3>
-                        <p class="text-body-secondary mb-0">Complete the missing setup areas to make cockpit signals more useful.</p>
+                        <h2 class="h5 mb-1">Operations snapshot</h2>
+                        <p class="text-body-secondary mb-0">Actionable operating counts and threshold-based business signals.</p>
+                    </div>
+                    <div class="cockpit-toolbar">
+                        <button class="btn btn-outline-secondary btn-sm" @onclick="RefreshBusinessSignalsAsync" disabled="@IsWidgetLoading("business-signals")">Refresh operations</button>
+                        <a class="btn btn-outline-primary btn-sm"
+                           href="@QueuePath"
+                           @onclick='() => NavigateToAsync(QueuePath, QueuePath, "operations-snapshot", "open-queue", "Open queue")'
+                           @onclick:preventDefault="true">Open queue</a>
                     </div>
                 </div>
-                <div class="cockpit-empty-grid mt-3">
-                    @SetupGuidanceCards()
+                @WidgetStatus("business-signals")
+
+                <div class="cockpit-summary-kpi-grid mt-3">
+                    @foreach (var item in OperationSummaryItems())
+                    {
+                        <article class="cockpit-summary-kpi">
+                            <span class="cockpit-summary-kpi__label">@item.Label</span>
+                            <strong class="cockpit-summary-kpi__value">@item.Value</strong>
+                            <span class="text-body-secondary">@item.Description</span>
+                            <a class="btn btn-sm btn-outline-secondary mt-2 align-self-start"
+                               href="@item.Route"
+                               @onclick='() => NavigateToAsync(item.Route, item.Route, "operations-snapshot", item.ActionKey, item.Label)'
+                               @onclick:preventDefault="true">@item.ActionLabel</a>
+                        </article>
+                    }
+                </div>
+
+                <div class="mt-4">
+                    <BusinessSignalsPanel Signals="VisibleBusinessSignals"
+                                          CompanyId="CompanyId"
+                                          OnActionClick="OnActionClick" />
                 </div>
             </article>
-        }
+        </div>
 
-        <article class="wizard-card wizard-card--compact cockpit-card">
+        <div class="dashboard-two-column-row dashboard-two-column-row--supporting">
+        <article class="wizard-card wizard-card--compact cockpit-card" data-testid="agent-activity-panel">
             <div class="cockpit-card__header">
-                <h3 class="h5 mb-0">Daily briefing</h3>
-                <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<ExecutiveCockpitDailyBriefingViewModel?>("daily-briefing")' disabled="@IsWidgetLoading("daily-briefing")">Refresh</button>
+                <div>
+                    <h2 class="h5 mb-1">Agent activity</h2>
+                    <p class="text-body-secondary mb-0">Recent dashboard-visible activity from agents, workflows, and operating systems.</p>
+                </div>
+                <a class="btn btn-outline-primary btn-sm"
+                   href="@ActivityFeedPath"
+                   @onclick='() => NavigateToAsync(ActivityFeedPath, ActivityFeedPath, "agent-activity", "open-activity-feed", "Activity feed")'
+                   @onclick:preventDefault="true">Open activity feed</a>
             </div>
-            @WidgetStatus("daily-briefing")
-            @if (dashboard.DailyBriefing is null)
+
+            @if (dashboard.RecentActivity.Count == 0)
             {
-                <p class="text-body-secondary mb-0">No daily briefing has been generated yet. Generate a briefing after agents, workflows, or approvals start producing activity.</p>
+                <p class="text-body-secondary mt-3 mb-0">No recent activity has been captured for this dashboard session yet.</p>
             }
             else
             {
-                <strong>@dashboard.DailyBriefing.Title</strong>
-                <div class="text-body-secondary">@dashboard.DailyBriefing.GeneratedUtc.ToLocalTime():g</div>
-                <p class="mt-2">@dashboard.DailyBriefing.Summary</p>
-                <a href="@(dashboard.DailyBriefing.Route ?? BriefingPreferencesPath)">Briefing delivery</a>
-            }
-        </article>
-
-        <article class="wizard-card wizard-card--compact cockpit-card">
-            <div class="cockpit-card__header">
-                <h3 class="h5 mb-0">Pending approvals</h3>
-                <a href="@SafeDrillRoute(dashboard.PendingApprovals.Route, ApprovalsPath)">Open approvals</a>
-                <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<ExecutiveCockpitPendingApprovalsViewModel>("pending-approvals")' disabled="@IsWidgetLoading("pending-approvals")">Refresh</button>
-            </div>
-            @WidgetStatus("pending-approvals")
-            @if (dashboard.EmptyStateFlags.NoPendingApprovals)
-            {
-                <p class="text-body-secondary mb-0">No approvals are waiting. New guarded actions appear here when they need a decision.</p>
-            }
-            else
-            {
-                <p class="text-body-secondary">@dashboard.PendingApprovals.TotalCount pending approval@(dashboard.PendingApprovals.TotalCount == 1 ? string.Empty : "s")</p>
-                <div class="activity-list">
-                    @foreach (var approval in dashboard.PendingApprovals.Items)
+                <div class="activity-list mt-3">
+                    @foreach (var item in dashboard.RecentActivity.OrderByDescending(x => x.OccurredUtc).Take(5))
                     {
-                        <a class="activity-item text-decoration-none text-reset" href="@SafeDrillRoute(approval.Route, dashboard.PendingApprovals.Route)">
-                            <strong>@approval.ApprovalType approval</strong>
-                            <div class="text-body-secondary">@approval.Summary</div>
-                            <small>@approval.CreatedUtc.ToLocalTime():g</small>
-                        </a>
+                        <article class="activity-item">
+                            <div class="d-flex justify-content-between align-items-start gap-3">
+                                <div>
+                                    <strong>@item.Title</strong>
+                                    <div class="text-body-secondary mt-1">@item.Summary</div>
+                                    <small class="text-body-secondary">@item.ActivityType | @item.OccurredUtc.ToLocalTime():g</small>
+                                </div>
+                                <a class="btn btn-sm btn-outline-secondary"
+                                   href="@ResolveRoute(item.Route, ActivityFeedPath)"
+                                    @onclick='() => NavigateToAsync(item.Route, ActivityFeedPath, "agent-activity", NormalizeCssToken(item.ActivityType), item.Title)'
+                                   @onclick:preventDefault="true">Open</a>
+                            </div>
+                        </article>
                     }
                 </div>
             }
         </article>
 
-        <article class="wizard-card wizard-card--compact cockpit-card">
+        <article class="wizard-card wizard-card--compact cockpit-card" data-testid="department-cards-panel">
             <div class="cockpit-card__header">
-                <h3 class="h5 mb-0">Alerts</h3>
-                <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<List<ExecutiveCockpitAlertViewModel>>("alerts")' disabled="@IsWidgetLoading("alerts")">Refresh</button>
+                <div>
+                    <h2 class="h5 mb-1">Department cards</h2>
+                    <p class="text-body-secondary mb-0">Department dashboards remain compact, showing only the most meaningful non-zero signals.</p>
+                </div>
             </div>
-            @WidgetStatus("alerts")
-            @if (dashboard.EmptyStateFlags.NoAlerts)
-            {
-                <p class="text-body-secondary mb-0">No active alerts. Blocked tasks and workflow exceptions will surface here.</p>
-            }
-            else
-            {
-                <div class="activity-list">
-                    @foreach (var alert in dashboard.Alerts)
-                    {
-                        @if (HasDrillRoute(alert.Route))
+            <div class="cockpit-kpi-grid mt-3">
+                @foreach (var departmentSection in VisibleDepartmentSections)
+                {
+                    var signals = departmentSection.VisibleSignals;
+                    var avatarUrl = ResolveDepartmentRepresentativeAvatarUrl(departmentSection);
+                    <section class="summary-pill department-section-card" aria-label="@departmentSection.DisplayName">
+                        <div class="department-section-card__header">
+                            <div class="department-section-card__leader">
+                                @if (!string.IsNullOrWhiteSpace(avatarUrl))
+                                {
+                                    <div class="department-section-card__avatar-frame">
+                                        <img class="department-section-card__avatar"
+                                             src="@avatarUrl"
+                                             alt="@GetDepartmentRepresentativeAvatarAlt(departmentSection)" />
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="department-section-card__avatar-frame department-section-card__avatar-frame--placeholder"
+                                         aria-hidden="true">
+                                        @GetDepartmentRepresentativeInitials(departmentSection)
+                                    </div>
+                                }
+
+                                <div class="department-section-card__leader-copy">
+                                    <span class="dashboard-kicker">@departmentSection.DisplayName</span>
+                                    <strong>@(departmentSection.Representative?.RoleName ?? departmentSection.DisplayName)</strong>
+                                    @if (!string.IsNullOrWhiteSpace(departmentSection.Representative?.DisplayName))
+                                    {
+                                        <span class="text-body-secondary">@departmentSection.Representative.DisplayName</span>
+                                    }
+                                </div>
+                            </div>
+                            <a class="department-section-card__link"
+                               href="@ResolveRoute(departmentSection.Navigation.Route, AgentsPath)"
+                               @onclick='() => NavigateToAsync(departmentSection.Navigation.Route, AgentsPath, "department-card", departmentSection.DepartmentKey, departmentSection.DisplayName)'
+                               @onclick:preventDefault="true">@departmentSection.Navigation.Label</a>
+                        </div>
+
+                        @if (signals.Count > 0)
                         {
-                            <a class="activity-item text-decoration-none text-reset" href="@alert.Route" aria-label="@($"Open {alert.Title}")">
-                                @AlertContent(alert)
-                            </a>
+                            <dl class="cockpit-kpi-list department-section-card__metrics mb-0 mt-3">
+                                @foreach (var signal in signals)
+                                {
+                                    <div><dt>@signal.Label</dt><dd>@signal.Value</dd></div>
+                                }
+                            </dl>
                         }
                         else
                         {
-                            <div class="activity-item">
-                                @AlertContent(alert)
+                            <div class="text-body-secondary mt-3">
+                                <strong class="d-block">@departmentSection.EmptyState.Title</strong>
+                                <span>@departmentSection.EmptyState.Message</span>
                             </div>
                         }
-                    }
-                </div>
-            }
+                    </section>
+                }
+            </div>
         </article>
-
-        @if (!IsInitialSetupEmpty)
-        {
-            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
-                <div class="cockpit-card__header">
-                    <div>
-                        <h3 class="h5 mb-1">Department KPIs</h3>
-                        <p class="text-body-secondary mb-0">Compare the selected range with the prior equivalent period.</p>
-                    </div>
-                </div>
-
-                <div class="row g-3 mt-1 align-items-end">
-                    <div class="col-12 col-md-4">
-                        <label class="form-label" for="kpi-department-filter">Department</label>
-                        <select id="kpi-department-filter" class="form-select" @bind="selectedKpiDepartment" @bind:after="OnKpiFilterChangedAsync" disabled="@isKpiLoading">
-                            <option value="">All departments</option>
-                            @foreach (var department in AvailableKpiDepartments)
-                            {
-                                <option value="@department">@department</option>
-                            }
-                        </select>
-                    </div>
-                    <div class="col-12 col-md-3">
-                        <label class="form-label" for="kpi-range-filter">Time range</label>
-                        <select id="kpi-range-filter" class="form-select" @bind="selectedKpiRange" @bind:after="OnKpiFilterChangedAsync" disabled="@isKpiLoading">
-                            <option value="7">Last 7 days</option>
-                            <option value="14">Last 14 days</option>
-                            <option value="30">Last 30 days</option>
-                            <option value="90">Last 90 days</option>
-                        </select>
-                    </div>
-                    <div class="col-12 col-md-auto text-body-secondary">
-                        <span>@(isKpiLoading ? "Updating filters..." : "Filters update automatically.")</span>
-                    </div>
-                </div>
-                @WidgetStatus("kpis")
-
-                @if (isKpiLoading)
-                {
-                    <p class="text-body-secondary mt-3 mb-0">Refreshing KPI signals...</p>
-                }
-                else if (!string.IsNullOrWhiteSpace(kpiErrorMessage))
-                {
-                    <div class="alert alert-warning mt-3 mb-0">@kpiErrorMessage</div>
-                }
-                else if (kpiDashboard is null || kpiDashboard.Kpis.Count == 0)
-                {
-                    <p class="text-body-secondary mt-3 mb-0">No KPI data is available for these filters.</p>
-                }
-                else
-                {
-                    <div class="cockpit-kpi-grid mt-3">
-                        @foreach (var kpi in kpiDashboard.Kpis)
-                        {
-                            <KpiTile Item="kpi" FallbackRoute="TasksPath" />
-                        }
-                    </div>
-                }
-
-                <div class="mt-4">
-                    <h4 class="h6">Anomalies</h4>
-                    @if (kpiDashboard is null || kpiDashboard.Anomalies.Count == 0)
-                    {
-                        <p class="text-body-secondary mb-0">No anomalies detected for this range.</p>
-                    }
-                    <AnomalyList Items="kpiDashboard?.Anomalies ?? []" FallbackRoute="DashboardPath" />
-                </div>
-            </article>
-        }
-
-        @if (dashboard.DepartmentSections.Count > 0)
-        {
-            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
-                <div class="cockpit-card__header">
-                    <div>
-                        <h3 class="h5 mb-1">Department sections</h3>
-                        <p class="text-body-secondary mb-0">Department dashboards are configured by the backend for this company and role.</p>
-                    </div>
-                </div>
-                <div class="cockpit-kpi-grid">
-                    @foreach (var section in dashboard.DepartmentSections)
-                    {
-                        <section class="summary-pill" aria-label="@(section.DisplayName)">
-                            <div class="cockpit-card__header">
-                                <strong>@(section.DisplayName)</strong>
-                                <a href="@SafeDrillRoute(section.Navigation.Route, AgentsPath)">@(section.Navigation.Label)</a>
-                            </div>
-                            <dl class="cockpit-kpi-list mb-0 mt-3">
-                                @foreach (var count in SectionSummaryCounts(section))
-                                {
-                                    <div><dt>@FormatSummaryLabel(count.Key)</dt><dd>@count.Value</dd></div>
-                                }
-                            </dl>
-                            @if (section.IsEmpty)
-                            {
-                                <div class="text-body-secondary mt-3">
-                                    <strong class="d-block">@(section.EmptyState.Title)</strong>
-                                    <span>@(section.EmptyState.Message)</span>
-                                </div>
-                            }
-                            @if (section.Widgets.Count > 0)
-                            {
-                                <div class="cockpit-empty-grid mt-3">
-                                    @foreach (var widget in section.Widgets)
-                                    {
-                                        <a class="agent-analytics-placeholder-card text-decoration-none text-reset" href="@SafeDrillRoute(widget.Navigation.Route, section.Navigation.Route)">
-                                            <strong>@widget.Title</strong>
-                                            <div class="h4 mt-2 mb-1">@widget.SummaryValue</div>
-                                            <p class="text-body-secondary mb-0">@(widget.IsEmpty ? widget.EmptyState.Message : widget.Navigation.Label)</p>
-                                        </a>
-                                    }
-                                </div>
-                            }
-                        </section>
-                    }
-                </div>
-            </article>
-        }
+        </div>
     }
 </section>
 
@@ -308,60 +289,112 @@
     [Parameter]
     public string? CompanyName { get; set; }
 
+    [Parameter]
+    public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
+
     private bool isLoading = true;
     private string? errorMessage;
     private ExecutiveCockpitDashboardViewModel? dashboard;
-    private ExecutiveCockpitKpiDashboardViewModel? kpiDashboard;
-    private bool isKpiLoading;
-    private string? kpiErrorMessage;
-    private string? selectedKpiDepartment;
-    private string selectedKpiRange = "7";
+    private DashboardFinanceSnapshotViewModel? financeSnapshot;
     private readonly HashSet<string> loadingWidgets = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> widgetErrors = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> widgetSuccessUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> pendingWidgetRenderStartUtc = new(StringComparer.OrdinalIgnoreCase);
+    private string? financeActionStatusMessage;
+    private string? financeActionErrorMessage;
+    private string? activeFinanceActionKey;
     private static readonly Meter WebMeter = new("VirtualCompany.ExecutiveCockpit.Web");
     private static readonly Histogram<double> WidgetFetchTiming = WebMeter.CreateHistogram<double>("executive_cockpit_widget_fetch_ms", "ms");
     private static readonly Histogram<double> WidgetRenderTiming = WebMeter.CreateHistogram<double>("executive_cockpit_widget_render_ms", "ms");
 
-    private string DashboardPath => $"/dashboard?companyId={CompanyId}";
-    private string AgentsPath => $"/agents?companyId={CompanyId}";
-    private string TasksPath => $"/tasks?companyId={CompanyId}";
-    private string WorkflowsPath => $"/workflows?companyId={CompanyId}";
-    private string ApprovalsPath => $"/approvals?companyId={CompanyId}";
-    private string KnowledgePath => "/onboarding";
-    private string BriefingPreferencesPath => $"/briefing-preferences?companyId={CompanyId}";
+    private string DashboardPath => DashboardRoutes.EnsureCompanyContext("/dashboard", CompanyId, "/dashboard");
+    private string AgentsPath => DashboardRoutes.EnsureCompanyContext("/agents", CompanyId, "/agents");
+    private string TasksPath => DashboardRoutes.BuildTasksPath(CompanyId, filter: "today");
+    private string WorkflowsPath => DashboardRoutes.EnsureCompanyContext("/workflows", CompanyId, "/workflows");
+    private string ApprovalsPath => DashboardRoutes.BuildApprovalsPath(CompanyId);
+    private string QueuePath => DashboardRoutes.EnsureCompanyContext(QueueRoutes.BuildPath(CompanyId), CompanyId, QueueRoutes.Home);
+    private string ActivityFeedPath => DashboardRoutes.EnsureCompanyContext("/activity-feed", CompanyId, "/activity-feed");
     private string ResolvedCompanyName => !string.IsNullOrWhiteSpace(CompanyName)
         ? CompanyName!
         : dashboard?.CompanyName ?? "Workspace dashboard";
-    private bool IsInitialSetupEmpty =>
-        dashboard?.SetupState.IsInitialSetupEmpty == true ||
-        dashboard?.EmptyStateFlags is { NoAgents: true, NoWorkflows: true, NoKnowledge: true };
-    private IReadOnlyList<string> AvailableKpiDepartments =>
-        kpiDashboard?.Departments.Count > 0 ? kpiDashboard.Departments : dashboard?.DepartmentKpis.Select(x => x.Department).ToList() ?? [];
+    private bool IsAnyWidgetLoading => loadingWidgets.Count > 0;
+    private IReadOnlyList<BusinessSignalViewModel> VisibleBusinessSignals =>
+        dashboard?.BusinessSignals
+            .Take(3)
+            .ToList()
+        ?? [];
+    private IReadOnlyList<DepartmentDashboardSectionViewModel> VisibleDepartmentSections =>
+        dashboard?.DepartmentSections
+            .Where(section => section.IsVisible)
+            .OrderBy(section => section.DisplayOrder)
+            .ToList()
+        ?? [];
+
+    private static string GetDepartmentRepresentativeInitials(DepartmentDashboardSectionViewModel section)
+    {
+        var source = !string.IsNullOrWhiteSpace(section.Representative?.DisplayName)
+            ? section.Representative.DisplayName
+            : section.DisplayName;
+        var parts = source
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Take(2)
+            .Select(part => char.ToUpperInvariant(part[0]));
+
+        var initials = new string(parts.ToArray());
+        return string.IsNullOrWhiteSpace(initials) ? "?" : initials;
+    }
+
+    private static string GetDepartmentRepresentativeAvatarAlt(DepartmentDashboardSectionViewModel section)
+    {
+        var displayName = !string.IsNullOrWhiteSpace(section.Representative?.DisplayName)
+            ? section.Representative.DisplayName
+            : section.DisplayName;
+        return $"{displayName} avatar";
+    }
+
+    private static readonly IReadOnlyDictionary<string, string> LegacyDepartmentAvatarMap =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["/avatars/agents/finance-manager.png"] = "/images/laura.png",
+            ["/avatars/agents/laura-finance.png"] = "/images/laura.png",
+            ["/avatars/agents/sales-manager.png"] = "/images/paul.png",
+            ["/avatars/agents/operations-manager.png"] = "/images/philip.png"
+        };
+
+    private static readonly IReadOnlyDictionary<string, string> DepartmentAvatarFallbackMap =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["finance"] = "/images/laura.png",
+            ["sales"] = "/images/paul.png",
+            ["operations"] = "/images/philip.png"
+        };
+
+    private static string? ResolveDepartmentRepresentativeAvatarUrl(DepartmentDashboardSectionViewModel section)
+    {
+        var avatarUrl = section.Representative?.AvatarUrl?.Trim();
+        if (!string.IsNullOrWhiteSpace(avatarUrl))
+        {
+            if (LegacyDepartmentAvatarMap.TryGetValue(avatarUrl, out var resolvedLegacyAvatarUrl))
+            {
+                return resolvedLegacyAvatarUrl;
+            }
+
+            if (avatarUrl.StartsWith("/images/", StringComparison.OrdinalIgnoreCase) ||
+                avatarUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                avatarUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                return avatarUrl;
+            }
+        }
+
+        return DepartmentAvatarFallbackMap.TryGetValue(section.DepartmentKey, out var fallbackAvatarUrl)
+            ? fallbackAvatarUrl
+            : null;
+    }
 
     protected override async Task OnParametersSetAsync()
     {
-        isLoading = true;
-        errorMessage = null;
-        dashboard = null;
-        kpiDashboard = null;
-        widgetErrors.Clear();
-        widgetSuccessUtc.Clear();
-
-        try
-        {
-            dashboard = await ApiClient.GetAsync(CompanyId);
-            await ReloadKpisAsync();
-        }
-        catch (OnboardingApiException ex)
-        {
-            errorMessage = ex.Message;
-        }
-        finally
-        {
-            isLoading = false;
-        }
+        await LoadAsync();
     }
 
     protected override Task OnAfterRenderAsync(bool firstRender)
@@ -377,76 +410,41 @@
         return Task.CompletedTask;
     }
 
+    private IReadOnlyList<OperationSummaryItem> OperationSummaryItems()
+    {
+        if (dashboard is null)
+        {
+            return [];
+        }
+
+        return
+        [
+            new("Pending approvals", dashboard.PendingApprovals.TotalCount, "Approvals still waiting on a decision.", ApprovalsPath, "open-approvals", "Review approvals"),
+            new("Recent alerts", dashboard.Alerts.Count, "Alert volume currently visible to this role.", dashboard.Alerts.FirstOrDefault()?.Route is string alertRoute && !string.IsNullOrWhiteSpace(alertRoute) ? ResolveRoute(alertRoute, ActivityFeedPath) : ActivityFeedPath, "open-alerts", "Review alerts"),
+            new("Active agents", dashboard.SetupState.AgentCount, "Agents configured for this company.", AgentsPath, "open-agents", "Open agents")
+        ];
+    }
+
     private static bool HasDrillRoute(string? route) =>
         !string.IsNullOrWhiteSpace(route) && route.StartsWith("/", StringComparison.Ordinal);
 
-    private static string SafeDrillRoute(string? route, string fallbackRoute) =>
-        HasDrillRoute(route) ? route! : fallbackRoute;
+    private string ResolveRoute(string? route, string fallbackRoute) =>
+        DashboardRoutes.EnsureCompanyContext(route, CompanyId, fallbackRoute);
 
-    private static string SummaryKpiCardClass(ExecutiveCockpitSummaryKpiViewModel kpi) =>
-        $"cockpit-summary-kpi cockpit-summary-kpi--{NormalizeCssToken(kpi.StatusHint)}";
-
-    private static string SummaryKpiTrendClass(ExecutiveCockpitSummaryKpiViewModel kpi) =>
-        $"cockpit-summary-kpi__trend cockpit-summary-kpi__trend--{NormalizeCssToken(kpi.TrendDirection)}";
-
-    private static string SummaryKpiTrendClass(string trendDirection) =>
-        $"cockpit-summary-kpi__trend cockpit-summary-kpi__trend--{NormalizeCssToken(trendDirection)}";
+    private async Task NavigateToAsync(string? route, string fallbackRoute, string area, string actionKey, string? label = null)
+    {
+        var resolvedRoute = ResolveRoute(route, fallbackRoute);
+        if (OnActionClick.HasDelegate)
+        {
+            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext(area, actionKey, resolvedRoute, Label: label));
+        }
+        Navigation.NavigateTo(resolvedRoute);
+    }
 
     private static string NormalizeCssToken(string? value) =>
         string.IsNullOrWhiteSpace(value) ? "neutral" : value.Trim().ToLowerInvariant().Replace("_", "-");
 
-    private static IEnumerable<KeyValuePair<string, int>> SectionSummaryCounts(DepartmentDashboardSectionViewModel section) =>
-        section.SummaryCounts
-            .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase);
-
-    private static string FormatSummaryLabel(string key) =>
-        string.Join(
-            " ",
-            key.Split('_', StringSplitOptions.RemoveEmptyEntries)
-                .Select(word => word.Length == 0 ? word : char.ToUpperInvariant(word[0]) + word[1..]));
-
-    private static string TrendGlyph(string? direction) =>
-        string.Equals(direction, "up", StringComparison.OrdinalIgnoreCase) ? "Up" :
-        string.Equals(direction, "down", StringComparison.OrdinalIgnoreCase) ? "Down" :
-        string.Equals(direction, "flat", StringComparison.OrdinalIgnoreCase) ? "Flat" :
-        "Trend";
-
-    private async Task ReloadKpisAsync()
-        => await ReloadKpisCoreAsync();
-
-    private async Task ReloadKpisCoreAsync()
-    {
-        isKpiLoading = true;
-        kpiErrorMessage = null;
-
-        try
-        {
-            var days = int.TryParse(selectedKpiRange, out var parsedDays) ? parsedDays : 7;
-            var endUtc = DateTime.UtcNow;
-            var startUtc = endUtc.AddDays(-Math.Clamp(days, 1, 365));
-            kpiDashboard = await ApiClient.GetKpisAsync(
-                CompanyId,
-                selectedKpiDepartment,
-                startUtc,
-                endUtc);
-        }
-        catch (OnboardingApiException ex)
-        {
-            kpiErrorMessage = ex.Message;
-        }
-        finally
-        {
-            isKpiLoading = false;
-        }
-    }
-
-    private async Task OnKpiFilterChangedAsync()
-    {
-        await ReloadKpisCoreAsync();
-    }
-
     private bool IsWidgetLoading(string widgetKey) => loadingWidgets.Contains(widgetKey);
-    private bool IsAnyWidgetLoading => loadingWidgets.Count > 0 || isKpiLoading;
 
     private RenderFragment WidgetStatus(string widgetKey) => builder =>
     {
@@ -478,19 +476,68 @@
         }
     };
 
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        dashboard = null;
+        financeSnapshot = null;
+        widgetErrors.Clear();
+        widgetSuccessUtc.Clear();
+
+        try
+        {
+            var dashboardTask = ApiClient.GetAsync(CompanyId);
+            var financeSnapshotTask = ApiClient.GetFinanceSnapshotAsync(CompanyId);
+            dashboard = await dashboardTask;
+            financeSnapshot = await financeSnapshotTask;
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
     private async Task RefreshDashboardWidgetsAsync()
     {
-        if (dashboard is null)
-        {
-            return;
-        }
+        await LoadAsync();
+    }
 
-        await Task.WhenAll(
-            RefreshWidgetAsync<List<ExecutiveCockpitSummaryKpiViewModel>>("summary-kpis"),
-            RefreshWidgetAsync<ExecutiveCockpitDailyBriefingViewModel?>("daily-briefing"),
-            RefreshWidgetAsync<ExecutiveCockpitPendingApprovalsViewModel>("pending-approvals"),
-            RefreshWidgetAsync<List<ExecutiveCockpitAlertViewModel>>("alerts"),
-            ReloadKpisCoreAsync());
+    private Task RefreshBusinessSignalsAsync() =>
+        RefreshWidgetAsync<List<BusinessSignalViewModel>>("business-signals");
+
+    private Task RefreshFinanceWidgetAsync() =>
+        RefreshWidgetAsync<ExecutiveCockpitFinanceViewModel>("finance");
+
+    private async Task RefreshFinanceSnapshotAsync()
+    {
+        const string widgetKey = "finance-snapshot";
+        loadingWidgets.Add(widgetKey);
+        widgetErrors.Remove(widgetKey);
+        widgetSuccessUtc.Remove(widgetKey);
+        var stopwatch = Stopwatch.StartNew();
+
+        try
+        {
+            financeSnapshot = await ApiClient.GetFinanceSnapshotAsync(CompanyId);
+            WidgetFetchTiming.Record(stopwatch.Elapsed.TotalMilliseconds, WidgetTags(widgetKey, "success"));
+            pendingWidgetRenderStartUtc[widgetKey] = DateTime.UtcNow;
+            widgetSuccessUtc[widgetKey] = financeSnapshot?.AsOfUtc ?? DateTime.UtcNow;
+        }
+        catch (OnboardingApiException ex)
+        {
+            widgetErrors[widgetKey] = ex.Message;
+            WidgetFetchTiming.Record(stopwatch.Elapsed.TotalMilliseconds, WidgetTags(widgetKey, "failure"));
+            Logger.LogWarning(ex, "Executive cockpit widget {WidgetKey} refresh failed.", widgetKey);
+        }
+        finally
+        {
+            loadingWidgets.Remove(widgetKey);
+        }
     }
 
     private async Task RefreshWidgetAsync<TPayload>(string widgetKey)
@@ -538,19 +585,11 @@
 
         switch (widgetKey)
         {
-            case "summary-kpis" when payload is List<ExecutiveCockpitSummaryKpiViewModel> summaryKpis:
-                dashboard.SummaryKpis = summaryKpis;
+            case "business-signals" when payload is List<BusinessSignalViewModel> businessSignals:
+                dashboard.BusinessSignals = businessSignals;
                 break;
-            case "daily-briefing" when payload is ExecutiveCockpitDailyBriefingViewModel dailyBriefing:
-                dashboard.DailyBriefing = dailyBriefing;
-                break;
-            case "pending-approvals" when payload is ExecutiveCockpitPendingApprovalsViewModel approvals:
-                dashboard.PendingApprovals = approvals;
-                dashboard.EmptyStateFlags.NoPendingApprovals = approvals.TotalCount == 0;
-                break;
-            case "alerts" when payload is List<ExecutiveCockpitAlertViewModel> alerts:
-                dashboard.Alerts = alerts;
-                dashboard.EmptyStateFlags.NoAlerts = alerts.Count == 0;
+            case "finance" when payload is ExecutiveCockpitFinanceViewModel finance:
+                dashboard.Finance = finance;
                 break;
         }
     }
@@ -598,63 +637,85 @@
         builder.CloseElement();
     };
 
-    private RenderFragment SetupGuidanceCards() => builder =>
+    private bool IsFinanceActionRunning(string actionKey) =>
+        string.Equals(activeFinanceActionKey, actionKey, StringComparison.OrdinalIgnoreCase);
+
+    private IEnumerable<ExecutiveCockpitFinanceActionViewModel> FinanceActions(params string[] keys)
     {
-        if (dashboard is null)
+        if (dashboard?.Finance is null || keys.Length == 0)
+        {
+            return [];
+        }
+
+        var keySet = new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase);
+        return dashboard.Finance.AvailableActions.Where(action => keySet.Contains(action.Key));
+    }
+
+    private async Task ExecuteFinanceActionAsync(ExecutiveCockpitFinanceActionViewModel action)
+    {
+        if (CompanyId == Guid.Empty || !action.IsEnabled)
         {
             return;
         }
 
-        var sequence = 0;
-        if (dashboard.EmptyStateFlags.NoAgents)
+        if (OnActionClick.HasDelegate)
         {
-            builder.OpenElement(sequence++, "a");
-            builder.AddAttribute(sequence++, "class", "agent-analytics-placeholder-card text-decoration-none text-reset");
-            builder.AddAttribute(sequence++, "href", AgentsPath);
-            builder.OpenElement(sequence++, "strong");
-            builder.AddContent(sequence++, "Hire agents");
-            builder.CloseElement();
-            builder.OpenElement(sequence++, "p");
-            builder.AddAttribute(sequence++, "class", "text-body-secondary mb-0");
-            builder.AddContent(sequence++, "Add the first agents so tasks, approvals, and department KPIs have owners.");
-            builder.CloseElement();
-            builder.CloseElement();
+            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext("finance", action.Key, ResolveRoute(action.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)), Label: action.Label));
         }
+        activeFinanceActionKey = action.Key;
+        financeActionStatusMessage = null;
+        financeActionErrorMessage = null;
 
-        if (dashboard.EmptyStateFlags.NoWorkflows)
+        try
         {
-            builder.OpenElement(sequence++, "a");
-            builder.AddAttribute(sequence++, "class", "agent-analytics-placeholder-card text-decoration-none text-reset");
-            builder.AddAttribute(sequence++, "href", WorkflowsPath);
-            builder.OpenElement(sequence++, "strong");
-            builder.AddContent(sequence++, "Define workflows");
-            builder.CloseElement();
-            builder.OpenElement(sequence++, "p");
-            builder.AddAttribute(sequence++, "class", "text-body-secondary mb-0");
-            builder.AddContent(sequence++, "Create or enable workflows so company processes can be tracked here.");
-            builder.CloseElement();
-            builder.CloseElement();
-        }
+            if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
+            {
+                if (HasDrillRoute(action.Route))
+                {
+                    Navigation.NavigateTo(ResolveRoute(action.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)));
+                }
+                return;
+            }
 
-        if (dashboard.EmptyStateFlags.NoKnowledge)
-        {
-            builder.OpenElement(sequence++, "a");
-            builder.AddAttribute(sequence++, "class", "agent-analytics-placeholder-card text-decoration-none text-reset");
-            builder.AddAttribute(sequence++, "href", KnowledgePath);
-            builder.OpenElement(sequence++, "strong");
-            builder.AddContent(sequence++, "Add knowledge");
-            builder.CloseElement();
-            builder.OpenElement(sequence++, "p");
-            builder.AddAttribute(sequence++, "class", "text-body-secondary mb-0");
-            builder.AddContent(sequence++, "Upload company documents so agents can ground decisions in current workspace context.");
-            builder.CloseElement();
-            builder.CloseElement();
+            switch (action.Key)
+            {
+                case "review_invoice" when action.TargetId is Guid invoiceId:
+                    await FinanceApiClient.StartInvoiceReviewWorkflowAsync(CompanyId, invoiceId);
+                    financeActionStatusMessage = "Invoice review started.";
+                    break;
+                case "inspect_anomaly" when action.TargetId is Guid transactionId:
+                    await FinanceApiClient.EvaluateTransactionAnomalyAsync(CompanyId, transactionId);
+                    financeActionStatusMessage = "Anomaly inspection submitted.";
+                    break;
+                case "view_cash_position":
+                    await FinanceApiClient.EvaluateCashPositionAsync(CompanyId);
+                    financeActionStatusMessage = "Cash position refreshed.";
+                    break;
+                case "open_finance_summary":
+                    break;
+            }
+
+            await RefreshFinanceWidgetAsync();
+            if (HasDrillRoute(action.Route))
+            {
+                Navigation.NavigateTo(ResolveRoute(action.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)));
+            }
         }
-    };
+        catch (FinanceApiException ex)
+        {
+            financeActionErrorMessage = ex.Message;
+        }
+        finally
+        {
+            activeFinanceActionKey = null;
+        }
+    }
 
     private static KeyValuePair<string, object?>[] WidgetTags(string widgetKey, string status) =>
     [
         new("widget", NormalizeCssToken(widgetKey)),
         new("status", status)
     ];
+
+    private sealed record OperationSummaryItem(string Label, int Value, string Description, string Route, string ActionKey, string ActionLabel);
 }

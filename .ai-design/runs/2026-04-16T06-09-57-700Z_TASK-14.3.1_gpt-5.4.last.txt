@@ -1,0 +1,889 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+index 0f7c3b2..c9df3b1 100644
+--- a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+@@ -252,6 +252,7 @@ public static class PolicyDecisionReasonCodes
+     public const string ToolNotConfigured = "tool_not_configured";
+     public const string ToolExplicitlyDenied = "tool_explicitly_denied";
+     public const string ToolNotPermitted = "tool_not_permitted";
++    public const string ToolActionTypeMismatch = "tool_action_type_mismatch";
+     public const string ToolActionNotPermitted = "tool_action_not_permitted";
+     public const string TenantScopeViolation = "tenant_scope_violation";
+     public const string DataScopeViolation = "data_scope_violation";
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+index 1f43d52..d5272a8 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -114,6 +114,18 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+         UpdatedUtc = CompletedUtc.Value;
+     }
+ 
++    public void MarkRejected(IDictionary<string, JsonNode?>? policyDecision, IDictionary<string, JsonNode?>? resultPayload = null, DateTime? completedAtUtc = null, string? denialReason = null)
++    {
++        Status = ToolExecutionStatus.Rejected;
++        PolicyDecision = CloneNodes(policyDecision);
++        ResultPayload = CloneNodes(resultPayload);
++        DenialReason = NormalizeOptional(denialReason, nameof(denialReason), DenialReasonMaxLength);
++        ApprovalRequestId = null;
++        CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
++        ExecutedUtc = null;
++        UpdatedUtc = CompletedUtc.Value;
++    }
++
+     public void MarkAwaitingApproval(
+         Guid approvalRequestId,
+         IDictionary<string, JsonNode?>? policyDecision,
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+index 8d17a2c..3e2a2af 100644
+--- a/src/VirtualCompany.Domain/Enums/AgentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -329,7 +329,8 @@ public static class ToolExecutionStatusValues
+         [ToolExecutionStatus.Denied] = "denied",
+         [ToolExecutionStatus.AwaitingApproval] = "awaiting_approval",
+         [ToolExecutionStatus.Executed] = "executed",
+-        [ToolExecutionStatus.Failed] = "failed"
++        [ToolExecutionStatus.Failed] = "failed",
++        [ToolExecutionStatus.Rejected] = "rejected"
+     };
+ 
+     private static readonly IReadOnlyDictionary<string, ToolExecutionStatus> ReverseValues =
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+index 3e2a2af..c61ac94 100644
+--- a/src/VirtualCompany.Domain/Enums/AgentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -18,7 +18,8 @@ public enum ToolExecutionStatus
+     Denied = 2,
+     AwaitingApproval = 3,
+     Executed = 4,
+-    Failed = 5
++    Failed = 5,
++    Rejected = 6
+ }
+ 
+ public enum AgentSeniority
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 3b9b1f8..b82f0a1 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -291,7 +291,12 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             var attempt = await _dbContext.ToolExecutionAttempts.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
+             var previousStatus = attempt.Status.ToStorageValue();
+             if (!approval.CanExecuteGuardedAction)
+             {
+-                attempt.MarkDenied(BuildBlockedApprovalPolicyDecision(approval));
++                var blockedDecision = BuildBlockedApprovalPolicyDecision(approval);
++                var resultPayload = BuildBlockedApprovalResultPayload(approval, attempt);
++                if (approval.Status == ApprovalRequestStatus.Rejected)
++                {
++                    attempt.MarkRejected(blockedDecision, resultPayload, denialReason: PolicyDecisionReasonCodes.ApprovalRejected);
++                    return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
++                }
++
++                attempt.MarkDenied(blockedDecision, resultPayload, denialReason: approval.ExecutionBlockReasonCode);
+                 return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+             }
+ 
+@@ -802,6 +807,28 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             CreateAuditContext(approval));
+     }
+ 
++    private static Dictionary<string, JsonNode?> BuildBlockedApprovalResultPayload(ApprovalRequest approval, ToolExecutionAttempt attempt)
++    {
++        var reasonCode = approval.ExecutionBlockReasonCode ?? PolicyDecisionReasonCodes.ApprovalCancelled;
++        var status = approval.Status == ApprovalRequestStatus.Rejected
++            ? ToolExecutionStatus.Rejected.ToStorageValue()
++            : ToolExecutionStatus.Denied.ToStorageValue();
++
++        return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create(ToolExecutionResult.SchemaVersion),
++            ["success"] = JsonValue.Create(false),
++            ["status"] = JsonValue.Create(status),
++            ["toolName"] = JsonValue.Create(attempt.ToolName),
++            ["actionType"] = JsonValue.Create(attempt.ActionType.ToStorageValue()),
++            ["errorCode"] = JsonValue.Create(reasonCode),
++            ["errorMessage"] = JsonValue.Create(approval.DecisionSummary ?? "The approval request did not authorize execution."),
++            ["approvalRequestId"] = JsonValue.Create(approval.Id),
++            ["executionId"] = JsonValue.Create(attempt.Id),
++            ["taskId"] = attempt.TaskId.HasValue ? JsonValue.Create(attempt.TaskId.Value) : null
++        };
++    }
++
+     private static ToolExecutionDecisionDto BuildApprovedApprovalPolicyDecision(ApprovalRequest approval)
+     {
+         var metadata = CloneNodes(approval.PolicyDecision);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs b/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
+index 69a2cae..b48cc3d 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
+@@ -17,6 +17,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+     private readonly IApprovalRequestService _approvalRequestService;
+     private readonly ICompanyKnowledgeSearchService _knowledgeSearchService;
+     private readonly IFinanceReadService _financeReadService;
++    private readonly IFinanceCommandService _financeCommandService;
+ 
+     public InternalCompanyToolContract(
+         ICompanyTaskQueryService taskQueryService,
+@@ -24,7 +25,8 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+         IApprovalRequestService approvalRequestService,
+         ICompanyKnowledgeSearchService knowledgeSearchService,
+-        IFinanceReadService financeReadService)
++        IFinanceReadService financeReadService,
++        IFinanceCommandService financeCommandService)
+     {
+         _taskQueryService = taskQueryService;
+         _taskCommandService = taskCommandService;
+@@ -32,6 +34,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+         _approvalRequestService = approvalRequestService;
+         _knowledgeSearchService = knowledgeSearchService;
+         _financeReadService = financeReadService;
++        _financeCommandService = financeCommandService;
+     }
+ 
+     public async Task<InternalToolExecutionResponse> ExecuteAsync(
+@@ -59,6 +62,10 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+                 "list_uncategorized_transactions" => await ExecuteListUncategorizedTransactionsAsync(request, cancellationToken),
+                 "list_invoices_awaiting_approval" => await ExecuteListInvoicesAwaitingApprovalAsync(request, cancellationToken),
+                 "get_profit_and_loss_summary" => await ExecuteGetProfitAndLossSummaryAsync(request, cancellationToken),
++                "recommend_transaction_category" => ExecuteRecommendTransactionCategory(request),
++                "recommend_invoice_approval_decision" => ExecuteRecommendInvoiceApprovalDecision(request),
++                "categorize_transaction" => await ExecuteCategorizeTransactionAsync(request, cancellationToken),
++                "approve_invoice" => await ExecuteApproveInvoiceAsync(request, cancellationToken),
+                 _ => Failed("unsupported_internal_tool", "The requested internal tool is not available.")
+             };
+         }
+@@ -361,6 +368,96 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             Metadata(request, "finance_read_service"));
+     }
+ 
++    private static InternalToolExecutionResponse ExecuteRecommendTransactionCategory(InternalToolExecutionRequest request)
++    {
++        if (!EnsureAction(request, ToolActionType.Recommend, out var actionFailure))
++        {
++            return actionFailure;
++        }
++
++        var transactionId = ReadGuid(request.Payload, "transactionId");
++        if (!transactionId.HasValue)
++        {
++            return Failed("transaction_id_required", "A transaction id is required to recommend a category.");
++        }
++
++        var recommendedCategory = ReadString(request.Payload, "candidateCategory") ?? "review_required";
++        return InternalToolExecutionResponse.Succeeded(
++            "Transaction category recommendation was prepared.",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["recommendation"] = new JsonObject
++                {
++                    ["transactionId"] = JsonValue.Create(transactionId.Value),
++                    ["recommendedCategory"] = JsonValue.Create(recommendedCategory),
++                    ["confidence"] = JsonValue.Create(0.75m)
++                }
++            },
++            Metadata(request, "finance_recommendation_service"));
++    }
++
++    private static InternalToolExecutionResponse ExecuteRecommendInvoiceApprovalDecision(InternalToolExecutionRequest request)
++    {
++        if (!EnsureAction(request, ToolActionType.Recommend, out var actionFailure))
++        {
++            return actionFailure;
++        }
++
++        var invoiceId = ReadGuid(request.Payload, "invoiceId");
++        if (!invoiceId.HasValue)
++        {
++            return Failed("invoice_id_required", "An invoice id is required to recommend an approval decision.");
++        }
++
++        var recommendedStatus = ReadString(request.Payload, "candidateStatus") ?? "approved";
++        return InternalToolExecutionResponse.Succeeded(
++            "Invoice approval recommendation was prepared.",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["recommendation"] = new JsonObject
++                {
++                    ["invoiceId"] = JsonValue.Create(invoiceId.Value),
++                    ["recommendedStatus"] = JsonValue.Create(recommendedStatus),
++                    ["confidence"] = JsonValue.Create(0.75m)
++                }
++            },
++            Metadata(request, "finance_recommendation_service"));
++    }
++
++    private async Task<InternalToolExecutionResponse> ExecuteCategorizeTransactionAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (!EnsureAction(request, ToolActionType.Execute, out var actionFailure))
++        {
++            return actionFailure;
++        }
++
++        var transactionId = ReadGuid(request.Payload, "transactionId");
++        var category = ReadString(request.Payload, "category");
++        if (!transactionId.HasValue || string.IsNullOrWhiteSpace(category))
++        {
++            return Failed("transaction_category_required", "A transaction id and category are required.");
++        }
++
++        var transaction = await _financeCommandService.UpdateTransactionCategoryAsync(
++            new UpdateFinanceTransactionCategoryCommand(request.CompanyId, transactionId.Value, category),
++            cancellationToken);
++
++        return InternalToolExecutionResponse.Succeeded(
++            "Transaction category was updated.",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["transaction"] = Serialize(transaction),
++                ["transactionId"] = JsonValue.Create(transaction.Id),
++                ["category"] = JsonValue.Create(transaction.TransactionType)
++            },
++            Metadata(request, "finance_command_service"));
++    }
++
++    private async Task<InternalToolExecutionResponse> ExecuteApproveInvoiceAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (!EnsureAction(request, ToolActionType.Execute, out var actionFailure))
++        {
++            return actionFailure;
++        }
++
++        var invoiceId = ReadGuid(request.Payload, "invoiceId");
++        var status = ReadString(request.Payload, "status") ?? "approved";
++        if (!invoiceId.HasValue)
++        {
++            return Failed("invoice_id_required", "An invoice id is required to approve an invoice.");
++        }
++
++        var invoice = await _financeCommandService.UpdateInvoiceApprovalStatusAsync(
++            new UpdateFinanceInvoiceApprovalStatusCommand(request.CompanyId, invoiceId.Value, status),
++            cancellationToken);
++
++        return InternalToolExecutionResponse.Succeeded(
++            "Invoice approval status was updated.",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["invoice"] = Serialize(invoice),
++                ["invoiceId"] = JsonValue.Create(invoice.Id),
++                ["status"] = JsonValue.Create(invoice.Status)
++            },
++            Metadata(request, "finance_command_service"));
++    }
++
+     private static bool EnsureAction(
+         InternalToolExecutionRequest request,
+         ToolActionType expectedAction,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+index 88a5f3c..121f71e 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+@@ -7,8 +7,15 @@ namespace VirtualCompany.Infrastructure.Companies;
+ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+ {
+     private const string SafeDeniedExplanation = "This action was blocked by policy.";
++    private readonly ICompanyToolRegistry _toolRegistry;
++
++    public PolicyGuardrailEngine(ICompanyToolRegistry toolRegistry)
++    {
++        _toolRegistry = toolRegistry;
++    }
+ 
+     public ToolExecutionDecisionDto Evaluate(PolicyEvaluationRequest request)
+     {
+@@ -85,6 +92,30 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         }
+ 
+         var toolName = request.ToolName.Trim();
+         var normalizedScope = string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope.Trim();
++        if (!_toolRegistry.TryGetTool(toolName, out var registeredTool))
++        {
++            metadata["registryPolicyState"] = JsonValue.Create("unregistered");
++            return Deny(
++                request,
++                normalizedAction,
++                [PolicyDecisionReasonCodes.ToolNotConfigured],
++                "The requested tool is not registered for trusted execution.",
++                metadata,
++                thresholdEvaluations);
++        }
++
++        metadata["registryPolicyState"] = JsonValue.Create("registered");
++        metadata["registeredToolVersion"] = JsonValue.Create(registeredTool.Version);
++        metadata["registeredToolActions"] = ToJsonArray(registeredTool.SupportedActions.Select(static action => action.ToStorageValue()));
++        if (!registeredTool.Supports(actionType, normalizedScope))
++        {
++            metadata["registryActionAllowed"] = JsonValue.Create(false);
++            return Deny(
++                request,
++                normalizedAction,
++                [PolicyDecisionReasonCodes.ToolActionTypeMismatch, PolicyDecisionReasonCodes.ToolActionNotPermitted],
++                "The requested action type or scope does not match the registered tool metadata.",
++                metadata,
++                thresholdEvaluations);
++        }
++
++        metadata["registryActionAllowed"] = JsonValue.Create(true);
+         if (!TryGetIdentifierSet(request.ToolPermissions, "allowed", out var allowedTools, out var allowedToolsExists) ||
+             !TryGetIdentifierSet(request.ToolPermissions, "denied", out var deniedTools, out _) ||
+             !TryGetIdentifierSet(request.ToolPermissions, "actions", out var allowedActions, out var allowedActionsExists) ||
+@@ -513,7 +544,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+     {
+         if (!TryGetEscalationTarget(request.EscalationRules, out var approvalTarget))
+         {
+             metadata["approvalRequirementState"] = JsonValue.Create("missing_route");
+-        metadata["decisionOutcome"] = JsonValue.Create(PolicyDecisionOutcomeValues.Allow);
++            metadata["decisionOutcome"] = JsonValue.Create(PolicyDecisionOutcomeValues.Deny);
+             return Deny(
+                 request,
+                 evaluatedActionType,
+@@ -955,7 +986,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         PolicyDecisionReasonCodes.MissingPolicyConfiguration or PolicyDecisionReasonCodes.InvalidPolicyConfiguration or PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration => "policy_configuration",
+-        PolicyDecisionReasonCodes.ToolNotConfigured or PolicyDecisionReasonCodes.ToolExplicitlyDenied or PolicyDecisionReasonCodes.ToolNotPermitted or PolicyDecisionReasonCodes.ToolActionNotPermitted => "tool",
++        PolicyDecisionReasonCodes.ToolNotConfigured or PolicyDecisionReasonCodes.ToolExplicitlyDenied or PolicyDecisionReasonCodes.ToolNotPermitted or PolicyDecisionReasonCodes.ToolActionTypeMismatch or PolicyDecisionReasonCodes.ToolActionNotPermitted => "tool",
+         PolicyDecisionReasonCodes.ScopeNotPermitted or PolicyDecisionReasonCodes.ScopeContextMissing or PolicyDecisionReasonCodes.DataScopeViolation => "scope",
+         PolicyDecisionReasonCodes.ApprovalRequiredByPolicy or PolicyDecisionReasonCodes.ApprovalRouteMissing or PolicyDecisionReasonCodes.ApprovalRequired => "approval",
+         PolicyDecisionReasonCodes.ThresholdContextMissing or PolicyDecisionReasonCodes.ThresholdConfigurationMissing or PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval => "threshold",
+@@ -980,6 +1011,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         PolicyDecisionReasonCodes.ToolNotConfigured => "The requested tool identity is missing or invalid.",
+         PolicyDecisionReasonCodes.ToolExplicitlyDenied => "The tool is explicitly denied.",
+         PolicyDecisionReasonCodes.ToolNotPermitted => "The tool is outside the allowed tool set.",
++        PolicyDecisionReasonCodes.ToolActionTypeMismatch => "The requested action type does not match the registered tool metadata.",
+         PolicyDecisionReasonCodes.ToolActionNotPermitted => "The requested action type is outside the allowed tool action set.",
+         PolicyDecisionReasonCodes.ScopeNotPermitted => "The requested scope is not permitted.",
+         PolicyDecisionReasonCodes.DataScopeViolation => "The requested scope violates the configured data boundary.",
+diff --git a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
+index d43b73f..ed74b09 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
+@@ -50,12 +50,16 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+ 
+     private static IReadOnlyList<ToolDefinitionManifest> FinanceToolDefinitions { get; } =
+     [
+-        FinanceDefinition("get_cash_balance", FinanceInputSchemas.AsOfDate(), FinanceOutputSchemas.WithDataProperty("cashBalance")),
+-        FinanceDefinition("list_transactions", FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("transactions")),
+-        FinanceDefinition("list_uncategorized_transactions", FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("transactions")),
+-        FinanceDefinition("list_invoices_awaiting_approval", FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("invoices")),
+-        FinanceDefinition("get_profit_and_loss_summary", FinanceInputSchemas.ProfitAndLoss(), FinanceOutputSchemas.WithDataProperty("profitAndLossSummary"))
++        FinanceDefinition("get_cash_balance", ToolActionType.Read, FinanceInputSchemas.AsOfDate(), FinanceOutputSchemas.WithDataProperty("cashBalance")),
++        FinanceDefinition("list_transactions", ToolActionType.Read, FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("transactions")),
++        FinanceDefinition("list_uncategorized_transactions", ToolActionType.Read, FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("transactions")),
++        FinanceDefinition("list_invoices_awaiting_approval", ToolActionType.Read, FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("invoices")),
++        FinanceDefinition("get_profit_and_loss_summary", ToolActionType.Read, FinanceInputSchemas.ProfitAndLoss(), FinanceOutputSchemas.WithDataProperty("profitAndLossSummary")),
++        FinanceDefinition("recommend_transaction_category", ToolActionType.Recommend, FinanceInputSchemas.TransactionRecommendation(), FinanceOutputSchemas.WithDataProperty("recommendation")),
++        FinanceDefinition("recommend_invoice_approval_decision", ToolActionType.Recommend, FinanceInputSchemas.InvoiceRecommendation(), FinanceOutputSchemas.WithDataProperty("recommendation")),
++        FinanceDefinition("categorize_transaction", ToolActionType.Execute, FinanceInputSchemas.CategorizeTransaction(), FinanceOutputSchemas.WithDataProperty("transaction")),
++        FinanceDefinition("approve_invoice", ToolActionType.Execute, FinanceInputSchemas.ApproveInvoice(), FinanceOutputSchemas.WithDataProperty("invoice"))
+     ];
+@@ -101,9 +105,10 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+ 
+     private static ToolDefinitionManifest FinanceDefinition(
+         string toolName,
++        ToolActionType actionType,
+         JsonObject inputSchema,
+         JsonObject outputSchema) =>
+-        new(toolName, "1.0.0", ToolActionType.Read, inputSchema, outputSchema);
++        new(toolName, "1.0.0", actionType, inputSchema, outputSchema);
+ 
+     private static class FinanceInputSchemas
+     {
+@@ -149,6 +154,80 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+                 }
+                 """);
++
++        public static JsonObject TransactionRecommendation() =>
++            ParseSchema(
++                """
++                {
++                  "type": "object",
++                  "additionalProperties": false,
++                  "required": [ "transactionId" ],
++                  "properties": {
++                    "transactionId": { "type": "string", "format": "uuid" },
++                    "candidateCategory": { "type": "string", "minLength": 1, "maxLength": 64 }
++                  }
++                }
++                """);
++
++        public static JsonObject InvoiceRecommendation() =>
++            ParseSchema(
++                """
++                {
++                  "type": "object",
++                  "additionalProperties": false,
++                  "required": [ "invoiceId" ],
++                  "properties": {
++                    "invoiceId": { "type": "string", "format": "uuid" },
++                    "candidateStatus": {
++                      "type": "string",
++                      "enum": [ "approved", "rejected" ]
++                    }
++                  }
++                }
++                """);
++
++        public static JsonObject CategorizeTransaction() =>
++            ParseSchema(
++                """
++                {
++                  "type": "object",
++                  "additionalProperties": false,
++                  "required": [ "transactionId", "category" ],
++                  "properties": {
++                    "transactionId": { "type": "string", "format": "uuid" },
++                    "category": { "type": "string", "minLength": 1, "maxLength": 64 }
++                  }
++                }
++                """);
++
++        public static JsonObject ApproveInvoice() =>
++            ParseSchema(
++                """
++                {
++                  "type": "object",
++                  "additionalProperties": false,
++                  "required": [ "invoiceId" ],
++                  "properties": {
++                    "invoiceId": { "type": "string", "format": "uuid" },
++                    "status": {
++                      "type": "string",
++                      "enum": [ "approved", "rejected" ]
++                    }
++                  }
++                }
++                """);
+     }
+ 
+     private static class FinanceOutputSchemas
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs b/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs
+index 0b67715..fa3b057 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs
+@@ -12,13 +12,16 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+ {
+-    private static readonly string[] FinanceToolNames =
++    private static readonly IReadOnlyDictionary<string, ToolActionType> FinanceTools = new Dictionary<string, ToolActionType>(StringComparer.OrdinalIgnoreCase)
+     [
+-        "get_cash_balance",
+-        "list_transactions",
+-        "list_uncategorized_transactions",
+-        "list_invoices_awaiting_approval",
+-        "get_profit_and_loss_summary"
+-    ];
++        ["get_cash_balance"] = ToolActionType.Read,
++        ["list_transactions"] = ToolActionType.Read,
++        ["list_uncategorized_transactions"] = ToolActionType.Read,
++        ["list_invoices_awaiting_approval"] = ToolActionType.Read,
++        ["get_profit_and_loss_summary"] = ToolActionType.Read,
++        ["recommend_transaction_category"] = ToolActionType.Recommend,
++        ["recommend_invoice_approval_decision"] = ToolActionType.Recommend,
++        ["categorize_transaction"] = ToolActionType.Execute,
++        ["approve_invoice"] = ToolActionType.Execute
++    ];
+ 
+@@ -33,20 +36,22 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+ 
+         var definitions = registry.ListToolDefinitions();
+ 
+-        foreach (var toolName in FinanceToolNames)
++        foreach (var (toolName, actionType) in FinanceTools)
+         {
+             var definition = Assert.Single(definitions.Where(x => x.ToolName == toolName));
+             Assert.Equal("1.0.0", definition.Version);
+-            Assert.Equal(ToolActionType.Read, definition.ActionType);
++            Assert.Equal(actionType, definition.ActionType);
+             Assert.Equal("object", definition.InputSchema["type"]!.GetValue<string>());
+             Assert.Equal("object", definition.OutputSchema["type"]!.GetValue<string>());
+ 
+             Assert.True(registry.TryGetTool(toolName, out var registration));
+             Assert.Equal(definition.Version, registration.Version);
+-            Assert.True(registration.Supports(ToolActionType.Read, "finance"));
++            Assert.True(registration.Supports(actionType, "finance"));
++            Assert.False(registration.Supports(actionType == ToolActionType.Execute ? ToolActionType.Read : ToolActionType.Execute, "finance"));
+         }
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs b/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs
+index a7dc761..ac2d1b3 100644
+--- a/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs
++++ b/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs
+@@ -31,6 +31,10 @@ public sealed class InternalCompanyToolRegistryTests : IClassFixture<TestWebAppl
+         Assert.Contains(tools, tool => tool.ToolName == "list_uncategorized_transactions" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+         Assert.Contains(tools, tool => tool.ToolName == "list_invoices_awaiting_approval" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+         Assert.Contains(tools, tool => tool.ToolName == "get_profit_and_loss_summary" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
++        Assert.Contains(tools, tool => tool.ToolName == "recommend_transaction_category" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Recommend, "finance"));
++        Assert.Contains(tools, tool => tool.ToolName == "recommend_invoice_approval_decision" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Recommend, "finance"));
++        Assert.Contains(tools, tool => tool.ToolName == "categorize_transaction" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Execute, "finance"));
++        Assert.Contains(tools, tool => tool.ToolName == "approve_invoice" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Execute, "finance"));
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs
+index e2256ec..4d2b82a 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs
+@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
+ using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -158,6 +159,238 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+         Assert.Null(attempt.ExecutedUtc);
+     }
+ 
++    [Fact]
++    public async Task Finance_execute_action_with_disallowed_action_type_is_denied_before_provider_dispatch()
++    {
++        using var financeFactory = CreateFinanceContractFactory();
++        var seed = await SeedAgentAsync(
++            financeFactory.Services,
++            tools: Payload(
++                ("allowed", new JsonArray(JsonValue.Create("categorize_transaction"))),
++                ("actions", new JsonArray(JsonValue.Create("read")))),
++            scopes: Payload(
++                ("read", new JsonArray(JsonValue.Create("finance"))),
++                ("execute", new JsonArray(JsonValue.Create("finance")))));
++
++        var financeSeed = await SeedFinanceRecordAsync(financeFactory.Services, seed.CompanyId);
++        using var client = CreateAuthenticatedClient(financeFactory, seed);
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
++        {
++            toolName = "categorize_transaction",
++            actionType = "execute",
++            scope = "finance",
++            requestPayload = new { transactionId = financeSeed.TransactionId, category = "software" }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("denied", payload!.Status);
++        Assert.Equal("deny", payload.PolicyDecision.Outcome);
++        Assert.Contains(PolicyDecisionReasonCodes.ToolActionNotPermitted, payload.PolicyDecision.ReasonCodes);
++
++        using var scope = financeFactory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var transaction = await dbContext.FinanceTransactions.AsNoTracking().SingleAsync(x => x.Id == financeSeed.TransactionId);
++        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
++
++        Assert.Equal("uncategorized", transaction.TransactionType);
++        Assert.Equal(ToolExecutionStatus.Denied, attempt.Status);
++        Assert.Equal(0, financeFactory.Services.GetRequiredService<TrackingFinanceCommandService>().TotalCallCount);
++    }
++
++    [Fact]
++    public async Task Finance_execute_action_above_threshold_creates_approval_request_without_state_change()
++    {
++        using var financeFactory = CreateFinanceContractFactory();
++        var seed = await SeedAgentAsync(
++            financeFactory.Services,
++            tools: Payload(
++                ("allowed", new JsonArray(JsonValue.Create("categorize_transaction"))),
++                ("actions", new JsonArray(JsonValue.Create("execute")))),
++            scopes: Payload(("execute", new JsonArray(JsonValue.Create("finance")))),
++            thresholds: Payload(("approval", new JsonObject { ["financeMutationUsd"] = 100 })));
++
++        var financeSeed = await SeedFinanceRecordAsync(financeFactory.Services, seed.CompanyId);
++        using var client = CreateAuthenticatedClient(financeFactory, seed);
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
++        {
++            toolName = "categorize_transaction",
++            actionType = "execute",
++            scope = "finance",
++            thresholdCategory = "approval",
++            thresholdKey = "financeMutationUsd",
++            thresholdValue = 250,
++            sensitiveAction = true,
++            taskId = financeSeed.TaskId,
++            requestPayload = new { transactionId = financeSeed.TransactionId, category = "software" }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("awaiting_approval", payload!.Status);
++        Assert.Equal("require_approval", payload.PolicyDecision.Outcome);
++        Assert.NotNull(payload.ApprovalRequestId);
++
++        using var scope = financeFactory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var transaction = await dbContext.FinanceTransactions.AsNoTracking().SingleAsync(x => x.Id == financeSeed.TransactionId);
++        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
++        var approval = await dbContext.ApprovalRequests.AsNoTracking().SingleAsync(x => x.Id == payload.ApprovalRequestId);
++
++        Assert.Equal("uncategorized", transaction.TransactionType);
++        Assert.Equal(ToolExecutionStatus.AwaitingApproval, attempt.Status);
++        Assert.Equal(payload.ApprovalRequestId, attempt.ApprovalRequestId);
++        Assert.Equal(attempt.Id, approval.ToolExecutionAttemptId);
++        Assert.Equal(attempt.Id, approval.TargetEntityId);
++        Assert.Equal(financeSeed.TaskId, approval.ThresholdContext["taskId"]!.GetValue<Guid>());
++        Assert.Equal(attempt.Id, approval.ThresholdContext["toolExecutionId"]!.GetValue<Guid>());
++        Assert.Equal(0, financeFactory.Services.GetRequiredService<TrackingFinanceCommandService>().TotalCallCount);
++    }
++
++    [Fact]
++    public async Task Approved_finance_execute_approval_runs_state_change_and_marks_execution_executed()
++    {
++        using var financeFactory = CreateFinanceContractFactory();
++        var seed = await SeedAgentAsync(
++            financeFactory.Services,
++            tools: Payload(
++                ("allowed", new JsonArray(JsonValue.Create("categorize_transaction"))),
++                ("actions", new JsonArray(JsonValue.Create("execute")))),
++            scopes: Payload(("execute", new JsonArray(JsonValue.Create("finance")))),
++            thresholds: Payload(("approval", new JsonObject { ["financeMutationUsd"] = 100 })));
++
++        var financeSeed = await SeedFinanceRecordAsync(financeFactory.Services, seed.CompanyId);
++        using var client = CreateAuthenticatedClient(financeFactory, seed);
++        var executeResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
++        {
++            toolName = "categorize_transaction",
++            actionType = "execute",
++            scope = "finance",
++            thresholdCategory = "approval",
++            thresholdKey = "financeMutationUsd",
++            thresholdValue = 250,
++            sensitiveAction = true,
++            taskId = financeSeed.TaskId,
++            requestPayload = new { transactionId = financeSeed.TransactionId, category = "software" }
++        });
++        var executePayload = await executeResponse.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
++        Assert.NotNull(executePayload?.ApprovalRequestId);
++
++        var approval = await GetApprovalAsync(financeFactory.Services, seed.CompanyId, executePayload!.ApprovalRequestId!.Value);
++        var decisionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/approvals/{approval.Id}/decisions", new
++        {
++            decision = "approve",
++            stepId = approval.CurrentStep!.Id,
++            comment = "Approved for categorization."
++        });
++
++        Assert.Equal(HttpStatusCode.OK, decisionResponse.StatusCode);
++
++        using var scope = financeFactory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var transaction = await dbContext.FinanceTransactions.AsNoTracking().SingleAsync(x => x.Id == financeSeed.TransactionId);
++        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == executePayload.ExecutionId);
++
++        Assert.Equal("software", transaction.TransactionType);
++        Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);
++        Assert.NotNull(attempt.ExecutedUtc);
++        Assert.Equal("executed", attempt.ResultPayload["status"]!.GetValue<string>());
++        Assert.Equal(1, financeFactory.Services.GetRequiredService<TrackingFinanceCommandService>().TotalCallCount);
++    }
++
++    [Fact]
++    public async Task Rejected_finance_execute_approval_leaves_state_unchanged_and_marks_execution_rejected()
++    {
++        using var financeFactory = CreateFinanceContractFactory();
++        var seed = await SeedAgentAsync(
++            financeFactory.Services,
++            tools: Payload(
++                ("allowed", new JsonArray(JsonValue.Create("categorize_transaction"))),
++                ("actions", new JsonArray(JsonValue.Create("execute")))),
++            scopes: Payload(("execute", new JsonArray(JsonValue.Create("finance")))),
++            thresholds: Payload(("approval", new JsonObject { ["financeMutationUsd"] = 100 })));
++
++        var financeSeed = await SeedFinanceRecordAsync(financeFactory.Services, seed.CompanyId);
++        using var client = CreateAuthenticatedClient(financeFactory, seed);
++        var executeResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
++        {
++            toolName = "categorize_transaction",
++            actionType = "execute",
++            scope = "finance",
++            thresholdCategory = "approval",
++            thresholdKey = "financeMutationUsd",
++            thresholdValue = 250,
++            sensitiveAction = true,
++            taskId = financeSeed.TaskId,
++            requestPayload = new { transactionId = financeSeed.TransactionId, category = "software" }
++        });
++        var executePayload = await executeResponse.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
++        Assert.NotNull(executePayload?.ApprovalRequestId);
++
++        var approval = await GetApprovalAsync(financeFactory.Services, seed.CompanyId, executePayload!.ApprovalRequestId!.Value);
++        var decisionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/approvals/{approval.Id}/decisions", new
++        {
++            decision = "reject",
++            stepId = approval.CurrentStep!.Id,
++            comment = "Needs more evidence."
++        });
++
++        Assert.Equal(HttpStatusCode.OK, decisionResponse.StatusCode);
++
++        using var scope = financeFactory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var transaction = await dbContext.FinanceTransactions.AsNoTracking().SingleAsync(x => x.Id == financeSeed.TransactionId);
++        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == executePayload.ExecutionId);
++
++        Assert.Equal("uncategorized", transaction.TransactionType);
++        Assert.Equal(ToolExecutionStatus.Rejected, attempt.Status);
++        Assert.Null(attempt.ExecutedUtc);
++        Assert.Equal(PolicyDecisionReasonCodes.ApprovalRejected, attempt.DenialReason);
++        Assert.Equal("rejected", attempt.ResultPayload["status"]!.GetValue<string>());
++        Assert.Equal(0, financeFactory.Services.GetRequiredService<TrackingFinanceCommandService>().TotalCallCount);
++    }
++
+@@ -228,7 +461,8 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+             builder.ConfigureServices(services =>
+             {
+                 services.RemoveAll<IFinanceReadService>();
++                services.RemoveAll<IFinanceCommandService>();
+                 services.RemoveAll<IInternalCompanyToolContract>();
+                 services.AddSingleton<TrackingFinanceReadService>();
++                services.AddSingleton<TrackingFinanceCommandService>();
+                 services.AddSingleton<IFinanceReadService>(provider => provider.GetRequiredService<TrackingFinanceReadService>());
++                services.AddScoped<IFinanceCommandService>(provider => provider.GetRequiredService<TrackingFinanceCommandService>());
+                 services.AddScoped<IInternalCompanyToolContract, InternalCompanyToolContract>();
+             });
+         });
+@@ -237,7 +471,8 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+     private static async Task<SeededExecutionAgent> SeedAgentAsync(
+         IServiceProvider services,
+         Dictionary<string, JsonNode?> tools,
+-        Dictionary<string, JsonNode?> scopes)
++        Dictionary<string, JsonNode?> scopes,
++        Dictionary<string, JsonNode?>? thresholds = null)
+     {
+@@ -276,7 +511,7 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+             objectives: Payload(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
+             kpis: Payload(("targets", new JsonArray(JsonValue.Create("forecast_accuracy")))),
+             tools: tools,
+             scopes: scopes,
+-            thresholds: Payload(("approval", new JsonObject { ["cashReadUsd"] = 100000 })),
++            thresholds: thresholds ?? Payload(("approval", new JsonObject { ["cashReadUsd"] = 100000 })),
+             escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))),
+             roleBrief: "Execution-ready finance profile.",
+@@ -292,6 +527,70 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+         return new SeededExecutionAgent(companyId, agentId, userId, subject, email, displayName);
+     }
+ 
++    private static async Task<SeededFinanceRecord> SeedFinanceRecordAsync(IServiceProvider services, Guid companyId)
++    {
++        var accountId = Guid.NewGuid();
++        var transactionId = Guid.NewGuid();
++        var counterpartyId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++
++        using var scope = services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(companyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            accountId,
++            companyId,
++            "1000",
++            "Operating Cash",
++            "asset",
++            "USD",
++            1000m,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.FinanceCounterparties.Add(new FinanceCounterparty(counterpartyId, companyId, "Vendor", "vendor"));
++        dbContext.FinanceTransactions.Add(new FinanceTransaction(
++            transactionId,
++            companyId,
++            accountId,
++            counterpartyId,
++            null,
++            null,
++            new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc),
++            "uncategorized",
++            -250m,
++            "USD",
++            "Cloud tools",
++            $"txn-{transactionId:N}"));
++        dbContext.WorkTasks.Add(new WorkTask(
++            taskId,
++            companyId,
++            "finance",
++            "Review transaction category",
++            "Requires approval before mutation.",
++            WorkTaskPriority.Normal,
++            null,
++            null,
++            "agent",
++            Guid.NewGuid(),
++            new Dictionary<string, JsonNode?> { ["transactionId"] = JsonValue.Create(transactionId) }));
++
++        await dbContext.SaveChangesAsync();
++        return new SeededFinanceRecord(transactionId, taskId);
++    }
++
++    private static async Task<ApprovalRequestDto> GetApprovalAsync(IServiceProvider services, Guid companyId, Guid approvalId)
++    {
++        using var scope = services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(companyId);
++        var service = scope.ServiceProvider.GetRequiredService<IApprovalRequestService>();
++        return await service.GetAsync(companyId, approvalId, CancellationToken.None);
++    }
++
+@@ -324,6 +623,10 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+         string Email,
+         string DisplayName);
+ 
++    private sealed record SeededFinanceRecord(
++        Guid TransactionId,
++        Guid TaskId);
++
+@@ -460,5 +763,46 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+             return Task.FromResult(balances);
+         }
+     }
++
++    public sealed class TrackingFinanceCommandService : IFinanceCommandService
++    {
++        private readonly IServiceScopeFactory _scopeFactory;
++        private readonly ConcurrentQueue<string> _callNames = new();
++
++        public TrackingFinanceCommandService(IServiceScopeFactory scopeFactory)
++        {
++            _scopeFactory = scopeFactory;
++        }
++
++        public int TotalCallCount => _callNames.Count;
++
++        public async Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
++            UpdateFinanceInvoiceApprovalStatusCommand command,
++            CancellationToken cancellationToken)
++        {
++            _callNames.Enqueue(nameof(UpdateInvoiceApprovalStatusAsync));
++            using var scope = _scopeFactory.CreateScope();
++            var service = ActivatorUtilities.CreateInstance<VirtualCompany.Infrastructure.Finance.CompanyFinanceCommandService>(
++                scope.ServiceProvider,
++                scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>());
++            return await service.UpdateInvoiceApprovalStatusAsync(command, cancellationToken);
++        }
++
++        public async Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(
++            UpdateFinanceTransactionCategoryCommand command,
++            CancellationToken cancellationToken)
++        {
++            _callNames.Enqueue(nameof(UpdateTransactionCategoryAsync));
++            using var scope = _scopeFactory.CreateScope();
++            var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++            companyContextAccessor.SetCompanyId(command.CompanyId);
++            var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            var transaction = await dbContext.FinanceTransactions
++                .Include(x => x.Account)
++                .Include(x => x.Counterparty)
++                .SingleAsync(x => x.CompanyId == command.CompanyId && x.Id == command.TransactionId, cancellationToken);
++
++            transaction.ChangeCategory(command.Category);
++            await dbContext.SaveChangesAsync(cancellationToken);
++            return new FinanceTransactionDto(transaction.Id, transaction.AccountId, transaction.Account.Name, transaction.CounterpartyId, transaction.Counterparty?.Name, transaction.InvoiceId, transaction.BillId, transaction.TransactionUtc, transaction.TransactionType, transaction.Amount, transaction.Currency, transaction.Description, transaction.ExternalReference, null);
++        }
++    }
+ }
+END_OF_PATCH

@@ -1,0 +1,1571 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -19,12 +19,20 @@ public sealed record GetFinanceExpenseBreakdownQuery(
+ public sealed record GetFinanceTransactionsQuery(
+     Guid CompanyId,
+     DateTime? StartUtc = null,
+     DateTime? EndUtc = null,
+-    int Limit = 100);
++    int Limit = 100,
++    string? Category = null,
++    string? FlaggedState = null);
++
++public sealed record GetFinanceTransactionDetailQuery(
++    Guid CompanyId,
++    Guid TransactionId);
+ 
+ public sealed record GetFinanceInvoicesQuery(
+     Guid CompanyId,
+     DateTime? StartUtc = null,
+     DateTime? EndUtc = null,
+     int Limit = 100);
++
++public sealed record GetFinanceInvoiceDetailQuery(
++    Guid CompanyId,
++    Guid InvoiceId);
+ 
+ public sealed record GetFinanceSeedAnomaliesQuery(
+     Guid CompanyId,
+@@ -212,14 +220,61 @@ public sealed record FinanceTransactionDto(
+     decimal Amount,
+     string Currency,
+     string Description,
+     string ExternalReference,
+-    FinanceLinkedDocumentDto? LinkedDocument);
++    FinanceLinkedDocumentDto? LinkedDocument,
++    bool IsFlagged = false,
++    string AnomalyState = "clear");
+ 
+ public sealed record FinanceInvoiceDto(
+     Guid Id,
+     Guid CounterpartyId,
+     string CounterpartyName,
+     string InvoiceNumber,
+@@ -243,6 +298,44 @@ public sealed record FinanceLinkedDocumentDto(
+     string Title,
+     string OriginalFileName,
+     string ContentType);
+ 
++public sealed record FinanceLinkedDocumentAccessDto(
++    string Availability,
++    string Message,
++    bool CanNavigate,
++    FinanceLinkedDocumentDto? Document);
++
++public sealed record FinanceTransactionDetailDto(
++    Guid Id,
++    Guid AccountId,
++    string AccountName,
++    Guid? CounterpartyId,
++    string? CounterpartyName,
++    Guid? InvoiceId,
++    Guid? BillId,
++    DateTime TransactionUtc,
++    string Category,
++    decimal Amount,
++    string Currency,
++    string Description,
++    string ExternalReference,
++    bool IsFlagged,
++    string AnomalyState,
++    IReadOnlyList<string> Flags,
++    FinanceLinkedDocumentAccessDto LinkedDocument);
++
++public sealed record FinanceInvoiceWorkflowContextDto(
++    Guid? WorkflowInstanceId,
++    Guid TaskId,
++    Guid? ApprovalRequestId,
++    string Classification,
++    string RiskLevel,
++    string RecommendedAction,
++    string Rationale,
++    decimal Confidence,
++    bool RequiresHumanApproval);
++
++public sealed record FinanceInvoiceDetailDto(
++    Guid Id,
++    Guid CounterpartyId,
++    string CounterpartyName,
++    string InvoiceNumber,
++    DateTime IssuedUtc,
++    DateTime DueUtc,
++    decimal Amount,
++    string Currency,
++    string Status,
++    FinanceInvoiceWorkflowContextDto? WorkflowContext,
++    FinanceLinkedDocumentAccessDto LinkedDocument);
++
+ public sealed record FinancePolicyConfigurationDto(
+     Guid CompanyId,
+     string ApprovalCurrency,
+@@ -421,9 +514,17 @@ public interface IFinanceReadService
+     Task<IReadOnlyList<FinanceTransactionDto>> GetTransactionsAsync(
+         GetFinanceTransactionsQuery query,
+         CancellationToken cancellationToken);
+ 
++    Task<FinanceTransactionDetailDto?> GetTransactionDetailAsync(
++        GetFinanceTransactionDetailQuery query,
++        CancellationToken cancellationToken);
++
+     Task<IReadOnlyList<FinanceInvoiceDto>> GetInvoicesAsync(
+         GetFinanceInvoicesQuery query,
+         CancellationToken cancellationToken);
++
++    Task<FinanceInvoiceDetailDto?> GetInvoiceDetailAsync(
++        GetFinanceInvoiceDetailQuery query,
++        CancellationToken cancellationToken);
+ 
+     Task<IReadOnlyList<FinanceSeedAnomalyDto>> GetSeedAnomaliesAsync(
+         GetFinanceSeedAnomaliesQuery query,
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -88,11 +88,28 @@ public sealed class InternalFinanceController : ControllerBase
+     public async Task<ActionResult<IReadOnlyList<FinanceTransactionDto>>> GetTransactionsAsync(
+         Guid companyId,
+         [FromQuery] DateTime? startUtc,
+         [FromQuery] DateTime? endUtc,
++        [FromQuery] string? category,
++        [FromQuery] string? flagged,
+         [FromQuery] int limit,
+         CancellationToken cancellationToken) =>
+         await ExecuteReadAsync(
+             () => _financeReadService.GetTransactionsAsync(
+-                new GetFinanceTransactionsQuery(companyId, startUtc, endUtc, limit),
++                new GetFinanceTransactionsQuery(companyId, startUtc, endUtc, limit, category, flagged),
+                 cancellationToken));
+ 
++    [HttpGet("transactions/{transactionId:guid}")]
++    public async Task<ActionResult<FinanceTransactionDetailDto>> GetTransactionDetailAsync(
++        Guid companyId,
++        Guid transactionId,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadOptionalAsync(
++            () => _financeReadService.GetTransactionDetailAsync(
++                new GetFinanceTransactionDetailQuery(companyId, transactionId),
++                cancellationToken),
++            "Finance transaction was not found.");
++
+     [HttpGet("invoices")]
+     public async Task<ActionResult<IReadOnlyList<FinanceInvoiceDto>>> GetInvoicesAsync(
+         Guid companyId,
+         [FromQuery] DateTime? startUtc,
+@@ -102,6 +119,35 @@ public sealed class InternalFinanceController : ControllerBase
+             () => _financeReadService.GetInvoicesAsync(
+                 new GetFinanceInvoicesQuery(companyId, startUtc, endUtc, limit),
+                 cancellationToken));
++
++    [HttpGet("invoices/{invoiceId:guid}")]
++    public async Task<ActionResult<FinanceInvoiceDetailDto>> GetInvoiceDetailAsync(
++        Guid companyId,
++        Guid invoiceId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var detail = await _financeReadService.GetInvoiceDetailAsync(
++                new GetFinanceInvoiceDetailQuery(companyId, invoiceId),
++                cancellationToken);
++            if (detail is null)
++            {
++                return NotFound(CreateProblemDetails("Finance invoice was not found.", "Finance record was not found.", StatusCodes.Status404NotFound));
++            }
++
++            var workflow = await _invoiceReviewWorkflowService.GetLatestByInvoiceAsync(companyId, invoiceId, cancellationToken);
++            return Ok(detail with
++            {
++                WorkflowContext = workflow is null
++                    ? null
++                    : new FinanceInvoiceWorkflowContextDto(
++                        workflow.WorkflowInstanceId,
++                        workflow.TaskId,
++                        workflow.ApprovalRequestId,
++                        workflow.InvoiceClassification,
++                        workflow.RiskLevel,
++                        workflow.RecommendedAction,
++                        workflow.Rationale,
++                        workflow.ConfidenceScore,
++                        workflow.RequiresHumanApproval)
++            });
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (ArgumentOutOfRangeException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message));
++        }
++        catch (ArgumentException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message));
++        }
++    }
+@@ -250,6 +296,29 @@ public sealed class InternalFinanceController : ControllerBase
+         }
+     }
+ 
++    private async Task<ActionResult<T>> ExecuteReadOptionalAsync<T>(Func<Task<T?>> read, string notFoundDetail)
++        where T : class
++    {
++        try
++        {
++            var result = await read();
++            return result is null
++                ? NotFound(CreateProblemDetails(notFoundDetail, "Finance record was not found.", StatusCodes.Status404NotFound))
++                : Ok(result);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (ArgumentOutOfRangeException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message));
++        }
++        catch (ArgumentException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message));
++        }
++    }
++
+     private async Task<ActionResult<T>> ExecuteWriteAsync<T>(Func<Task<T>> write)
+     {
+         try
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -235,7 +235,9 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+         EnsureTenant(query.CompanyId);
+         var startUtc = NormalizeUtc(query.StartUtc);
+         var endUtc = NormalizeUtc(query.EndUtc);
++        var category = NormalizeOptionalText(query.Category);
++        var flaggedState = NormalizeFlaggedState(query.FlaggedState);
+         var limit = NormalizeLimit(query.Limit);
+ 
+         var transactions = _dbContext.FinanceTransactions
+             .IgnoreQueryFilters()
+@@ -250,7 +252,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+ 
+         var rows = await transactions
+             .OrderByDescending(x => x.TransactionUtc)
+             .ThenBy(x => x.ExternalReference)
+-            .Take(limit)
++            .Take(MaxLimit)
+             .Select(x => new FinanceTransactionRow(
+                 x.Id,
+                 x.AccountId,
+@@ -266,14 +268,72 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+                 x.Description,
+                 x.ExternalReference))
+             .ToListAsync(cancellationToken);
+ 
++        var anomalyLookup = await LoadTransactionAnomalyLookupAsync(
++            query.CompanyId,
++            rows.Select(x => x.Id),
++            cancellationToken);
++
+         var linkedDocuments = await LoadLinkedDocumentsAsync(
+             query.CompanyId,
+             rows.Select(x => x.DocumentId),
+             cancellationToken);
+ 
+         return rows
++            .Where(x => category is null || string.Equals(x.TransactionType, category, StringComparison.OrdinalIgnoreCase))
++            .Where(x => MatchesFlaggedState(flaggedState, anomalyLookup.ContainsKey(x.Id)))
++            .Take(limit)
+             .Select(x => new FinanceTransactionDto(
+                 x.Id,
+                 x.AccountId,
+                 x.AccountName,
+@@ -286,7 +346,52 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+                 x.Amount,
+                 x.Currency,
+                 x.Description,
+                 x.ExternalReference,
+-                MapLinkedDocument(x.DocumentId, linkedDocuments)))
++                MapLinkedDocument(x.DocumentId, linkedDocuments),
++                anomalyLookup.ContainsKey(x.Id),
++                ResolveTransactionAnomalyState(anomalyLookup.GetValueOrDefault(x.Id))))
++            .ToList();
++    }
++
++    public async Task<FinanceTransactionDetailDto?> GetTransactionDetailAsync(
++        GetFinanceTransactionDetailQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        if (query.TransactionId == Guid.Empty)
++        {
++            throw new ArgumentException("Transaction id is required.", nameof(query));
++        }
++
++        var row = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.TransactionId)
++            .Select(x => new FinanceTransactionRow(
++                x.Id,
++                x.AccountId,
++                x.Account.Name,
++                x.CounterpartyId,
++                x.Counterparty == null ? null : x.Counterparty.Name,
++                x.InvoiceId,
++                x.BillId,
++                x.DocumentId,
++                x.TransactionUtc,
++                x.TransactionType,
++                x.Amount,
++                x.Currency,
++                x.Description,
++                x.ExternalReference))
++            .SingleOrDefaultAsync(cancellationToken);
++
++        if (row is null)
++        {
++            return null;
++        }
++
++        var anomalyLookup = await LoadTransactionAnomalyLookupAsync(query.CompanyId, [row.Id], cancellationToken);
++        var anomalies = anomalyLookup.GetValueOrDefault(row.Id) ?? [];
++        var linkedDocuments = await LoadLinkedDocumentsAsync(query.CompanyId, [row.DocumentId], cancellationToken);
++        var documentAccess = await BuildDocumentAccessAsync(query.CompanyId, row.DocumentId, linkedDocuments, cancellationToken);
++
++        return new FinanceTransactionDetailDto(
++            row.Id,
++            row.AccountId,
++            row.AccountName,
++            row.CounterpartyId,
++            row.CounterpartyName,
++            row.InvoiceId,
++            row.BillId,
++            row.TransactionUtc,
++            row.TransactionType,
++            row.Amount,
++            row.Currency,
++            row.Description,
++            row.ExternalReference,
++            anomalies.Count > 0,
++            ResolveTransactionAnomalyState(anomalies),
++            anomalies.Select(x => NormalizeCategory(x.AnomalyType)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
++            documentAccess);
++    }
++
++    public async Task<FinanceInvoiceDetailDto?> GetInvoiceDetailAsync(
++        GetFinanceInvoiceDetailQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        if (query.InvoiceId == Guid.Empty)
++        {
++            throw new ArgumentException("Invoice id is required.", nameof(query));
++        }
++
++        var row = await _dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.InvoiceId)
++            .Select(x => new FinanceInvoiceRow(
++                x.Id,
++                x.CounterpartyId,
++                x.Counterparty.Name,
++                x.InvoiceNumber,
++                x.IssuedUtc,
++                x.DueUtc,
++                x.Amount,
++                x.Currency,
++                x.Status,
++                x.DocumentId))
++            .SingleOrDefaultAsync(cancellationToken);
++
++        if (row is null)
++        {
++            return null;
++        }
++
++        var linkedDocuments = await LoadLinkedDocumentsAsync(query.CompanyId, [row.DocumentId], cancellationToken);
++        var documentAccess = await BuildDocumentAccessAsync(query.CompanyId, row.DocumentId, linkedDocuments, cancellationToken);
++
++        return new FinanceInvoiceDetailDto(
++            row.Id,
++            row.CounterpartyId,
++            row.CounterpartyName,
++            row.InvoiceNumber,
++            row.IssuedUtc,
++            row.DueUtc,
++            row.Amount,
++            row.Currency,
++            row.Status,
++            null,
++            documentAccess);
++    }
++
++    private async Task<Dictionary<Guid, List<FinanceSeedAnomalyDto>>> LoadTransactionAnomalyLookupAsync(
++        Guid companyId,
++        IEnumerable<Guid> transactionIds,
++        CancellationToken cancellationToken)
++    {
++        var ids = transactionIds
++            .Where(id => id != Guid.Empty)
++            .Distinct()
++            .ToArray();
++
++        if (ids.Length == 0)
++        {
++            return [];
++        }
++
++        var anomalies = await _dbContext.FinanceSeedAnomalies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .ToListAsync(cancellationToken);
++
++        var lookup = new Dictionary<Guid, List<FinanceSeedAnomalyDto>>();
++        foreach (var anomaly in anomalies.Select(MapSeedAnomaly))
++        {
++            foreach (var affectedRecordId in anomaly.AffectedRecordIds.Where(ids.Contains))
++            {
++                if (!lookup.TryGetValue(affectedRecordId, out var items))
++                {
++                    items = [];
++                    lookup[affectedRecordId] = items;
++                }
++
++                items.Add(anomaly);
++            }
++        }
++
++        return lookup;
+     }
+ 
+     public async Task<IReadOnlyList<FinanceInvoiceDto>> GetInvoicesAsync(
+         GetFinanceInvoicesQuery query,
+@@ -363,6 +468,46 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
+             .ToList();
+     }
++
++    private async Task<FinanceLinkedDocumentAccessDto> BuildDocumentAccessAsync(
++        Guid companyId,
++        Guid? documentId,
++        IReadOnlyDictionary<Guid, FinanceLinkedDocumentRow> linkedDocuments,
++        CancellationToken cancellationToken)
++    {
++        if (documentId is not Guid resolvedDocumentId)
++        {
++            return new FinanceLinkedDocumentAccessDto(
++                "none",
++                "No linked document is attached.",
++                false,
++                null);
++        }
++
++        if (linkedDocuments.TryGetValue(resolvedDocumentId, out var linkedDocument))
++        {
++            return new FinanceLinkedDocumentAccessDto(
++                "available",
++                "Linked document available.",
++                true,
++                new FinanceLinkedDocumentDto(
++                    linkedDocument.Id,
++                    linkedDocument.Title,
++                    linkedDocument.OriginalFileName,
++                    linkedDocument.ContentType));
++        }
++
++        var documentExists = await _dbContext.CompanyKnowledgeDocuments
++            .AsNoTracking()
++            .AnyAsync(x => x.CompanyId == companyId && x.Id == resolvedDocumentId, cancellationToken);
++
++        return documentExists
++            ? new FinanceLinkedDocumentAccessDto(
++                "inaccessible",
++                "Linked document unavailable or you do not have access.",
++                false,
++                null)
++            : new FinanceLinkedDocumentAccessDto(
++                "missing",
++                "Linked document is no longer available.",
++                false,
++                null);
++    }
+ 
+     private async Task<Dictionary<Guid, FinanceLinkedDocumentRow>> LoadLinkedDocumentsAsync(
+         Guid companyId,
+@@ -454,6 +599,31 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             ? null
+             : value.Value.ToUniversalTime();
+ 
++    private static string? NormalizeOptionalText(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? null
++            : value.Trim();
++
++    private static string? NormalizeFlaggedState(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        return value.Trim().ToLowerInvariant() switch
++        {
++            "all" => null,
++            "flagged" => "flagged",
++            "not_flagged" => "not_flagged",
++            _ => throw new ArgumentException("Flagged state must be 'all', 'flagged', or 'not_flagged'.", nameof(value))
++        };
++    }
++
++    private static bool MatchesFlaggedState(string? flaggedState, bool isFlagged) =>
++        flaggedState switch
++        {
++            "flagged" => isFlagged,
++            "not_flagged" => !isFlagged,
++            _ => true
++        };
++
+     private static bool IsCashAccount(string name, string code) =>
+         name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
+         code.StartsWith("10", StringComparison.OrdinalIgnoreCase);
+@@ -463,6 +633,17 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+         string.IsNullOrWhiteSpace(category)
+             ? "Uncategorized"
+             : category.Trim();
++
++    private static string ResolveTransactionAnomalyState(IReadOnlyCollection<FinanceSeedAnomalyDto>? anomalies)
++    {
++        if (anomalies is not { Count: > 0 })
++        {
++            return "clear";
++        }
++
++        return anomalies.Any(x => string.Equals(x.AnomalyType, "missing_receipt", StringComparison.OrdinalIgnoreCase))
++            ? "needs_review"
++            : "flagged";
++    }
+ 
+     private static string ResolveCurrency(IEnumerable<FinanceAmountRow> rows)
+     {
+diff --git a/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor b/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor
+@@ -1,14 +1,110 @@
+ @page "/finance/transactions"
++@page "/finance/transactions/{TransactionId:guid}"
+ 
+ <PageTitle>Transactions</PageTitle>
+ 
+ <FinancePageLayout
+     IsLoading="@IsLoading"
+     AccessState="@AccessState"
+     ErrorMessage="@ErrorMessage"
+     Title="Transactions"
+     Description="Inspect transaction activity and categorization work for the selected company."
+-    LoadingMessage="Loading transactions shell...">
+-    <p class="text-body-secondary mb-0">
+-        This shell reserves the route for tenant-aware transaction review and future finance workflows.
+-    </p>
++    LoadingMessage="Loading transactions workspace...">
++    <form method="get" class="agent-filter-bar mb-4">
++        <input type="hidden" name="@FinanceRoutes.CompanyIdQueryKey" value="@AccessState.CompanyId" />
++        <div>
++            <label class="form-label" for="transaction-filter-from">From</label>
++            <input id="transaction-filter-from" class="form-control" type="date" name="from" value="@FromInputValue" />
++        </div>
++        <div>
++            <label class="form-label" for="transaction-filter-to">To</label>
++            <input id="transaction-filter-to" class="form-control" type="date" name="to" value="@ToInputValue" />
++        </div>
++        <div>
++            <label class="form-label" for="transaction-filter-category">Category</label>
++            <select id="transaction-filter-category" class="form-select" name="category">
++                <option value="" selected="@string.IsNullOrWhiteSpace(CategoryFilterValue)">All categories</option>
++                @foreach (var option in CategoryOptions)
++                {
++                    <option value="@option" selected="@IsCategorySelected(option)">@FormatLabel(option)</option>
++                }
++            </select>
++        </div>
++        <div>
++            <label class="form-label" for="transaction-filter-flagged">Flagged</label>
++            <select id="transaction-filter-flagged" class="form-select" name="flagged">
++                <option value="all" selected="@IsFlaggedSelected("all")">All transactions</option>
++                <option value="flagged" selected="@IsFlaggedSelected("flagged")">Flagged only</option>
++                <option value="not_flagged" selected="@IsFlaggedSelected("not_flagged")">Not flagged</option>
++            </select>
++        </div>
++        <div class="dashboard-actions">
++            <button class="btn btn-primary" type="submit">Apply filters</button>
++            <a class="btn btn-outline-secondary" href="@ClearFiltersHref">Clear</a>
++        </div>
++    </form>
++
++    <div class="row g-4 align-items-start">
++        <div class="col-lg-7">
++            <div class="wizard-card wizard-card--compact">
++                <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
++                    <div>
++                        <h2 class="h5 mb-1">Transaction list</h2>
++                        <p class="text-body-secondary mb-0">Date, category, amount, and flagged state stay in sync with the route.</p>
++                    </div>
++                    <span class="badge text-bg-light">@Transactions.Count item@(Transactions.Count == 1 ? string.Empty : "s")</span>
++                </div>
++
++                <FinanceDataState
++                    IsLoading="@IsListLoading"
++                    IsEmpty="@IsListEmpty"
++                    ErrorMessage="@ListErrorMessage"
++                    LoadingTitle="Loading transactions"
++                    LoadingMessage="Fetching tenant-scoped transaction activity."
++                    EmptyTitle="No transactions matched the active filters"
++                    EmptyMessage="Adjust the date range, category, or flagged filter and try again."
++                    OnRetry="@ReloadAsync">
++                    <div class="list-group">
++                        @foreach (var transaction in Transactions)
++                        {
++                            <a class="@GetTransactionListItemClass(transaction.Id)" href="@BuildTransactionHref(transaction.Id)">
++                                <div class="d-flex w-100 justify-content-between gap-3">
++                                    <div>
++                                        <strong>@transaction.Description</strong>
++                                        <div class="text-body-secondary small mt-1">@FormatDate(transaction.TransactionUtc) | @FormatLabel(transaction.TransactionType)</div>
++                                        <div class="small mt-2">@transaction.ExternalReference</div>
++                                    </div>
++                                    <div class="text-end">
++                                        <div class="fw-semibold">@FormatCurrency(transaction.Amount, transaction.Currency)</div>
++                                        <div class="small text-body-secondary mt-1">@transaction.AccountName</div>
++                                        <div class="mt-2">
++                                            <span class="badge @(transaction.IsFlagged ? "text-bg-warning" : "text-bg-light")">@FormatLabel(transaction.AnomalyState)</span>
++                                        </div>
++                                    </div>
++                                </div>
++                            </a>
++                        }
++                    </div>
++                </FinanceDataState>
++            </div>
++        </div>
++
++        <div class="col-lg-5">
++            <div class="wizard-card wizard-card--compact">
++                @if (IsDetailLoading)
++                {
++                    <FinanceLoadingState Title="Loading transaction detail" Message="Resolving the selected transaction from the current route." />
++                }
++                else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
++                {
++                    <FinanceErrorState Title="Transaction detail unavailable" Message="@DetailErrorMessage!" RetryText="Retry" OnRetry="@ReloadAsync" />
++                }
++                else if (SelectedTransaction is null)
++                {
++                    <FinanceEmptyState Title="No transaction selected" Message="Select a transaction to open the route-driven detail panel." />
++                }
++                else
++                {
++                    <h2 class="h5">Transaction detail</h2>
++                    <p class="text-body-secondary mb-4">@SelectedTransaction.Description</p>
++
++                    <dl class="mb-4">
++                        <dt>Category</dt>
++                        <dd>@FormatLabel(SelectedTransaction.Category)</dd>
++                        <dt>Amount</dt>
++                        <dd>@FormatCurrency(SelectedTransaction.Amount, SelectedTransaction.Currency)</dd>
++                        <dt>Account</dt>
++                        <dd>@SelectedTransaction.AccountName</dd>
++                        <dt>Counterparty</dt>
++                        <dd>@(string.IsNullOrWhiteSpace(SelectedTransaction.CounterpartyName) ? "n/a" : SelectedTransaction.CounterpartyName)</dd>
++                        <dt>Occurred</dt>
++                        <dd>@FormatDate(SelectedTransaction.TransactionUtc)</dd>
++                        <dt>Reference</dt>
++                        <dd>@SelectedTransaction.ExternalReference</dd>
++                        <dt>Flag state</dt>
++                        <dd><span class="badge @(SelectedTransaction.IsFlagged ? "text-bg-warning" : "text-bg-light")">@FormatLabel(SelectedTransaction.AnomalyState)</span></dd>
++                    </dl>
++
++                    <h3 class="h6">Flags</h3>
++                    @if (SelectedTransaction.Flags.Count == 0)
++                    {
++                        <p class="text-body-secondary">No anomaly flags were recorded for this transaction.</p>
++                    }
++                    else
++                    {
++                        <div class="d-flex flex-wrap gap-2 mb-4">
++                            @foreach (var flag in SelectedTransaction.Flags)
++                            {
++                                <span class="badge text-bg-light">@FormatLabel(flag)</span>
++                            }
++                        </div>
++                    }
++
++                    <h3 class="h6">Linked document</h3>
++                    @if (SelectedTransaction.LinkedDocument.Document is not null)
++                    {
++                        <div class="text-body-secondary">@SelectedTransaction.LinkedDocument.Document.Title</div>
++                        <div class="small text-body-secondary">@SelectedTransaction.LinkedDocument.Document.OriginalFileName</div>
++                    }
++                    <p class="text-body-secondary mt-2">@SelectedTransaction.LinkedDocument.Message</p>
++                    @if (SelectedTransaction.LinkedDocument.CanNavigate && SelectedTransaction.LinkedDocument.Document is not null)
++                    {
++                        <a class="btn btn-outline-primary btn-sm" href="@BuildDocumentHref(SelectedTransaction.LinkedDocument.Document.Id)" target="_blank" rel="noopener noreferrer">Open linked document</a>
++                    }
++                }
++            </div>
++        </div>
++    </div>
+ </FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor.cs
+@@ -1,5 +1,144 @@
++using System.Globalization;
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++
+ namespace VirtualCompany.Web.Pages.Finance;
+ 
+ public partial class TransactionsPage : FinancePageBase
+ {
++    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
++
++    [Parameter]
++    public Guid? TransactionId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "from")]
++    public DateTime? From { get; set; }
++
++    [SupplyParameterFromQuery(Name = "to")]
++    public DateTime? To { get; set; }
++
++    [SupplyParameterFromQuery(Name = "category")]
++    public string? Category { get; set; }
++
++    [SupplyParameterFromQuery(Name = "flagged")]
++    public string? Flagged { get; set; }
++
++    private IReadOnlyList<FinanceTransactionResponse> Transactions { get; set; } = [];
++    private FinanceTransactionDetailResponse? SelectedTransaction { get; set; }
++    private bool IsListLoading { get; set; }
++    private bool IsDetailLoading { get; set; }
++    private string? ListErrorMessage { get; set; }
++    private string? DetailErrorMessage { get; set; }
++
++    private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Transactions.Count == 0;
++    private string FromInputValue => From?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty;
++    private string ToInputValue => To?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty;
++    private string? CategoryFilterValue => NormalizeOptionalText(Category);
++    private string FlaggedFilterValue => NormalizeFlaggedState(Flagged);
++    private IReadOnlyList<string> CategoryOptions => Transactions
++        .Select(x => x.TransactionType)
++        .Append(CategoryFilterValue ?? string.Empty)
++        .Where(x => !string.IsNullOrWhiteSpace(x))
++        .Distinct(StringComparer.OrdinalIgnoreCase)
++        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
++        .ToArray();
++    private string ClearFiltersHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Transactions, AccessState.CompanyId);
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        Transactions = [];
++        SelectedTransaction = null;
++        ListErrorMessage = null;
++        DetailErrorMessage = null;
++
++        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadTransactionsAsync(companyId);
++
++        if (TransactionId is Guid transactionId)
++        {
++            await LoadDetailAsync(companyId, transactionId);
++        }
++    }
++
++    private async Task ReloadAsync()
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadTransactionsAsync(companyId);
++        if (TransactionId is Guid transactionId)
++        {
++            await LoadDetailAsync(companyId, transactionId);
++        }
++    }
++
++    private async Task LoadTransactionsAsync(Guid companyId)
++    {
++        IsListLoading = true;
++        ListErrorMessage = null;
++
++        try
++        {
++            Transactions = await FinanceApiClient.GetTransactionsAsync(
++                companyId,
++                NormalizeStartUtc(From),
++                NormalizeEndExclusiveUtc(To),
++                CategoryFilterValue,
++                FlaggedFilterValue == "all" ? null : FlaggedFilterValue,
++                200);
++        }
++        catch (FinanceApiException ex)
++        {
++            Transactions = [];
++            ListErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsListLoading = false;
++        }
++    }
++
++    private async Task LoadDetailAsync(Guid companyId, Guid transactionId)
++    {
++        IsDetailLoading = true;
++        DetailErrorMessage = null;
++
++        try
++        {
++            SelectedTransaction = await FinanceApiClient.GetTransactionDetailAsync(companyId, transactionId);
++            if (SelectedTransaction is null)
++            {
++                DetailErrorMessage = "The selected transaction could not be found in the active company context.";
++            }
++        }
++        catch (FinanceApiException ex)
++        {
++            SelectedTransaction = null;
++            DetailErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsDetailLoading = false;
++        }
++    }
++
++    private string BuildTransactionHref(Guid transactionId)
++    {
++        var path = FinanceRoutes.BuildTransactionDetailPath(transactionId, null);
++        var query = new List<string>
++        {
++            $"{FinanceRoutes.CompanyIdQueryKey}={AccessState.CompanyId}"
++        };
++
++        if (From is DateTime from)
++        {
++            query.Add($"from={Uri.EscapeDataString(from.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))}");
++        }
++
++        if (To is DateTime to)
++        {
++            query.Add($"to={Uri.EscapeDataString(to.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))}");
++        }
++
++        if (!string.IsNullOrWhiteSpace(CategoryFilterValue))
++        {
++            query.Add($"category={Uri.EscapeDataString(CategoryFilterValue)}");
++        }
++
++        if (!string.Equals(FlaggedFilterValue, "all", StringComparison.OrdinalIgnoreCase))
++        {
++            query.Add($"flagged={Uri.EscapeDataString(FlaggedFilterValue)}");
++        }
++
++        return $"{path}?{string.Join("&", query)}";
++    }
++
++    private string BuildDocumentHref(Guid documentId) =>
++        $"/api/companies/{AccessState.CompanyId}/documents/{documentId}";
++
++    private string GetTransactionListItemClass(Guid transactionId) =>
++        TransactionId == transactionId
++            ? "list-group-item list-group-item-action active"
++            : "list-group-item list-group-item-action";
++
++    private bool IsCategorySelected(string option) =>
++        string.Equals(CategoryFilterValue, option, StringComparison.OrdinalIgnoreCase);
++
++    private bool IsFlaggedSelected(string option) =>
++        string.Equals(FlaggedFilterValue, option, StringComparison.OrdinalIgnoreCase);
++
++    private static string NormalizeFlaggedState(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return "all";
++        }
++
++        return value.Trim().ToLowerInvariant() switch
++        {
++            "flagged" => "flagged",
++            "not_flagged" => "not_flagged",
++            _ => "all"
++        };
++    }
++
++    private static string? NormalizeOptionalText(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
++
++    private static DateTime? NormalizeStartUtc(DateTime? value) =>
++        value.HasValue ? DateTime.SpecifyKind(value.Value.Date, DateTimeKind.Utc) : null;
++
++    private static DateTime? NormalizeEndExclusiveUtc(DateTime? value) =>
++        value.HasValue ? DateTime.SpecifyKind(value.Value.Date.AddDays(1), DateTimeKind.Utc) : null;
++
++    private static string FormatCurrency(decimal amount, string currency) =>
++        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
++
++    private static string FormatDate(DateTime value) =>
++        value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
++
++    private static string FormatLabel(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "n/a"
++            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
+@@ -1,14 +1,89 @@
+ @page "/finance/invoices"
++@page "/finance/invoices/{InvoiceId:guid}"
+ 
+ <PageTitle>Invoices</PageTitle>
+ 
+ <FinancePageLayout
+     IsLoading="@IsLoading"
+     AccessState="@AccessState"
+     ErrorMessage="@ErrorMessage"
+     Title="Invoices"
+     Description="Track invoice review queues and collection workflows inside the active company."
+-    LoadingMessage="Loading invoices shell...">
+-    <p class="text-body-secondary mb-0">
+-        This shell preserves company-scoped routing for invoice work without introducing finance data dependencies yet.
+-    </p>
++    LoadingMessage="Loading invoices workspace...">
++    <div class="row g-4 align-items-start">
++        <div class="col-lg-7">
++            <div class="wizard-card wizard-card--compact">
++                <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
++                    <div>
++                        <h2 class="h5 mb-1">Invoice list</h2>
++                        <p class="text-body-secondary mb-0">Approval status, supplier context, and selection all follow the route.</p>
++                    </div>
++                    <span class="badge text-bg-light">@Invoices.Count item@(Invoices.Count == 1 ? string.Empty : "s")</span>
++                </div>
++
++                <FinanceDataState
++                    IsLoading="@IsListLoading"
++                    IsEmpty="@IsListEmpty"
++                    ErrorMessage="@ListErrorMessage"
++                    LoadingTitle="Loading invoices"
++                    LoadingMessage="Fetching tenant-scoped invoices."
++                    EmptyTitle="No invoices available"
++                    EmptyMessage="The active company does not currently have invoice records to review."
++                    OnRetry="@ReloadAsync">
++                    <div class="list-group">
++                        @foreach (var invoice in Invoices)
++                        {
++                            <a class="@GetInvoiceListItemClass(invoice.Id)" href="@BuildInvoiceHref(invoice.Id)">
++                                <div class="d-flex w-100 justify-content-between gap-3">
++                                    <div>
++                                        <strong>@invoice.InvoiceNumber</strong>
++                                        <div class="text-body-secondary small mt-1">@invoice.CounterpartyName</div>
++                                        <div class="small mt-2">Due @FormatDate(invoice.DueUtc)</div>
++                                    </div>
++                                    <div class="text-end">
++                                        <div class="fw-semibold">@FormatCurrency(invoice.Amount, invoice.Currency)</div>
++                                        <div class="mt-2"><span class="badge text-bg-light">@FormatLabel(invoice.Status)</span></div>
++                                    </div>
++                                </div>
++                            </a>
++                        }
++                    </div>
++                </FinanceDataState>
++            </div>
++        </div>
++
++        <div class="col-lg-5">
++            <div class="wizard-card wizard-card--compact">
++                @if (IsDetailLoading)
++                {
++                    <FinanceLoadingState Title="Loading invoice detail" Message="Resolving the selected invoice from the route." />
++                }
++                else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
++                {
++                    <FinanceErrorState Title="Invoice detail unavailable" Message="@DetailErrorMessage!" RetryText="Retry" OnRetry="@ReloadAsync" />
++                }
++                else if (SelectedInvoice is null)
++                {
++                    <FinanceEmptyState Title="No invoice selected" Message="Select an invoice to open the detail panel route." />
++                }
++                else
++                {
++                    <h2 class="h5">Invoice detail</h2>
++                    <dl class="mb-4">
++                        <dt>Supplier</dt>
++                        <dd>@SelectedInvoice.CounterpartyName</dd>
++                        <dt>Status</dt>
++                        <dd><span class="badge text-bg-light">@FormatLabel(SelectedInvoice.Status)</span></dd>
++                        <dt>Amount</dt>
++                        <dd>@FormatCurrency(SelectedInvoice.Amount, SelectedInvoice.Currency)</dd>
++                        <dt>Issued</dt>
++                        <dd>@FormatDate(SelectedInvoice.IssuedUtc)</dd>
++                        <dt>Due</dt>
++                        <dd>@FormatDate(SelectedInvoice.DueUtc)</dd>
++                    </dl>
++
++                    <h3 class="h6">Workflow context</h3>
++                    @if (SelectedInvoice.WorkflowContext is null)
++                    {
++                        <p class="text-body-secondary">No linked review workflow metadata is available for this invoice yet.</p>
++                    }
++                    else
++                    {
++                        <dl class="mb-4">
++                            <dt>Classification</dt>
++                            <dd>@FormatLabel(SelectedInvoice.WorkflowContext.Classification)</dd>
++                            <dt>Risk level</dt>
++                            <dd>@FormatLabel(SelectedInvoice.WorkflowContext.RiskLevel)</dd>
++                            <dt>Recommended action</dt>
++                            <dd>@FormatLabel(SelectedInvoice.WorkflowContext.RecommendedAction)</dd>
++                            <dt>Approval request</dt>
++                            <dd>@(SelectedInvoice.WorkflowContext.ApprovalRequestId?.ToString("D") ?? "n/a")</dd>
++                            <dt>Workflow task</dt>
++                            <dd>@SelectedInvoice.WorkflowContext.TaskId.ToString("D")</dd>
++                        </dl>
++                        <p class="text-body-secondary mb-4">@SelectedInvoice.WorkflowContext.Rationale</p>
++                    }
++
++                    <h3 class="h6">Linked document</h3>
++                    @if (SelectedInvoice.LinkedDocument.Document is not null)
++                    {
++                        <div class="text-body-secondary">@SelectedInvoice.LinkedDocument.Document.Title</div>
++                        <div class="small text-body-secondary">@SelectedInvoice.LinkedDocument.Document.OriginalFileName</div>
++                    }
++                    <p class="text-body-secondary mt-2">@SelectedInvoice.LinkedDocument.Message</p>
++                    @if (SelectedInvoice.LinkedDocument.CanNavigate && SelectedInvoice.LinkedDocument.Document is not null)
++                    {
++                        <a class="btn btn-outline-primary btn-sm" href="@BuildDocumentHref(SelectedInvoice.LinkedDocument.Document.Id)" target="_blank" rel="noopener noreferrer">Open linked document</a>
++                    }
++                }
++            </div>
++        </div>
++    </div>
+ </FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
+@@ -1,5 +1,97 @@
++using System.Globalization;
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++
+ namespace VirtualCompany.Web.Pages.Finance;
+ 
+ public partial class InvoicesPage : FinancePageBase
+ {
++    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
++
++    [Parameter]
++    public Guid? InvoiceId { get; set; }
++
++    private IReadOnlyList<FinanceInvoiceResponse> Invoices { get; set; } = [];
++    private FinanceInvoiceDetailResponse? SelectedInvoice { get; set; }
++    private bool IsListLoading { get; set; }
++    private bool IsDetailLoading { get; set; }
++    private string? ListErrorMessage { get; set; }
++    private string? DetailErrorMessage { get; set; }
++
++    private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Invoices.Count == 0;
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        Invoices = [];
++        SelectedInvoice = null;
++        ListErrorMessage = null;
++        DetailErrorMessage = null;
++
++        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadInvoicesAsync(companyId);
++        if (InvoiceId is Guid invoiceId)
++        {
++            await LoadDetailAsync(companyId, invoiceId);
++        }
++    }
++
++    private async Task ReloadAsync()
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadInvoicesAsync(companyId);
++        if (InvoiceId is Guid invoiceId)
++        {
++            await LoadDetailAsync(companyId, invoiceId);
++        }
++    }
++
++    private async Task LoadInvoicesAsync(Guid companyId)
++    {
++        IsListLoading = true;
++        ListErrorMessage = null;
++
++        try
++        {
++            Invoices = await FinanceApiClient.GetInvoicesAsync(companyId, limit: 200);
++        }
++        catch (FinanceApiException ex)
++        {
++            Invoices = [];
++            ListErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsListLoading = false;
++        }
++    }
++
++    private async Task LoadDetailAsync(Guid companyId, Guid invoiceId)
++    {
++        IsDetailLoading = true;
++        DetailErrorMessage = null;
++
++        try
++        {
++            SelectedInvoice = await FinanceApiClient.GetInvoiceDetailAsync(companyId, invoiceId);
++            if (SelectedInvoice is null)
++            {
++                DetailErrorMessage = "The selected invoice could not be found in the active company context.";
++            }
++        }
++        catch (FinanceApiException ex)
++        {
++            SelectedInvoice = null;
++            DetailErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsDetailLoading = false;
++        }
++    }
++
++    private string BuildInvoiceHref(Guid invoiceId) =>
++        FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId);
++
++    private string BuildDocumentHref(Guid documentId) =>
++        $"/api/companies/{AccessState.CompanyId}/documents/{documentId}";
++
++    private string GetInvoiceListItemClass(Guid invoiceId) =>
++        InvoiceId == invoiceId
++            ? "list-group-item list-group-item-action active"
++            : "list-group-item list-group-item-action";
++
++    private static string FormatCurrency(decimal amount, string currency) =>
++        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
++
++    private static string FormatDate(DateTime value) =>
++        value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
++
++    private static string FormatLabel(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "n/a"
++            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+ }
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -58,6 +58,34 @@ public sealed class FinanceApiClient
+         return GetListAsync<FinanceSeedAnomalyResponse>(companyId, $"internal/companies/{companyId}/finance/anomalies?limit={limit}", cancellationToken);
+     }
+ 
++    public Task<IReadOnlyList<FinanceTransactionResponse>> GetTransactionsAsync(
++        Guid companyId,
++        DateTime? startUtc = null,
++        DateTime? endUtc = null,
++        string? category = null,
++        string? flagged = null,
++        int limit = 100,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<IReadOnlyList<FinanceTransactionResponse>>([]);
++        }
++
++        var uri = $"internal/companies/{companyId}/finance/transactions{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("category", category), ("flagged", flagged), ("limit", limit.ToString()))}";
++        return GetListAsync<FinanceTransactionResponse>(companyId, uri, cancellationToken);
++    }
++
++    public Task<FinanceTransactionDetailResponse?> GetTransactionDetailAsync(Guid companyId, Guid transactionId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinanceTransactionDetailResponse?>(null)
++            : GetAsync<FinanceTransactionDetailResponse>(companyId, $"internal/companies/{companyId}/finance/transactions/{transactionId}", allowNotFound: true, cancellationToken);
++
++    public Task<IReadOnlyList<FinanceInvoiceResponse>> GetInvoicesAsync(Guid companyId, DateTime? startUtc = null, DateTime? endUtc = null, int limit = 100, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<IReadOnlyList<FinanceInvoiceResponse>>([]);
++        }
++
++        var uri = $"internal/companies/{companyId}/finance/invoices{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("limit", limit.ToString()))}";
++        return GetListAsync<FinanceInvoiceResponse>(companyId, uri, cancellationToken);
++    }
++
++    public Task<FinanceInvoiceDetailResponse?> GetInvoiceDetailAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinanceInvoiceDetailResponse?>(null)
++            : GetAsync<FinanceInvoiceDetailResponse>(companyId, $"internal/companies/{companyId}/finance/invoices/{invoiceId}", allowNotFound: true, cancellationToken);
++
+     public async Task<FinanceMonthlySummaryResponse?> GetMonthlySummaryAsync(Guid companyId, DateTime? referenceUtc = null, CancellationToken cancellationToken = default)
+     {
+         FinanceSimulationClockResponse? clock = null;
+@@ -319,6 +347,65 @@ public sealed class FinanceExpenseCategoryResponse
+     public string Currency { get; set; } = string.Empty;
+ }
+ 
++public sealed class FinanceTransactionResponse
++{
++    public Guid Id { get; set; }
++    public Guid AccountId { get; set; }
++    public string AccountName { get; set; } = string.Empty;
++    public Guid? CounterpartyId { get; set; }
++    public string? CounterpartyName { get; set; }
++    public Guid? InvoiceId { get; set; }
++    public Guid? BillId { get; set; }
++    public DateTime TransactionUtc { get; set; }
++    public string TransactionType { get; set; } = string.Empty;
++    public decimal Amount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public string Description { get; set; } = string.Empty;
++    public string ExternalReference { get; set; } = string.Empty;
++    public FinanceLinkedDocumentResponse? LinkedDocument { get; set; }
++    public bool IsFlagged { get; set; }
++    public string AnomalyState { get; set; } = string.Empty;
++}
++
++public sealed class FinanceTransactionDetailResponse
++{
++    public Guid Id { get; set; }
++    public Guid AccountId { get; set; }
++    public string AccountName { get; set; } = string.Empty;
++    public Guid? CounterpartyId { get; set; }
++    public string? CounterpartyName { get; set; }
++    public Guid? InvoiceId { get; set; }
++    public Guid? BillId { get; set; }
++    public DateTime TransactionUtc { get; set; }
++    public string Category { get; set; } = string.Empty;
++    public decimal Amount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public string Description { get; set; } = string.Empty;
++    public string ExternalReference { get; set; } = string.Empty;
++    public bool IsFlagged { get; set; }
++    public string AnomalyState { get; set; } = string.Empty;
++    public List<string> Flags { get; set; } = [];
++    public FinanceLinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
++}
++
++public sealed class FinanceInvoiceResponse
++{
++    public Guid Id { get; set; }
++    public Guid CounterpartyId { get; set; }
++    public string CounterpartyName { get; set; } = string.Empty;
++    public string InvoiceNumber { get; set; } = string.Empty;
++    public DateTime IssuedUtc { get; set; }
++    public DateTime DueUtc { get; set; }
++    public decimal Amount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public FinanceLinkedDocumentResponse? LinkedDocument { get; set; }
++}
++
++public sealed class FinanceInvoiceDetailResponse
++{
++    public Guid Id { get; set; }
++    public Guid CounterpartyId { get; set; }
++    public string CounterpartyName { get; set; } = string.Empty;
++    public string InvoiceNumber { get; set; } = string.Empty;
++    public DateTime IssuedUtc { get; set; }
++    public DateTime DueUtc { get; set; }
++    public decimal Amount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public FinanceInvoiceWorkflowContextResponse? WorkflowContext { get; set; }
++    public FinanceLinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
++}
++
+ public sealed class FinanceSeedAnomalyResponse
+ {
+     public Guid Id { get; set; }
+@@ -328,3 +415,31 @@ public sealed class FinanceSeedAnomalyResponse
+     public List<Guid> AffectedRecordIds { get; set; } = [];
+     public string ExpectedDetectionMetadataJson { get; set; } = string.Empty;
+ }
++
++public sealed class FinanceLinkedDocumentResponse
++{
++    public Guid Id { get; set; }
++    public string Title { get; set; } = string.Empty;
++    public string OriginalFileName { get; set; } = string.Empty;
++    public string ContentType { get; set; } = string.Empty;
++}
++
++public sealed class FinanceLinkedDocumentAccessResponse
++{
++    public string Availability { get; set; } = string.Empty;
++    public string Message { get; set; } = string.Empty;
++    public bool CanNavigate { get; set; }
++    public FinanceLinkedDocumentResponse? Document { get; set; }
++}
++
++public sealed class FinanceInvoiceWorkflowContextResponse
++{
++    public Guid? WorkflowInstanceId { get; set; }
++    public Guid TaskId { get; set; }
++    public Guid? ApprovalRequestId { get; set; }
++    public string Classification { get; set; } = string.Empty;
++    public string RiskLevel { get; set; } = string.Empty;
++    public string RecommendedAction { get; set; } = string.Empty;
++    public string Rationale { get; set; } = string.Empty;
++    public decimal Confidence { get; set; }
++    public bool RequiresHumanApproval { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Services/FinanceRoutes.cs b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+--- a/src/VirtualCompany.Web/Services/FinanceRoutes.cs
++++ b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+@@ -11,7 +11,9 @@ public static class FinanceRoutes
+     public const string Home = "/finance";
+     public const string CashPosition = "/finance/cash-position";
+     public const string Transactions = "/finance/transactions";
++    public const string TransactionDetail = "/finance/transactions/{transactionId:guid}";
+     public const string Invoices = "/finance/invoices";
++    public const string InvoiceDetail = "/finance/invoices/{invoiceId:guid}";
+     public const string Balances = "/finance/balances";
+     public const string MonthlySummary = "/finance/monthly-summary";
+     public const string Anomalies = "/finance/anomalies";
+@@ -47,6 +49,12 @@ public static class FinanceRoutes
+             new("Anomalies", Anomalies, "Review finance anomalies and follow-up work in the selected tenant.")
+         ];
+ 
++    public static string BuildTransactionDetailPath(Guid transactionId, Guid? companyId) =>
++        WithCompanyContext($"/finance/transactions/{transactionId:D}", companyId);
++
++    public static string BuildInvoiceDetailPath(Guid invoiceId, Guid? companyId) =>
++        WithCompanyContext($"/finance/invoices/{invoiceId:D}", companyId);
++
+     public static string WithCompanyContext(string path, Guid? companyId)
+     {
+         if (companyId is not Guid resolvedCompanyId)
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -118,6 +118,61 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         Assert.NotNull(anomaliesByAffectedRecord);
+         Assert.Single(anomaliesByAffectedRecord!);
+         Assert.Equal(seed.AnomalyId, anomaliesByAffectedRecord[0].Id);
++
++        var filteredTransactionsResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions?category=customer_payment&flagged=flagged&limit=10");
++        Assert.Equal(HttpStatusCode.OK, filteredTransactionsResponse.StatusCode);
++        var filteredTransactions = await filteredTransactionsResponse.Content.ReadFromJsonAsync<List<TransactionResponse>>();
++        Assert.NotNull(filteredTransactions);
++        Assert.NotEmpty(filteredTransactions!);
++        Assert.All(filteredTransactions, transaction =>
++        {
++            Assert.Equal("customer_payment", transaction.TransactionType);
++            Assert.True(transaction.IsFlagged);
++        });
++    }
++
++    [Fact]
++    public async Task Finance_detail_endpoints_surface_route_drilldown_data_and_guard_linked_documents()
++    {
++        var seed = await SeedFinanceCompanyAsync();
++        using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var reviewResponse = await ownerClient.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.ReviewInvoiceId}/review-workflow",
++            new { });
++        Assert.Equal(HttpStatusCode.OK, reviewResponse.StatusCode);
++
++        var transactionDetailResponse = await ownerClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions/{seed.AccessibleTransactionId}");
++        Assert.Equal(HttpStatusCode.OK, transactionDetailResponse.StatusCode);
++        var transactionDetail = await transactionDetailResponse.Content.ReadFromJsonAsync<TransactionDetailResponse>();
++        Assert.NotNull(transactionDetail);
++        Assert.Equal(seed.AccessibleTransactionId, transactionDetail!.Id);
++        Assert.True(transactionDetail.IsFlagged);
++        Assert.NotEmpty(transactionDetail.Flags);
++        Assert.NotNull(transactionDetail.LinkedDocument);
++        Assert.Equal("available", transactionDetail.LinkedDocument.Availability);
++        Assert.True(transactionDetail.LinkedDocument.CanNavigate);
++        Assert.NotNull(transactionDetail.LinkedDocument.Document);
++
++        var invoiceDetailResponse = await ownerClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.ReviewInvoiceId}");
++        Assert.Equal(HttpStatusCode.OK, invoiceDetailResponse.StatusCode);
++        var invoiceDetail = await invoiceDetailResponse.Content.ReadFromJsonAsync<InvoiceDetailResponse>();
++        Assert.NotNull(invoiceDetail);
++        Assert.Equal(seed.ReviewInvoiceId, invoiceDetail!.Id);
++        Assert.NotNull(invoiceDetail.WorkflowContext);
++        Assert.NotEqual(Guid.Empty, invoiceDetail.WorkflowContext!.TaskId);
++
++        using var approverClient = CreateAuthenticatedClient(seed.ApproverSubject, seed.ApproverEmail, seed.ApproverDisplayName);
++        var restrictedInvoiceDetailResponse = await approverClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.RestrictedInvoiceId}");
++        Assert.Equal(HttpStatusCode.OK, restrictedInvoiceDetailResponse.StatusCode);
++        var restrictedInvoiceDetail = await restrictedInvoiceDetailResponse.Content.ReadFromJsonAsync<InvoiceDetailResponse>();
++        Assert.NotNull(restrictedInvoiceDetail);
++        Assert.Equal("inaccessible", restrictedInvoiceDetail!.LinkedDocument.Availability);
++        Assert.False(restrictedInvoiceDetail.LinkedDocument.CanNavigate);
++        Assert.Null(restrictedInvoiceDetail.LinkedDocument.Document);
+     }
+ 
+     private async Task<FinanceEndpointSeed> SeedFinanceCompanyAsync()
+@@ -132,9 +187,14 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         const string displayName = "Finance Reader";
+         var employeeUserId = Guid.NewGuid();
+         var employeeSubject = $"finance-employee-{Guid.NewGuid():N}";
+-        var anomalyId = Guid.Empty;
+-        var affectedRecordId = Guid.Empty;
+         var employeeEmail = $"{employeeSubject}@example.com";
++        var approverUserId = Guid.NewGuid();
++        var approverSubject = $"finance-approver-{Guid.NewGuid():N}";
++        var approverEmail = $"{approverSubject}@example.com";
++        const string approverDisplayName = "Finance Approver";
++        var anomalyId = Guid.Empty;
++        var affectedRecordId = Guid.Empty;
++        var accessibleTransactionId = Guid.Empty;
++        var restrictedInvoiceId = Guid.Empty;
++        var reviewInvoiceId = Guid.Empty;
+         const string employeeDisplayName = "Finance Employee";
+         FinanceSeedResult? financeSeed = null;
+ 
+@@ -142,11 +202,14 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         {
+             dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
+             dbContext.Users.Add(new User(employeeUserId, employeeEmail, employeeDisplayName, "dev-header", employeeSubject));
++            dbContext.Users.Add(new User(approverUserId, approverEmail, approverDisplayName, "dev-header", approverSubject));
+             dbContext.Companies.AddRange(
+                 new Company(companyId, "Finance Read Company"),
+                 new Company(otherCompanyId, "Other Finance Read Company"));
+             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, approverUserId, CompanyMembershipRole.FinanceApprover, CompanyMembershipStatus.Active));
+ 
+             financeSeed = FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++            accessibleTransactionId = financeSeed.TransactionIds[0];
++            restrictedInvoiceId = financeSeed.InvoiceIds[4];
++            reviewInvoiceId = financeSeed.InvoiceIds[0];
+             var seedAnomaly = new FinanceSeedAnomaly(
+                 Guid.NewGuid(),
+                 companyId,
+@@ -170,7 +233,10 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+             companyId, otherCompanyId, subject, email, displayName,
+-            employeeSubject, employeeEmail, employeeDisplayName,
+-            financeSeed!.DocumentIds, anomalyId, affectedRecordId);
++            employeeSubject, employeeEmail, employeeDisplayName,
++            approverSubject, approverEmail, approverDisplayName,
++            financeSeed!.DocumentIds, anomalyId, affectedRecordId,
++            accessibleTransactionId, restrictedInvoiceId, reviewInvoiceId);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+@@ -190,8 +256,14 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         string DisplayName,
+         string EmployeeSubject,
+         string EmployeeEmail,
+         string EmployeeDisplayName,
++        string ApproverSubject,
++        string ApproverEmail,
++        string ApproverDisplayName,
+         IReadOnlyList<Guid> DocumentIds,
+         Guid AnomalyId,
+-        Guid AffectedRecordId);
++        Guid AffectedRecordId,
++        Guid AccessibleTransactionId,
++        Guid RestrictedInvoiceId,
++        Guid ReviewInvoiceId);
+ 
+     private sealed class CashBalanceResponse
+     {
+@@ -279,6 +351,8 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         public string Description { get; set; } = string.Empty;
+         public string ExternalReference { get; set; } = string.Empty;
+         public LinkedDocumentResponse? LinkedDocument { get; set; }
++        public bool IsFlagged { get; set; }
++        public string AnomalyState { get; set; } = string.Empty;
+     }
+ 
+     private sealed class InvoiceResponse
+@@ -310,6 +384,37 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         public string ContentType { get; set; } = string.Empty;
+     }
+ 
++    private sealed class LinkedDocumentAccessResponse
++    {
++        public string Availability { get; set; } = string.Empty;
++        public string Message { get; set; } = string.Empty;
++        public bool CanNavigate { get; set; }
++        public LinkedDocumentResponse? Document { get; set; }
++    }
++
++    private sealed class TransactionDetailResponse
++    {
++        public Guid Id { get; set; }
++        public bool IsFlagged { get; set; }
++        public string AnomalyState { get; set; } = string.Empty;
++        public List<string> Flags { get; set; } = [];
++        public LinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
++    }
++
++    private sealed class InvoiceDetailResponse
++    {
++        public Guid Id { get; set; }
++        public string Status { get; set; } = string.Empty;
++        public InvoiceWorkflowContextResponse? WorkflowContext { get; set; }
++        public LinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
++    }
++
++    private sealed class InvoiceWorkflowContextResponse
++    {
++        public Guid? WorkflowInstanceId { get; set; }
++        public Guid TaskId { get; set; }
++        public Guid? ApprovalRequestId { get; set; }
++        public string Classification { get; set; } = string.Empty;
++        public string RiskLevel { get; set; } = string.Empty;
++        public string RecommendedAction { get; set; } = string.Empty;
++        public string Rationale { get; set; } = string.Empty;
++    }
++
+     private sealed class SeedAnomalyResponse
+     {
+         public Guid Id { get; set; }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
+@@ -10,7 +10,9 @@ public sealed class FinanceRouteRegistrationTests
+     [Theory]
+     [InlineData(typeof(FinancePage), FinanceRoutes.Home)]
+     [InlineData(typeof(CashPositionPage), FinanceRoutes.CashPosition)]
+     [InlineData(typeof(TransactionsPage), FinanceRoutes.Transactions)]
++    [InlineData(typeof(TransactionsPage), FinanceRoutes.TransactionDetail)]
+     [InlineData(typeof(InvoicesPage), FinanceRoutes.Invoices)]
++    [InlineData(typeof(InvoicesPage), FinanceRoutes.InvoiceDetail)]
+     [InlineData(typeof(BalancesPage), FinanceRoutes.Balances)]
+     [InlineData(typeof(MonthlySummaryPage), FinanceRoutes.MonthlySummary)]
+     [InlineData(typeof(AnomaliesPage), FinanceRoutes.Anomalies)]
+END_OF_PATCH

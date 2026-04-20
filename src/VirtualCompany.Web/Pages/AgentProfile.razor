@@ -131,7 +131,13 @@ else
                             <dt>Display name</dt>
                             <dd>@currentProfile.DisplayName</dd>
                             <dt>Role</dt>
-                            <dd>@currentProfile.RoleName</dd>
+                            <dd>
+                                @currentProfile.RoleName
+                                @if (IsLauraFinanceManagerProfile(currentProfile))
+                                {
+                                    <span class="badge text-bg-warning ms-2">Preconfigured Finance Manager</span>
+                                }
+                            </dd>
                             <dt>Department</dt>
                             <dd>@currentProfile.Department</dd>
                             <dt>Seniority</dt>
@@ -165,6 +171,39 @@ else
                     <strong>Future analytics note:</strong> extend this profile page first for workload, KPI, health, and trend modules so navigation remains stable from the roster and management surfaces.
                 </div>
             </section>
+
+            @if (IsFinanceProfile(currentProfile))
+            {
+                <section id="finance-context" class="wizard-card agent-profile-section agent-profile-section--wide">
+                    <div class="agent-profile-section-heading">
+                        <div>
+                            <span class="dashboard-kicker">Finance context</span>
+                            <h2 class="h5 mb-1 mt-2">@(IsLauraFinanceManagerProfile(currentProfile) ? "Finance Manager context" : "Finance workflow context")</h2>
+                            <p class="text-body-secondary mb-0">@(IsLauraFinanceManagerProfile(currentProfile) ? "Laura is the preconfigured Finance Manager for finance workflows, transaction categorization, invoice review, and cash posture monitoring." : "This finance profile can review finance capabilities, transaction categorization, invoice workflows, and linked operating routes.")</p>
+                        </div>
+                    </div>
+
+                    <div class="summary-pill-grid mb-4">
+                        @foreach (var capability in GetFinanceCapabilitySummaries(currentProfile))
+                        {
+                            <div class="summary-pill">
+                                <span class="dashboard-kicker">Capability</span>
+                                <strong>@capability</strong>
+                            </div>
+                        }
+                    </div>
+
+                    <div class="template-grid">
+                        @foreach (var card in BuildFinanceWorkflowCards())
+                        {
+                            <a class="template-card text-decoration-none text-reset" href="@card.Href">
+                                <strong>@card.Title</strong>
+                                <div class="text-body-secondary mt-2">@card.Description</div>
+                            </a>
+                        }
+                    </div>
+                </section>
+            }
 
             <section id="objectives" class="wizard-card agent-profile-section">
                 <h2 class="h5 mb-3">Objectives</h2>
@@ -524,6 +563,29 @@ else
             ? "AG"
             : new string(parts);
     }
+
+    private static bool IsFinanceProfile(AgentProfileViewModel profile) =>
+        AgentFinancePresentation.IsFinanceProfile(profile);
+
+    private static bool IsLauraFinanceManagerProfile(AgentProfileViewModel profile) =>
+        AgentFinancePresentation.IsLauraFinanceManagerProfile(profile);
+
+    private IReadOnlyList<string> GetFinanceCapabilitySummaries(AgentProfileViewModel profile) =>
+        AgentFinancePresentation.GetCapabilitySummaries(profile);
+
+    private IReadOnlyList<(string Title, string Description, string Href)> BuildFinanceWorkflowCards() =>
+        AgentFinancePresentation.BuildWorkflowCards(CompanyId)
+            .Select(card => (card.Title, card.Description, card.Href))
+            .ToArray();
+
+    private static IReadOnlyList<string> TryReadStringArray(IReadOnlyDictionary<string, JsonNode?> payload, string key) =>
+        payload.TryGetValue(key, out var node) && node is JsonArray array
+            ? array
+                .Select(item => item is JsonValue value && value.TryGetValue<string>(out var text) ? text : null)
+                .Where(text => !string.IsNullOrWhiteSpace(text))
+                .Select(text => text!)
+                .ToArray()
+            : [];
 
     private RenderFragment RenderEntries(IReadOnlyDictionary<string, JsonNode?> values) => builder =>
     {

@@ -1,0 +1,384 @@
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -7,7 +7,7 @@ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ [ApiController]
+ [Route("internal/companies/{companyId:guid}/finance")]
+-[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[Authorize(Policy = CompanyPolicies.FinanceView)]
+ [RequireCompanyContext]
+ public sealed class InternalFinanceController : ControllerBase
+ {
+diff --git a/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs b/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs
+--- a/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs
++++ b/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs
+@@ -6,10 +6,12 @@ public static class CompanyPolicies
+     public const string CompanyManager = "CompanyManager";
+     public const string AuditReview = "AuditReview";
+     public const string CompanyOwnerOrAdmin = "CompanyOwnerOrAdmin";
++    public const string FinanceView = "FinanceView";
+ 
+     public const string CompanyMembership = CompanyMember;
+     public const string CompanyAuditReview = AuditReview;
+     public const string CompanyAdmin = CompanyOwnerOrAdmin;
++    public const string CompanyFinanceView = FinanceView;
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
+--- a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
++++ b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
+@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Shared;
+ 
+ namespace VirtualCompany.Infrastructure.Authorization;
+ 
+@@ -16,6 +17,20 @@ public sealed class CompanyMembershipRoleRequirement : IAuthorizationRequirement
+     // Agent execution permissions belong to dedicated agent policy components.
+     public IReadOnlySet<CompanyMembershipRole> AllowedMembershipRoles { get; }
+ }
++
++public sealed class CompanyPermissionRequirement : IAuthorizationRequirement
++{
++    public CompanyPermissionRequirement(string permission)
++    {
++        if (string.IsNullOrWhiteSpace(permission))
++        {
++            throw new ArgumentException("Permission is required.", nameof(permission));
++        }
++
++        Permission = permission.Trim();
++    }
++
++    public string Permission { get; }
++}
+ 
+ public sealed class CompanyMembershipAuthorizationHandler
+     : AuthorizationHandler<CompanyMembershipRequirement>
+@@ -94,3 +109,48 @@ public sealed class CompanyMembershipRoleResourceAuthorizationHandler
+         }
+     }
+ }
++
++public sealed class CompanyPermissionAuthorizationHandler
++    : AuthorizationHandler<CompanyPermissionRequirement>
++{
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
++
++    public CompanyPermissionAuthorizationHandler(
++        ICompanyMembershipContextResolver companyMembershipContextResolver)
++    {
++        _companyMembershipContextResolver = companyMembershipContextResolver;
++    }
++
++    protected override async Task HandleRequirementAsync(
++        AuthorizationHandlerContext context,
++        CompanyPermissionRequirement requirement)
++    {
++        var companyContext = await _companyMembershipContextResolver.ResolveAsync(CancellationToken.None);
++        if (companyContext is not null &&
++            CompanyPermissionAuthorizationRules.HasPermission(companyContext.MembershipRole, requirement.Permission))
++        {
++            context.Succeed(requirement);
++        }
++    }
++}
++
++public sealed class CompanyPermissionResourceAuthorizationHandler
++    : AuthorizationHandler<CompanyPermissionRequirement, Guid>
++{
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
++
++    public CompanyPermissionResourceAuthorizationHandler(
++        ICompanyMembershipContextResolver companyMembershipContextResolver)
++    {
++        _companyMembershipContextResolver = companyMembershipContextResolver;
++    }
++
++    protected override async Task HandleRequirementAsync(
++        AuthorizationHandlerContext context,
++        CompanyPermissionRequirement requirement,
++        Guid companyId)
++    {
++        var companyContext = await _companyMembershipContextResolver.ResolveAsync(companyId, CancellationToken.None);
++        if (companyContext is not null &&
++            CompanyPermissionAuthorizationRules.HasPermission(companyContext.MembershipRole, requirement.Permission))
++        {
++            context.Succeed(requirement);
++        }
++    }
++}
++
++internal static class CompanyPermissionAuthorizationRules
++{
++    public static bool HasPermission(CompanyMembershipRole membershipRole, string permission) =>
++        permission switch
++        {
++            FinancePermissions.View => FinanceAccess.CanView(membershipRole.ToStorageValue()),
++            _ => false
++        };
++}
+diff --git a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs
+--- a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs
++++ b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs
+@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
+ using Microsoft.Extensions.Hosting;
+ using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Shared;
+ 
+ namespace VirtualCompany.Infrastructure.Authorization;
+ 
+@@ -39,6 +40,10 @@ public static class CompanyAuthorizationServiceCollectionExtensions
+                 policy.RequireAuthenticatedUser()
+                     .AddRequirements(new CompanyMembershipRoleRequirement(
+                         CompanyMembershipRole.Owner,
++                        CompanyMembershipRole.Admin,
++                        CompanyMembershipRole.Manager,
++                        CompanyMembershipRole.FinanceApprover)));
++
++            options.AddPolicy(CompanyPolicies.FinanceView, policy =>
++                policy.RequireAuthenticatedUser()
++                    .AddRequirements(new CompanyPermissionRequirement(FinancePermissions.View)));
++
++            options.AddPolicy(CompanyPolicies.CompanyOwnerOrAdmin, policy =>
++                policy.RequireAuthenticatedUser()
++                    .AddRequirements(new CompanyMembershipRoleRequirement(
++                        CompanyMembershipRole.Owner,
+                         CompanyMembershipRole.Admin)));
+-
+-            options.AddPolicy(CompanyPolicies.CompanyOwnerOrAdmin, policy =>
+-                policy.RequireAuthenticatedUser()
+-                    .AddRequirements(new CompanyMembershipRoleRequirement(
+-                        CompanyMembershipRole.Owner,
+-                        CompanyMembershipRole.Admin)));
+         });
+ 
+         return services;
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -283,6 +283,8 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyMembershipContextResolver, CompanyMembershipContextResolver>();
+         services.AddScoped<IAuthorizationHandler, CompanyMembershipRoleAuthorizationHandler>();
+         services.AddScoped<IAuthorizationHandler, CompanyMembershipRoleResourceAuthorizationHandler>();
++        services.AddScoped<IAuthorizationHandler, CompanyPermissionAuthorizationHandler>();
++        services.AddScoped<IAuthorizationHandler, CompanyPermissionResourceAuthorizationHandler>();
+ 
+         services
+             .AddAuthentication(options =>
+diff --git a/src/VirtualCompany.Shared/FinanceAccess.cs b/src/VirtualCompany.Shared/FinanceAccess.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Shared/FinanceAccess.cs
+@@ -0,0 +1,21 @@
++namespace VirtualCompany.Shared;
++
++public static class FinancePermissions
++{
++    public const string View = "finance.view";
++}
++
++public static class FinanceAccess
++{
++    private static readonly HashSet<string> FinanceViewRoleValues = new(StringComparer.OrdinalIgnoreCase)
++    {
++        "owner",
++        "admin",
++        "manager",
++        "finance_approver"
++    };
++
++    public static IReadOnlyCollection<string> ViewRoles => FinanceViewRoleValues;
++
++    public static bool CanView(string? membershipRole) =>
++        !string.IsNullOrWhiteSpace(membershipRole) &&
++        FinanceViewRoleValues.Contains(membershipRole.Trim());
++}
+diff --git a/src/VirtualCompany.Web/Layout/NavMenu.razor b/src/VirtualCompany.Web/Layout/NavMenu.razor
+--- a/src/VirtualCompany.Web/Layout/NavMenu.razor
++++ b/src/VirtualCompany.Web/Layout/NavMenu.razor
+@@ -1,6 +1,6 @@
+ @inject OnboardingApiClient ApiClient
+ @inject FinanceAccessResolver FinanceAccessResolver
+ 
+-Лпи<div class="top-row ps-3 navbar navbar-dark">
++<div class="top-row ps-3 navbar navbar-dark">
+     <div class="container-fluid">
+         <a class="navbar-brand" href="">Virtual Company</a>
+         <button title="Navigation menu" class="navbar-toggler" @onclick="ToggleNavMenu">
+diff --git a/src/VirtualCompany.Web/Services/FinanceAccessResolver.cs b/src/VirtualCompany.Web/Services/FinanceAccessResolver.cs
+--- a/src/VirtualCompany.Web/Services/FinanceAccessResolver.cs
++++ b/src/VirtualCompany.Web/Services/FinanceAccessResolver.cs
+@@ -1,3 +1,5 @@
++using VirtualCompany.Shared;
++
+ namespace VirtualCompany.Web.Services;
+ 
+ public enum FinanceAccessStateKind
+@@ -29,6 +31,9 @@ public sealed class FinanceAccessResolver
+         var activeMemberships = currentUser?.Memberships
+             .Where(membership => IsActive(membership.Status))
+             .ToList()
++            ?? [];
++        var financeMemberships = activeMemberships
++            .Where(membership => HasFinanceViewAccess(membership.MembershipRole))
+             ?? [];
+ 
+         if (requestedCompanyId is Guid companyId)
+@@ -37,21 +42,32 @@ public sealed class FinanceAccessResolver
+             if (currentUser?.ActiveCompany is { } activeCompany &&
+                 activeCompany.CompanyId == companyId &&
+                 IsActive(activeCompany.Status))
+             {
+-                return FinanceAccessState.Allowed(activeCompany.CompanyId, activeCompany.CompanyName, activeCompany.MembershipRole);
++                return HasFinanceViewAccess(activeCompany.MembershipRole)
++                    ? FinanceAccessState.Allowed(activeCompany.CompanyId, activeCompany.CompanyName, activeCompany.MembershipRole)
++                    : FinanceAccessState.Forbidden("Finance access requires the finance.view permission for the selected company.");
+             }
+ 
+             var requestedMembership = activeMemberships.FirstOrDefault(membership => membership.CompanyId == companyId);
+-            return requestedMembership is null
+-                ? FinanceAccessState.Forbidden("Finance pages are only available inside a company you can access.")
++            if (requestedMembership is null)
++            {
++                return FinanceAccessState.Forbidden("Finance pages are only available inside a company you can access.");
++            }
++
++            return HasFinanceViewAccess(requestedMembership.MembershipRole)
+                 : FinanceAccessState.Allowed(
+                     requestedMembership.CompanyId,
+                     requestedMembership.CompanyName,
+-                    requestedMembership.MembershipRole);
++                    requestedMembership.MembershipRole)
++                ? FinanceAccessState.Allowed(
++                    requestedMembership.CompanyId,
++                    requestedMembership.CompanyName,
++                    requestedMembership.MembershipRole)
++                : FinanceAccessState.Forbidden("Finance access requires the finance.view permission for the selected company.");
+         }
+ 
+         if (currentUser?.ActiveCompany is { } resolvedCompany && IsActive(resolvedCompany.Status))
+         {
+-            return FinanceAccessState.Allowed(
+-                resolvedCompany.CompanyId,
+-                resolvedCompany.CompanyName,
+-                resolvedCompany.MembershipRole);
++            return HasFinanceViewAccess(resolvedCompany.MembershipRole)
++                ? FinanceAccessState.Allowed(
++                    resolvedCompany.CompanyId,
++                    resolvedCompany.CompanyName,
++                    resolvedCompany.MembershipRole)
++                : FinanceAccessState.Forbidden("Finance access requires the finance.view permission for the active company.");
+         }
+ 
+-        if (activeMemberships.Count == 1)
++        if (financeMemberships.Count == 1)
+         {
+-            var membership = activeMemberships[0];
++            var membership = financeMemberships[0];
+             return FinanceAccessState.Allowed(
+                 membership.CompanyId,
+                 membership.CompanyName,
+                 membership.MembershipRole);
+         }
+ 
+-        if (activeMemberships.Count > 1)
++        if (financeMemberships.Count > 1)
+         {
+             return FinanceAccessState.CompanySelectionRequired(
+                 "Finance pages stay scoped to the active company. Select a company before opening the finance workspace.");
+         }
+ 
+-        return FinanceAccessState.Forbidden("Finance access requires an active company membership.");
++        return activeMemberships.Count > 0
++            ? FinanceAccessState.Forbidden("Finance access requires the finance.view permission for the selected company.")
++            : FinanceAccessState.Forbidden("Finance access requires an active company membership.");
+     }
+@@ -68,4 +84,7 @@ public sealed class FinanceAccessResolver
+ 
+     private static bool IsActive(string? status) =>
+         string.Equals(status, "active", StringComparison.OrdinalIgnoreCase);
++
++    private static bool HasFinanceViewAccess(string? membershipRole) =>
++        FinanceAccess.CanView(membershipRole);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs b/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs
+@@ -31,6 +31,24 @@ public sealed class FinanceAccessResolverTests
+         Assert.Equal("finance_approver", state.MembershipRole);
+     }
+ 
++    [Fact]
++    public void Resolve_hides_navigation_when_active_company_membership_lacks_finance_view_permission()
++    {
++        var companyId = Guid.NewGuid();
++        var currentUser = CreateCurrentUser(
++            memberships: [CreateMembership(companyId, "Company A", "employee", "active")],
++            activeCompany: CreateActiveCompany(companyId, "Company A", "employee", "active"));
++
++        var state = _resolver.Resolve(currentUser, null);
++
++        Assert.True(state.IsForbidden);
++        Assert.False(_resolver.CanShowNavigation(currentUser));
++        Assert.Null(_resolver.BuildNavigationHref(currentUser));
++    }
++
++    [Fact]
++    public void Resolve_forbids_requested_company_when_membership_lacks_finance_view_permission()
++    {
++        var companyId = Guid.NewGuid();
++        var currentUser = CreateCurrentUser(
++            memberships: [CreateMembership(companyId, "Company A", "employee", "active")],
++            activeCompany: null);
++
++        var state = _resolver.Resolve(currentUser, companyId);
++
++        Assert.True(state.IsForbidden);
++    }
++
+     [Fact]
+     public void Resolve_requires_company_selection_when_multiple_active_memberships_exist()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -125,29 +125,14 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+     }
+ 
+     [Fact]
+-    public async Task Linked_finance_documents_are_filtered_by_knowledge_access_scope()
++    public async Task Internal_finance_read_endpoints_forbid_users_without_finance_view_permission()
+     {
+         var seed = await SeedFinanceCompanyAsync();
+-
+-        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+-        var transactionsResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions?limit=5");
+-
+-        Assert.Equal(HttpStatusCode.OK, transactionsResponse.StatusCode);
+-        var transactions = await transactionsResponse.Content.ReadFromJsonAsync<List<TransactionResponse>>();
+-        Assert.NotNull(transactions);
+-        Assert.Contains(transactions!, transaction => transaction.LinkedDocument is not null);
+-
+-        var restrictedDocumentId = seed.DocumentIds[4];
+-        Assert.Contains(
+-            transactions!,
+-            transaction => transaction.LinkedDocument is not null && transaction.LinkedDocument.Id == restrictedDocumentId);
+-
+         using var employeeClient = CreateAuthenticatedClient(seed.EmployeeSubject, seed.EmployeeEmail, seed.EmployeeDisplayName);
+-        var employeeResponse = await employeeClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions?limit=5");
++        var employeeResponse = await employeeClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions?limit=5");
+ 
+-        Assert.Equal(HttpStatusCode.OK, employeeResponse.StatusCode);
+-        var employeeTransactions = await employeeResponse.Content.ReadFromJsonAsync<List<TransactionResponse>>();
+-        Assert.NotNull(employeeTransactions);
+-        Assert.Contains(employeeTransactions!, transaction => transaction.LinkedDocument is not null);
+-        Assert.DoesNotContain(
+-            employeeTransactions!, transaction => transaction.LinkedDocument is not null && transaction.LinkedDocument.Id == restrictedDocumentId);
++        Assert.Equal(HttpStatusCode.Forbidden, employeeResponse.StatusCode);
+     }
+ 
+     [Fact]
+END_OF_PATCH

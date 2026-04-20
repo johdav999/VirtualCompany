@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-22.3.3",
+  "promptPath": ".ai-design/prompts/TASK-22.3.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-19T16:05:06.164Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-19T16-05-06-164Z_TASK-22.3.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-19T16-05-06-164Z_TASK-22.3.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-19T16:21:41.204Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": ".Empty;\n-    public string Title { get; set; } = string.Empty;\n-    public string Summary { get; set; } = string.Empty;\n-    public DateTime OccurredUtc { get; set; }\n-    public string? Route { get; set; }\n-}\n-\n-public sealed class ExecutiveCockpitSetupStateViewModel\n-{\n-    public bool HasAgents { get; set; }\n-    public bool HasWorkflows { get; set; }\n-    public bool HasKnowledge { get; set; }\n-    public int AgentCount { get; set; }\n-    public int WorkflowCount { get; set; }\n-    public int KnowledgeDocumentCount { get; set; }\n-    public bool IsInitialSetupEmpty { get; set; }\n-}\n-\n-public sealed class ExecutiveCockpitEmptyStateFlagsViewModel\n-{\n-    public bool NoAgents { get; set; }\n-    public bool NoWorkflows { get; set; }\n-    public bool NoKnowledge { get; set; }\n-    public bool NoRecentActivity { get; set; }\n-    public bool NoPendingApprovals { get; set; }\n-    public bool NoAlerts { get; set; }\n-}\ndiff --git a/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs\n--- a/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs\n@@ -27,6 +27,7 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Test\n         Assert.Equal(60000m, snapshot.Cash);\n         Assert.Equal(1000m, snapshot.BurnRate);\n         Assert.Equal(60, snapshot.RunwayDays);\n+        Assert.Equal(\"USD\", snapshot.Currency);\n         Assert.Equal(\"warning\", snapshot.RiskLevel);\n         Assert.True(snapshot.HasFinanceData);\n     }\n@@ -100,6 +101,7 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Test\n         public int? RunwayDays { get; set; }\n         public string RiskLevel { get; set; } = string.Empty;\n         public bool HasFinanceData { get; set; }\n+        public string Currency { get; set; } = string.Empty;\n     }\n }\nEND_OF_PATCH\n",
+  "stderrTail": "string Title { get; set; } = string.Empty;\n-    public string Summary { get; set; } = string.Empty;\n-    public DateTime OccurredUtc { get; set; }\n-    public string? Route { get; set; }\n-}\n-\n-public sealed class ExecutiveCockpitSetupStateViewModel\n-{\n-    public bool HasAgents { get; set; }\n-    public bool HasWorkflows { get; set; }\n-    public bool HasKnowledge { get; set; }\n-    public int AgentCount { get; set; }\n-    public int WorkflowCount { get; set; }\n-    public int KnowledgeDocumentCount { get; set; }\n-    public bool IsInitialSetupEmpty { get; set; }\n-}\n-\n-public sealed class ExecutiveCockpitEmptyStateFlagsViewModel\n-{\n-    public bool NoAgents { get; set; }\n-    public bool NoWorkflows { get; set; }\n-    public bool NoKnowledge { get; set; }\n-    public bool NoRecentActivity { get; set; }\n-    public bool NoPendingApprovals { get; set; }\n-    public bool NoAlerts { get; set; }\n-}\ndiff --git a/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs\n--- a/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs\n@@ -27,6 +27,7 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Test\n         Assert.Equal(60000m, snapshot.Cash);\n         Assert.Equal(1000m, snapshot.BurnRate);\n         Assert.Equal(60, snapshot.RunwayDays);\n+        Assert.Equal(\"USD\", snapshot.Currency);\n         Assert.Equal(\"warning\", snapshot.RiskLevel);\n         Assert.True(snapshot.HasFinanceData);\n     }\n@@ -100,6 +101,7 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Test\n         public int? RunwayDays { get; set; }\n         public string RiskLevel { get; set; } = string.Empty;\n         public bool HasFinanceData { get; set; }\n+        public string Currency { get; set; } = string.Empty;\n     }\n }\nEND_OF_PATCH\ntokens used\n197,823\n",
+  "verbosityMode": "verbose"
+}

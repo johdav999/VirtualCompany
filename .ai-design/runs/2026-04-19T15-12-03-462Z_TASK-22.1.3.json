@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-22.1.3",
+  "promptPath": ".ai-design/prompts/TASK-22.1.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-19T15:12:03.462Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-19T15-12-03-462Z_TASK-22.1.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-19T15-12-03-462Z_TASK-22.1.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-19T15:15:55.496Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "+    }\n+\n+    [Fact]\n+    public void Panel_shows_error_state_when_api_request_fails()\n+    {\n+        var companyId = Guid.Parse(\"4c5cfd22-87fd-4214-b579-fc9e7554ab72\");\n+\n+        using var context = CreateContext(_ => CreateProblemResponse(HttpStatusCode.BadGateway, \"Dashboard unavailable\", \"Focus feed is temporarily unavailable.\"));\n+        var cut = context.RenderComponent<TodayFocusPanel>(parameters => parameters\n+            .Add(component => component.CompanyId, companyId));\n+\n+        cut.WaitForAssertion(() =>\n+        {\n+            Assert.Contains(\"Focus feed is temporarily unavailable.\", cut.Markup);\n+            Assert.Empty(cut.FindAll(\"[data-testid='today-focus-card']\"));\n+        });\n+    }\n+\n+    private static TestContext CreateContext(Func<HttpRequestMessage, HttpResponseMessage> responseFactory)\n+    {\n+        var context = new TestContext();\n+        context.Services.AddLogging();\n+        context.Services.AddSingleton(new TodayFocusApiClient(\n+            new HttpClient(new AsyncStubHttpMessageHandler((request, _) => Task.FromResult(responseFactory(request))))\n+            {\n+                BaseAddress = new Uri(\"http://localhost/\")\n+            }));\n+        return context;\n+    }\n+\n+    private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>\n+        new(HttpStatusCode.OK)\n+        {\n+            Content = JsonContent.Create(payload)\n+        };\n+\n+    private static HttpResponseMessage CreateProblemResponse(HttpStatusCode statusCode, string title, string detail) =>\n+        new(statusCode)\n+        {\n+            Content = JsonContent.Create(new { title, detail })\n+        };\n     }\n \n     private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler\n@@ -72,4 +149,4 @@ public sealed class TodayFocusPanelTests\n         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>\n             _handler(request, cancellationToken);\n     }\n-}\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "]\n+    public void Panel_shows_error_state_when_api_request_fails()\n+    {\n+        var companyId = Guid.Parse(\"4c5cfd22-87fd-4214-b579-fc9e7554ab72\");\n+\n+        using var context = CreateContext(_ => CreateProblemResponse(HttpStatusCode.BadGateway, \"Dashboard unavailable\", \"Focus feed is temporarily unavailable.\"));\n+        var cut = context.RenderComponent<TodayFocusPanel>(parameters => parameters\n+            .Add(component => component.CompanyId, companyId));\n+\n+        cut.WaitForAssertion(() =>\n+        {\n+            Assert.Contains(\"Focus feed is temporarily unavailable.\", cut.Markup);\n+            Assert.Empty(cut.FindAll(\"[data-testid='today-focus-card']\"));\n+        });\n+    }\n+\n+    private static TestContext CreateContext(Func<HttpRequestMessage, HttpResponseMessage> responseFactory)\n+    {\n+        var context = new TestContext();\n+        context.Services.AddLogging();\n+        context.Services.AddSingleton(new TodayFocusApiClient(\n+            new HttpClient(new AsyncStubHttpMessageHandler((request, _) => Task.FromResult(responseFactory(request))))\n+            {\n+                BaseAddress = new Uri(\"http://localhost/\")\n+            }));\n+        return context;\n+    }\n+\n+    private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>\n+        new(HttpStatusCode.OK)\n+        {\n+            Content = JsonContent.Create(payload)\n+        };\n+\n+    private static HttpResponseMessage CreateProblemResponse(HttpStatusCode statusCode, string title, string detail) =>\n+        new(statusCode)\n+        {\n+            Content = JsonContent.Create(new { title, detail })\n+        };\n     }\n \n     private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler\n@@ -72,4 +149,4 @@ public sealed class TodayFocusPanelTests\n         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>\n             _handler(request, cancellationToken);\n     }\n-}\n+}\nEND_OF_PATCH\ntokens used\n70,401\n",
+  "verbosityMode": "verbose"
+}

@@ -1,0 +1,478 @@
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceDetailTestScenarioFactory.cs b/tests/VirtualCompany.Api.Tests/FinanceDetailTestScenarioFactory.cs
+new file mode 100644
+index 0000000..4f6f4b0
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceDetailTestScenarioFactory.cs
+@@ -0,0 +1,143 @@
++using System.Net.Http;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Api.Tests;
++
++internal static class FinanceDetailTestScenarioFactory
++{
++    internal static async Task<FinanceDetailTestScenario> CreateAsync(TestWebApplicationFactory factory)
++    {
++        var ownerUserId = Guid.NewGuid();
++        var approverUserId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var ownerSubject = $"finance-detail-owner-{Guid.NewGuid():N}";
++        var ownerEmail = $"{ownerSubject}@example.com";
++        const string ownerDisplayName = "Finance Detail Owner";
++        var approverSubject = $"finance-detail-approver-{Guid.NewGuid():N}";
++        var approverEmail = $"{approverSubject}@example.com";
++        const string approverDisplayName = "Finance Detail Approver";
++        var anchorUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
++
++        FinanceSeedResult? primarySeed = null;
++        FinanceSeedResult? otherSeed = null;
++        var accessibleTransactionId = Guid.Empty;
++        var restrictedTransactionId = Guid.Empty;
++        var missingTransactionId = Guid.Empty;
++        var reviewInvoiceId = Guid.Empty;
++        var missingInvoiceId = Guid.Empty;
++        var restrictedInvoiceId = Guid.Empty;
++
++        await factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.AddRange(
++                new User(ownerUserId, ownerEmail, ownerDisplayName, "dev-header", ownerSubject),
++                new User(approverUserId, approverEmail, approverDisplayName, "dev-header", approverSubject));
++
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Finance Detail Company"),
++                new Company(otherCompanyId, "Other Finance Detail Company"));
++
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyId, approverUserId, CompanyMembershipRole.FinanceApprover, CompanyMembershipStatus.Active));
++
++            primarySeed = FinanceSeedData.AddMockFinanceData(dbContext, companyId, anchorUtc);
++            otherSeed = FinanceSeedData.AddMockFinanceData(dbContext, otherCompanyId, anchorUtc);
++
++            accessibleTransactionId = primarySeed.TransactionIds[0];
++            restrictedTransactionId = primarySeed.TransactionIds[4];
++            reviewInvoiceId = primarySeed.InvoiceIds[0];
++            restrictedInvoiceId = primarySeed.InvoiceIds[4];
++
++            var templateTransaction = dbContext.FinanceTransactions.Local.First(x => x.CompanyId == companyId);
++            var missingTransaction = new FinanceTransaction(
++                Guid.NewGuid(),
++                companyId,
++                templateTransaction.AccountId,
++                templateTransaction.CounterpartyId,
++                null,
++                null,
++                templateTransaction.TransactionUtc.AddMinutes(15),
++                "software",
++                -89.42m,
++                templateTransaction.Currency,
++                "Missing linked document transaction",
++                $"missing-tx-{Guid.NewGuid():N}".Substring(0, 22),
++                Guid.NewGuid());
++            dbContext.FinanceTransactions.Add(missingTransaction);
++            missingTransactionId = missingTransaction.Id;
++
++            var templateInvoice = dbContext.FinanceInvoices.Local.First(x => x.CompanyId == companyId);
++            var missingInvoice = new FinanceInvoice(
++                Guid.NewGuid(),
++                companyId,
++                templateInvoice.CounterpartyId,
++                $"{templateInvoice.InvoiceNumber}-MISSING",
++                templateInvoice.IssuedUtc.AddDays(3),
++                templateInvoice.DueUtc.AddDays(3),
++                templateInvoice.Amount + 42m,
++                templateInvoice.Currency,
++                "pending_approval",
++                Guid.NewGuid());
++            dbContext.FinanceInvoices.Add(missingInvoice);
++            missingInvoiceId = missingInvoice.Id;
++
++            dbContext.FinanceSeedAnomalies.Add(new FinanceSeedAnomaly(
++                Guid.NewGuid(),
++                companyId,
++                "missing_receipt",
++                "detail_mapping",
++                [accessibleTransactionId],
++                """{"expectedDetector":"receipt_completeness","expectedSignal":"missing_supporting_document"}"""));
++
++            return Task.CompletedTask;
++        });
++
++        return new FinanceDetailTestScenario(
++            companyId,
++            otherCompanyId,
++            ownerSubject,
++            ownerEmail,
++            ownerDisplayName,
++            approverSubject,
++            approverEmail,
++            approverDisplayName,
++            anchorUtc,
++            accessibleTransactionId,
++            restrictedTransactionId,
++            missingTransactionId,
++            otherSeed!.TransactionIds[0],
++            reviewInvoiceId,
++            missingInvoiceId,
++            restrictedInvoiceId,
++            otherSeed.InvoiceIds[0]);
++    }
++
++    internal static HttpClient CreateAuthenticatedClient(
++        TestWebApplicationFactory factory,
++        string subject,
++        string email,
++        string displayName)
++    {
++        var client = factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++}
++
++internal sealed record FinanceDetailTestScenario(
++    Guid CompanyId,
++    Guid OtherCompanyId,
++    string OwnerSubject,
++    string OwnerEmail,
++    string OwnerDisplayName,
++    string ApproverSubject,
++    string ApproverEmail,
++    string ApproverDisplayName,
++    DateTime AnchorUtc,
++    Guid AccessibleTransactionId,
++    Guid RestrictedTransactionId,
++    Guid MissingTransactionId,
++    Guid OtherCompanyTransactionId,
++    Guid ReviewInvoiceId,
++    Guid MissingInvoiceId,
++    Guid RestrictedInvoiceId,
++    Guid OtherCompanyInvoiceId);
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInvoiceDetailMappingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInvoiceDetailMappingIntegrationTests.cs
+new file mode 100644
+index 0000000..45f2ee2
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceInvoiceDetailMappingIntegrationTests.cs
+@@ -0,0 +1,172 @@
++using System.Net;
++using System.Net.Http.Json;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceInvoiceDetailMappingIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinanceInvoiceDetailMappingIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Invoice_list_and_detail_map_summary_fields_and_available_document_metadata_end_to_end()
++    {
++        var seed = await FinanceDetailTestScenarioFactory.CreateAsync(_factory);
++        using var client = FinanceDetailTestScenarioFactory.CreateAuthenticatedClient(
++            _factory,
++            seed.OwnerSubject,
++            seed.OwnerEmail,
++            seed.OwnerDisplayName);
++
++        var listResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/invoices?limit=10");
++        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
++
++        var invoices = await listResponse.Content.ReadFromJsonAsync<List<FinanceInvoiceResponse>>();
++        Assert.NotNull(invoices);
++
++        var invoice = Assert.Single(invoices!, item => item.Id == seed.ReviewInvoiceId);
++        Assert.Equal("Adventure Works", invoice.CounterpartyName);
++        Assert.Equal("INV-202601-001", invoice.InvoiceNumber);
++        Assert.Equal(new DateTime(2025, 11, 18, 0, 0, 0, DateTimeKind.Utc), invoice.IssuedUtc);
++        Assert.Equal(new DateTime(2025, 12, 18, 0, 0, 0, DateTimeKind.Utc), invoice.DueUtc);
++        Assert.Equal(2725m, invoice.Amount);
++        Assert.Equal("USD", invoice.Currency);
++        Assert.Equal("open", invoice.Status);
++        Assert.NotNull(invoice.LinkedDocument);
++        Assert.Equal("Finance supporting document 001", invoice.LinkedDocument!.Title);
++        Assert.Equal("finance-document-001.pdf", invoice.LinkedDocument.OriginalFileName);
++        Assert.Equal("application/pdf", invoice.LinkedDocument.ContentType);
++
++        var detailResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.ReviewInvoiceId}");
++        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
++
++        var detail = await detailResponse.Content.ReadFromJsonAsync<FinanceInvoiceDetailResponse>();
++        Assert.NotNull(detail);
++        Assert.Equal(seed.ReviewInvoiceId, detail!.Id);
++        Assert.Equal(invoice.CounterpartyId, detail.CounterpartyId);
++        Assert.Equal(invoice.CounterpartyName, detail.CounterpartyName);
++        Assert.Equal(invoice.InvoiceNumber, detail.InvoiceNumber);
++        Assert.Equal(invoice.IssuedUtc, detail.IssuedUtc);
++        Assert.Equal(invoice.DueUtc, detail.DueUtc);
++        Assert.Equal(invoice.Amount, detail.Amount);
++        Assert.Equal(invoice.Currency, detail.Currency);
++        Assert.Equal(invoice.Status, detail.Status);
++        Assert.Null(detail.WorkflowContext);
++        Assert.Equal("available", detail.LinkedDocument.Availability);
++        Assert.Equal("Linked document available.", detail.LinkedDocument.Message);
++        Assert.True(detail.LinkedDocument.CanNavigate);
++        Assert.NotNull(detail.LinkedDocument.Document);
++        Assert.Equal(invoice.LinkedDocument.Id, detail.LinkedDocument.Document!.Id);
++        Assert.Equal(invoice.LinkedDocument.Title, detail.LinkedDocument.Document.Title);
++        Assert.Equal(invoice.LinkedDocument.OriginalFileName, detail.LinkedDocument.Document.OriginalFileName);
++        Assert.Equal(invoice.LinkedDocument.ContentType, detail.LinkedDocument.Document.ContentType);
++    }
++
++    [Fact]
++    public async Task Invoice_detail_maps_workflow_context_and_missing_document_status_without_blocking_rendering()
++    {
++        var seed = await FinanceDetailTestScenarioFactory.CreateAsync(_factory);
++        using var client = FinanceDetailTestScenarioFactory.CreateAuthenticatedClient(
++            _factory,
++            seed.OwnerSubject,
++            seed.OwnerEmail,
++            seed.OwnerDisplayName);
++
++        var reviewResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.MissingInvoiceId}/review-workflow",
++            new { });
++        Assert.Equal(HttpStatusCode.OK, reviewResponse.StatusCode);
++
++        var detailResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.MissingInvoiceId}");
++        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
++
++        var detail = await detailResponse.Content.ReadFromJsonAsync<FinanceInvoiceDetailResponse>();
++        Assert.NotNull(detail);
++        Assert.Equal(seed.MissingInvoiceId, detail!.Id);
++        Assert.Equal("Adventure Works", detail.CounterpartyName);
++        Assert.Equal("INV-202601-001-MISSING", detail.InvoiceNumber);
++        Assert.Equal(new DateTime(2025, 11, 21, 0, 0, 0, DateTimeKind.Utc), detail.IssuedUtc);
++        Assert.Equal(new DateTime(2025, 12, 21, 0, 0, 0, DateTimeKind.Utc), detail.DueUtc);
++        Assert.Equal(2767m, detail.Amount);
++        Assert.Equal("USD", detail.Currency);
++        Assert.Equal("pending_approval", detail.Status);
++        Assert.Equal("missing", detail.LinkedDocument.Availability);
++        Assert.Equal("Linked document is no longer available.", detail.LinkedDocument.Message);
++        Assert.False(detail.LinkedDocument.CanNavigate);
++        Assert.Null(detail.LinkedDocument.Document);
++
++        Assert.NotNull(detail.WorkflowContext);
++        Assert.Equal("Invoice review workflow", detail.WorkflowContext!.WorkflowName);
++        Assert.Equal("awaiting_approval", detail.WorkflowContext.ReviewTaskStatus);
++        Assert.Equal("overdue_invoice", detail.WorkflowContext.Classification);
++        Assert.Equal("medium", detail.WorkflowContext.RiskLevel);
++        Assert.Equal("request_human_approval", detail.WorkflowContext.RecommendedAction);
++        Assert.Equal(0.76m, detail.WorkflowContext.Confidence);
++        Assert.True(detail.WorkflowContext.RequiresHumanApproval);
++        Assert.True(detail.WorkflowContext.ApprovalRequestId.HasValue);
++        Assert.Equal("pending", detail.WorkflowContext.ApprovalStatus);
++        Assert.Equal("Awaiting finance_approver approval.", detail.WorkflowContext.ApprovalAssigneeSummary);
++        Assert.False(detail.WorkflowContext.CanNavigateToWorkflow);
++        Assert.True(detail.WorkflowContext.CanNavigateToApproval);
++    }
++
++    [Fact]
++    public async Task Invoice_detail_hides_inaccessible_navigation_and_remains_tenant_scoped()
++    {
++        var seed = await FinanceDetailTestScenarioFactory.CreateAsync(_factory);
++
++        using var approverClient = FinanceDetailTestScenarioFactory.CreateAuthenticatedClient(
++            _factory,
++            seed.ApproverSubject,
++            seed.ApproverEmail,
++            seed.ApproverDisplayName);
++
++        var restrictedDetailResponse = await approverClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.RestrictedInvoiceId}");
++        Assert.Equal(HttpStatusCode.OK, restrictedDetailResponse.StatusCode);
++
++        var restrictedDetail = await restrictedDetailResponse.Content.ReadFromJsonAsync<FinanceInvoiceDetailResponse>();
++        Assert.NotNull(restrictedDetail);
++        Assert.Equal(seed.RestrictedInvoiceId, restrictedDetail!.Id);
++        Assert.Equal("Adventure Works", restrictedDetail.CounterpartyName);
++        Assert.Equal("INV-202601-005", restrictedDetail.InvoiceNumber);
++        Assert.Equal(new DateTime(2025, 11, 22, 0, 0, 0, DateTimeKind.Utc), restrictedDetail.IssuedUtc);
++        Assert.Equal(new DateTime(2025, 12, 22, 0, 0, 0, DateTimeKind.Utc), restrictedDetail.DueUtc);
++        Assert.Equal(4025m, restrictedDetail.Amount);
++        Assert.Equal("USD", restrictedDetail.Currency);
++        Assert.Equal("open", restrictedDetail.Status);
++        Assert.Null(restrictedDetail.WorkflowContext);
++        Assert.Equal("inaccessible", restrictedDetail.LinkedDocument.Availability);
++        Assert.Equal("Linked document unavailable or you do not have access.", restrictedDetail.LinkedDocument.Message);
++        Assert.False(restrictedDetail.LinkedDocument.CanNavigate);
++        Assert.Null(restrictedDetail.LinkedDocument.Document);
++
++        using var ownerClient = FinanceDetailTestScenarioFactory.CreateAuthenticatedClient(
++            _factory,
++            seed.OwnerSubject,
++            seed.OwnerEmail,
++            seed.OwnerDisplayName);
++
++        var crossTenantDetailResponse = await ownerClient.GetAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.OtherCompanyInvoiceId}");
++        Assert.Equal(HttpStatusCode.NotFound, crossTenantDetailResponse.StatusCode);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceTransactionDetailMappingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceTransactionDetailMappingIntegrationTests.cs
+new file mode 100644
+index 0000000..a17f0f6
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceTransactionDetailMappingIntegrationTests.cs
+@@ -0,0 +1,148 @@
++using System.Net;
++using System.Net.Http.Json;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceTransactionDetailMappingIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinanceTransactionDetailMappingIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Transaction_list_and_detail_map_summary_fields_and_available_document_metadata_end_to_end()
++    {
++        var seed = await FinanceDetailTestScenarioFactory.CreateAsync(_factory);
++        using var client = FinanceDetailTestScenarioFactory.CreateAuthenticatedClient(
++            _factory,
++            seed.OwnerSubject,
++            seed.OwnerEmail,
++            seed.OwnerDisplayName);
++
++        var listResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions?limit=60");
++        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
++
++        var transactions = await listResponse.Content.ReadFromJsonAsync<List<FinanceTransactionResponse>>();
++        Assert.NotNull(transactions);
++
++        var transaction = Assert.Single(transactions!, item => item.Id == seed.AccessibleTransactionId);
++        Assert.Equal("Operating Cash", transaction.AccountName);
++        Assert.Equal("Northwind Analytics", transaction.CounterpartyName);
++        Assert.Equal(seed.ReviewInvoiceId, transaction.InvoiceId);
++        Assert.Null(transaction.BillId);
++        Assert.Equal(new DateTime(2025, 11, 13, 0, 0, 0, DateTimeKind.Utc), transaction.TransactionUtc);
++        Assert.Equal("customer_payment", transaction.TransactionType);
++        Assert.Equal(450m, transaction.Amount);
++        Assert.Equal("USD", transaction.Currency);
++        Assert.Equal("Customer receipt", transaction.Description);
++        Assert.Equal($"FIN-{seed.CompanyId:N}-0000", transaction.ExternalReference);
++        Assert.True(transaction.IsFlagged);
++        Assert.Equal("needs_review", transaction.AnomalyState);
++        Assert.NotNull(transaction.LinkedDocument);
++        Assert.Equal("Finance supporting document 001", transaction.LinkedDocument!.Title);
++        Assert.Equal("finance-document-001.pdf", transaction.LinkedDocument.OriginalFileName);
++        Assert.Equal("application/pdf", transaction.LinkedDocument.ContentType);
++
++        var detailResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions/{seed.AccessibleTransactionId}");
++        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
++
++        var detail = await detailResponse.Content.ReadFromJsonAsync<FinanceTransactionDetailResponse>();
++        Assert.NotNull(detail);
++        Assert.Equal(seed.AccessibleTransactionId, detail!.Id);
++        Assert.Equal(transaction.AccountId, detail.AccountId);
++        Assert.Equal(transaction.AccountName, detail.AccountName);
++        Assert.Equal(transaction.CounterpartyId, detail.CounterpartyId);
++        Assert.Equal(transaction.CounterpartyName, detail.CounterpartyName);
++        Assert.Equal(transaction.InvoiceId, detail.InvoiceId);
++        Assert.Equal(transaction.BillId, detail.BillId);
++        Assert.Equal(transaction.TransactionUtc, detail.TransactionUtc);
++        Assert.Equal(transaction.TransactionType, detail.Category);
++        Assert.Equal(transaction.Amount, detail.Amount);
++        Assert.Equal(transaction.Currency, detail.Currency);
++        Assert.Equal(transaction.Description, detail.Description);
++        Assert.Equal(transaction.ExternalReference, detail.ExternalReference);
++        Assert.True(detail.IsFlagged);
++        Assert.Equal("needs_review", detail.AnomalyState);
++        Assert.Equal(["missing_receipt"], detail.Flags);
++        Assert.Equal("available", detail.LinkedDocument.Availability);
++        Assert.Equal("Linked document available.", detail.LinkedDocument.Message);
++        Assert.True(detail.LinkedDocument.CanNavigate);
++        Assert.NotNull(detail.LinkedDocument.Document);
++        Assert.Equal(transaction.LinkedDocument.Id, detail.LinkedDocument.Document!.Id);
++        Assert.Equal(transaction.LinkedDocument.Title, detail.LinkedDocument.Document.Title);
++        Assert.Equal(transaction.LinkedDocument.OriginalFileName, detail.LinkedDocument.Document.OriginalFileName);
++        Assert.Equal(transaction.LinkedDocument.ContentType, detail.LinkedDocument.Document.ContentType);
++    }
++
++    [Fact]
++    public async Task Transaction_detail_surfaces_missing_and_inaccessible_document_states_without_blocking_rendering()
++    {
++        var seed = await FinanceDetailTestScenarioFactory.CreateAsync(_factory);
++
++        using var ownerClient = FinanceDetailTestScenarioFactory.CreateAuthenticatedClient(
++            _factory,
++            seed.OwnerSubject,
++            seed.OwnerEmail,
++            seed.OwnerDisplayName);
++
++        var missingDetailResponse = await ownerClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions/{seed.MissingTransactionId}");
++        Assert.Equal(HttpStatusCode.OK, missingDetailResponse.StatusCode);
++
++        var missingDetail = await missingDetailResponse.Content.ReadFromJsonAsync<FinanceTransactionDetailResponse>();
++        Assert.NotNull(missingDetail);
++        Assert.Equal(seed.MissingTransactionId, missingDetail!.Id);
++        Assert.Equal("software", missingDetail.Category);
++        Assert.Equal(-89.42m, missingDetail.Amount);
++        Assert.Equal("USD", missingDetail.Currency);
++        Assert.Equal("Missing linked document transaction", missingDetail.Description);
++        Assert.False(missingDetail.IsFlagged);
++        Assert.Equal("clear", missingDetail.AnomalyState);
++        Assert.Empty(missingDetail.Flags);
++        Assert.Equal("missing", missingDetail.LinkedDocument.Availability);
++        Assert.Equal("Linked document is no longer available.", missingDetail.LinkedDocument.Message);
++        Assert.False(missingDetail.LinkedDocument.CanNavigate);
++        Assert.Null(missingDetail.LinkedDocument.Document);
++
++        using var approverClient = FinanceDetailTestScenarioFactory.CreateAuthenticatedClient(
++            _factory,
++            seed.ApproverSubject,
++            seed.ApproverEmail,
++            seed.ApproverDisplayName);
++
++        var inaccessibleDetailResponse = await approverClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions/{seed.RestrictedTransactionId}");
++        Assert.Equal(HttpStatusCode.OK, inaccessibleDetailResponse.StatusCode);
++
++        var inaccessibleDetail = await inaccessibleDetailResponse.Content.ReadFromJsonAsync<FinanceTransactionDetailResponse>();
++        Assert.NotNull(inaccessibleDetail);
++        Assert.Equal(seed.RestrictedTransactionId, inaccessibleDetail!.Id);
++        Assert.Equal("customer_payment", inaccessibleDetail.Category);
++        Assert.Equal(520m, inaccessibleDetail.Amount);
++        Assert.Equal("USD", inaccessibleDetail.Currency);
++        Assert.Equal("Customer receipt", inaccessibleDetail.Description);
++        Assert.False(inaccessibleDetail.IsFlagged);
++        Assert.Equal("clear", inaccessibleDetail.AnomalyState);
++        Assert.Empty(inaccessibleDetail.Flags);
++        Assert.Equal("inaccessible", inaccessibleDetail.LinkedDocument.Availability);
++        Assert.Equal("Linked document unavailable or you do not have access.", inaccessibleDetail.LinkedDocument.Message);
++        Assert.False(inaccessibleDetail.LinkedDocument.CanNavigate);
++        Assert.Null(inaccessibleDetail.LinkedDocument.Document);
++    }
++
++    [Fact]
++    public async Task Transaction_detail_is_tenant_scoped()
++    {
++        var seed = await FinanceDetailTestScenarioFactory.CreateAsync(_factory);
++        using var client = FinanceDetailTestScenarioFactory.CreateAuthenticatedClient(
++            _factory,
++            seed.OwnerSubject,
++            seed.OwnerEmail,
++            seed.OwnerDisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions/{seed.OtherCompanyTransactionId}");
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++    }
++}
+END_OF_PATCH

@@ -5,6 +5,7 @@
 @inject OnboardingApiClient OnboardingApiClient
 @inject TaskApiClient TaskApiClient
 @inject NavigationManager Navigation
+@using VirtualCompany.Web.Services
 
 <PageTitle>Tasks</PageTitle>
 
@@ -31,7 +32,7 @@ else if (CompanyId is null)
                 <div class="template-grid">
                     @foreach (var membership in activeMemberships)
                     {
-                        <a class="template-card text-decoration-none text-reset" href="@BuildTasksUri(membership.CompanyId, null, null, null)">
+                        <a class="template-card text-decoration-none text-reset" href="@BuildTasksUri(membership.CompanyId, EffectiveStatus, null, null, ReturnUrl, Filter, Source)">
                             <strong>@membership.CompanyName</strong>
                             <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
                         </a>
@@ -50,19 +51,34 @@ else
                 <h1>@(companyAccess?.CompanyName ?? "Tasks")</h1>
                 <p class="text-body-secondary mb-0">Open work, blocked execution, and dashboard-linked task details are scoped to this company.</p>
 
+                @if (NormalizedReturnUrl is not null)
+                {
+                    <div class="dashboard-actions mt-3">
+                        <a class="btn btn-outline-secondary" href="@NormalizedReturnUrl">Back to workbench</a>
+                    </div>
+                }
+
                 <form class="agent-filter-bar mt-4" method="get">
                     <input type="hidden" name="companyId" value="@CompanyId" />
                     @if (TaskId is Guid taskId)
                     {
                         <input type="hidden" name="taskId" value="@taskId" />
                     }
+                    @if (NormalizedReturnUrl is not null)
+                    {
+                        <input type="hidden" name="returnUrl" value="@NormalizedReturnUrl" />
+                    }
+                    @if (!string.IsNullOrWhiteSpace(Source))
+                    {
+                        <input type="hidden" name="source" value="@Source" />
+                    }
                     <div>
                         <label class="form-label" for="task-status-filter">Status</label>
                         <select id="task-status-filter" class="form-select" name="status">
-                            <option value="" selected="@string.IsNullOrWhiteSpace(Status)">All tasks</option>
+                            <option value="" selected="@false">All tasks</option>
                             @foreach (var status in SupportedStatuses)
                             {
-                                <option value="@status" selected="@IsSelected(Status, status)">@ToDisplayText(status)</option>
+                                <option value="@status" selected="@IsSelected(EffectiveStatus, status)">@ToDisplayText(status)</option>
                             }
                         </select>
                     </div>
@@ -72,8 +88,13 @@ else
                     </div>
                     <div class="dashboard-actions">
                         <button class="btn btn-primary" type="submit">Apply filters</button>
-                        <a class="btn btn-outline-secondary" href="@BuildTasksUri(CompanyId!.Value, null, null, null)">Clear</a>
+                        <a class="btn btn-outline-secondary" href="@BuildTasksUri(CompanyId!.Value, null, null, null, ReturnUrl, null, Source)">Clear</a>
                     </div>
+
+                    @if (!string.IsNullOrWhiteSpace(Filter))
+                    {
+                        <input type="hidden" name="filter" value="@Filter" />
+                    }
                 </form>
 
                 @if (!string.IsNullOrWhiteSpace(errorMessage))
@@ -90,7 +111,7 @@ else
                     <div class="list-group mt-4">
                         @foreach (var task in tasks)
                         {
-                            <a class="@GetTaskListItemClass(task)" href="@BuildTasksUri(task.CompanyId, Status, AssignedAgentId, task.Id)">
+                            <a class="@GetTaskListItemClass(task)" href="@BuildTasksUri(task.CompanyId, EffectiveStatus, AssignedAgentId, task.Id, ReturnUrl, Filter, Source)">
                                 <div class="d-flex w-100 justify-content-between gap-3">
                                     <div>
                                         <strong>@task.Title</strong>
@@ -149,7 +170,7 @@ else
                             @foreach (var subtask in selectedTask.Subtasks)
                             {
                                 <li class="mb-2">
-                                    <a href="@BuildTasksUri(subtask.CompanyId, null, null, subtask.Id)">@subtask.Title</a>
+                                    <a href="@BuildTasksUri(subtask.CompanyId, EffectiveStatus, null, subtask.Id, ReturnUrl, Filter, Source)">@subtask.Title</a>
                                     <span class="text-body-secondary"> - @ToDisplayText(subtask.Status)</span>
                                 </li>
                             }
@@ -182,8 +203,17 @@ else
     [SupplyParameterFromQuery(Name = "status")]
     public string? Status { get; set; }
 
+    [SupplyParameterFromQuery(Name = DashboardRoutes.FilterQueryKey)]
+    public string? Filter { get; set; }
+
     [SupplyParameterFromQuery(Name = "assignedAgentId")]
     public Guid? AssignedAgentId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "returnUrl")]
+    public string? ReturnUrl { get; set; }
+
+    [SupplyParameterFromQuery(Name = DashboardRoutes.SourceQueryKey)]
+    public string? Source { get; set; }
 
     private bool isLoading = true;
     private string? errorMessage;
@@ -192,6 +222,9 @@ else
     private List<TaskListItemViewModel> tasks = [];
     private TaskDetailViewModel? selectedTask;
 
+    private string? NormalizedReturnUrl => ReturnUrlNavigation.NormalizeLocalReturnUrl(ReturnUrl);
+
+    private string? EffectiveStatus => NormalizeTaskStatus(Status, Filter);
     private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
         currentUser?.Memberships
             .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
@@ -210,14 +243,14 @@ else
             currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
             if (CompanyId is null && currentUser?.ActiveCompany is not null)
             {
-                Navigation.NavigateTo(BuildTasksUri(currentUser.ActiveCompany.CompanyId, Status, AssignedAgentId, TaskId), replace: true);
+                Navigation.NavigateTo(BuildTasksUri(currentUser.ActiveCompany.CompanyId, EffectiveStatus, AssignedAgentId, TaskId, ReturnUrl, Filter, Source), replace: true);
                 return;
             }
 
             if (CompanyId is Guid companyId)
             {
                 companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
-                var result = await TaskApiClient.ListAsync(companyId, Status, AssignedAgentId);
+                var result = await TaskApiClient.ListAsync(companyId, EffectiveStatus, AssignedAgentId);
                 tasks = result.Items.ToList();
                 selectedTask = TaskId is Guid taskId
                     ? await TaskApiClient.GetAsync(companyId, taskId)
@@ -260,12 +293,29 @@ else
             _ => "text-bg-secondary"
         };
 
-    private static string BuildTasksUri(Guid companyId, string? status, Guid? assignedAgentId, Guid? taskId)
+    private static string? NormalizeTaskStatus(string? status, string? filter)
     {
-        var query = new List<string> { $"companyId={companyId}" };
-        if (!string.IsNullOrWhiteSpace(status)) query.Add($"status={Uri.EscapeDataString(status)}");
-        if (assignedAgentId is Guid agentId) query.Add($"assignedAgentId={agentId}");
-        if (taskId is Guid selectedTaskId) query.Add($"taskId={selectedTaskId}");
-        return $"/tasks?{string.Join("&", query)}";
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            return status.Trim();
+        }
+
+        return filter?.Trim().ToLowerInvariant() switch
+        {
+            "blocked" => "blocked",
+            "awaiting-approval" => "awaiting_approval",
+            "today" => "pending",
+            _ => null
+        };
     }
+
+    private static string BuildTasksUri(Guid companyId, string? status, Guid? assignedAgentId, Guid? taskId, string? returnUrl, string? filter, string? source) =>
+        DashboardRoutes.BuildTasksPath(
+            companyId,
+            filter: filter,
+            status: status,
+            taskId: taskId,
+            assignedAgentId: assignedAgentId,
+            returnUrl: returnUrl,
+            source: source);
 }

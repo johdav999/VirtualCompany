@@ -344,7 +344,7 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
                 .Where(x => x.CompanyId == companyId && messageIds.Contains(x.Id))
                 .ToDictionaryAsync(
                     x => x.Id,
-                    x => string.IsNullOrWhiteSpace(x.Conversation.Subject)
+                    x => x.Conversation is null || string.IsNullOrWhiteSpace(x.Conversation.Subject)
                         ? "Conversation message"
                         : $"Message in {x.Conversation.Subject}",
                     cancellationToken);

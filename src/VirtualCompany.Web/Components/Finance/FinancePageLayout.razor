@@ -1,0 +1,45 @@
+@if (IsLoading)
+{
+    <section class="py-4">
+        <h1>@Title</h1>
+        <p class="text-body-secondary mb-0">@LoadingMessage</p>
+    </section>
+}
+else if (AccessState.RequiresCompanySelection)
+{
+    <CompanySelectionRequiredState Message="@AccessState.Message" />
+}
+else if (AccessState.IsForbidden)
+{
+    <ForbiddenState
+        Title="Finance access required"
+        Message="@AccessState.Message"
+        ReturnHref="/dashboard"
+        ReturnText="Back to dashboard" />
+}
+else
+{
+    <FinanceModuleShell
+        Title="@Title"
+        Description="@Description"
+        CompanyId="@AccessState.CompanyId!.Value"
+        CompanyName="@(AccessState.CompanyName!)"
+        MembershipRole="@AccessState.MembershipRole">
+        @ChildContent
+    </FinanceModuleShell>
+}
+
+@if (!string.IsNullOrWhiteSpace(ErrorMessage))
+{
+    <div class="alert alert-danger mt-3" role="alert">@ErrorMessage</div>
+}
+
+@code {
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public FinanceAccessState AccessState { get; set; } = FinanceAccessState.Forbidden("Finance access is unavailable.");
+    [Parameter] public string Title { get; set; } = string.Empty;
+    [Parameter] public string Description { get; set; } = string.Empty;
+    [Parameter] public string LoadingMessage { get; set; } = "Loading finance workspace...";
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

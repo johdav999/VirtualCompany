@@ -1,0 +1,122 @@
+diff --git a/src/VirtualCompany.Domain/Enums/MembershipEnums.cs b/src/VirtualCompany.Domain/Enums/MembershipEnums.cs
+index 6231ab4..7adff0c 100644
+--- a/src/VirtualCompany.Domain/Enums/MembershipEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/MembershipEnums.cs
+@@ -9,7 +9,8 @@ public enum CompanyMembershipRole
+     Manager = 3,
+     Employee = 4,
+     FinanceApprover = 5,
+-    SupportSupervisor = 6
++    SupportSupervisor = 6,
++    Tester = 7
+ }
+ 
+ public enum CompanyMembershipStatus
+@@ -29,7 +30,8 @@ public static class CompanyMembershipRoles
+         new(CompanyMembershipRole.Manager, "manager", "Manager"),
+         new(CompanyMembershipRole.Employee, "employee", "Employee"),
+         new(CompanyMembershipRole.FinanceApprover, "finance_approver", "Finance Approver"),
+-        new(CompanyMembershipRole.SupportSupervisor, "support_supervisor", "Support Supervisor")
++        new(CompanyMembershipRole.SupportSupervisor, "support_supervisor", "Support Supervisor"),
++        new(CompanyMembershipRole.Tester, "tester", "Tester")
+     ];
+ 
+     private static readonly IReadOnlyDictionary<CompanyMembershipRole, CompanyMembershipRoleOption> RolesByEnum =
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+index fc4457a..ac9eb58 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+@@ -20,6 +20,7 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+     [Theory]
+     [InlineData("owner")]
+     [InlineData("admin")]
++    [InlineData("tester")]
+     public async Task Sandbox_admin_endpoints_allow_owner_and_admin_memberships(string role)
+     {
+         var seed = await SeedSandboxAdminCompanyAsync();
+@@ -73,6 +74,7 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+         var owner = TestIdentity.Create("Sandbox Owner");
+         var admin = TestIdentity.Create("Sandbox Admin");
+         var manager = TestIdentity.Create("Sandbox Manager");
++        var tester = TestIdentity.Create("Sandbox Tester");
+         var approver = TestIdentity.Create("Sandbox Approver");
+         var employee = TestIdentity.Create("Sandbox Employee");
+ 
+@@ -80,12 +82,14 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+         {
+             dbContext.Users.AddRange(
+                 new User(owner.UserId, owner.Email, owner.DisplayName, "dev-header", owner.Subject),
+                 new User(admin.UserId, admin.Email, admin.DisplayName, "dev-header", admin.Subject),
+                 new User(manager.UserId, manager.Email, manager.DisplayName, "dev-header", manager.Subject),
++                new User(tester.UserId, tester.Email, tester.DisplayName, "dev-header", tester.Subject),
+                 new User(approver.UserId, approver.Email, approver.DisplayName, "dev-header", approver.Subject),
+                 new User(employee.UserId, employee.Email, employee.DisplayName, "dev-header", employee.Subject));
+ 
+             dbContext.Companies.Add(new Company(companyId, "Finance Sandbox Company"));
+             dbContext.CompanyMemberships.AddRange(
+                 new CompanyMembership(Guid.NewGuid(), companyId, owner.UserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
+                 new CompanyMembership(Guid.NewGuid(), companyId, admin.UserId, CompanyMembershipRole.Admin, CompanyMembershipStatus.Active),
+                 new CompanyMembership(Guid.NewGuid(), companyId, manager.UserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyId, tester.UserId, CompanyMembershipRole.Tester, CompanyMembershipStatus.Active),
+                 new CompanyMembership(Guid.NewGuid(), companyId, approver.UserId, CompanyMembershipRole.FinanceApprover, CompanyMembershipStatus.Active),
+                 new CompanyMembership(Guid.NewGuid(), companyId, employee.UserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
+ 
+@@ -110,6 +114,7 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+             companyId,
+             owner,
+             admin,
+             manager,
++            tester,
+             approver,
+             employee);
+     }
+@@ -127,6 +132,7 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+         Guid CompanyId,
+         TestIdentity Owner,
+         TestIdentity Admin,
+         TestIdentity Manager,
++        TestIdentity Tester,
+         TestIdentity Approver,
+         TestIdentity Employee)
+     {
+@@ -135,6 +141,7 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+                 "owner" => Owner,
+                 "admin" => Admin,
+                 "manager" => Manager,
++                "tester" => Tester,
+                 "finance_approver" => Approver,
+                 "employee" => Employee,
+                 _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unsupported sandbox admin test role.")
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+index 6e37baf..2f2ba6b 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+@@ -25,6 +25,25 @@ public sealed class FinanceSandboxAdminPageTests
+         Assert.Equal(0, sandboxService.TotalCalls);
+     }
+ 
++    [Fact]
++    public void Sandbox_admin_page_allows_tester_memberships_to_load_admin_sections()
++    {
++        var companyId = Guid.Parse("6dbd9307-4ab8-43d6-9458-6db64f927f68");
++        var sandboxService = new StubFinanceSandboxAdminService();
++
++        using var harness = CreateHarness(companyId, "tester", sandboxService);
++        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Finance sandbox admin", cut.Markup);
++            Assert.Contains("Dataset generation is not configured", cut.Markup);
++        });
++
++        Assert.Equal(5, sandboxService.TotalCalls);
++    }
++
+     [Fact]
+     public void Sandbox_admin_page_sections_load_independently_and_support_loading_empty_error_and_content_states()
+     {
+END_OF_PATCH

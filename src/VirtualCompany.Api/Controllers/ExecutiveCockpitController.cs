@@ -129,6 +129,25 @@ public sealed class ExecutiveCockpitController : ControllerBase
         }
     }
 
+    [HttpGet("finance-alerts/{alertId:guid}")]
+    public async Task<ActionResult<ExecutiveCockpitFinanceAlertDetailDto>> GetFinanceAlertDetailAsync(
+        Guid companyId,
+        Guid alertId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _dashboardService.GetFinanceAlertDetailAsync(
+                new GetExecutiveCockpitFinanceAlertDetailQuery(companyId, alertId),
+                cancellationToken);
+            return result is null ? NotFound() : Ok(result);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
     [HttpGet("kpis")]
     public async Task<ActionResult<ExecutiveCockpitKpiDashboardDto>> GetKpisAsync(
         Guid companyId,

@@ -1,0 +1,60 @@
+@using System.Globalization
+
+<section class="invoice-review-summary-bar">
+    <div class="invoice-review-summary-metrics">
+        <article class="invoice-review-summary-card">
+            <span class="invoice-review-summary-card__label">Pending review</span>
+            <strong class="invoice-review-summary-card__value">@PendingCount</strong>
+            <span class="invoice-review-summary-card__meta">Invoices in the active workbench</span>
+        </article>
+
+        <article class="invoice-review-summary-card invoice-review-summary-card--risk">
+            <span class="invoice-review-summary-card__label">High risk</span>
+            <strong class="invoice-review-summary-card__value">@HighRiskCount</strong>
+            <span class="invoice-review-summary-card__meta">High and critical recommendations</span>
+        </article>
+
+        <article class="invoice-review-summary-card">
+            <span class="invoice-review-summary-card__label">Total amount pending</span>
+            <strong class="invoice-review-summary-card__value">@FormatAmount(TotalAmountPending, CurrencyLabel)</strong>
+            <span class="invoice-review-summary-card__meta">Visible review workload value</span>
+        </article>
+
+        <article class="invoice-review-summary-card invoice-review-summary-card--attention">
+            <span class="invoice-review-summary-card__label">Need attention</span>
+            <strong class="invoice-review-summary-card__value">@NeedsAttentionCount</strong>
+            <span class="invoice-review-summary-card__meta">Approval or confidence follow-up needed</span>
+        </article>
+    </div>
+
+    <div class="invoice-review-summary-actions">
+        <button class="btn btn-primary" type="button" disabled="@(!CanReviewNextHighRisk || IsBusy)" @onclick="OnReviewNextHighRisk">
+            Review next high-risk
+        </button>
+        <button class="btn btn-outline-primary" type="button" disabled="@(!CanRunReview || IsBusy)" @onclick="OnRunReview">
+            Run review
+        </button>
+        <button class="btn btn-outline-secondary" type="button" disabled="@IsBusy" @onclick="OnRefreshAnalysis">
+            Refresh analysis
+        </button>
+    </div>
+</section>
+
+@code {
+    [Parameter] public int PendingCount { get; set; }
+    [Parameter] public int HighRiskCount { get; set; }
+    [Parameter] public decimal TotalAmountPending { get; set; }
+    [Parameter] public int NeedsAttentionCount { get; set; }
+    [Parameter] public string CurrencyLabel { get; set; } = "USD";
+    [Parameter] public bool CanReviewNextHighRisk { get; set; }
+    [Parameter] public bool CanRunReview { get; set; }
+    [Parameter] public bool IsBusy { get; set; }
+    [Parameter] public EventCallback OnReviewNextHighRisk { get; set; }
+    [Parameter] public EventCallback OnRunReview { get; set; }
+    [Parameter] public EventCallback OnRefreshAnalysis { get; set; }
+
+    private static string FormatAmount(decimal amount, string currency) =>
+        string.IsNullOrWhiteSpace(currency)
+            ? amount.ToString("N2", CultureInfo.InvariantCulture)
+            : $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+}

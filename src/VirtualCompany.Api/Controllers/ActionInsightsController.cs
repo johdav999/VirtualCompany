@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Authorization;
+using VirtualCompany.Application.Common;
 using VirtualCompany.Application.Insights;
 using VirtualCompany.Infrastructure.Tenancy;
 
@@ -14,6 +15,8 @@ public sealed class ActionInsightsController : ControllerBase
 {
     private readonly IActionInsightService _insights;
 
+    private const int DefaultTopActionCount = 5;
+    private const int DefaultPageSize = 25;
     public ActionInsightsController(IActionInsightService insights)
     {
         _insights = insights;
@@ -26,7 +29,50 @@ public sealed class ActionInsightsController : ControllerBase
     {
         try
         {
-            return Ok(await _insights.GetActionQueueAsync(companyId, cancellationToken));
+            var items = await _insights.GetActionQueueAsync(companyId, cancellationToken);
+            return Ok(items.Select(DisplayTextMapper.MapActionItem).ToList());
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpGet("top")]
+    public async Task<ActionResult<IReadOnlyList<ActionQueueItemDto>>> GetTopActionsAsync(
+        Guid companyId,
+        [FromQuery] int count = DefaultTopActionCount,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var items = await _insights.GetActionQueueAsync(companyId, cancellationToken);
+            var distinctItems = DisplayTextMapper
+                .DistinctActionItemsForDisplay(items)
+                .Take(Math.Max(1, count))
+                .ToList();
+            return Ok(distinctItems);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpGet]
+    public async Task<ActionResult<ActionQueuePageDto>> GetAllActionsAsync(
+        Guid companyId,
+        [FromQuery(Name = "page")] int? page = null,
+        [FromQuery] int pageNumber = 1,
+        [FromQuery] int pageSize = DefaultPageSize,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var resolvedPageNumber = page ?? pageNumber;
+
+            var pageResult = await _insights.GetAllActionsAsync(companyId, resolvedPageNumber, pageSize, cancellationToken);
+            return Ok(DisplayTextMapper.MapActionPage(pageResult));
         }
         catch (UnauthorizedAccessException)
         {
@@ -50,7 +96,8 @@ public sealed class ActionInsightsController : ControllerBase
 
         try
         {
-            return Ok(await _insights.AcknowledgeAsync(companyId, Uri.UnescapeDataString(insightKey), cancellationToken));
+            var item = await _insights.AcknowledgeAsync(companyId, Uri.UnescapeDataString(insightKey), cancellationToken);
+            return Ok(item is null ? null : DisplayTextMapper.MapActionItem(item));
         }
         catch (UnauthorizedAccessException)
         {

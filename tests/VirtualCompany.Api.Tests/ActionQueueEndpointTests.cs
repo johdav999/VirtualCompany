@@ -83,6 +83,76 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
         Assert.DoesNotContain(otherTenantQueue!, item => item.InsightKey == target.InsightKey);
     }
 
+    [Fact]
+    public async Task Top_endpoint_returns_first_five_items_using_required_priority_order()
+    {
+        var seed = await SeedPrioritizedTaskQueueAsync();
+        using var client = CreateAuthenticatedClient("founder", "founder@example.com");
+
+        var items = await client.GetFromJsonAsync<List<ActionQueueItemResponse>>(
+            $"/api/companies/{seed.CompanyId}/action-insights/top?count=5");
+
+        Assert.NotNull(items);
+        Assert.Equal(
+            new[]
+            {
+                "Overdue critical release",
+                "Due soon critical release",
+                "Due soon normal supplier task",
+                "Due soon low supplier task",
+                "Medium due follow-up"
+            },
+            items!.Select(item => item.Title).ToArray());
+        Assert.Equal(5, items.Count);
+    }
+
+    [Fact]
+    public async Task Paginated_endpoint_returns_stable_non_overlapping_pages()
+    {
+        var seed = await SeedPrioritizedTaskQueueAsync();
+        using var client = CreateAuthenticatedClient("founder", "founder@example.com");
+
+        var pageOne = await client.GetFromJsonAsync<ActionQueuePageResponse>(
+            $"/api/companies/{seed.CompanyId}/action-insights?pageNumber=1&pageSize=2");
+        var pageTwo = await client.GetFromJsonAsync<ActionQueuePageResponse>(
+            $"/api/companies/{seed.CompanyId}/action-insights?pageNumber=2&pageSize=2");
+        var repeatedPageTwo = await client.GetFromJsonAsync<ActionQueuePageResponse>(
+            $"/api/companies/{seed.CompanyId}/action-insights?pageNumber=2&pageSize=2");
+        var otherTenantPage = await client.GetFromJsonAsync<ActionQueuePageResponse>(
+            $"/api/companies/{seed.OtherCompanyId}/action-insights?pageNumber=1&pageSize=10");
+
+        Assert.NotNull(pageOne);
+        Assert.NotNull(pageTwo);
+        Assert.NotNull(repeatedPageTwo);
+        Assert.Equal(7, pageOne!.TotalCount);
+        Assert.Equal(4, pageOne.TotalPages);
+        Assert.Equal(pageTwo!.Items.Select(item => item.InsightKey), repeatedPageTwo!.Items.Select(item => item.InsightKey));
+        Assert.Empty(pageOne.Items.Select(item => item.InsightKey).Intersect(pageTwo.Items.Select(item => item.InsightKey)));
+        Assert.Equal(new[] { "Due soon normal supplier task", "Due soon low supplier task" }, pageTwo.Items.Select(item => item.Title).ToArray());
+        Assert.Empty(otherTenantPage!.Items);
+    }
+
+    [Fact]
+    public async Task Paginated_endpoint_accepts_page_alias_and_uses_stable_source_id_tie_breaker()
+    {
+        var seed = await SeedDeterministicPaginationQueueAsync();
+        using var client = CreateAuthenticatedClient("founder", "founder@example.com");
+
+        var pageOne = await client.GetFromJsonAsync<ActionQueuePageResponse>(
+            $"/api/companies/{seed.CompanyId}/action-insights?page=1&pageSize=2");
+        var pageTwo = await client.GetFromJsonAsync<ActionQueuePageResponse>(
+            $"/api/companies/{seed.CompanyId}/action-insights?page=2&pageSize=2");
+        var repeatedPageTwo = await client.GetFromJsonAsync<ActionQueuePageResponse>(
+            $"/api/companies/{seed.CompanyId}/action-insights?page=2&pageSize=2");
+
+        Assert.NotNull(pageOne);
+        Assert.NotNull(pageTwo);
+        Assert.NotNull(repeatedPageTwo);
+        Assert.Equal(new[] { "Tied action 1", "Tied action 2" }, pageOne!.Items.Select(item => item.Title).ToArray());
+        Assert.Equal(new[] { "Tied action 3", "Tied action 4" }, pageTwo!.Items.Select(item => item.Title).ToArray());
+        Assert.Equal(pageTwo.Items.Select(item => item.InsightKey), repeatedPageTwo!.Items.Select(item => item.InsightKey));
+    }
+
     private HttpClient CreateAuthenticatedClient(string subject, string email)
     {
         var client = _factory.CreateClient();
@@ -200,7 +270,111 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
         return new ActionQueueSeed(companyId, otherCompanyId);
     }
 
+    private async Task<ActionQueueSeed> SeedPrioritizedTaskQueueAsync()
+    {
+        var companyId = Guid.NewGuid();
+        var otherCompanyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var agentId = Guid.NewGuid();
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
+            dbContext.Companies.AddRange(
+                new Company(companyId, "Priority Queue Company"),
+                new Company(otherCompanyId, "Other Priority Queue Company"));
+            dbContext.CompanyMemberships.AddRange(
+                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
+                new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+            dbContext.Agents.Add(new Agent(agentId, companyId, "ops", "Operations Lead", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
+
+            dbContext.WorkTasks.AddRange(
+                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Overdue critical release", WorkTaskPriority.High, DateTime.UtcNow.AddHours(-1)),
+                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Due soon critical release", WorkTaskPriority.High, DateTime.UtcNow.AddHours(1)),
+                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Due soon normal supplier task", WorkTaskPriority.Normal, DateTime.UtcNow.AddHours(2)),
+                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Due soon low supplier task", WorkTaskPriority.Low, DateTime.UtcNow.AddHours(2)),
+                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Medium due follow-up", WorkTaskPriority.Low, DateTime.UtcNow.AddHours(12)),
+                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Medium no due follow-up", WorkTaskPriority.High, null),
+                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Low no due follow-up", WorkTaskPriority.Low, null),
+                BuildTask(Guid.NewGuid(), otherCompanyId, userId, null, "Other tenant follow-up", WorkTaskPriority.High, DateTime.UtcNow.AddHours(1)));
+
+            return Task.CompletedTask;
+        });
+
+        return new ActionQueueSeed(companyId, otherCompanyId);
+    }
+
+    private async Task<ActionQueueSeed> SeedDeterministicPaginationQueueAsync()
+    {
+        var companyId = Guid.NewGuid();
+        var otherCompanyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var dueUtc = new DateTime(2026, 4, 14, 16, 0, 0, DateTimeKind.Utc);
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
+            dbContext.Companies.AddRange(
+                new Company(companyId, "Deterministic Queue Company"),
+                new Company(otherCompanyId, "Other Deterministic Queue Company"));
+            dbContext.CompanyMemberships.AddRange(
+                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
+                new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+
+            dbContext.WorkTasks.AddRange(
+                BuildTask(Guid.Parse("11111111-1111-1111-1111-111111111111"), companyId, userId, null, "Tied action 1", WorkTaskPriority.High, dueUtc),
+                BuildTask(Guid.Parse("22222222-2222-2222-2222-222222222222"), companyId, userId, null, "Tied action 2", WorkTaskPriority.High, dueUtc),
+                BuildTask(Guid.Parse("33333333-3333-3333-3333-333333333333"), companyId, userId, null, "Tied action 3", WorkTaskPriority.High, dueUtc),
+                BuildTask(Guid.Parse("44444444-4444-4444-4444-444444444444"), companyId, userId, null, "Tied action 4", WorkTaskPriority.High, dueUtc),
+                BuildTask(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), otherCompanyId, userId, null, "Other tenant tied action", WorkTaskPriority.High, dueUtc));
+
+            return Task.CompletedTask;
+        });
+
+        return new ActionQueueSeed(companyId, otherCompanyId);
+    }
+
+    private static WorkTask BuildTask(
+        Guid taskId,
+        Guid companyId,
+        Guid userId,
+        Guid? assignedAgentId,
+        string title,
+        WorkTaskPriority priority,
+        DateTime? dueUtc)
+    {
+        var task = new WorkTask(
+            taskId,
+            companyId,
+            "queue-test",
+            title,
+            "Priority ordering test task.",
+            priority,
+            assignedAgentId,
+            null,
+            "user",
+            userId);
+
+        if (dueUtc.HasValue)
+        {
+            task.SetDueDate(dueUtc.Value);
+        }
+
+        return task;
+    }
+
     private sealed record ActionQueueSeed(Guid CompanyId, Guid OtherCompanyId);
+
+    private sealed class ActionQueuePageResponse
+    {
+        public List<ActionQueueItemResponse> Items { get; set; } = [];
+        public int PageNumber { get; set; }
+        public int PageSize { get; set; }
+        public int TotalCount { get; set; }
+        public int TotalPages { get; set; }
+        public bool HasPreviousPage { get; set; }
+        public bool HasNextPage { get; set; }
+    }
 
     private sealed class ActionQueueItemResponse
     {
@@ -217,6 +391,7 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
         public DateTime? DueUtc { get; set; }
         public string SlaState { get; set; } = string.Empty;
         public int PriorityScore { get; set; }
+        public int ImpactScore { get; set; }
         public string Priority { get; set; } = string.Empty;
         public string DeepLink { get; set; } = string.Empty;
         public bool IsAcknowledged { get; set; }

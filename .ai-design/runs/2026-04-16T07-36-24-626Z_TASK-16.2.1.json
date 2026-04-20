@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-16.2.1",
+  "promptPath": ".ai-design/prompts/TASK-16.2.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T07:36:24.626Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T07-36-24-626Z_TASK-16.2.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T07-36-24-626Z_TASK-16.2.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T07:40:57.471Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "()\n+            .Where(x => x.CompanyId == companyId)\n+            .ToArrayAsync();\n+\n+        var highInvoice = dataset.Anomalies.Single(x => x.AnomalyType == \"unusually_high_invoice\");\n+        Assert.Contains(invoices, x => highInvoice.GetAffectedRecordIds().Contains(x.Id) && x.Amount > 10000m);\n+\n+        var duplicateCharge = dataset.Anomalies.Single(x => x.AnomalyType == \"duplicate_vendor_charge\");\n+        Assert.Equal(2, transactions.Count(x => duplicateCharge.GetAffectedRecordIds().Contains(x.Id)));\n+\n+        var categoryMismatch = dataset.Anomalies.Single(x => x.AnomalyType == \"category_mismatch\");\n+        Assert.Contains(transactions, x => categoryMismatch.GetAffectedRecordIds().Contains(x.Id) && x.TransactionType == \"office_supplies\" && x.DocumentId.HasValue);\n+\n+        var missingReceipt = dataset.Anomalies.Single(x => x.AnomalyType == \"missing_receipt\");\n+        Assert.Contains(transactions, x => missingReceipt.GetAffectedRecordIds().Contains(x.Id) && !x.DocumentId.HasValue);\n+    }\n+\n+    [Fact]\n+    public async Task Anomaly_injection_can_be_disabled()\n+    {\n+        var companyId = Guid.Parse(\"22222222-3333-4444-5555-666666666666\");\n+        await using var connection = await OpenConnectionAsync();\n+        await using var dbContext = CreateContext(connection);\n+        await dbContext.Database.EnsureCreatedAsync();\n+        dbContext.Companies.Add(new Company(companyId, \"No Anomaly Seed Company\"));\n+\n+        var dataset = DeterministicFinanceSeedDatasetGenerator.Generate(dbContext, companyId, 160202, anomalyOptions: FinanceAnomalyInjectionOptions.Disabled);\n+        await dbContext.SaveChangesAsync();\n+\n+        Assert.Empty(dataset.Anomalies);\n+        Assert.Empty(await dbContext.FinanceSeedAnomalies.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToArrayAsync());\n+    }\n \n     private static async Task<IReadOnlyList<FinanceTransactionSnapshot>> GenerateSnapshotAsync(Guid companyId, int seedValue, DateTime anchorUtc)\nEND_OF_PATCH\n",
+  "stderrTail": "ere(x => x.CompanyId == companyId)\n+            .ToArrayAsync();\n+\n+        var highInvoice = dataset.Anomalies.Single(x => x.AnomalyType == \"unusually_high_invoice\");\n+        Assert.Contains(invoices, x => highInvoice.GetAffectedRecordIds().Contains(x.Id) && x.Amount > 10000m);\n+\n+        var duplicateCharge = dataset.Anomalies.Single(x => x.AnomalyType == \"duplicate_vendor_charge\");\n+        Assert.Equal(2, transactions.Count(x => duplicateCharge.GetAffectedRecordIds().Contains(x.Id)));\n+\n+        var categoryMismatch = dataset.Anomalies.Single(x => x.AnomalyType == \"category_mismatch\");\n+        Assert.Contains(transactions, x => categoryMismatch.GetAffectedRecordIds().Contains(x.Id) && x.TransactionType == \"office_supplies\" && x.DocumentId.HasValue);\n+\n+        var missingReceipt = dataset.Anomalies.Single(x => x.AnomalyType == \"missing_receipt\");\n+        Assert.Contains(transactions, x => missingReceipt.GetAffectedRecordIds().Contains(x.Id) && !x.DocumentId.HasValue);\n+    }\n+\n+    [Fact]\n+    public async Task Anomaly_injection_can_be_disabled()\n+    {\n+        var companyId = Guid.Parse(\"22222222-3333-4444-5555-666666666666\");\n+        await using var connection = await OpenConnectionAsync();\n+        await using var dbContext = CreateContext(connection);\n+        await dbContext.Database.EnsureCreatedAsync();\n+        dbContext.Companies.Add(new Company(companyId, \"No Anomaly Seed Company\"));\n+\n+        var dataset = DeterministicFinanceSeedDatasetGenerator.Generate(dbContext, companyId, 160202, anomalyOptions: FinanceAnomalyInjectionOptions.Disabled);\n+        await dbContext.SaveChangesAsync();\n+\n+        Assert.Empty(dataset.Anomalies);\n+        Assert.Empty(await dbContext.FinanceSeedAnomalies.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToArrayAsync());\n+    }\n \n     private static async Task<IReadOnlyList<FinanceTransactionSnapshot>> GenerateSnapshotAsync(Guid companyId, int seedValue, DateTime anchorUtc)\nEND_OF_PATCH\ntokens used\n91,963\n",
+  "verbosityMode": "summary"
+}

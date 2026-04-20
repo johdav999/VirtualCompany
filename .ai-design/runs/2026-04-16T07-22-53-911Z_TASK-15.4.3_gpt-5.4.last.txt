@@ -1,0 +1,314 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -99,6 +99,56 @@ public sealed record FinanceWorkflowOutputSchemaDto(
+     decimal Confidence,
+     string SourceWorkflow);
+ 
++public static class FinanceWorkflowOutputSchemas
++{
++    public static FinanceWorkflowOutputSchemaDto Create(
++        string classification,
++        string riskLevel,
++        string recommendedAction,
++        string rationale,
++        decimal confidence,
++        string sourceWorkflow) =>
++        new(
++            Required(classification, nameof(classification)),
++            Required(riskLevel, nameof(riskLevel)).ToLowerInvariant(),
++            Required(recommendedAction, nameof(recommendedAction)),
++            Required(rationale, nameof(rationale)),
++            Math.Clamp(confidence, 0m, 1m),
++            Required(sourceWorkflow, nameof(sourceWorkflow)));
++
++    public static JsonObject ToJsonObject(FinanceWorkflowOutputSchemaDto output) =>
++        new()
++        {
++            ["classification"] = JsonValue.Create(output.Classification),
++            ["riskLevel"] = JsonValue.Create(output.RiskLevel),
++            ["recommendedAction"] = JsonValue.Create(output.RecommendedAction),
++            ["rationale"] = JsonValue.Create(output.Rationale),
++            ["confidence"] = JsonValue.Create(output.Confidence),
++            ["sourceWorkflow"] = JsonValue.Create(output.SourceWorkflow)
++        };
++
++    public static void CopyToPayload(
++        IDictionary<string, JsonNode?> payload,
++        FinanceWorkflowOutputSchemaDto output,
++        bool includeWorkflowOutputNode = true)
++    {
++        payload["classification"] = JsonValue.Create(output.Classification);
++        payload["riskLevel"] = JsonValue.Create(output.RiskLevel);
++        payload["recommendedAction"] = JsonValue.Create(output.RecommendedAction);
++        payload["rationale"] = JsonValue.Create(output.Rationale);
++        payload["confidence"] = JsonValue.Create(output.Confidence);
++        payload["sourceWorkflow"] = JsonValue.Create(output.SourceWorkflow);
++
++        if (includeWorkflowOutputNode)
++        {
++            payload["workflowOutput"] = ToJsonObject(output);
++        }
++    }
++
++    private static string Required(string value, string parameterName)
++    {
++        var normalized = value.Trim();
++        return string.IsNullOrWhiteSpace(normalized)
++            ? throw new ArgumentException("Finance workflow output schema fields are required.", parameterName)
++            : normalized;
++    }
++}
++
+ public sealed record FinanceCashPositionAlertStateDto(
+     bool IsLowCash,
+     string RiskLevel,
+@@ -196,7 +246,7 @@ public sealed record FinanceInvoiceReviewWorkflowResultDto(
+     Dictionary<string, JsonNode?> OutputPayload)
+ {
+     public FinanceWorkflowOutputSchemaDto WorkflowOutput { get; init; } =
+-        new("invoice_review", "low", "no_action", "No workflow output was recorded.", 0m, "invoice_review");
++        FinanceWorkflowOutputSchemas.Create("invoice_review", "low", "no_action", "No workflow output was recorded.", 0m, "invoice_review");
+ }
+ 
+ public sealed record FinanceTransactionAnomalyEvaluationDto(
+@@ -218,7 +268,7 @@ public sealed record FinanceTransactionAnomalyDto(
+     bool AlertDeduplicated)
+ {
+     public FinanceWorkflowOutputSchemaDto WorkflowOutput { get; init; } =
+-        new(AnomalyType, "medium", RecommendedAction, Explanation, Confidence, "transaction_anomaly_detection");
++        FinanceWorkflowOutputSchemas.Create(AnomalyType, "medium", RecommendedAction, Explanation, Confidence, "transaction_anomaly_detection");
+ }
+ 
+ public sealed record FinanceTransactionHistoricalBaselineDto(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -730,7 +730,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             })
+             .ToList();
+ 
+-        var notableAgentUpdates = await _dbContext.AuditEvents
++        var notableAgentRows = await _dbContext.AuditEvents
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && x.OccurredUtc >= window.StartUtc && x.OccurredUtc < window.EndUtc)
+@@ -738,7 +738,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .Take(10)
+             .Select(x => new { x.Id, x.Action, x.TargetType, x.TargetId, x.Outcome, x.RationaleSummary, x.OccurredUtc })
+             .ToListAsync(cancellationToken);
+-        var notableAgentUpdates = notableAgentUpdates
++        var notableAgentUpdates = notableAgentRows
+             .Select(x => ApplyPriority(new BriefingAggregateItemDto(
+                 "agent_updates",
+                 x.Action,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCashPositionWorkflowService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCashPositionWorkflowService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCashPositionWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCashPositionWorkflowService.cs
+@@ -121,7 +121,8 @@ public sealed class CompanyFinanceCashPositionWorkflowService : IFinanceCashPosi
+             ["recommendedAction"] = JsonValue.Create(position.RecommendedAction),
+             ["rationale"] = JsonValue.Create(position.Rationale),
+             ["confidence"] = JsonValue.Create(position.Confidence),
+-            ["sourceWorkflow"] = JsonValue.Create(SourceWorkflow)
++            ["sourceWorkflow"] = JsonValue.Create(position.SourceWorkflow),
++            ["workflowOutput"] = FinanceWorkflowOutputSchemas.ToJsonObject(position.WorkflowOutput)
+         };
+ 
+     private static Dictionary<string, JsonNode?> BuildMetadata(
+@@ -136,7 +137,9 @@ public sealed class CompanyFinanceCashPositionWorkflowService : IFinanceCashPosi
+             ["classification"] = JsonValue.Create(position.Classification),
+             ["riskLevel"] = JsonValue.Create(position.RiskLevel),
+             ["recommendedAction"] = JsonValue.Create(position.RecommendedAction),
+-            ["confidence"] = JsonValue.Create(position.Confidence)
++            ["rationale"] = JsonValue.Create(position.Rationale),
++            ["confidence"] = JsonValue.Create(position.Confidence),
++            ["workflowOutput"] = FinanceWorkflowOutputSchemas.ToJsonObject(position.WorkflowOutput)
+         };
+ 
+     private static AlertSeverity ParseSeverity(string riskLevel) =>
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -108,7 +108,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+         var isLowCash = riskLevel is "critical" or "high" or "medium";
+         var existingAlert = await LoadExistingLowCashAlertAsync(query.CompanyId, cancellationToken);
+         var rationale = BuildCashPositionRationale(cashBalance, averageMonthlyBurn, estimatedRunwayDays, policy, warningCashAmount, criticalCashAmount, riskLevel);
+-        var workflowOutput = new FinanceWorkflowOutputSchemaDto(
++        var workflowOutput = FinanceWorkflowOutputSchemas.Create(
+             isLowCash ? "low_cash_position" : "cash_position_healthy",
+             riskLevel,
+             isLowCash ? "review_cash_plan" : "monitor",
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs
+@@ -26,6 +26,7 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+     private const string FollowUpTaskType = "finance_transaction_anomaly_follow_up";
+     private const string CorrelationPrefix = "finance-transaction-anomaly";
+     private const string FinanceWorkflowQueue = "finance_workflow_queue";
++    private const string SourceWorkflow = "transaction_anomaly_detection";
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly IFinancePolicyConfigurationService _policyConfigurationService;
+@@ -87,13 +88,14 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+                 dedupeWindow,
+                 cancellationToken);
+ 
++            var workflowOutput = BuildWorkflowOutput(decision);
+             anomalies.Add(new FinanceTransactionAnomalyDto(
+                 decision.AnomalyType,
+                 decision.Explanation,
+                 decision.Confidence,
+                 decision.RecommendedAction,
+                 alert.Alert.Id,
+                 task.Id,
+                 alert.Created,
+                 alert.Deduplicated)
+             {
+-                WorkflowOutput = new FinanceWorkflowOutputSchemaDto(
+-                    decision.AnomalyType,
+-                    decision.Severity.ToStorageValue(),
+-                    decision.RecommendedAction,
+-                    decision.Explanation,
+-                    decision.Confidence,
+-                    "transaction_anomaly_detection")
++                WorkflowOutput = workflowOutput
+             });
+         }
+ 
+@@ -376,6 +378,11 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+             ["historicalBaseline"] = BuildBaselineNode(baseline),
+             ["anomalyType"] = JsonValue.Create(decision.AnomalyType),
+             ["confidence"] = JsonValue.Create(decision.Confidence),
++            ["classification"] = JsonValue.Create(decision.AnomalyType),
++            ["riskLevel"] = JsonValue.Create(decision.Severity.ToStorageValue()),
++            ["rationale"] = JsonValue.Create(decision.Explanation),
+             ["recommendedAction"] = JsonValue.Create(decision.RecommendedAction),
++            ["sourceWorkflow"] = JsonValue.Create(SourceWorkflow),
++            ["workflowOutput"] = FinanceWorkflowOutputSchemas.ToJsonObject(BuildWorkflowOutput(decision)),
+             ["evaluatedUtc"] = JsonValue.Create(evaluatedUtc),
+             ["deduplicationWindowStartUtc"] = JsonValue.Create(dedupeWindow.StartUtc),
+             ["deduplicationWindowEndUtc"] = JsonValue.Create(dedupeWindow.EndUtc),
+@@ -390,13 +397,19 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+         DedupeWindow dedupeWindow) =>
+         new(StringComparer.OrdinalIgnoreCase)
+         {
+-            ["source"] = JsonValue.Create("finance_anomaly_detection"),
++            ["source"] = JsonValue.Create(SourceWorkflow),
+             ["assignedQueue"] = JsonValue.Create(FinanceWorkflowQueue),
+             ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
+             ["transactionDescription"] = JsonValue.Create(transaction.Description),
+             ["baselineSampleSize"] = JsonValue.Create(baseline.SampleSize),
+             ["anomalyType"] = JsonValue.Create(decision.AnomalyType),
++            ["classification"] = JsonValue.Create(decision.AnomalyType),
++            ["riskLevel"] = JsonValue.Create(decision.Severity.ToStorageValue()),
++            ["recommendedAction"] = JsonValue.Create(decision.RecommendedAction),
++            ["rationale"] = JsonValue.Create(decision.Explanation),
++            ["confidence"] = JsonValue.Create(decision.Confidence),
++            ["sourceWorkflow"] = JsonValue.Create(SourceWorkflow),
+             ["dedupeKey"] = JsonValue.Create(BuildDedupeKey(command.CompanyId, command.TransactionId, decision.AnomalyType)),
++            ["workflowOutput"] = FinanceWorkflowOutputSchemas.ToJsonObject(BuildWorkflowOutput(decision)),
+             ["deduplicationWindowStartUtc"] = JsonValue.Create(dedupeWindow.StartUtc),
+             ["deduplicationWindowEndUtc"] = JsonValue.Create(dedupeWindow.EndUtc),
+             ["deduplicationWindowHours"] = JsonValue.Create(dedupeWindow.Hours)
+@@ -414,9 +427,13 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+             ["alertId"] = JsonValue.Create(alertId),
+             ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
+             ["anomalyType"] = JsonValue.Create(decision.AnomalyType),
++            ["classification"] = JsonValue.Create(decision.AnomalyType),
++            ["riskLevel"] = JsonValue.Create(decision.Severity.ToStorageValue()),
+             ["explanation"] = JsonValue.Create(decision.Explanation),
++            ["rationale"] = JsonValue.Create(decision.Explanation),
+             ["confidence"] = JsonValue.Create(decision.Confidence),
+             ["recommendedAction"] = JsonValue.Create(decision.RecommendedAction),
++            ["sourceWorkflow"] = JsonValue.Create(SourceWorkflow),
++            ["workflowOutput"] = FinanceWorkflowOutputSchemas.ToJsonObject(BuildWorkflowOutput(decision)),
+             ["transactionAmount"] = JsonValue.Create(transaction.Amount),
+             ["transactionCurrency"] = JsonValue.Create(transaction.Currency),
+             ["policyLowerBound"] = JsonValue.Create(policy.AnomalyDetectionLowerBound),
+@@ -439,6 +456,14 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+             ["latestTransactionUtc"] = baseline.LatestTransactionUtc.HasValue ? JsonValue.Create(baseline.LatestTransactionUtc.Value) : null
+         };
+ 
++    private static FinanceWorkflowOutputSchemaDto BuildWorkflowOutput(AnomalyDecision decision) =>
++        FinanceWorkflowOutputSchemas.Create(
++            decision.AnomalyType,
++            decision.Severity.ToStorageValue(),
++            decision.RecommendedAction,
++            decision.Explanation,
++            decision.Confidence,
++            SourceWorkflow);
++
+     private static string BuildAlertTitle(TransactionRow transaction, AnomalyDecision decision) =>
+         $"Finance anomaly: {decision.AnomalyType.Replace('_', ' ')} on {transaction.ExternalReference}";
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
+@@ -107,7 +107,7 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             policy,
+             CloneNodes(outputPayload))
+         {
+-            WorkflowOutput = new FinanceWorkflowOutputSchemaDto(
++            WorkflowOutput = FinanceWorkflowOutputSchemas.Create(
+                 review.InvoiceClassification,
+                 review.RiskLevel,
+                 review.RecommendedAction,
+@@ -179,7 +179,7 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             policy,
+             CloneNodes(task.OutputPayload))
+         {
+-            WorkflowOutput = new FinanceWorkflowOutputSchemaDto(
++            WorkflowOutput = FinanceWorkflowOutputSchemas.Create(
+                 review.InvoiceClassification,
+                 review.RiskLevel,
+                 review.RecommendedAction,
+@@ -411,7 +411,7 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+         InvoiceReviewDecision review,
+         Guid taskId,
+         Guid? approvalRequestId,
+-        Guid? workflowInstanceId) =>
+-        new(StringComparer.OrdinalIgnoreCase)
++        Guid? workflowInstanceId)
++    {
++        var workflowOutput = FinanceWorkflowOutputSchemas.Create(
++            review.InvoiceClassification,
++            review.RiskLevel,
++            review.RecommendedAction,
++            review.Rationale,
++            review.ConfidenceScore,
++            "invoice_review");
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+         {
+             ["companyId"] = JsonValue.Create(companyId),
+             ["invoiceId"] = JsonValue.Create(invoice.Id),
+@@ -425,12 +425,6 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             ["classification"] = JsonValue.Create(review.InvoiceClassification),
+             ["invoiceClassification"] = JsonValue.Create(review.InvoiceClassification),
+             ["riskLevel"] = JsonValue.Create(review.RiskLevel),
+-            ["recommendedAction"] = JsonValue.Create(review.RecommendedAction),
+-            ["rationale"] = JsonValue.Create(review.Rationale),
+-            ["confidence"] = JsonValue.Create(review.ConfidenceScore),
+-            ["sourceWorkflow"] = JsonValue.Create("invoice_review"),
+             ["confidenceScore"] = JsonValue.Create(review.ConfidenceScore),
+             ["requiresHumanApproval"] = JsonValue.Create(review.RequiresHumanApproval),
+             ["invoiceAmount"] = JsonValue.Create(invoice.Amount),
+@@ -444,7 +438,11 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             ["policyInvoiceApprovalThreshold"] = JsonValue.Create(policy.InvoiceApprovalThreshold),
+             ["policyApprovalCurrency"] = JsonValue.Create(policy.ApprovalCurrency),
+             ["relatedPaymentContext"] = BuildRelatedPaymentNode(paymentContext)
+         };
++        FinanceWorkflowOutputSchemas.CopyToPayload(payload, workflowOutput);
++        payload["invoiceClassification"] = JsonValue.Create(workflowOutput.Classification);
++        payload["confidenceScore"] = JsonValue.Create(workflowOutput.Confidence);
++        return payload;
++    }
+ 
+     private async Task<InvoicePaymentContext> LoadRelatedPaymentContextAsync(
+         Guid companyId,
+END_OF_PATCH

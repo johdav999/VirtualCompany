@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-18.2.3",
+  "promptPath": ".ai-design/prompts/TASK-18.2.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T19:39:17.264Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T19-39-17-264Z_TASK-18.2.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T19-39-17-264Z_TASK-18.2.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T19:42:34.483Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "));\n+\n+        var items = cut.FindAll(\".list-group-item\");\n+        Assert.Equal(3, items.Count);\n+        Assert.Contains(\"Tool event\", items[0].TextContent);\n+        Assert.Contains(\"Approval\", items[1].TextContent);\n+        Assert.Contains(\"Task execution\", items[2].TextContent);\n+        Assert.Contains(\"Unknown time\", items[2].TextContent);\n+    }\n+\n     [Fact]\n     public void Invoice_workflow_presentation_sorts_descending_deduplicates_by_event_id_and_preserves_blank_ids()\n     {\n@@ -277,6 +326,37 @@ public sealed class InvoiceReviewComponentTests\n         Assert.Equal(approvalId, history[1].RelatedApprovalId);\n     }\n \n+    [Fact]\n+    public void Invoice_workflow_presentation_prefers_more_complete_duplicate_when_timestamps_match()\n+    {\n+        var auditId = Guid.Parse(\"db84057d-2d39-4322-8f57-bf0687cc748e\");\n+\n+        var history = InvoiceWorkflowPresentation.NormalizeWorkflowHistory(\n+        [\n+            new FinanceInvoiceWorkflowHistoryItemResponse\n+            {\n+                EventId = \"duplicate-event\",\n+                EventType = \"Review\",\n+                OccurredAtUtc = new DateTime(2026, 4, 16, 8, 30, 0, DateTimeKind.Utc)\n+            },\n+            new FinanceInvoiceWorkflowHistoryItemResponse\n+            {\n+                EventId = \"duplicate-event\",\n+                EventType = \"Review\",\n+                ActorOrSourceDisplayName = \"Finance analyst\",\n+                OccurredAtUtc = new DateTime(2026, 4, 16, 8, 30, 0, DateTimeKind.Utc),\n+                RelatedAuditId = auditId\n+            }\n+        ]);\n+\n+        var item = Assert.Single(history);\n+        Assert.Equal(\"duplicate-event\", item.EventId);\n+        Assert.Equal(\"Review\", item.EventType);\n+        Assert.Equal(\"Finance analyst\", item.ActorOrSourceDisplayName);\n+        Assert.Equal(auditId, item.RelatedAuditId);\n+    }\n+\n     [Fact]\n     public void Invoice_workflow_presentation_resolves_invoice_detail_recommendation_from_structured_fields_only()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "items = cut.FindAll(\".list-group-item\");\n+        Assert.Equal(3, items.Count);\n+        Assert.Contains(\"Tool event\", items[0].TextContent);\n+        Assert.Contains(\"Approval\", items[1].TextContent);\n+        Assert.Contains(\"Task execution\", items[2].TextContent);\n+        Assert.Contains(\"Unknown time\", items[2].TextContent);\n+    }\n+\n     [Fact]\n     public void Invoice_workflow_presentation_sorts_descending_deduplicates_by_event_id_and_preserves_blank_ids()\n     {\n@@ -277,6 +326,37 @@ public sealed class InvoiceReviewComponentTests\n         Assert.Equal(approvalId, history[1].RelatedApprovalId);\n     }\n \n+    [Fact]\n+    public void Invoice_workflow_presentation_prefers_more_complete_duplicate_when_timestamps_match()\n+    {\n+        var auditId = Guid.Parse(\"db84057d-2d39-4322-8f57-bf0687cc748e\");\n+\n+        var history = InvoiceWorkflowPresentation.NormalizeWorkflowHistory(\n+        [\n+            new FinanceInvoiceWorkflowHistoryItemResponse\n+            {\n+                EventId = \"duplicate-event\",\n+                EventType = \"Review\",\n+                OccurredAtUtc = new DateTime(2026, 4, 16, 8, 30, 0, DateTimeKind.Utc)\n+            },\n+            new FinanceInvoiceWorkflowHistoryItemResponse\n+            {\n+                EventId = \"duplicate-event\",\n+                EventType = \"Review\",\n+                ActorOrSourceDisplayName = \"Finance analyst\",\n+                OccurredAtUtc = new DateTime(2026, 4, 16, 8, 30, 0, DateTimeKind.Utc),\n+                RelatedAuditId = auditId\n+            }\n+        ]);\n+\n+        var item = Assert.Single(history);\n+        Assert.Equal(\"duplicate-event\", item.EventId);\n+        Assert.Equal(\"Review\", item.EventType);\n+        Assert.Equal(\"Finance analyst\", item.ActorOrSourceDisplayName);\n+        Assert.Equal(auditId, item.RelatedAuditId);\n+    }\n+\n     [Fact]\n     public void Invoice_workflow_presentation_resolves_invoice_detail_recommendation_from_structured_fields_only()\n     {\nEND_OF_PATCH\ntokens used\n62,107\n",
+  "verbosityMode": "summary"
+}

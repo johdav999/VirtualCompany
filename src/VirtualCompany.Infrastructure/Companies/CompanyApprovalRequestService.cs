@@ -303,7 +303,15 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             var previousStatus = attempt.Status.ToStorageValue();
             if (!approval.CanExecuteGuardedAction)
             {
-                attempt.MarkDenied(BuildBlockedApprovalPolicyDecision(approval));
+                var blockedDecision = BuildBlockedApprovalPolicyDecision(approval);
+                var resultPayload = BuildBlockedApprovalResultPayload(approval, attempt);
+                if (approval.Status == ApprovalRequestStatus.Rejected)
+                {
+                    attempt.MarkRejected(blockedDecision, resultPayload, denialReason: PolicyDecisionReasonCodes.ApprovalRejected);
+                    return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+                }
+
+                attempt.MarkDenied(blockedDecision, resultPayload, denialReason: approval.ExecutionBlockReasonCode);
                 return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
             }
 
@@ -797,6 +805,29 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
                     $"{ToDisplayName(approval.TargetEntityType)}: {approval.TargetEntityId:N}",
                     [new ApprovalAffectedEntityDto(approval.TargetEntityType, approval.TargetEntityId, ToDisplayName(approval.TargetEntityType))]);
             });
+    }
+
+    private static Dictionary<string, JsonNode?> BuildBlockedApprovalResultPayload(ApprovalRequest approval, ToolExecutionAttempt attempt)
+    {
+        var reasonCode = approval.ExecutionBlockReasonCode ?? PolicyDecisionReasonCodes.ApprovalCancelled;
+        var status = approval.Status == ApprovalRequestStatus.Rejected
+            ? ToolExecutionStatus.Rejected.ToStorageValue()
+            : ToolExecutionStatus.Denied.ToStorageValue();
+
+        return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["schemaVersion"] = JsonValue.Create(ToolExecutionResult.SchemaVersion),
+            ["success"] = JsonValue.Create(false),
+            ["status"] = JsonValue.Create(status),
+            ["toolName"] = JsonValue.Create(attempt.ToolName),
+            ["actionType"] = JsonValue.Create(attempt.ActionType.ToStorageValue()),
+            ["errorCode"] = JsonValue.Create(reasonCode),
+            ["errorMessage"] = JsonValue.Create(approval.DecisionSummary ?? "The approval request did not authorize execution."),
+            ["approvalRequestId"] = JsonValue.Create(approval.Id),
+            ["executionId"] = JsonValue.Create(attempt.Id),
+            ["taskId"] = attempt.TaskId.HasValue ? JsonValue.Create(attempt.TaskId.Value) : null,
+            ["workflowInstanceId"] = attempt.WorkflowInstanceId.HasValue ? JsonValue.Create(attempt.WorkflowInstanceId.Value) : null
+        };
     }
 
     private static ApprovalRequestDto ToDto(ApprovalRequest approval, ApprovalSummaryContext? summaryContext)

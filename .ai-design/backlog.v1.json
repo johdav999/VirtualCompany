@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-04-15T20:38:28.905Z",
+  "generatedAt": "2026-04-19T14:49:41.806Z",
   "epics": [
     {
       "id": "EP-1",
@@ -3688,6 +3688,1343 @@
             "Configured anomaly or threshold conditions emit a `finance.threshold.breached` event with breach type, affected record ID, and evaluation details.",
             "Events are published for both initial simulation-generated changes and ongoing time progression changes without duplicate delivery from a single write operation.",
             "Published events are consumable by the trigger system from EP-7 through the existing event contract, and an integration test verifies end-to-end delivery."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-17",
+      "title": "EPIC-17 — Finance workspace UI, drilldowns, and controlled finance operations",
+      "stories": [
+        {
+          "id": "US-17.1",
+          "title": "ST-FUI-171 — Finance module shell, routing, and role-aware navigation",
+          "tasks": [
+            {
+              "id": "TASK-17.1.1",
+              "title": "Add finance route group and page shell components to the web router",
+              "tags": [
+                "frontend",
+                "routing",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-17.1.2",
+              "title": "Implement role-aware Finance navigation visibility and route guards",
+              "tags": [
+                "frontend",
+                "auth",
+                "rbac"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-17.1.3",
+              "title": "Build Finance landing page with links to all finance workspace screens",
+              "tags": [
+                "frontend",
+                "ui",
+                "navigation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The web app exposes a top-level Finance navigation entry for users with finance view permission.",
+            "The Finance landing page renders links to cash position, transactions, invoices, balances, monthly summary, and anomalies.",
+            "Direct navigation to finance routes returns tenant-scoped data only for the active tenant.",
+            "Users without finance access receive a forbidden state on finance routes and do not see Finance navigation items.",
+            "Finance routes are registered in the application router and support browser refresh without navigation errors."
+          ]
+        },
+        {
+          "id": "US-17.2",
+          "title": "ST-FUI-172 — Finance summary views for cash, balances, monthly summary, and anomalies",
+          "tasks": [
+            {
+              "id": "TASK-17.2.1",
+              "title": "Create finance summary page components for cash, balances, monthly summary, and anomalies",
+              "tags": [
+                "frontend",
+                "ui",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-17.2.2",
+              "title": "Integrate summary screens with finance aggregate APIs and tenant context",
+              "tags": [
+                "frontend",
+                "api",
+                "tenant"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-17.2.3",
+              "title": "Implement reusable loading, empty, and error state components for finance views",
+              "tags": [
+                "frontend",
+                "ux",
+                "states"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Cash position, balances, monthly summary, and anomalies screens each load data from existing finance backend endpoints.",
+            "Each summary screen displays loading, empty, success, and error states.",
+            "All summary values shown in the UI are scoped to the active tenant and match backend responses in integration tests.",
+            "Expense breakdown by category is visible on the monthly summary screen when category aggregate data is returned.",
+            "Users can navigate between summary screens without full page reload."
+          ]
+        },
+        {
+          "id": "US-17.3",
+          "title": "ST-FUI-173 — Transactions and invoices workspace with detail drilldowns and linked documents",
+          "tasks": [
+            {
+              "id": "TASK-17.3.1",
+              "title": "Build transactions list and filter UI with detail panel routing",
+              "tags": [
+                "frontend",
+                "transactions",
+                "filters"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-17.3.2",
+              "title": "Build invoices list and detail UI with approval context rendering",
+              "tags": [
+                "frontend",
+                "invoices",
+                "workflow"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-17.3.3",
+              "title": "Integrate linked document metadata and document drilldown actions into finance detail views",
+              "tags": [
+                "frontend",
+                "documents",
+                "drilldown"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-17.3.4",
+              "title": "Add integration tests for transaction and invoice detail data mapping",
+              "tags": [
+                "test",
+                "integration",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Transactions page lists finance transactions with filter controls for date range, category, and flagged state.",
+            "Selecting a transaction opens a detail view showing category, flags, anomaly state, and linked document metadata when available.",
+            "Invoices page lists invoices with approval or review status, amount, and supplier.",
+            "Selecting an invoice opens a detail view showing status, amount, supplier, and linked workflow or approval context when available.",
+            "Linked documents in transaction and invoice detail views provide navigation to the document view when the user has access.",
+            "Missing or inaccessible linked documents render a clear non-blocking status message."
+          ]
+        },
+        {
+          "id": "US-17.4",
+          "title": "ST-FUI-174 — Controlled finance edits, policy-aware actions, and Laura finance context",
+          "tasks": [
+            {
+              "id": "TASK-17.4.1",
+              "title": "Implement transaction category edit form with backend mutation and inline validation handling",
+              "tags": [
+                "frontend",
+                "edit",
+                "transactions"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-17.4.2",
+              "title": "Implement invoice approval status action controls with permission-aware rendering",
+              "tags": [
+                "frontend",
+                "invoices",
+                "permissions"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-17.4.3",
+              "title": "Add policy and role checks to finance action components and route-level data loading",
+              "tags": [
+                "frontend",
+                "rbac",
+                "policy"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-17.4.4",
+              "title": "Build Laura finance role presentation view with capability cards and finance deep links",
+              "tags": [
+                "frontend",
+                "laura",
+                "profile"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Authorized users can update transaction category from the transaction detail view and receive inline validation feedback for invalid values.",
+            "Authorized users can change invoice approval status through the existing backend workflow and see updated status after save.",
+            "Users without required permissions see restricted finance actions disabled or hidden consistently across transaction and invoice screens.",
+            "Laura's profile or role presentation page identifies her as the preconfigured Finance Manager and displays finance capability summaries.",
+            "Role-specific workflow cards on Laura's finance context view link to relevant finance pages and resolve successfully."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-18",
+      "title": "EPIC-18 — Finance workflow, anomaly, and cockpit experience",
+      "stories": [
+        {
+          "id": "US-18.1",
+          "title": "ST-FUI-201 — Invoice review workbench and recommendation drilldown",
+          "tasks": [
+            {
+              "id": "TASK-18.1.1",
+              "title": "Implement invoice review list page with finance workflow data binding and filterable table",
+              "tags": [
+                "frontend",
+                "finance",
+                "table"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-18.1.2",
+              "title": "Build invoice recommendation detail page with approval deep links and action state handling",
+              "tags": [
+                "frontend",
+                "routing",
+                "approval"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-18.1.3",
+              "title": "Add role-aware action gating and actionable-state checks for invoice review controls",
+              "tags": [
+                "auth",
+                "policy",
+                "ui"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-18.1.4",
+              "title": "Create component and integration tests for invoice review list, detail, and error states",
+              "tags": [
+                "test",
+                "frontend",
+                "qa"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A finance review route is available in the UI and lists invoices with reviewable statuses returned by the existing finance workflow APIs.",
+            "Each invoice row displays invoice number, supplier name, amount, currency, risk level, recommendation status, confidence, and last updated timestamp.",
+            "Users can filter the list by status, supplier, risk level, and recommendation outcome, and filters are reflected in the URL query string.",
+            "Selecting an invoice opens a dedicated review result page that shows recommendation summary, recommended action, confidence, and links to the source invoice and related approval when present.",
+            "Review result pages expose approve, reject, or send-for-follow-up actions only when the current user has permission and the invoice is in an actionable state.",
+            "Loading, empty, and API error states are rendered for both the list and detail views and are covered by component tests."
+          ]
+        },
+        {
+          "id": "US-18.2",
+          "title": "ST-FUI-202 — Finance recommendation details and invoice workflow history",
+          "tasks": [
+            {
+              "id": "TASK-18.2.1",
+              "title": "Implement structured recommendation details panel for invoice pages using finance output models",
+              "tags": [
+                "frontend",
+                "finance",
+                "details"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-18.2.2",
+              "title": "Build invoice workflow history timeline component with audit and approval deep links",
+              "tags": [
+                "frontend",
+                "timeline",
+                "audit"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-18.2.3",
+              "title": "Add client-side normalization to suppress duplicate history events and enforce sort order",
+              "tags": [
+                "frontend",
+                "data",
+                "timeline"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The invoice detail experience includes a recommendation details section showing classification, risk, rationale summary, confidence, recommended action, and current workflow status.",
+            "Recommendation explanations are rendered from structured backend fields and do not expose raw chain-of-thought or internal prompt text.",
+            "The invoice detail page includes a workflow history timeline with entries for review, approval, rejection, task execution, and tool events when provided by backend data.",
+            "Each timeline entry shows event type, actor or system source, timestamp, and a link to related audit or approval detail when an identifier is available.",
+            "Timeline entries are sorted in descending chronological order and duplicate events with the same event id are not rendered twice.",
+            "If recommendation or history data is unavailable, the UI shows a non-blocking empty state while preserving access to the base invoice record."
+          ]
+        },
+        {
+          "id": "US-18.3",
+          "title": "ST-FUI-203 — Finance anomaly workbench and follow-up actions",
+          "tasks": [
+            {
+              "id": "TASK-18.3.1",
+              "title": "Implement finance anomaly list page with filters, pagination, and persisted URL state",
+              "tags": [
+                "frontend",
+                "anomaly",
+                "filters"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-18.3.2",
+              "title": "Build anomaly detail page with related record links and follow-up task references",
+              "tags": [
+                "frontend",
+                "anomaly",
+                "tasks"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-18.3.3",
+              "title": "Wire deduplication metadata display and conditional rendering for anomaly key and window fields",
+              "tags": [
+                "frontend",
+                "metadata",
+                "ui"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A dedicated anomaly workbench route lists finance anomalies returned by existing anomaly APIs.",
+            "The anomaly list supports filtering by anomaly type, status, confidence range, supplier, and date window, and supports pagination or infinite loading for datasets over 50 items.",
+            "Each anomaly row shows anomaly type, affected record reference, explanation summary, confidence, recommended action, deduplication key or window when available, and current follow-up status.",
+            "Selecting an anomaly opens a detail page showing anomaly type, affected record, explanation, confidence, recommended action, related follow-up tasks, and links to the underlying invoice or transaction record.",
+            "Users can open linked follow-up tasks from the anomaly detail page and return to the anomaly workbench without losing current filters.",
+            "When backend deduplication metadata is present, the UI displays the anomaly key and detection window; when absent, the UI hides the section without rendering placeholder errors."
+          ]
+        },
+        {
+          "id": "US-18.4",
+          "title": "ST-FUI-204 — Cash position cockpit widgets and finance action entry points",
+          "tasks": [
+            {
+              "id": "TASK-18.4.1",
+              "title": "Add cash position and runway widgets to the executive cockpit with finance data adapters",
+              "tags": [
+                "frontend",
+                "cockpit",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-18.4.2",
+              "title": "Implement finance alert detail panel and deep links from low-cash alert surfaces",
+              "tags": [
+                "frontend",
+                "alerts",
+                "routing"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-18.4.3",
+              "title": "Add role-gated finance action entry points and connect them to orchestration triggers",
+              "tags": [
+                "frontend",
+                "actions",
+                "auth"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-18.4.4",
+              "title": "Create end-to-end tests covering cockpit widget navigation, alert opening, and action visibility",
+              "tags": [
+                "e2e",
+                "qa",
+                "cockpit"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The executive cockpit displays a finance widget for current cash position with value, trend indicator, and last refreshed timestamp.",
+            "The cockpit displays a runway visualization with current runway estimate and threshold-based status styling for healthy, warning, and critical states.",
+            "Low-cash alerts from finance workflows open a finance-specific detail panel or page showing alert summary, contributing factors, and links to detailed finance views.",
+            "Cockpit finance widgets deep-link to the finance workspace, anomaly workbench, or cash detail page as appropriate.",
+            "Explicit finance actions are available in the UI, including Review invoice, Inspect anomaly, View cash position, and Open finance summary.",
+            "Finance action entry points are shown only when the current user satisfies role and policy checks, and action triggers call existing backend orchestration endpoints."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-19",
+      "title": "EPIC-19 — Finance sandbox admin, simulation controls, and integration transparency UI",
+      "stories": [
+        {
+          "id": "US-19.1",
+          "title": "ST-FUI-301 — Finance sandbox administration page",
+          "tasks": [
+            {
+              "id": "TASK-19.1.1",
+              "title": "Create finance sandbox admin page route and navigation entry",
+              "tags": [
+                "frontend",
+                "routing",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-19.1.2",
+              "title": "Implement role-gated access guard for sandbox admin views",
+              "tags": [
+                "auth",
+                "frontend",
+                "security"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-19.1.3",
+              "title": "Build admin page layout with section containers and async state handling",
+              "tags": [
+                "ui",
+                "frontend",
+                "state"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A dedicated finance sandbox admin route is available from the finance area navigation.",
+            "The page renders sections for dataset generation, anomaly injection, simulation controls, tool execution visibility, and domain events.",
+            "Users without an authorized admin/tester role receive an access denied state and cannot load admin data.",
+            "Each section loads its backing data independently and shows loading, empty, and error states."
+          ]
+        },
+        {
+          "id": "US-19.2",
+          "title": "ST-FUI-302 — Seed dataset generation and validation UI",
+          "tasks": [
+            {
+              "id": "TASK-19.2.1",
+              "title": "Implement seed dataset generation form with parameter validation",
+              "tags": [
+                "frontend",
+                "forms",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-19.2.2",
+              "title": "Integrate seed generation and validation API mutations",
+              "tags": [
+                "api",
+                "frontend",
+                "integration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-19.2.3",
+              "title": "Render generation summary and validation result panels",
+              "tags": [
+                "ui",
+                "results",
+                "validation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The dataset generation form accepts company, seed value, anchor date, and generation mode inputs.",
+            "Submitting the form calls the seed generation API with the selected parameters and disables duplicate submission while the request is in progress.",
+            "After a successful run, the UI displays a generation summary including created and updated record counts.",
+            "Validation results are displayed after generation, including referential-integrity errors and warnings when returned by the backend.",
+            "API failures and validation failures are shown inline with actionable error messages."
+          ]
+        },
+        {
+          "id": "US-19.3",
+          "title": "ST-FUI-303 — Anomaly injection and simulation time controls",
+          "tasks": [
+            {
+              "id": "TASK-19.3.1",
+              "title": "Build anomaly injection form and registry list components",
+              "tags": [
+                "frontend",
+                "anomalies",
+                "ui"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-19.3.2",
+              "title": "Connect anomaly injection, registry, and detail endpoints",
+              "tags": [
+                "api",
+                "integration",
+                "anomalies"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-19.3.3",
+              "title": "Implement simulation clock controls and progression history panel",
+              "tags": [
+                "simulation",
+                "frontend",
+                "controls"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-19.3.4",
+              "title": "Add polling or refresh logic for progression run status updates",
+              "tags": [
+                "state",
+                "polling",
+                "simulation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Users can select an anomaly scenario profile and submit an anomaly injection request from the admin page.",
+            "The anomaly registry lists anomalies with ID, type, status, and affected record reference.",
+            "Selecting an anomaly opens a detail view showing scenario metadata and a link to the related finance record when available.",
+            "Users can advance simulation time by a specified increment and start a progression run from the UI.",
+            "The UI shows progression run status, run history, generated-record counts, and warning or failure messages returned by the backend."
+          ]
+        },
+        {
+          "id": "US-19.4",
+          "title": "ST-FUI-304 — Finance events and tool execution transparency",
+          "tasks": [
+            {
+              "id": "TASK-19.4.1",
+              "title": "Implement finance domain event stream list and detail drawer",
+              "tags": [
+                "frontend",
+                "events",
+                "observability"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-19.4.2",
+              "title": "Build finance tool registry view with manifest and provider metadata",
+              "tags": [
+                "frontend",
+                "tools",
+                "registry"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-19.4.3",
+              "title": "Create tool execution history and execution detail components",
+              "tags": [
+                "frontend",
+                "executions",
+                "audit"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-19.4.4",
+              "title": "Wire deep links between events, executions, approvals, and finance actions",
+              "tags": [
+                "integration",
+                "linking",
+                "workflow"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The admin area displays a finance domain event stream with event type, timestamp, correlation identifier, and affected entity reference.",
+            "Users can open an event detail view that shows payload summary and trigger consumption tracing when backend data exists.",
+            "The UI lists finance tool manifests with tool name, version metadata, contract/schema summary, and provider adapter identity.",
+            "A finance tool execution history view shows lifecycle state, request summary, response summary, and execution timestamp.",
+            "Execution detail links tool execution records to approval requests and originating finance actions when related identifiers are available."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-20",
+      "title": "EPIC-20 — Automatic finance data seeding, retroactive backfill, and first-run finance initialization",
+      "stories": [
+        {
+          "id": "US-20.1",
+          "title": "ST-FUI-409 — Detect finance seeding state for new and existing companies",
+          "tasks": [
+            {
+              "id": "TASK-20.1.1",
+              "title": "Implement finance seeding state resolver service with metadata and lightweight record checks",
+              "tags": [
+                "backend",
+                "finance",
+                "seeding"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-20.1.2",
+              "title": "Add company-level finance seed status fields and timestamps to persistence model",
+              "tags": [
+                "backend",
+                "db",
+                "migration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-20.1.3",
+              "title": "Expose seeding state through internal API used by finance UI and jobs",
+              "tags": [
+                "api",
+                "backend",
+                "shared"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-20.1.4",
+              "title": "Add unit and integration tests for seeded state classification and fallback logic",
+              "tags": [
+                "test",
+                "backend",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "System exposes a company finance seeding state with values `not_seeded`, `partially_seeded`, or `fully_seeded`.",
+            "Seeding state can be resolved for a company using metadata and/or lightweight existence checks without full dataset scans.",
+            "Finance UI, onboarding flow, and background jobs use the same shared detection service or endpoint.",
+            "Detection returns a result for a company within an application-defined fast path suitable for request-time usage.",
+            "If finance seed metadata is missing but finance records exist, the company is classified as `partially_seeded` or `fully_seeded` according to implemented rules.",
+            "Automated tests cover all three states and inconsistent metadata/data combinations."
+          ]
+        },
+        {
+          "id": "US-20.2",
+          "title": "ST-FUI-410 — Auto-seed finance data on first finance access for existing companies",
+          "tasks": [
+            {
+              "id": "TASK-20.2.1",
+              "title": "Add finance route guard/controller logic to enqueue async seed job for unseeded companies",
+              "tags": [
+                "backend",
+                "queue",
+                "finance-ui"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-20.2.2",
+              "title": "Implement frontend initializing, in-progress, success, and failure states for first-run finance access",
+              "tags": [
+                "frontend",
+                "ux",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-20.2.3",
+              "title": "Add duplicate-job suppression and company-level seeding lock for finance access flow",
+              "tags": [
+                "backend",
+                "idempotency",
+                "queue"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-20.2.4",
+              "title": "Instrument analytics and logs for finance auto-seed lifecycle events",
+              "tags": [
+                "observability",
+                "analytics",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "When a user opens `/finance` for a company in `not_seeded` state, the system starts an asynchronous seed job without blocking the page request.",
+            "The finance UI displays an initializing state while seeding is in progress.",
+            "After seed completion, the UI refreshes data automatically or presents a clear reload action that loads seeded data successfully.",
+            "Repeated navigation to `/finance` while a seed job is already running does not enqueue duplicate jobs for the same company.",
+            "If seeding fails, the UI shows a recoverable error state with retry guidance instead of an empty or broken page.",
+            "Telemetry is recorded for seed job requested, started, completed, and failed events from finance entry."
+          ]
+        },
+        {
+          "id": "US-20.3",
+          "title": "ST-FUI-411 — Background backfill job for retroactive seeding of existing companies",
+          "tasks": [
+            {
+              "id": "TASK-20.3.1",
+              "title": "Implement scheduled backfill worker to scan companies and enqueue finance seed jobs in batches",
+              "tags": [
+                "backend",
+                "jobs",
+                "backfill"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-20.3.2",
+              "title": "Add rate limiting, concurrency caps, and retry policy for retroactive seeding jobs",
+              "tags": [
+                "queue",
+                "reliability",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-20.3.3",
+              "title": "Persist per-company backfill execution records and aggregate job metrics",
+              "tags": [
+                "db",
+                "observability",
+                "ops"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-20.3.4",
+              "title": "Create integration tests for backfill reruns, skips, and failure recovery",
+              "tags": [
+                "test",
+                "backfill",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A background job can scan all companies and identify those in `not_seeded` or eligible `partially_seeded` states.",
+            "The backfill process seeds companies in batches with configurable rate limiting and concurrency controls.",
+            "The job is idempotent and safe to rerun without corrupting or duplicating controlled seed datasets.",
+            "Each company backfill attempt records status, start time, end time, and error details when applicable.",
+            "Operators can review aggregate counts for scanned, queued, succeeded, skipped, and failed companies.",
+            "Automated tests verify rerun safety, rate limiting behavior, and partial failure handling."
+          ]
+        },
+        {
+          "id": "US-20.4",
+          "title": "ST-FUI-412/ST-FUI-413 — Manual regenerate controls and seed-on-demand fallback for finance-dependent flows",
+          "tasks": [
+            {
+              "id": "TASK-20.4.1",
+              "title": "Add finance UI actions and confirmation modal for generate/regenerate seed operations",
+              "tags": [
+                "frontend",
+                "finance",
+                "admin"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-20.4.2",
+              "title": "Implement manual seed API with controlled replace mode and shared orchestration path",
+              "tags": [
+                "api",
+                "backend",
+                "seeding"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-20.4.3",
+              "title": "Add finance API middleware/service fallback for missing dataset detection and structured not-initialized responses",
+              "tags": [
+                "backend",
+                "api",
+                "resilience"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-20.4.4",
+              "title": "Record audit events and logs for manual regenerate and fallback-triggered seeding",
+              "tags": [
+                "audit",
+                "observability",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The `/finance` UI provides a `Generate finance data` or `Regenerate finance data` action based on current seeding state.",
+            "Manual regenerate requires explicit confirmation before overwrite when replace mode is selected.",
+            "Manual trigger supports at least `replace` mode, and if `append` mode is implemented it is clearly distinguished in API and UI.",
+            "Finance APIs that require seeded data return a structured `not_initialized` response or trigger seeding according to configured fallback behavior.",
+            "Finance-dependent requests do not throw unhandled exceptions when data is missing.",
+            "Manual and fallback seeding paths use the same idempotent seed orchestration service and emit audit/log events."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-21",
+      "title": "EPIC-21 — Tenant-scoped finance simulation engine and deterministic time progression",
+      "stories": [
+        {
+          "id": "US-21.1",
+          "title": "Build tenant-scoped simulation state service and progression runner",
+          "tasks": [
+            {
+              "id": "TASK-21.1.1",
+              "title": "Implement simulation state persistence model and tenant/company-scoped repository",
+              "tags": [
+                "backend",
+                "simulation",
+                "multitenant",
+                "persistence"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-21.1.2",
+              "title": "Add simulation control APIs for start, pause, resume, stop, and state retrieval",
+              "tags": [
+                "api",
+                "backend",
+                "simulation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-21.1.3",
+              "title": "Create background progression runner that advances 1 simulated day every 10 seconds for running sessions",
+              "tags": [
+                "scheduler",
+                "backend",
+                "time"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-21.1.4",
+              "title": "Add deterministic seed handling and session lifecycle validation tests",
+              "tags": [
+                "testing",
+                "determinism",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A tenant/company simulation state can be created, read, updated, paused, resumed, and stopped through additive backend APIs without changing existing finance APIs.",
+            "When simulation status is running, the simulated company date advances by exactly 1 day every 10 seconds based on server time.",
+            "When simulation status is paused, simulated time does not advance and the last simulated date is preserved.",
+            "When simulation status is stopped, the active simulation session is ended, no further progression occurs, and a new start creates a clean session state.",
+            "Simulation state is isolated by tenant and company so one company's progression does not affect another company's state.",
+            "Given the same seed, start date, and configuration, two runs produce the same sequence of simulated dates and scheduled generation decisions.",
+            "The service stores and exposes current status, current simulated date/time, last progression timestamp, generation enabled flag, seed, and active session identifier."
+          ]
+        },
+        {
+          "id": "US-21.2",
+          "title": "Generate deterministic finance activity and anomaly scenarios into existing finance workflows",
+          "tasks": [
+            {
+              "id": "TASK-21.2.1",
+              "title": "Implement finance generation policy that maps simulated day progression to realistic invoice, bill, transaction, balance, and recurring expense outputs",
+              "tags": [
+                "backend",
+                "finance",
+                "generation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-21.2.2",
+              "title": "Integrate generated records with existing finance workflow, approval, payment, and history services",
+              "tags": [
+                "integration",
+                "finance",
+                "workflow"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-21.2.3",
+              "title": "Build deterministic anomaly injection scheduler and scenario factory using seeded generation rules",
+              "tags": [
+                "anomaly",
+                "determinism",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-21.2.4",
+              "title": "Add end-to-end tests validating generated scenarios appear in existing finance pages and workflows",
+              "tags": [
+                "e2e",
+                "testing",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "When generation is enabled and a simulated day advances, the system creates or updates finance records for the active company in existing finance tables/services rather than a mock-only store.",
+            "Generated daily activity includes invoices, bills, transactions, balances, recurring expense instances, payment status changes, workflow tasks, approval requests where required, and finance history events.",
+            "Across a deterministic run, the generated invoice set includes pending invoice over approval threshold, different approval currency, partial payment, full or over-payment, due soon, overdue, and normal low-risk pending scenarios.",
+            "Across a deterministic run, the generated policy scenarios include amount just below threshold, exactly at threshold, just above threshold, requiring human approval, eligible without escalation, and already approved or no longer actionable.",
+            "Anomalies are injected periodically rather than every simulated day and include duplicate vendor charge, unusually high amount, category mismatch, missing document, suspicious payment timing, multiple payments, and payment before expected state transition.",
+            "Generated anomalies and review signals are visible through existing finance review, approval, anomaly, and history workflows for the active company.",
+            "Given the same seed and configuration, repeated runs generate the same finance records, anomaly days, and workflow outcomes for the same simulated dates."
+          ]
+        },
+        {
+          "id": "US-21.3",
+          "title": "Expose finance page simulation controls and live simulation status",
+          "tasks": [
+            {
+              "id": "TASK-21.3.1",
+              "title": "Add finance top-panel simulation controls and generation toggle bound to company simulation APIs",
+              "tags": [
+                "frontend",
+                "finance-ui",
+                "controls"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-21.3.2",
+              "title": "Render live simulation status, simulated date/time, and last progression metadata in the finance page",
+              "tags": [
+                "frontend",
+                "status",
+                "ux"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-21.3.3",
+              "title": "Implement optional step-forward and refresh actions with optimistic UI state handling",
+              "tags": [
+                "frontend",
+                "actions",
+                "ux"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "When the feature is enabled, the finance page top panel displays Start, Pause, and Stop controls for the active company simulation.",
+            "The finance page displays a simulation status indicator with values stopped, running, or paused and updates within 2 seconds of a control action.",
+            "The finance page displays the current simulated date/time, last progression timestamp, and whether generation is enabled.",
+            "A user can toggle Generate financial data during simulation between On and Off before starting and while paused, and the selected value is persisted to simulation state.",
+            "If Step forward 1 day is implemented, invoking it advances the simulated date by exactly 1 day once and triggers one day of generation only when generation is On.",
+            "If Refresh simulation state is implemented, it reloads the latest backend state without requiring a full page refresh.",
+            "Generated records become visible in existing finance lists and detail views after progression without introducing a separate simulation-only UI."
+          ]
+        },
+        {
+          "id": "US-21.4",
+          "title": "Add feature gating, observability, and safe-disable behavior for simulation",
+          "tasks": [
+            {
+              "id": "TASK-21.4.1",
+              "title": "Implement environment-aware feature flags for simulation UI visibility and backend execution gates",
+              "tags": [
+                "config",
+                "feature-flag",
+                "backend",
+                "frontend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-21.4.2",
+              "title": "Add backend guards to block simulation routes, jobs, and manual triggers when execution is disabled",
+              "tags": [
+                "backend",
+                "security",
+                "guard"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-21.4.3",
+              "title": "Persist simulation event logs, run history, anomaly reasons, and generation errors for operator review",
+              "tags": [
+                "observability",
+                "logging",
+                "persistence"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-21.4.4",
+              "title": "Expose recent simulation history and error state in sandbox admin or finance diagnostics view",
+              "tags": [
+                "admin-ui",
+                "observability",
+                "frontend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A configuration-driven feature flag can disable simulation UI visibility and backend execution independently.",
+            "When UI visibility is disabled, simulation controls and related simulation status panels are not rendered anywhere in the app.",
+            "When backend execution is disabled, simulation control APIs and admin actions return a safe disabled response and no simulation session can start.",
+            "When simulation is fully disabled, no background progression or finance generation jobs run for any tenant/company.",
+            "The system records simulation run history including session identifier, status transitions, generated record counts per simulated day, injected anomalies, warnings, and errors.",
+            "Operators can retrieve recent simulation history and per-day generation logs for a tenant/company from an existing admin or finance-facing view.",
+            "Disabling simulation does not break standard finance page loading, finance workflows, or existing finance APIs."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-22",
+      "title": "EPIC-22 — Action-Centric Executive Dashboard Redesign",
+      "stories": [
+        {
+          "id": "US-22.1",
+          "title": "Implement Today’s Focus aggregation API and primary decision panel",
+          "tasks": [
+            {
+              "id": "TASK-22.1.1",
+              "title": "Create FocusItem model and implement IFocusEngine with cross-domain scoring and normalization",
+              "tags": [
+                "backend",
+                "dashboard",
+                "focus"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-22.1.2",
+              "title": "Add GET /api/dashboard/focus endpoint with tenant and user scoping",
+              "tags": [
+                "api",
+                "backend",
+                "multi-tenant"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-22.1.3",
+              "title": "Build TodayFocusPanel.razor to render 3–5 prioritized action cards with CTA navigation",
+              "tags": [
+                "frontend",
+                "blazor",
+                "dashboard"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-22.1.4",
+              "title": "Add integration and component tests for focus ordering, field completeness, and navigation behavior",
+              "tags": [
+                "testing",
+                "api",
+                "ui"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "GET /api/dashboard/focus returns 3 to 5 FocusItem records for a valid companyId and userId, ordered by PriorityScore descending.",
+            "Each FocusItem response includes non-empty Id, Title, Description, ActionType, PriorityScore, and NavigationTarget fields.",
+            "PriorityScore is normalized to an integer between 0 and 100 for every returned item.",
+            "The focus aggregation includes items sourced from approvals, tasks, anomalies, and finance alerts when data exists in those domains.",
+            "TodayFocusPanel renders returned focus items as cards with title, short description, and CTA button.",
+            "Clicking a focus item CTA navigates to the exact NavigationTarget returned by the API."
+          ]
+        },
+        {
+          "id": "US-22.2",
+          "title": "Refactor dashboard action queue into inline prioritized action list",
+          "tasks": [
+            {
+              "id": "TASK-22.2.1",
+              "title": "Extend queue service with GetTopActions and paginated GetAllActions using priority, due time, and impact sorting",
+              "tags": [
+                "backend",
+                "queue",
+                "sorting"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-22.2.2",
+              "title": "Remove legacy right sidebar queue from Dashboard.razor and insert TopActionsList below Today’s Focus",
+              "tags": [
+                "frontend",
+                "layout",
+                "dashboard"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-22.2.3",
+              "title": "Implement TopActionsList.razor with top 5 rendering and full queue navigation",
+              "tags": [
+                "frontend",
+                "blazor",
+                "queue"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The dashboard no longer renders the legacy right sidebar action queue component.",
+            "TopActionsList renders exactly the top 5 actions inline below Today’s Focus when 5 or more actions exist.",
+            "The action service returns actions sorted by priority descending, then due time ascending, then impact score descending.",
+            "The dashboard provides a visible 'View full queue' link that navigates to the dedicated queue page.",
+            "The full queue endpoint supports pagination parameters and returns deterministic ordering across pages."
+          ]
+        },
+        {
+          "id": "US-22.3",
+          "title": "Transform KPI and finance sections into decision-support signals and snapshots",
+          "tasks": [
+            {
+              "id": "TASK-22.3.1",
+              "title": "Implement BusinessSignal model and ISignalEngine rules for operational load and approval bottleneck detection",
+              "tags": [
+                "backend",
+                "signals",
+                "rules"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-22.3.2",
+              "title": "Add finance snapshot computation service and GET /api/dashboard/finance-snapshot endpoint",
+              "tags": [
+                "backend",
+                "api",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-22.3.3",
+              "title": "Replace KPI cards with BusinessSignalsPanel.razor and add FinanceSnapshotCard.razor with missing-data CTA state",
+              "tags": [
+                "frontend",
+                "blazor",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-22.3.4",
+              "title": "Add automated tests for signal rule evaluation and finance snapshot calculations",
+              "tags": [
+                "testing",
+                "signals",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "ISignalEngine.GenerateSignals(companyId) returns at least one BusinessSignal when threshold rules are met for seeded operational data.",
+            "BusinessSignalsPanel replaces legacy KPI cards and renders each signal with severity-specific color and icon treatment.",
+            "GET /api/dashboard/finance-snapshot returns Cash, BurnRate, RunwayDays, and RiskLevel for tenants with finance data.",
+            "BurnRate is computed from the average of the last 30 days of expenses and RunwayDays is derived from Cash divided by BurnRate when BurnRate is greater than zero.",
+            "FinanceSnapshotCard displays a 'Connect accounting' CTA when finance data is missing or incomplete.",
+            "FinanceSnapshotCard displays cash, runway days, and risk badge when finance data is available."
+          ]
+        },
+        {
+          "id": "US-22.4",
+          "title": "Rebuild dashboard layout, deep links, and telemetry for action-first usage",
+          "tasks": [
+            {
+              "id": "TASK-22.4.1",
+              "title": "Refactor Dashboard.razor layout hierarchy and responsive grid styling for the new section order",
+              "tags": [
+                "frontend",
+                "layout",
+                "css"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-22.4.2",
+              "title": "Implement deep-link routing for approvals, tasks, and finance actions with contextual query parameters",
+              "tags": [
+                "frontend",
+                "navigation",
+                "routing"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-22.4.3",
+              "title": "Add DashboardInteractionService to capture focus clicks, time-to-first-action, and scroll depth events",
+              "tags": [
+                "telemetry",
+                "analytics",
+                "frontend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-22.4.4",
+              "title": "Simplify DepartmentCard rendering to high-signal summaries and hide zero-value metrics",
+              "tags": [
+                "frontend",
+                "dashboard",
+                "ux"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Dashboard.razor renders sections in this order: CompanyHealthBanner, TodayFocusPanel, TopActionsList, FinanceSnapshot and OperationsSnapshot grid, AgentActivityPanel, DepartmentCards.",
+            "The dashboard uses a responsive two-column layout on desktop and collapses to a single column on smaller viewports.",
+            "All dashboard action CTAs route to valid deep links including required query parameters for context, such as /approvals?filter=pending.",
+            "Telemetry records focus item clicks, first action timestamp, and scroll depth for each dashboard session.",
+            "A dashboard session emits a measurable time-to-first-action metric when a user clicks any actionable CTA.",
+            "Department cards render no more than 3 key signals and suppress zero-value metrics."
           ]
         }
       ]

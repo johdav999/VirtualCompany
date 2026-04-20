@@ -1,0 +1,1748 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -96,6 +96,11 @@ public sealed record FinanceSeedBootstrapCommand(
+     bool InjectAnomalies = false,
+     string? AnomalyScenarioProfile = null);
+ 
++public sealed record GetFinanceEntryStateQuery(
++    Guid CompanyId,
++    bool RetryOnFailure = false,
++    string Source = FinanceEntrySources.FinanceEntry);
++
+ public sealed record GetCompanySimulationClockQuery(
+     Guid CompanyId);
+ 
+@@ -443,6 +448,22 @@ public sealed record FinanceSeedingStateResultDto(
+     DateTime CheckedAtUtc,
+     FinanceSeedingStateDiagnosticsDto Diagnostics);
+ 
++public sealed record FinanceEntryStateDto(
++    Guid CompanyId,
++    string InitializationStatus,
++    FinanceSeedingState SeedingState,
++    bool SeedJobEnqueued,
++    bool SeedJobActive,
++    bool CanRetry,
++    bool CanRefresh,
++    string Message,
++    DateTime CheckedAtUtc,
++    DateTime? SeededAtUtc,
++    DateTime? LastAttemptedUtc,
++    DateTime? LastCompletedUtc,
++    string? LastErrorCode,
++    string? LastErrorMessage,
++    string? JobStatus,
++    string? CorrelationId);
++
+ public interface IFinanceSeedBootstrapService
+ {
+     Task<FinanceSeedBootstrapResultDto> GenerateAsync(FinanceSeedBootstrapCommand command, CancellationToken cancellationToken);
+@@ -463,6 +484,11 @@ public interface IFinanceSeedingStateResolver : IFinanceSeedingStateService
+     Task<FinanceSeedingStateResultDto> ResolveAsync(Guid companyId, CancellationToken cancellationToken = default);
+ }
+ 
++public interface IFinanceEntryService
++{
++    Task<FinanceEntryStateDto> GetEntryStateAsync(GetFinanceEntryStateQuery query, CancellationToken cancellationToken);
++}
++
+ public interface IFinanceCashPositionWorkflowService
+ {
+     Task<FinanceCashPositionDto> EvaluateAsync(EvaluateFinanceCashPositionWorkflowCommand command, CancellationToken cancellationToken);
+@@ -577,3 +603,16 @@ public interface ICompanySimulationService
+         RunScheduledCompanySimulationCommand command,
+         DateTimeOffset utcNow,
+         CancellationToken cancellationToken);
++}
++
++public static class FinanceEntryInitializationStates
++{
++    public const string Ready = "ready";
++    public const string Initializing = "initializing";
++    public const string Failed = "failed";
++}
++
++public static class FinanceEntrySources
++{
++    public const string FinanceEntry = "finance_entry";
++    public const string FinanceEntryRetry = "finance_entry_retry";
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -27,6 +27,7 @@ public sealed class InternalFinanceController : ControllerBase
+     private readonly IAuditQueryService _auditQueryService;
+     private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
+     private readonly IFinanceSeedBootstrapService _financeSeedBootstrapService;
++    private readonly IFinanceEntryService _financeEntryService;
+     private readonly IInvoiceReviewWorkflowService _invoiceReviewWorkflowService;
+     private readonly IFinanceSeedingStateService _financeSeedingStateService;
+     private readonly IApprovalRequestService _approvalRequestService;
+@@ -43,6 +44,7 @@ public sealed class InternalFinanceController : ControllerBase
+         IFinanceCommandService financeCommandService,
+         IAuditQueryService auditQueryService,
+         IFinancePolicyConfigurationService financePolicyConfigurationService,
++        IFinanceEntryService financeEntryService,
+         IFinanceSeedBootstrapService financeSeedBootstrapService,
+         IFinanceSeedingStateService financeSeedingStateService,
+         IInvoiceReviewWorkflowService invoiceReviewWorkflowService,
+@@ -59,6 +61,7 @@ public sealed class InternalFinanceController : ControllerBase
+         _financeCommandService = financeCommandService;
+         _auditQueryService = auditQueryService;
+         _financePolicyConfigurationService = financePolicyConfigurationService;
++        _financeEntryService = financeEntryService;
+         _financeSeedBootstrapService = financeSeedBootstrapService;
+         _financeSeedingStateService = financeSeedingStateService;
+         _invoiceReviewWorkflowService = invoiceReviewWorkflowService;
+@@ -68,7 +71,6 @@ public sealed class InternalFinanceController : ControllerBase
+         _dbContext = dbContext;
+         _cashPositionWorkflowService = cashPositionWorkflowService;
+         _companySimulationService = companySimulationService;
+-
+     }
+ 
+     [HttpGet("cash-balance")]
+@@ -102,6 +104,31 @@ public sealed class InternalFinanceController : ControllerBase
+                 }.WithRecordChecks(result.Diagnostics)
+             };
+         });
++
++    [HttpGet("entry-state")]
++    public async Task<ActionResult<FinanceEntryInitializationResponse>> GetEntryStateAsync(
++        Guid companyId,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(async () =>
++        {
++            var result = await _financeEntryService.GetEntryStateAsync(
++                new GetFinanceEntryStateQuery(companyId),
++                cancellationToken);
++            return MapFinanceEntryState(result);
++        });
++
++    [HttpPost("entry-state/retry")]
++    public async Task<ActionResult<FinanceEntryInitializationResponse>> RetryEntryStateAsync(
++        Guid companyId,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(async () =>
++        {
++            var result = await _financeEntryService.GetEntryStateAsync(
++                new GetFinanceEntryStateQuery(companyId, RetryOnFailure: true, Source: FinanceEntrySources.FinanceEntryRetry),
++                cancellationToken);
++            return MapFinanceEntryState(result);
++        });
+ 
+     [HttpGet("profit-and-loss/monthly")]
+     public async Task<ActionResult<FinanceMonthlyProfitAndLossDto>> GetMonthlyProfitAndLossAsync(
+@@ -765,6 +792,25 @@ internal static class FinanceSeedingStateResponseMappings
+     }
+ }
+     int TotalHours,
+     int? ExecutionStepHours = null,
+     bool Accelerated = false);
++
++public sealed record RetryFinanceEntryStateRequest;
++
++internal static partial class InternalFinanceControllerMappings
++{
++    public static FinanceEntryInitializationResponse MapFinanceEntryState(FinanceEntryStateDto result) =>
++        new()
++        {
++            CompanyId = result.CompanyId,
++            InitializationStatus = result.InitializationStatus,
++            SeedingState = result.SeedingState.ToStorageValue(),
++            SeedJobEnqueued = result.SeedJobEnqueued,
++            SeedJobActive = result.SeedJobActive,
++            CanRetry = result.CanRetry,
++            CanRefresh = result.CanRefresh,
++            Message = result.Message,
++            CheckedAtUtc = result.CheckedAtUtc,
++            SeededAtUtc = result.SeededAtUtc,
++            LastAttemptedUtc = result.LastAttemptedUtc,
++            LastCompletedUtc = result.LastCompletedUtc,
++            LastErrorCode = result.LastErrorCode,
++            LastErrorMessage = result.LastErrorMessage,
++            JobStatus = result.JobStatus,
++            CorrelationId = result.CorrelationId
++        };
++}
+diff --git a/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
+@@ -95,6 +95,25 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
+         UpdatedUtc = StartedUtc.Value;
+     }
+ 
++    public void Queue(DateTime utcNow, string? correlationId = null, bool resetAttempts = false)
++    {
++        var normalizedUtcNow = utcNow.Kind == DateTimeKind.Utc ? utcNow : utcNow.ToUniversalTime();
++        if (!string.IsNullOrWhiteSpace(correlationId))
++        {
++            CorrelationId = NormalizeRequired(correlationId, nameof(correlationId), CorrelationIdMaxLength);
++        }
++
++        Status = BackgroundExecutionStatus.Pending;
++        if (resetAttempts)
++        {
++            AttemptCount = 0;
++        }
++
++        NextRetryUtc = null;
++        StartedUtc = null;
++        HeartbeatUtc = null;
++        CompletedUtc = null;
++        FailureCategory = null;
++        FailureCode = null;
++        FailureMessage = null;
++        EscalationId = null;
++        UpdatedUtc = normalizedUtcNow;
++    }
++
+     public void RecordHeartbeat(DateTime utcNow)
+     {
+         HeartbeatUtc = utcNow.Kind == DateTimeKind.Utc ? utcNow : utcNow.ToUniversalTime();
+@@ -191,4 +210,5 @@ public static class BackgroundExecutionRelatedEntityTypes
+     public const string WorkTask = "task";
+     public const string OutboxMessage = "outbox_message";
+     public const string Schedule = "schedule";
++    public const string FinanceSeed = "finance_seed";
+ }
+diff --git a/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs b/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
+--- a/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
+@@ -6,7 +6,8 @@ public enum BackgroundExecutionType
+     WorkflowProgression = 2,
+     Retry = 3,
+     LongRunningTask = 4,
+-    OutboxDispatch = 5
++    OutboxDispatch = 5,
++    FinanceSeed = 6
+ }
+ 
+ public enum BackgroundExecutionStatus
+@@ -42,7 +43,8 @@ public static class BackgroundExecutionTypeValues
+         [BackgroundExecutionType.WorkflowProgression] = "workflow_progression",
+         [BackgroundExecutionType.Retry] = "retry",
+         [BackgroundExecutionType.LongRunningTask] = "long_running_task",
+-        [BackgroundExecutionType.OutboxDispatch] = "outbox_dispatch"
++        [BackgroundExecutionType.OutboxDispatch] = "outbox_dispatch",
++        [BackgroundExecutionType.FinanceSeed] = "finance_seed"
+     };
+ 
+     private static readonly IReadOnlyDictionary<string, BackgroundExecutionType> ReverseValues =
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -97,6 +97,9 @@ public static class DependencyInjection
+         services.AddOptions<BackgroundExecutionOptions>()
+             .Bind(configuration.GetSection(BackgroundExecutionOptions.SectionName))
+             .Configure(options => options.BaseRetryDelaySeconds = Math.Max(options.BaseRetryDelaySeconds, 0));
++        services.AddOptions<FinanceSeedWorkerOptions>()
++            .Bind(configuration.GetSection(FinanceSeedWorkerOptions.SectionName))
++            .PostConfigure(options => options.BatchSize = Math.Max(1, options.BatchSize));
+ 
+         services.AddOptions<KnowledgeChunkingOptions>()
+             .Bind(configuration.GetSection(KnowledgeChunkingOptions.SectionName));
+@@ -155,6 +158,7 @@ public static class DependencyInjection
+         services.AddHostedService<BriefingUpdateJobBackgroundService>();
+         services.AddHostedService<WorkflowProgressionBackgroundService>();
+         services.AddHostedService<TriggerEvaluationBackgroundService>();
++        services.AddHostedService<FinanceSeedBackgroundService>();
+ 
+         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
+         services.AddSingleton<IBackgroundJobExecutor, BackgroundJobExecutor>();
+@@ -242,6 +246,8 @@ public static class DependencyInjection
+         services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
+         services.AddScoped<IFinanceSeedBootstrapService, CompanyFinanceSeedBootstrapService>();
+         services.AddScoped<IFinanceSeedingStateService, CompanyFinanceSeedingStateResolver>();
++        services.AddScoped<IFinanceEntryService, CompanyFinanceEntryService>();
++        services.AddScoped<IFinanceSeedJobRunner, CompanyFinanceSeedJobRunner>();
+         services.AddScoped<IFinanceSeedingStateResolver, CompanyFinanceSeedingStateResolver>();
+         services.AddScoped<IInvoiceReviewWorkflowService, CompanyInvoiceReviewWorkflowService>();
+         services.AddScoped<IFinanceTransactionAnomalyDetectionService, CompanyFinanceTransactionAnomalyDetectionService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceEntryService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceEntryService.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceEntryService.cs
+@@ -0,0 +1,267 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.BackgroundExecution;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Observability;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyFinanceEntryService : IFinanceEntryService
++{
++    private const string FinanceSeedRequestedAction = "finance.seed.job.requested";
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IFinanceSeedingStateService _financeSeedingStateService;
++    private readonly IBackgroundExecutionIdentityFactory _identityFactory;
++    private readonly IAuditEventWriter _auditEventWriter;
++    private readonly ICorrelationContextAccessor? _correlationContextAccessor;
++    private readonly TimeProvider _timeProvider;
++    private readonly ILogger<CompanyFinanceEntryService> _logger;
++
++    public CompanyFinanceEntryService(
++        VirtualCompanyDbContext dbContext,
++        IFinanceSeedingStateService financeSeedingStateService,
++        IBackgroundExecutionIdentityFactory identityFactory,
++        IAuditEventWriter auditEventWriter,
++        TimeProvider timeProvider,
++        ILogger<CompanyFinanceEntryService> logger,
++        ICorrelationContextAccessor? correlationContextAccessor = null)
++    {
++        _dbContext = dbContext;
++        _financeSeedingStateService = financeSeedingStateService;
++        _identityFactory = identityFactory;
++        _auditEventWriter = auditEventWriter;
++        _timeProvider = timeProvider;
++        _logger = logger;
++        _correlationContextAccessor = correlationContextAccessor;
++    }
++
++    public async Task<FinanceEntryStateDto> GetEntryStateAsync(GetFinanceEntryStateQuery query, CancellationToken cancellationToken)
++    {
++        if (query.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(query));
++        }
++
++        var checkedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var company = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.Id == query.CompanyId, cancellationToken)
++            ?? throw new KeyNotFoundException($"Company '{query.CompanyId}' was not found.");
++
++        var seedingState = await _financeSeedingStateService.GetCompanyFinanceSeedingStateAsync(query.CompanyId, cancellationToken);
++        var execution = await FindExecutionAsync(query.CompanyId, cancellationToken);
++        var seedJobEnqueued = false;
++
++        if (ShouldRetry(query, seedingState.State, execution))
++        {
++            execution!.Queue(
++                checkedAtUtc,
++                _identityFactory.EnsureCorrelationId(_correlationContextAccessor?.CorrelationId),
++                resetAttempts: true);
++            seedJobEnqueued = true;
++            await WriteRequestedAuditAsync(company.Id, execution, query.Source, isRetry: true, cancellationToken);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++        else if (ShouldEnqueueInitialRequest(seedingState.State, execution))
++        {
++            execution = await EnqueueAsync(company.Id, query.Source, checkedAtUtc, cancellationToken);
++            seedJobEnqueued = true;
++        }
++
++        var initializationStatus = ResolveInitializationStatus(seedingState.State, execution);
++        var canRetry = initializationStatus == FinanceEntryInitializationStates.Failed;
++        var canRefresh = initializationStatus != FinanceEntryInitializationStates.Ready;
++
++        return new FinanceEntryStateDto(
++            company.Id,
++            initializationStatus,
++            seedingState.State,
++            seedJobEnqueued,
++            IsExecutionActive(execution),
++            canRetry,
++            canRefresh,
++            BuildMessage(initializationStatus, execution),
++            checkedAtUtc,
++            company.FinanceSeededUtc,
++            execution?.StartedUtc,
++            execution?.CompletedUtc,
++            execution?.FailureCode,
++            execution?.FailureMessage,
++            execution?.Status.ToStorageValue(),
++            execution?.CorrelationId);
++    }
++
++    private async Task<BackgroundExecution?> EnqueueAsync(
++        Guid companyId,
++        string source,
++        DateTime checkedAtUtc,
++        CancellationToken cancellationToken)
++    {
++        var identity = CreateIdentity(companyId);
++        var execution = new BackgroundExecution(
++            Guid.NewGuid(),
++            companyId,
++            BackgroundExecutionType.FinanceSeed,
++            BackgroundExecutionRelatedEntityTypes.FinanceSeed,
++            companyId.ToString("D"),
++            identity.CorrelationId,
++            identity.IdempotencyKey,
++            maxAttempts: 5);
++
++        _dbContext.BackgroundExecutions.Add(execution);
++
++        try
++        {
++            await WriteRequestedAuditAsync(companyId, execution, source, isRetry: false, cancellationToken);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            _logger.LogInformation(
++                "Queued finance seed background execution {ExecutionId} for company {CompanyId}.",
++                execution.Id,
++                companyId);
++            return execution;
++        }
++        catch (DbUpdateException)
++        {
++            _dbContext.Entry(execution).State = EntityState.Detached;
++            return await FindExecutionAsync(companyId, cancellationToken);
++        }
++    }
++
++    private async Task WriteRequestedAuditAsync(
++        Guid companyId,
++        BackgroundExecution execution,
++        string source,
++        bool isRetry,
++        CancellationToken cancellationToken)
++    {
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.System,
++                null,
++                FinanceSeedRequestedAction,
++                BackgroundExecutionRelatedEntityTypes.FinanceSeed,
++                execution.Id.ToString("D"),
++                AuditEventOutcomes.Requested,
++                isRetry
++                    ? "Finance entry requested a retry for the finance seed background job."
++                    : "Finance entry requested the finance seed background job.",
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["source"] = source,
++                    ["companyId"] = companyId.ToString("D"),
++                    ["executionId"] = execution.Id.ToString("D"),
++                    ["jobStatus"] = execution.Status.ToStorageValue(),
++                    ["idempotencyKey"] = execution.IdempotencyKey,
++                    ["correlationId"] = execution.CorrelationId,
++                    ["isRetry"] = isRetry ? "true" : "false"
++                },
++                CorrelationId: execution.CorrelationId,
++                OccurredUtc: _timeProvider.GetUtcNow().UtcDateTime),
++            cancellationToken);
++    }
++
++    private BackgroundExecutionIdentity CreateIdentity(Guid companyId) =>
++        _identityFactory.Create(
++            companyId,
++            "finance-seed",
++            _correlationContextAccessor?.CorrelationId,
++            BackgroundExecutionType.FinanceSeed.ToStorageValue(),
++            companyId.ToString("N"));
++
++    private async Task<BackgroundExecution?> FindExecutionAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var identity = _identityFactory.CreateIdempotencyKey(
++            "finance-seed",
++            BackgroundExecutionType.FinanceSeed.ToStorageValue(),
++            companyId.ToString("N"));
++
++        return await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == companyId &&
++                     x.ExecutionType == BackgroundExecutionType.FinanceSeed &&
++                     x.IdempotencyKey == identity,
++                cancellationToken);
++    }
++
++    private static bool ShouldEnqueueInitialRequest(FinanceSeedingState seedingState, BackgroundExecution? execution) =>
++        seedingState == FinanceSeedingState.NotSeeded &&
++        execution is null;
++
++    private static bool ShouldRetry(GetFinanceEntryStateQuery query, FinanceSeedingState seedingState, BackgroundExecution? execution) =>
++        query.RetryOnFailure &&
++        seedingState != FinanceSeedingState.FullySeeded &&
++        execution is not null &&
++        execution.Status is BackgroundExecutionStatus.Failed or BackgroundExecutionStatus.Blocked;
++
++    private static string ResolveInitializationStatus(FinanceSeedingState seedingState, BackgroundExecution? execution)
++    {
++        if (seedingState == FinanceSeedingState.FullySeeded)
++        {
++            return FinanceEntryInitializationStates.Ready;
++        }
++
++        if (execution is null)
++        {
++            return FinanceEntryInitializationStates.Initializing;
++        }
++
++        return execution.Status switch
++        {
++            BackgroundExecutionStatus.Pending or
++            BackgroundExecutionStatus.InProgress or
++            BackgroundExecutionStatus.RetryScheduled => FinanceEntryInitializationStates.Initializing,
++            BackgroundExecutionStatus.Failed or
++            BackgroundExecutionStatus.Blocked => FinanceEntryInitializationStates.Failed,
++            _ => FinanceEntryInitializationStates.Ready
++        };
++    }
++
++    private static bool IsExecutionActive(BackgroundExecution? execution) =>
++        execution?.Status is BackgroundExecutionStatus.Pending
++            or BackgroundExecutionStatus.InProgress
++            or BackgroundExecutionStatus.RetryScheduled;
++
++    private static string BuildMessage(string initializationStatus, BackgroundExecution? execution) =>
++        initializationStatus switch
++        {
++            FinanceEntryInitializationStates.Ready =>
++                "Finance data is ready.",
++            FinanceEntryInitializationStates.Failed =>
++                string.IsNullOrWhiteSpace(execution?.FailureMessage)
++                    ? "Finance setup failed. Retry the initialization to prepare the finance workspace."
++                    : $"Finance setup failed: {execution!.FailureMessage}",
++            _ when execution?.Status == BackgroundExecutionStatus.RetryScheduled =>
++                "Finance data is still being prepared. A previous attempt failed and the job is retrying in the background.",
++            _ when execution?.Status == BackgroundExecutionStatus.InProgress =>
++                "Finance data is being prepared in the background. This page will refresh automatically when setup completes.",
++            _ =>
++                "Finance data is being prepared in the background. This page will refresh automatically when setup completes."
++        };
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs
+@@ -0,0 +1,306 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.BackgroundExecution;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.BackgroundJobs;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class FinanceSeedWorkerOptions
++{
++    public const string SectionName = "FinanceSeedWorker";
++
++    public bool Enabled { get; set; } = true;
++    public int PollIntervalMilliseconds { get; set; } = 1000;
++    public int BatchSize { get; set; } = 10;
++    public int ClaimTimeoutSeconds { get; set; } = 300;
++}
++
++public interface IFinanceSeedJobRunner
++{
++    Task<int> RunDueAsync(CancellationToken cancellationToken);
++}
++
++public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
++{
++    private const string FinanceSeedStartedAction = "finance.seed.job.started";
++    private const string FinanceSeedCompletedAction = "finance.seed.job.completed";
++    private const string FinanceSeedFailedAction = "finance.seed.job.failed";
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IFinanceSeedBootstrapService _bootstrapService;
++    private readonly IBackgroundJobExecutor _backgroundJobExecutor;
++    private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
++    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
++    private readonly IAuditEventWriter _auditEventWriter;
++    private readonly IOptions<FinanceSeedWorkerOptions> _options;
++    private readonly TimeProvider _timeProvider;
++    private readonly ILogger<CompanyFinanceSeedJobRunner> _logger;
++
++    public CompanyFinanceSeedJobRunner(
++        VirtualCompanyDbContext dbContext,
++        IFinanceSeedBootstrapService bootstrapService,
++        IBackgroundJobExecutor backgroundJobExecutor,
++        IBackgroundExecutionRetryPolicy retryPolicy,
++        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
++        IAuditEventWriter auditEventWriter,
++        IOptions<FinanceSeedWorkerOptions> options,
++        TimeProvider timeProvider,
++        ILogger<CompanyFinanceSeedJobRunner> logger)
++    {
++        _dbContext = dbContext;
++        _bootstrapService = bootstrapService;
++        _backgroundJobExecutor = backgroundJobExecutor;
++        _retryPolicy = retryPolicy;
++        _companyExecutionScopeFactory = companyExecutionScopeFactory;
++        _auditEventWriter = auditEventWriter;
++        _options = options;
++        _timeProvider = timeProvider;
++        _logger = logger;
++    }
++
++    public async Task<int> RunDueAsync(CancellationToken cancellationToken)
++    {
++        var executions = await ClaimDueExecutionsAsync(cancellationToken);
++        var handled = 0;
++
++        foreach (var execution in executions)
++        {
++            using var tenantScope = _companyExecutionScopeFactory.BeginScope(execution.CompanyId);
++            var attempt = execution.AttemptCount + 1;
++            var maxAttempts = Math.Max(1, execution.MaxAttempts);
++            var retryDelay = _retryPolicy.GetRetryDelay(attempt);
++
++            execution.StartAttempt(execution.CorrelationId, attempt, maxAttempts);
++            await WriteLifecycleAuditAsync(
++                execution,
++                FinanceSeedStartedAction,
++                AuditEventOutcomes.Pending,
++                "Finance seed background execution started from finance entry.",
++                cancellationToken);
++
++            var result = await _backgroundJobExecutor.ExecuteAsync(
++                new BackgroundJobExecutionContext(
++                    "finance-seed",
++                    attempt,
++                    maxAttempts,
++                    execution.CompanyId,
++                    execution.CorrelationId,
++                    execution.IdempotencyKey,
++                    requireCompanyContext: true),
++                innerCancellationToken => _bootstrapService.GenerateAsync(
++                    new FinanceSeedBootstrapCommand(
++                        execution.CompanyId,
++                        ResolveSeedValue(execution.CompanyId),
++                        SeedAnchorUtc: null,
++                        ReplaceExisting: true,
++                        InjectAnomalies: false),
++                    innerCancellationToken),
++                retryDelay,
++                cancellationToken);
++
++            var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++            switch (result.Outcome)
++            {
++                case BackgroundJobExecutionOutcome.Succeeded:
++                case BackgroundJobExecutionOutcome.IdempotentDuplicate:
++                    execution.MarkSucceeded();
++                    await WriteLifecycleAuditAsync(
++                        execution,
++                        FinanceSeedCompletedAction,
++                        AuditEventOutcomes.Succeeded,
++                        "Finance seed background execution completed successfully.",
++                        cancellationToken);
++                    handled++;
++                    break;
++                case BackgroundJobExecutionOutcome.RetryScheduled:
++                    execution.ScheduleRetry(
++                        nowUtc.Add(result.RetryDelay ?? TimeSpan.Zero),
++                        MapFailureCategory(result.FailureClassification),
++                        ResolveFailureCode(result),
++                        ResolveFailureMessage(result));
++                    break;
++                case BackgroundJobExecutionOutcome.Blocked:
++                case BackgroundJobExecutionOutcome.PermanentFailure:
++                case BackgroundJobExecutionOutcome.RetryExhausted:
++                    execution.MarkFailed(
++                        MapFailureCategory(result.FailureClassification),
++                        ResolveFailureCode(result),
++                        ResolveFailureMessage(result));
++                    await WriteLifecycleAuditAsync(
++                        execution,
++                        FinanceSeedFailedAction,
++                        AuditEventOutcomes.Failed,
++                        ResolveFailureMessage(result),
++                        cancellationToken);
++                    handled++;
++                    break;
++            }
++
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++
++        return handled;
++    }
++
++    private async Task WriteLifecycleAuditAsync(
++        BackgroundExecution execution,
++        string action,
++        string outcome,
++        string rationale,
++        CancellationToken cancellationToken)
++    {
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                execution.CompanyId,
++                AuditActorTypes.System,
++                null,
++                action,
++                BackgroundExecutionRelatedEntityTypes.FinanceSeed,
++                execution.Id.ToString("D"),
++                outcome,
++                rationale,
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["source"] = FinanceEntrySources.FinanceEntry,
++                    ["companyId"] = execution.CompanyId.ToString("D"),
++                    ["executionId"] = execution.Id.ToString("D"),
++                    ["jobStatus"] = execution.Status.ToStorageValue(),
++                    ["idempotencyKey"] = execution.IdempotencyKey,
++                    ["correlationId"] = execution.CorrelationId,
++                    ["failureCode"] = execution.FailureCode,
++                    ["failureMessage"] = execution.FailureMessage
++                },
++                CorrelationId: execution.CorrelationId,
++                OccurredUtc: _timeProvider.GetUtcNow().UtcDateTime),
++            cancellationToken);
++    }
++
++    private async Task<IReadOnlyList<BackgroundExecution>> ClaimDueExecutionsAsync(CancellationToken cancellationToken)
++    {
++        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var staleBeforeUtc = nowUtc.Subtract(TimeSpan.FromSeconds(Math.Max(30, _options.Value.ClaimTimeoutSeconds)));
++        var candidateIds = await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.ExecutionType == BackgroundExecutionType.FinanceSeed &&
++                (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
++                  (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
++                 (x.Status == BackgroundExecutionStatus.InProgress &&
++                  x.HeartbeatUtc != null &&
++                  x.HeartbeatUtc <= staleBeforeUtc)))
++            .OrderBy(x => x.NextRetryUtc ?? x.CreatedUtc)
++            .ThenBy(x => x.CreatedUtc)
++            .Take(Math.Max(1, _options.Value.BatchSize))
++            .Select(x => x.Id)
++            .ToArrayAsync(cancellationToken);
++
++        if (candidateIds.Length == 0)
++        {
++            return [];
++        }
++
++        await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .Where(x =>
++                candidateIds.Contains(x.Id) &&
++                x.ExecutionType == BackgroundExecutionType.FinanceSeed &&
++                (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
++                  (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
++                 (x.Status == BackgroundExecutionStatus.InProgress &&
++                  x.HeartbeatUtc != null &&
++                  x.HeartbeatUtc <= staleBeforeUtc)))
++            .ExecuteUpdateAsync(setters => setters
++                .SetProperty(x => x.Status, BackgroundExecutionStatus.InProgress)
++                .SetProperty(x => x.StartedUtc, nowUtc)
++                .SetProperty(x => x.HeartbeatUtc, nowUtc)
++                .SetProperty(x => x.NextRetryUtc, (DateTime?)null)
++                .SetProperty(x => x.UpdatedUtc, nowUtc),
++                cancellationToken);
++
++        return await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .Where(x =>
++                candidateIds.Contains(x.Id) &&
++                x.ExecutionType == BackgroundExecutionType.FinanceSeed &&
++                x.Status == BackgroundExecutionStatus.InProgress &&
++                x.StartedUtc == nowUtc)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync(cancellationToken);
++    }
++
++    private static int ResolveSeedValue(Guid companyId)
++    {
++        var bytes = companyId.ToByteArray();
++        var value =
++            BitConverter.ToInt32(bytes, 0) ^
++            BitConverter.ToInt32(bytes, 4) ^
++            BitConverter.ToInt32(bytes, 8) ^
++            BitConverter.ToInt32(bytes, 12);
++
++        if (value == int.MinValue)
++        {
++            return 913;
++        }
++
++        value = Math.Abs(value);
++        return value == 0 ? 913 : value;
++    }
++
++    private static string ResolveFailureMessage(BackgroundJobExecutionResult result) =>
++        string.IsNullOrWhiteSpace(result.ErrorMessage)
++            ? "Finance seed background execution failed."
++            : result.ErrorMessage;
++
++    private static string ResolveFailureCode(BackgroundJobExecutionResult result) =>
++        string.IsNullOrWhiteSpace(result.ExceptionType)
++            ? result.Outcome.ToString()
++            : result.ExceptionType;
++
++    private static BackgroundExecutionFailureCategory MapFailureCategory(BackgroundJobFailureClassification? classification) =>
++        classification switch
++        {
++            BackgroundJobFailureClassification.Unknown => BackgroundExecutionFailureCategory.Unknown,
++            BackgroundJobFailureClassification.LockContention => BackgroundExecutionFailureCategory.LockContention,
++            BackgroundJobFailureClassification.ExternalDependencyTimeout => BackgroundExecutionFailureCategory.ExternalDependencyTimeout,
++            BackgroundJobFailureClassification.ExternalDependencyUnavailable => BackgroundExecutionFailureCategory.ExternalDependencyUnavailable,
++            BackgroundJobFailureClassification.RateLimited => BackgroundExecutionFailureCategory.RateLimited,
++            BackgroundJobFailureClassification.PermanentBusinessRule or BackgroundJobFailureClassification.Permanent => BackgroundExecutionFailureCategory.PermanentBusinessRule,
++            BackgroundJobFailureClassification.PermanentPolicy => BackgroundExecutionFailureCategory.PermanentPolicy,
++            BackgroundJobFailureClassification.Validation => BackgroundExecutionFailureCategory.Validation,
++            BackgroundJobFailureClassification.ApprovalRequired => BackgroundExecutionFailureCategory.ApprovalRequired,
++            BackgroundJobFailureClassification.Configuration => BackgroundExecutionFailureCategory.Configuration,
++            _ => BackgroundExecutionFailureCategory.TransientInfrastructure
++        };
++}
++
++public sealed class FinanceSeedBackgroundService : BackgroundService
++{
++    private readonly IServiceScopeFactory _scopeFactory;
++    private readonly IOptions<FinanceSeedWorkerOptions> _options;
++    private readonly ILogger<FinanceSeedBackgroundService> _logger;
++
++    public FinanceSeedBackgroundService(
++        IServiceScopeFactory scopeFactory,
++        IOptions<FinanceSeedWorkerOptions> options,
++        ILogger<FinanceSeedBackgroundService> logger)
++    {
++        _scopeFactory = scopeFactory;
++        _options = options;
++        _logger = logger;
++    }
++
++    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
++    {
++        if (!_options.Value.Enabled)
++        {
++            _logger.LogInformation("Finance seed worker is disabled.");
++            return;
++        }
++
++        var pollInterval = TimeSpan.FromMilliseconds(Math.Max(100, _options.Value.PollIntervalMilliseconds));
++        while (!stoppingToken.IsCancellationRequested)
++        {
++            try
++            {
++                using var scope = _scopeFactory.CreateScope();
++                var runner = scope.ServiceProvider.GetRequiredService<IFinanceSeedJobRunner>();
++                var handled = await runner.RunDueAsync(stoppingToken);
++                if (handled == 0)
++                {
++                    await Task.Delay(pollInterval, stoppingToken);
++                }
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(ex, "Finance seed worker loop failed.");
++                await Task.Delay(pollInterval, stoppingToken);
++            }
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Shared/FinanceSeedingContracts.cs b/src/VirtualCompany.Shared/FinanceSeedingContracts.cs
+--- a/src/VirtualCompany.Shared/FinanceSeedingContracts.cs
++++ b/src/VirtualCompany.Shared/FinanceSeedingContracts.cs
+@@ -20,6 +20,23 @@ public sealed class FinanceSeedingStateResponse
+     public FinanceSeedingStateDiagnosticsResponse Diagnostics { get; set; } = new();
+ }
+ 
++public sealed class FinanceEntryInitializationResponse
++{
++    public Guid CompanyId { get; set; }
++    public string InitializationStatus { get; set; } = string.Empty;
++    public string SeedingState { get; set; } = string.Empty;
++    public bool SeedJobEnqueued { get; set; }
++    public bool SeedJobActive { get; set; }
++    public bool CanRetry { get; set; }
++    public bool CanRefresh { get; set; }
++    public string Message { get; set; } = string.Empty;
++    public DateTime CheckedAtUtc { get; set; }
++    public DateTime? SeededAtUtc { get; set; }
++    public DateTime? LastAttemptedUtc { get; set; }
++    public DateTime? LastCompletedUtc { get; set; }
++    public string? LastErrorCode { get; set; }
++    public string? LastErrorMessage { get; set; }
++    public string? JobStatus { get; set; }
++    public string? CorrelationId { get; set; }
++}
++
+ public static class FinanceSeedingStateContractValues
+ {
+     public const string NotSeeded = "not_seeded";
+@@ -27,3 +44,10 @@ public static class FinanceSeedingStateContractValues
+     public const string FullySeeded = "fully_seeded";
+ }
++
++public static class FinanceEntryInitializationContractValues
++{
++    public const string Ready = "ready";
++    public const string Initializing = "initializing";
++    public const string Failed = "failed";
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
+@@ -10,13 +10,54 @@
+     Title="Finance"
+     Description="Open tenant-scoped finance workflows from a single module shell."
+     LoadingMessage="Loading finance workspace...">
+-    <div class="template-grid">
+-        @foreach (var route in FinanceRoutes.SectionPages)
+-        {
+-            <NavLink class="@($"template-card text-decoration-none text-reset {(route.IsVisibleTo(AccessState.MembershipRole) ? string.Empty : "d-none")}")" href="@route.BuildPath(AccessState.CompanyId)" Match="NavLinkMatch.All">
+-                <strong>@route.Title</strong>
+-                <div class="text-body-secondary mt-2">@route.Description</div>
+-            </NavLink>
+-        }
+-    </div>
++    @if (IsEntryStateLoading)
++    {
++        <FinanceLoadingState
++            Title="Preparing finance workspace"
++            Message="Checking whether this company needs finance setup before the workspace can load." />
++    }
++    else if (!string.IsNullOrWhiteSpace(EntryStateErrorMessage))
++    {
++        <FinanceErrorState
++            Title="Finance workspace is unavailable"
++            Message="@EntryStateErrorMessage"
++            RetryText="Reload finance workspace"
++            OnRetry="@RefreshEntryStateAsync" />
++    }
++    else if (IsFinanceInitializing)
++    {
++        <section class="wizard-card finance-state-card" aria-live="polite" aria-busy="true">
++            <div class="d-flex flex-column gap-3">
++                <div class="d-flex align-items-center gap-3">
++                    <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
++                    <div>
++                        <h2 class="h5 mb-2">Initializing finance data</h2>
++                        <p class="text-body-secondary mb-0">@FinanceStateMessage</p>
++                    </div>
++                </div>
++                <div class="d-flex flex-wrap gap-2">
++                    <button class="btn btn-outline-primary" type="button" @onclick="RefreshEntryStateAsync">Refresh status</button>
++                    <span class="text-body-secondary align-self-center">This page refreshes automatically while setup is running.</span>
++                </div>
++            </div>
++        </section>
++    }
++    else if (IsFinanceFailed)
++    {
++        <FinanceErrorState
++            Title="Finance setup needs attention"
++            Message="@FinanceStateMessage"
++            RetryText="Retry finance setup"
++            OnRetry="@RetryFinanceSetupAsync" />
++    }
++    else
++    {
++        <div class="template-grid">
++            @foreach (var route in FinanceRoutes.SectionPages)
++            {
++                <NavLink class="@($"template-card text-decoration-none text-reset {(route.IsVisibleTo(AccessState.MembershipRole) ? string.Empty : "d-none")}")" href="@route.BuildPath(AccessState.CompanyId)" Match="NavLinkMatch.All">
++                    <strong>@route.Title</strong>
++                    <div class="text-body-secondary mt-2">@route.Description</div>
++                </NavLink>
++            }
++        </div>
++    }
+ </FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
+@@ -1,6 +1,145 @@
++using VirtualCompany.Shared;
++using VirtualCompany.Web.Services;
++
+ namespace VirtualCompany.Web.Pages.Finance;
+ 
+-public partial class FinancePage : FinancePageBase
++public partial class FinancePage : FinancePageBase, IDisposable
+ {
++    [Inject] protected FinanceApiClient FinanceApiClient { get; set; } = default!;
++
++    private const int PollIntervalMilliseconds = 250;
++
++    private CancellationTokenSource? _entryStateCts;
++    private int _entryStateVersion;
++
++    protected FinanceEntryInitializationResponse? EntryState { get; private set; }
++    protected bool IsEntryStateLoading { get; private set; }
++    protected string? EntryStateErrorMessage { get; private set; }
++
++    protected bool IsFinanceInitializing =>
++        string.Equals(EntryState?.InitializationStatus, FinanceEntryInitializationContractValues.Initializing, StringComparison.OrdinalIgnoreCase);
++
++    protected bool IsFinanceFailed =>
++        string.Equals(EntryState?.InitializationStatus, FinanceEntryInitializationContractValues.Failed, StringComparison.OrdinalIgnoreCase);
++
++    protected string FinanceStateMessage =>
++        EntryState?.Message ??
++        "Finance data is being prepared for this company.";
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        CancelEntryStateRefresh();
++        if (IsLoading || !AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
++            ResetEntryState();
++            return;
++        }
++
++        await LoadEntryStateAsync(companyId, retryOnFailure: false);
++    }
++
++    protected Task RefreshEntryStateAsync() =>
++        AccessState.CompanyId is Guid companyId
++            ? LoadEntryStateAsync(companyId, retryOnFailure: false)
++            : Task.CompletedTask;
++
++    protected Task RetryFinanceSetupAsync() =>
++        AccessState.CompanyId is Guid companyId
++            ? LoadEntryStateAsync(companyId, retryOnFailure: true)
++            : Task.CompletedTask;
++
++    private async Task LoadEntryStateAsync(Guid companyId, bool retryOnFailure)
++    {
++        IsEntryStateLoading = true;
++        EntryStateErrorMessage = null;
++        await InvokeAsync(StateHasChanged);
++
++        var loadVersion = Interlocked.Increment(ref _entryStateVersion);
++        var cancellationTokenSource = new CancellationTokenSource();
++        var previousCancellation = Interlocked.Exchange(ref _entryStateCts, cancellationTokenSource);
++        previousCancellation?.Cancel();
++        previousCancellation?.Dispose();
++
++        try
++        {
++            EntryState = retryOnFailure
++                ? await FinanceApiClient.RetryEntryInitializationAsync(companyId, cancellationTokenSource.Token)
++                : await FinanceApiClient.GetEntryInitializationStateAsync(companyId, cancellationTokenSource.Token);
++
++            if (loadVersion != _entryStateVersion || cancellationTokenSource.IsCancellationRequested)
++            {
++                return;
++            }
++
++            if (IsFinanceInitializing)
++            {
++                _ = PollUntilReadyAsync(companyId, loadVersion, cancellationTokenSource.Token);
++            }
++        }
++        catch (OperationCanceledException) when (cancellationTokenSource.IsCancellationRequested)
++        {
++        }
++        catch (FinanceApiException ex)
++        {
++            if (loadVersion != _entryStateVersion || cancellationTokenSource.IsCancellationRequested)
++            {
++                return;
++            }
++
++            EntryStateErrorMessage = ex.Message;
++        }
++        finally
++        {
++            if (loadVersion == _entryStateVersion)
++            {
++                IsEntryStateLoading = false;
++                await InvokeAsync(StateHasChanged);
++            }
++        }
++    }
++
++    private async Task PollUntilReadyAsync(Guid companyId, int loadVersion, CancellationToken cancellationToken)
++    {
++        while (!cancellationToken.IsCancellationRequested)
++        {
++            try
++            {
++                await Task.Delay(PollIntervalMilliseconds, cancellationToken);
++                var nextState = await FinanceApiClient.GetEntryInitializationStateAsync(companyId, cancellationToken);
++                if (loadVersion != _entryStateVersion || cancellationToken.IsCancellationRequested)
++                {
++                    return;
++                }
++
++                EntryState = nextState;
++                await InvokeAsync(StateHasChanged);
++                if (!string.Equals(nextState.InitializationStatus, FinanceEntryInitializationContractValues.Initializing, StringComparison.OrdinalIgnoreCase))
++                {
++                    return;
++                }
++            }
++            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
++            {
++                return;
++            }
++            catch (FinanceApiException ex)
++            {
++                if (loadVersion != _entryStateVersion || cancellationToken.IsCancellationRequested)
++                {
++                    return;
++                }
++
++                EntryStateErrorMessage = ex.Message;
++                await InvokeAsync(StateHasChanged);
++                return;
++            }
++        }
++    }
++
++    private void ResetEntryState()
++    {
++        EntryState = null;
++        EntryStateErrorMessage = null;
++        IsEntryStateLoading = false;
++    }
++
++    private void CancelEntryStateRefresh()
++    {
++        var cancellationTokenSource = Interlocked.Exchange(ref _entryStateCts, null);
++        cancellationTokenSource?.Cancel();
++        cancellationTokenSource?.Dispose();
++    }
++
++    public void Dispose() => CancelEntryStateRefresh();
+ }
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -87,6 +87,28 @@ public sealed class FinanceApiClient
+             ? Task.FromResult<FinanceSeedingStateResponse?>(new FinanceSeedingStateResponse
+             {
+                 CompanyId = companyId,
++                SeedingState = FinanceSeedingStateContractValues.NotSeeded
++            })
++            : GetAsync<FinanceSeedingStateResponse>(companyId, $"internal/companies/{companyId}/finance/seeding-state", allowNotFound: true, cancellationToken);
++
++    public Task<FinanceEntryInitializationResponse> GetEntryInitializationStateAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult(new FinanceEntryInitializationResponse
++            {
++                CompanyId = companyId,
++                InitializationStatus = FinanceEntryInitializationContractValues.Ready,
++                SeedingState = FinanceSeedingStateContractValues.FullySeeded,
++                Message = "Finance workspace is ready in offline mode."
++            })
++            : GetAsync<FinanceEntryInitializationResponse>(companyId, $"internal/companies/{companyId}/finance/entry-state", allowNotFound: false, cancellationToken)!;
++
++    public Task<FinanceEntryInitializationResponse> RetryEntryInitializationAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<object, FinanceEntryInitializationResponse>(
++            companyId,
++            HttpMethod.Post,
++            $"internal/companies/{companyId}/finance/entry-state/retry",
++            new { },
++            cancellationToken);
++    }
++
+-                SeedingState = FinanceSeedingStateContractValues.NotSeeded
+-            })
+-            : GetAsync<FinanceSeedingStateResponse>(companyId, $"internal/companies/{companyId}/finance/seeding-state", allowNotFound: true, cancellationToken);
+-
+     public Task<FinanceSandboxSeedGenerationResponse> GenerateSandboxSeedDatasetAsync(
+         Guid companyId,
+         FinanceSandboxSeedGenerationRequest request,
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -40,6 +40,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+                 [$"{KnowledgeIndexingOptions.SectionName}:Enabled"] = "false",
+                 [$"{KnowledgeEmbeddingOptions.SectionName}:Provider"] = "deterministic",
+                 [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",
++                [$"{FinanceSeedWorkerOptions.SectionName}:Enabled"] = "false",
+                 [$"{KnowledgeEmbeddingOptions.SectionName}:Dimensions"] = "256",
+                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:Enabled"] = "true",
+                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KeyVersion"] = "tests-v1",
+@@ -96,6 +97,14 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+         await dbContext.SaveChangesAsync();
+     }
+ 
++    public async Task<T> ExecuteDbContextAsync<T>(Func<VirtualCompanyDbContext, Task<T>> callback)
++    {
++        using var scope = Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        await dbContext.Database.EnsureCreatedAsync();
++        return await callback(dbContext);
++    }
++
+     protected override void Dispose(bool disposing)
+     {
+         base.Dispose(disposing);
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceEntryInitializationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceEntryInitializationIntegrationTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceEntryInitializationIntegrationTests.cs
+@@ -0,0 +1,243 @@
++using System.Net;
++using System.Net.Http.Json;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Shared;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceEntryInitializationIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinanceEntryInitializationIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task First_finance_entry_access_for_not_seeded_company_enqueues_one_job_and_returns_initializing_state()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/entry-state");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<FinanceEntryInitializationResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(FinanceEntryInitializationContractValues.Initializing, payload!.InitializationStatus);
++        Assert.Equal(FinanceSeedingStateContractValues.NotSeeded, payload.SeedingState);
++        Assert.True(payload.SeedJobEnqueued);
++        Assert.True(payload.SeedJobActive);
++        Assert.False(payload.CanRetry);
++
++        var snapshot = await _factory.ExecuteDbContextAsync(async dbContext =>
++        {
++            var jobs = dbContext.BackgroundExecutions
++                .Where(x => x.CompanyId == seed.CompanyId && x.ExecutionType == BackgroundExecutionType.FinanceSeed)
++                .ToList();
++            var audits = dbContext.AuditEvents
++                .Where(x => x.CompanyId == seed.CompanyId && x.Action == "finance.seed.job.requested")
++                .ToList();
++            return new { Jobs = jobs, Audits = audits };
++        });
++
++        var job = Assert.Single(snapshot.Jobs);
++        Assert.Equal(BackgroundExecutionStatus.Pending, job.Status);
++        Assert.Equal(BackgroundExecutionRelatedEntityTypes.FinanceSeed, job.RelatedEntityType);
++        Assert.Single(snapshot.Audits);
++    }
++
++    [Fact]
++    public async Task Repeated_finance_entry_access_does_not_enqueue_duplicate_seed_jobs_while_a_job_is_active()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var firstResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/entry-state");
++        var secondResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/entry-state");
++
++        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
++
++        var secondPayload = await secondResponse.Content.ReadFromJsonAsync<FinanceEntryInitializationResponse>();
++        Assert.NotNull(secondPayload);
++        Assert.False(secondPayload!.SeedJobEnqueued);
++        Assert.True(secondPayload.SeedJobActive);
++
++        var jobCount = await _factory.ExecuteDbContextAsync(async dbContext =>
++            await Task.FromResult(dbContext.BackgroundExecutions.Count(x =>
++                x.CompanyId == seed.CompanyId &&
++                x.ExecutionType == BackgroundExecutionType.FinanceSeed)));
++
++        Assert.Equal(1, jobCount);
++    }
++
++    [Fact]
++    public async Task Failed_finance_seed_job_returns_recoverable_error_state()
++    {
++        var seed = await SeedCompanyAsync(configureCompany: (dbContext, companyId) =>
++        {
++            var execution = new BackgroundExecution(
++                Guid.NewGuid(),
++                companyId,
++                BackgroundExecutionType.FinanceSeed,
++                BackgroundExecutionRelatedEntityTypes.FinanceSeed,
++                companyId.ToString("D"),
++                "finance-seed-failed",
++                $"finance-seed:{companyId:N}",
++                maxAttempts: 1);
++            execution.StartAttempt("finance-seed-failed", 1, 1);
++            execution.MarkFailed(
++                BackgroundExecutionFailureCategory.TransientInfrastructure,
++                "timeout",
++                "The finance seed worker timed out.");
++            dbContext.BackgroundExecutions.Add(execution);
++        });
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/entry-state");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<FinanceEntryInitializationResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(FinanceEntryInitializationContractValues.Failed, payload!.InitializationStatus);
++        Assert.True(payload.CanRetry);
++        Assert.Equal("timeout", payload.LastErrorCode);
++        Assert.Contains("timed out", payload.Message, StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public async Task Seeded_finance_entry_returns_ready_state_without_enqueuing_a_job()
++    {
++        var seed = await SeedCompanyAsync(configureCompany: (dbContext, companyId) =>
++        {
++            FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        });
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/entry-state");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<FinanceEntryInitializationResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(FinanceEntryInitializationContractValues.Ready, payload!.InitializationStatus);
++        Assert.False(payload.SeedJobActive);
++        Assert.False(payload.SeedJobEnqueued);
++
++        var jobCount = await _factory.ExecuteDbContextAsync(async dbContext =>
++            await Task.FromResult(dbContext.BackgroundExecutions.Count(x =>
++                x.CompanyId == seed.CompanyId &&
++                x.ExecutionType == BackgroundExecutionType.FinanceSeed)));
++
++        Assert.Equal(0, jobCount);
++    }
++
++    private async Task<FinanceEntrySeed> SeedCompanyAsync(Action<VirtualCompanyDbContext, Guid>? configureCompany = null)
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var subject = $"finance-entry-{Guid.NewGuid():N}";
++        var email = $"{subject}@example.com";
++        const string displayName = "Finance Entry User";
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            var company = new Company(companyId, "Finance Entry Company");
++            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++            dbContext.Companies.Add(company);
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++
++            configureCompany?.Invoke(dbContext, companyId);
++            return Task.CompletedTask;
++        });
++
++        return new FinanceEntrySeed(companyId, subject, email, displayName);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private sealed record FinanceEntrySeed(
++        Guid CompanyId,
++        string Subject,
++        string Email,
++        string DisplayName);
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePageTests.cs b/tests/VirtualCompany.Api.Tests/FinancePageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinancePageTests.cs
+@@ -0,0 +1,205 @@
++using System.Collections.Concurrent;
++using System.Net;
++using System.Net.Http.Json;
++using Bunit;
++using Bunit.TestDoubles;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Shared;
++using VirtualCompany.Web.Pages.Finance;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinancePageTests
++{
++    [Fact]
++    public void Finance_page_shows_initializing_state_and_refreshes_to_ready_cards()
++    {
++        var companyId = Guid.Parse("7b791dba-0d66-4717-a832-8f562cdf07ce");
++        var entryResponses = new ConcurrentQueue<FinanceEntryInitializationResponse>(new[]
++        {
++            new FinanceEntryInitializationResponse
++            {
++                CompanyId = companyId,
++                InitializationStatus = FinanceEntryInitializationContractValues.Initializing,
++                SeedingState = FinanceSeedingStateContractValues.NotSeeded,
++                SeedJobActive = true,
++                Message = "Finance data is being prepared in the background."
++            },
++            new FinanceEntryInitializationResponse
++            {
++                CompanyId = companyId,
++                InitializationStatus = FinanceEntryInitializationContractValues.Ready,
++                SeedingState = FinanceSeedingStateContractValues.FullySeeded,
++                Message = "Finance data is ready."
++            }
++        });
++
++        using var harness = CreateHarness(companyId, CreateCurrentUser(companyId, "owner"), entryResponses, retryResponse: null);
++        harness.Navigation.NavigateTo($"http://localhost/finance?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<FinancePage>(parameters => parameters.Add(x => x.CompanyId, companyId));
++
++        cut.WaitForAssertion(() => Assert.Contains("Initializing finance data", cut.Markup));
++        cut.WaitForAssertion(() =>
++        {
++            Assert.DoesNotContain("Initializing finance data", cut.Markup);
++            Assert.Contains("Cash position", cut.Markup);
++            Assert.Contains("Transactions", cut.Markup);
++        });
++    }
++
++    [Fact]
++    public void Finance_page_shows_retry_guidance_for_failed_state_and_retries_through_same_entry_endpoint()
++    {
++        var companyId = Guid.Parse("44f7a342-08c8-4b33-ab40-39180c5c97f0");
++        var entryResponses = new ConcurrentQueue<FinanceEntryInitializationResponse>(new[]
++        {
++            new FinanceEntryInitializationResponse
++            {
++                CompanyId = companyId,
++                InitializationStatus = FinanceEntryInitializationContractValues.Failed,
++                SeedingState = FinanceSeedingStateContractValues.NotSeeded,
++                CanRetry = true,
++                Message = "Finance setup failed: worker timeout."
++            }
++        });
++
++        var retryResponse = new FinanceEntryInitializationResponse
++        {
++            CompanyId = companyId,
++            InitializationStatus = FinanceEntryInitializationContractValues.Ready,
++            SeedingState = FinanceSeedingStateContractValues.FullySeeded,
++            Message = "Finance data is ready."
++        };
++
++        using var harness = CreateHarness(companyId, CreateCurrentUser(companyId, "owner"), entryResponses, retryResponse);
++        harness.Navigation.NavigateTo($"http://localhost/finance?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<FinancePage>(parameters => parameters.Add(x => x.CompanyId, companyId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Finance setup needs attention", cut.Markup);
++            Assert.Contains("worker timeout", cut.Markup);
++        });
++
++        cut.Find("button").Click();
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Cash position", cut.Markup);
++            Assert.Contains("Transactions", cut.Markup);
++        });
++    }
++
++    private static FinancePageHarness CreateHarness(
++        Guid companyId,
++        CurrentUserContextViewModel currentUser,
++        ConcurrentQueue<FinanceEntryInitializationResponse> entryResponses,
++        FinanceEntryInitializationResponse? retryResponse)
++    {
++        var context = new TestContext();
++        context.Services.AddSingleton(new FinanceAccessResolver());
++        context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            return Task.FromResult(request.RequestUri?.AbsolutePath switch
++            {
++                "/api/auth/me" => CreateJsonResponse(currentUser),
++                _ => CreateNotFoundResponse()
++            });
++        }))
++        {
++            BaseAddress = new Uri("http://localhost/")
++        }));
++
++        context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            if (request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/entry-state" &&
++                request.Method == HttpMethod.Get)
++            {
++                if (!entryResponses.TryDequeue(out var nextResponse))
++                {
++                    nextResponse = retryResponse ?? new FinanceEntryInitializationResponse
++                    {
++                        CompanyId = companyId,
++                        InitializationStatus = FinanceEntryInitializationContractValues.Ready,
++                        SeedingState = FinanceSeedingStateContractValues.FullySeeded,
++                        Message = "Finance data is ready."
++                    };
++                }
++
++                return Task.FromResult(CreateJsonResponse(nextResponse));
++            }
++
++            if (request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/entry-state/retry" &&
++                request.Method == HttpMethod.Post)
++            {
++                return Task.FromResult(CreateJsonResponse(retryResponse!));
++            }
++
++            return Task.FromResult(CreateNotFoundResponse());
++        }))
++        {
++            BaseAddress = new Uri("http://localhost/")
++        }));
++
++        return new FinancePageHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
++    }
++
++    private static CurrentUserContextViewModel CreateCurrentUser(Guid companyId, string membershipRole) =>
++        new()
++        {
++            Memberships =
++            [
++                new CompanyMembershipViewModel
++                {
++                    MembershipId = Guid.NewGuid(),
++                    CompanyId = companyId,
++                    CompanyName = "Contoso Finance",
++                    MembershipRole = membershipRole,
++                    Status = "active"
++                }
++            ],
++            ActiveCompany = new ResolvedCompanyContextViewModel
++            {
++                MembershipId = Guid.NewGuid(),
++                CompanyId = companyId,
++                CompanyName = "Contoso Finance",
++                MembershipRole = membershipRole,
++                Status = "active"
++            }
++        };
++
++    private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>
++        new(HttpStatusCode.OK)
++        {
++            Content = JsonContent.Create(payload)
++        };
++
++    private static HttpResponseMessage CreateNotFoundResponse() =>
++        new(HttpStatusCode.NotFound)
++        {
++            Content = JsonContent.Create(new { title = "Not found", detail = "Not found." })
++        };
++
++    private sealed record FinancePageHarness(TestContext Context, FakeNavigationManager Navigation) : IDisposable
++    {
++        public void Dispose() => Context.Dispose();
++    }
++
++    private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler
++    {
++        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
++
++        public AsyncStubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
++        {
++            _handler = handler;
++        }
++
++        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
++            _handler(request, cancellationToken);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedJobRunnerTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedJobRunnerTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedJobRunnerTests.cs
+@@ -0,0 +1,207 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.BackgroundExecution;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auditing;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.BackgroundJobs;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceSeedJobRunnerTests
++{
++    [Fact]
++    public async Task Runner_marks_finance_seed_job_completed_and_records_started_and_completed_audits()
++    {
++        var companyId = Guid.NewGuid();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        dbContext.Companies.Add(new Company(companyId, "Finance Seed Runner Company"));
++        dbContext.BackgroundExecutions.Add(new BackgroundExecution(
++            Guid.NewGuid(),
++            companyId,
++            BackgroundExecutionType.FinanceSeed,
++            BackgroundExecutionRelatedEntityTypes.FinanceSeed,
++            companyId.ToString("D"),
++            "finance-seed-runner",
++            $"finance-seed:{companyId:N}",
++            maxAttempts: 5));
++        await dbContext.SaveChangesAsync();
++
++        var runner = CreateRunner(
++            dbContext,
++            new CompanyFinanceSeedBootstrapService(dbContext),
++            new AuditEventWriter(dbContext));
++
++        var handled = await runner.RunDueAsync(CancellationToken.None);
++
++        Assert.Equal(1, handled);
++
++        var execution = await dbContext.BackgroundExecutions.SingleAsync(x => x.CompanyId == companyId);
++        Assert.Equal(BackgroundExecutionStatus.Succeeded, execution.Status);
++
++        var company = await dbContext.Companies.SingleAsync(x => x.Id == companyId);
++        Assert.Equal(FinanceSeedingState.FullySeeded, company.FinanceSeedStatus);
++        Assert.NotNull(company.FinanceSeededUtc);
++
++        var actions = await dbContext.AuditEvents
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => x.Action)
++            .ToListAsync();
++
++        Assert.Contains("finance.seed.job.started", actions);
++        Assert.Contains("finance.seed.job.completed", actions);
++    }
++
++    [Fact]
++    public async Task Runner_marks_finance_seed_job_failed_and_records_failure_audit_when_generation_exhausts_retries()
++    {
++        var companyId = Guid.NewGuid();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        dbContext.Companies.Add(new Company(companyId, "Finance Seed Failure Company"));
++        dbContext.BackgroundExecutions.Add(new BackgroundExecution(
++            Guid.NewGuid(),
++            companyId,
++            BackgroundExecutionType.FinanceSeed,
++            BackgroundExecutionRelatedEntityTypes.FinanceSeed,
++            companyId.ToString("D"),
++            "finance-seed-failure",
++            $"finance-seed:{companyId:N}",
++            maxAttempts: 1));
++        await dbContext.SaveChangesAsync();
++
++        var runner = CreateRunner(
++            dbContext,
++            new ThrowingFinanceSeedBootstrapService(),
++            new AuditEventWriter(dbContext));
++
++        var handled = await runner.RunDueAsync(CancellationToken.None);
++
++        Assert.Equal(1, handled);
++
++        var execution = await dbContext.BackgroundExecutions.SingleAsync(x => x.CompanyId == companyId);
++        Assert.Equal(BackgroundExecutionStatus.Failed, execution.Status);
++        Assert.Contains("Configured finance seed failure.", execution.FailureMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
++
++        var actions = await dbContext.AuditEvents
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => x.Action)
++            .ToListAsync();
++
++        Assert.Contains("finance.seed.job.started", actions);
++        Assert.Contains("finance.seed.job.failed", actions);
++    }
++
++    private static CompanyFinanceSeedJobRunner CreateRunner(
++        VirtualCompanyDbContext dbContext,
++        IFinanceSeedBootstrapService bootstrapService,
++        IAuditEventWriter auditEventWriter)
++    {
++        var companyContextAccessor = new RequestCompanyContextAccessor();
++        return new CompanyFinanceSeedJobRunner(
++            dbContext,
++            bootstrapService,
++            new BackgroundJobExecutor(
++                NullLogger<BackgroundJobExecutor>.Instance,
++                new DefaultBackgroundJobFailureClassifier(),
++                new DefaultBackgroundExecutionIdentityFactory()),
++            new ExponentialBackgroundExecutionRetryPolicy(Options.Create(new BackgroundExecutionOptions
++            {
++                BaseRetryDelaySeconds = 0,
++                MaxRetryDelaySeconds = 0
++            })),
++            new CompanyExecutionScopeFactory(companyContextAccessor),
++            auditEventWriter,
++            Options.Create(new FinanceSeedWorkerOptions
++            {
++                BatchSize = 10,
++                ClaimTimeoutSeconds = 300
++            }),
++            TimeProvider.System,
++            NullLogger<CompanyFinanceSeedJobRunner>.Instance);
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options);
++
++    private sealed class ThrowingFinanceSeedBootstrapService : IFinanceSeedBootstrapService
++    {
++        public Task<FinanceSeedBootstrapResultDto> GenerateAsync(FinanceSeedBootstrapCommand command, CancellationToken cancellationToken) =>
++            throw new InvalidOperationException("Configured finance seed failure.");
++    }
++}
+END_OF_PATCH

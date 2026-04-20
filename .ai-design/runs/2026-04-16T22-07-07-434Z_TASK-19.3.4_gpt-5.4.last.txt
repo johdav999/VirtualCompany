@@ -1,0 +1,493 @@
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+index 9e6c7f1..1a5fd8b 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+@@ -399,15 +399,19 @@
+                                             EmptyMessage="No simulation controls are configured for the active company."
+                                             ErrorTitle="Simulation controls are unavailable"
+                                             Loader="@LoadSimulationControlsAsync">
+-                    <ChildContent Context="simulation">
++                    <ChildContent Context="simulation">
++                        @{
++                            var displayedSimulation = _latestSimulationControls ?? simulation;
++                            var displayedRun = _latestProgressionRun ?? displayedSimulation.CurrentRun ?? displayedSimulation.RunHistory.FirstOrDefault();
++                        }
++
+                         <div class="row g-4">
+                             <div class="col-lg-5">
+                                 <dl class="row mb-3">
+                                     <dt class="col-sm-4">Clock mode</dt>
+-                                    <dd class="col-sm-8">@simulation.ClockMode</dd>
++                                    <dd class="col-sm-8">@displayedSimulation.ClockMode</dd>
+                                     <dt class="col-sm-4">Reference time</dt>
+-                                    <dd class="col-sm-8">@simulation.ReferenceUtc.ToString("u")</dd>
++                                    <dd class="col-sm-8">@displayedSimulation.ReferenceUtc.ToString("u")</dd>
+                                     <dt class="col-sm-4">Checkpoint</dt>
+-                                    <dd class="col-sm-8">@simulation.CheckpointLabel</dd>
++                                    <dd class="col-sm-8">@displayedSimulation.CheckpointLabel</dd>
+                                     <dt class="col-sm-4">Observation</dt>
+-                                    <dd class="col-sm-8">@simulation.Observation</dd>
++                                    <dd class="col-sm-8">@displayedSimulation.Observation</dd>
+                                 </dl>
+ 
+                                 @if (!string.IsNullOrWhiteSpace(_simulationActionErrorMessage))
+@@ -420,6 +424,11 @@
+                                     <div class="alert alert-success" role="status">@_simulationActionSuccessMessage</div>
+                                 }
+ 
++                                @if (!string.IsNullOrWhiteSpace(_simulationRefreshErrorMessage))
++                                {
++                                    <div class="alert alert-warning" role="alert">@_simulationRefreshErrorMessage</div>
++                                }
++
+                                 <EditForm EditContext="@_simulationControlsEditContext">
+                                     <DataAnnotationsValidator />
+                                     <ValidationSummary />
+@@ -444,20 +453,34 @@
+                                             <button id="progression-run-submit" type="button" class="btn btn-outline-primary" disabled="@IsSimulationBusy" @onclick="HandleStartProgressionRunAsync">
+-                                                @(_isStartingProgressionRun ? "Starting progression run..." : "Start progression run")
++                                                @(_isStartingProgressionRun
++                                                    ? "Starting progression run..."
++                                                    : HasActiveProgressionRun
++                                                        ? "Progression run in progress"
++                                                        : "Start progression run")
+                                             </button>
++                                            <button id="simulation-refresh-submit" type="button" class="btn btn-outline-secondary" disabled="@_isRefreshingSimulationControls" @onclick="HandleRefreshSimulationControlsAsync">
++                                                @(_isRefreshingSimulationControls ? "Refreshing status..." : "Refresh status")
++                                            </button>
++                                        </div>
++                                        <div class="col-12 d-flex flex-wrap gap-3 text-body-secondary">
++                                            @if (_lastSimulationRefreshUtc.HasValue)
++                                            {
++                                                <span>Last updated @_lastSimulationRefreshUtc.Value.ToString("u")</span>
++                                            }
++                                            @if (_isPollingSimulationControls)
++                                            {
++                                                <span>Status refresh is active while the latest progression run is still in progress.</span>
++                                            }
++                                            @if (HasActiveProgressionRun && !IsSimulationBusy)
++                                            {
++                                                <span>Duplicate progression runs are disabled until the current run reaches a terminal status.</span>
++                                            }
+                                         </div>
+                                     </div>
+                                 </EditForm>
+                             </div>
+ 
+                             <div class="col-lg-7">
+                                 <h3 class="h6 mb-3">Latest progression output</h3>
+ 
+-                                @{
+-                                    var displayedRun = _latestProgressionRun ?? simulation.CurrentRun;
+-                                }
+-
+                                 @if (displayedRun is null)
+                                 {
+                                     <p class="text-body-secondary mb-0">No progression run has been recorded for the active company yet.</p>
+@@ -491,6 +514,11 @@
+                                     @foreach (var message in displayedRun.Messages)
+                                     {
+                                         <div class="@ResolveBackendMessageAlertClass(message.Severity)" role="alert">
++                                            @if (!string.IsNullOrWhiteSpace(message.Code))
++                                            {
++                                                <span class="fw-semibold">@message.Code:</span>
++                                                <span> </span>
++                                            }
+                                             @message.Message
+                                         </div>
+                                     }
+@@ -526,7 +554,7 @@
+                                     <div class="mt-4">
+                                         <h4 class="h6 mb-3">Run history</h4>
+ 
+-                                        @if (simulation.RunHistory.Count == 0)
++                                        @if (displayedSimulation.RunHistory.Count == 0)
+                                         {
+                                             <p class="text-body-secondary mb-0">No completed runs are available in backend history yet.</p>
+                                         }
+@@ -541,7 +569,7 @@
+                                                     </thead>
+                                                     <tbody>
+-                                                        @foreach (var run in simulation.RunHistory)
++                                                        @foreach (var run in displayedSimulation.RunHistory)
+                                                         {
+                                                             <tr>
+                                                                 <td>@FinanceAnomalyPresentation.FormatLabel(run.RunType)</td>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+index 4dd8897..78f9ab1 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+@@ -7,6 +7,8 @@ namespace VirtualCompany.Web.Pages.Finance;
+ 
+ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+ {
++    private const int DefaultSimulationPollingIntervalMilliseconds = 3000;
++
+     [Inject] private IFinanceSandboxAdminService SandboxAdminService { get; set; } = default!;
+ 
+     private readonly SeedGenerationFormModel _seedGenerationForm = new();
+@@ -30,11 +32,21 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private bool _isAdvancingSimulation;
+     private bool _isStartingProgressionRun;
+     private FinanceSandboxProgressionRunViewModel? _latestProgressionRun;
++    private FinanceSandboxSimulationControlsViewModel? _latestSimulationControls;
+     private readonly List<CompanyOption> _companyOptions = [];
+     private bool _isSubmittingSeedGeneration;
++    private bool _isRefreshingSimulationControls;
++    private bool _isPollingSimulationControls;
++    private string? _simulationRefreshErrorMessage;
++    private DateTime? _lastSimulationRefreshUtc;
++    private Guid? _simulationPollingCompanyId;
++    private CancellationTokenSource? _simulationPollingCts;
+     private int _datasetGenerationSectionVersion;
+     private int _anomalyInjectionSectionVersion;
+-    private int _simulationControlsSectionVersion;
++
++    [Parameter]
++    public int SimulationPollingIntervalMilliseconds { get; set; } = DefaultSimulationPollingIntervalMilliseconds;
++
++    private bool HasActiveProgressionRun => IsNonTerminalProgressionStatus((_latestProgressionRun ?? _latestSimulationControls?.CurrentRun)?.Status);
+ 
+     private bool HasSandboxAdminAccess =>
+         AccessState.IsAllowed &&
+@@ -96,11 +108,15 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+                 _selectedAnomalyDetail = null;
+                 _simulationActionErrorMessage = null;
+                 _simulationActionSuccessMessage = null;
++                _simulationRefreshErrorMessage = null;
+                 _latestProgressionRun = null;
++                _latestSimulationControls = null;
++                _lastSimulationRefreshUtc = null;
+                 ClearSeedGenerationValidation();
++                StopSimulationPolling();
+             }
+         }
+-        else if (_companyOptions.Count > 0 && _seedGenerationForm.CompanyId == Guid.Empty)
++        else if (_companyOptions.Count > 0 && _seedGenerationForm.CompanyId == Guid.Empty)
+         {
+             await HandleCompanySelectionChangedAsync(_companyOptions[0].CompanyId);
+         }
+@@ -132,9 +148,13 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         _selectedAnomalyDetail = null;
+         _simulationActionErrorMessage = null;
+         _simulationActionSuccessMessage = null;
++        _simulationRefreshErrorMessage = null;
++        _latestProgressionRun = null;
++        _latestSimulationControls = null;
++        _lastSimulationRefreshUtc = null;
+         ClearSeedGenerationValidation();
++        StopSimulationPolling();
+ 
+         Navigation.NavigateTo(FinanceRoutes.WithCompanyContext(FinanceRoutes.SandboxAdmin, companyId));
+         return Task.CompletedTask;
+@@ -266,6 +286,14 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         await ExecuteSimulationAdvanceAsync(companyId, _simulationControlsForm.ProgressionRunHours, "progression_run");
+     }
+ 
++    private async Task HandleRefreshSimulationControlsAsync()
++    {
++        if (AccessState.CompanyId is not Guid companyId || _isRefreshingSimulationControls)
++        {
++            return;
++        }
++
++        await RefreshSimulationControlsAsync(companyId, CancellationToken.None);
++    }
++
+     private void ClearSeedGenerationValidation()
+     {
+         _seedGenerationMessageStore.Clear();
+@@ -294,16 +322,20 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+                 Accelerated = _simulationControlsForm.Accelerated
+             };
+ 
+-            _latestProgressionRun = string.Equals(runType, "advance", StringComparison.OrdinalIgnoreCase)
++            _latestProgressionRun = string.Equals(runType, "advance", StringComparison.OrdinalIgnoreCase)
+                 ? await SandboxAdminService.AdvanceSimulationAsync(command)
+                 : await SandboxAdminService.StartProgressionRunAsync(command);
+ 
+-            _simulationActionSuccessMessage = string.Equals(runType, "advance", StringComparison.OrdinalIgnoreCase)
+-                ? $"Simulation advanced by {incrementHours} hour(s)."
+-                : $"Progression run completed for {incrementHours} hour(s).";
+-            _simulationControlsSectionVersion++;
++            _simulationRefreshErrorMessage = null;
++            UpdateSimulationPolling(companyId, _latestProgressionRun);
++            await RefreshSimulationControlsAsync(companyId, CancellationToken.None);
++
++            _simulationActionSuccessMessage = BuildSimulationSuccessMessage(
++                runType,
++                incrementHours,
++                _latestProgressionRun?.Status);
++
+             _anomalyInjectionSectionVersion++;
+         }
+-        catch (FinanceApiException ex)
++        catch (FinanceApiException ex)
+         {
+             _simulationActionErrorMessage = ex.Message;
+         }
+@@ -358,8 +390,122 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private Task<FinanceSandboxAnomalyInjectionViewModel?> LoadAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken) =>
+         SandboxAdminService.GetAnomalyInjectionAsync(companyId, cancellationToken);
+ 
+-    private Task<FinanceSandboxSimulationControlsViewModel?> LoadSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken) =>
+-        SandboxAdminService.GetSimulationControlsAsync(companyId, cancellationToken);
++    private async Task<FinanceSandboxSimulationControlsViewModel?> LoadSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var simulation = await SandboxAdminService.GetSimulationControlsAsync(companyId, cancellationToken);
++        ApplySimulationControlsSnapshot(companyId, simulation);
++        return simulation;
++    }
++
++    private async Task RefreshSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (_isRefreshingSimulationControls)
++        {
++            return;
++        }
++
++        _isRefreshingSimulationControls = true;
++
++        try
++        {
++            var simulation = await SandboxAdminService.GetSimulationControlsAsync(companyId, cancellationToken);
++            ApplySimulationControlsSnapshot(companyId, simulation);
++        }
++        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
++        {
++        }
++        catch (FinanceApiException ex) when (!cancellationToken.IsCancellationRequested)
++        {
++            _simulationRefreshErrorMessage = ex.Message;
++        }
++        finally
++        {
++            _isRefreshingSimulationControls = false;
++
++            if (!cancellationToken.IsCancellationRequested)
++            {
++                await InvokeAsync(StateHasChanged);
++            }
++        }
++    }
++
++    private void ApplySimulationControlsSnapshot(Guid companyId, FinanceSandboxSimulationControlsViewModel? simulation)
++    {
++        _latestSimulationControls = simulation;
++        _latestProgressionRun = simulation?.CurrentRun ?? simulation?.RunHistory.FirstOrDefault();
++        _simulationRefreshErrorMessage = null;
++        _lastSimulationRefreshUtc = DateTime.UtcNow;
++        UpdateSimulationPolling(companyId, _latestProgressionRun);
++    }
++
++    private void UpdateSimulationPolling(Guid companyId, FinanceSandboxProgressionRunViewModel? latestRun)
++    {
++        if (IsNonTerminalProgressionStatus(latestRun?.Status))
++        {
++            EnsureSimulationPolling(companyId);
++            return;
++        }
++
++        StopSimulationPolling();
++    }
++
++    private void EnsureSimulationPolling(Guid companyId)
++    {
++        if (_isPollingSimulationControls && _simulationPollingCompanyId == companyId)
++        {
++            return;
++        }
++
++        StopSimulationPolling();
++
++        _simulationPollingCompanyId = companyId;
++        _simulationPollingCts = new CancellationTokenSource();
++        _isPollingSimulationControls = true;
++
++        // Poll in the background until the latest run reaches a terminal backend state.
++        _ = PollSimulationControlsAsync(companyId, _simulationPollingCts.Token);
++    }
++
++    private async Task PollSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(Math.Max(10, SimulationPollingIntervalMilliseconds)));
++
++        try
++        {
++            while (await timer.WaitForNextTickAsync(cancellationToken))
++            {
++                await RefreshSimulationControlsAsync(companyId, cancellationToken);
++
++                if (!IsNonTerminalProgressionStatus(_latestProgressionRun?.Status))
++                {
++                    break;
++                }
++            }
++        }
++        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
++        {
++        }
++        finally
++        {
++            if (_simulationPollingCompanyId == companyId && !IsNonTerminalProgressionStatus(_latestProgressionRun?.Status))
++            {
++                StopSimulationPolling();
++            }
++        }
++    }
++
++    private void StopSimulationPolling()
++    {
++        var pollingCts = Interlocked.Exchange(ref _simulationPollingCts, null);
++        pollingCts?.Cancel();
++        pollingCts?.Dispose();
++        _simulationPollingCompanyId = null;
++        _isPollingSimulationControls = false;
++    }
++
++    private static string BuildSimulationSuccessMessage(string runType, int incrementHours, string? status) =>
++        string.Equals(runType, "advance", StringComparison.OrdinalIgnoreCase)
++            ? $"Simulation advanced by {incrementHours} hour(s)."
++            : IsNonTerminalProgressionStatus(status)
++                ? $"Progression run started for {incrementHours} hour(s). Status updates will refresh automatically."
++                : $"Progression run completed for {incrementHours} hour(s).";
++
++    private static bool IsNonTerminalProgressionStatus(string? status) =>
++        !string.IsNullOrWhiteSpace(status) && !IsTerminalProgressionStatus(status);
++
++    private static bool IsTerminalProgressionStatus(string? status) =>
++        status?.Trim().ToLowerInvariant() switch
++        {
++            null or "" => false,
++            "completed" or "complete" or "succeeded" or "success" or "completed_with_warnings" or "completed-with-warnings" or "warning" or "warnings" or "failed" or "failure" or "error" or "cancelled" or "canceled" => true,
++            _ => false
++        };
+ 
+     private IReadOnlyList<CompanyOption> GetSandboxAdminCompanyOptions() =>
+         (CurrentUserContext?.Memberships ?? [])
+@@ -420,6 +566,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         _seedGenerationEditContext.OnFieldChanged -= HandleSeedGenerationFieldChanged;
+         _anomalyInjectionEditContext.OnValidationRequested -= HandleAnomalyInjectionValidationRequested;
+         _anomalyInjectionEditContext.OnFieldChanged -= HandleAnomalyInjectionFieldChanged;
++        StopSimulationPolling();
+     }
+ 
+     private sealed class SeedGenerationFormModel : IValidatableObject
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+index 79f2343..f58af97 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+@@ -391,7 +391,7 @@ public sealed class FinanceSandboxAdminPageTests
+                 CheckpointLabel = "Ready",
+                 Observation = "Awaiting run"
+             }),
+-            OnAdvanceSimulationAsync = (_, _) => Task.FromResult(new FinanceSandboxProgressionRunViewModel
++            OnStartProgressionRunAsync = (_, _) => Task.FromResult(new FinanceSandboxProgressionRunViewModel
+             {
+                 RunType = "progression_run",
+                 Status = "completed",
+@@ -415,6 +415,72 @@ public sealed class FinanceSandboxAdminPageTests
+         });
+     }
+ 
++    [Fact]
++    public void Sandbox_admin_page_polls_simulation_controls_until_progression_run_reaches_a_terminal_state()
++    {
++        var companyId = Guid.Parse("d728d91e-c53a-46c3-a198-542a5e7db59d");
++        var runningRun = new FinanceSandboxProgressionRunViewModel
++        {
++            RunType = "progression_run",
++            Status = "running",
++            StartedUtc = new DateTime(2026, 4, 16, 10, 0, 0, DateTimeKind.Utc),
++            AdvancedHours = 24,
++            ExecutionStepHours = 24,
++            Messages = [new FinanceSandboxBackendMessageViewModel { Severity = "warning", Code = "sandbox.progression.running", Message = "The progression run is still processing backend steps." }]
++        };
++        var completedRun = new FinanceSandboxProgressionRunViewModel
++        {
++            RunType = "progression_run",
++            Status = "completed",
++            StartedUtc = new DateTime(2026, 4, 16, 10, 0, 0, DateTimeKind.Utc),
++            CompletedUtc = new DateTime(2026, 4, 16, 11, 0, 0, DateTimeKind.Utc),
++            AdvancedHours = 24,
++            ExecutionStepHours = 24,
++            TransactionsGenerated = 6,
++            InvoicesGenerated = 3,
++            BillsGenerated = 2,
++            RecurringExpenseInstancesGenerated = 1,
++            EventsEmitted = 2,
++            Messages = [new FinanceSandboxBackendMessageViewModel { Severity = "warning", Code = "sandbox.progression.completed", Message = "The progression run completed and generated 12 finance record(s)." }],
++            Steps = [new FinanceSandboxProgressionRunStepViewModel { WindowStartUtc = new DateTime(2026, 4, 16, 10, 0, 0, DateTimeKind.Utc), WindowEndUtc = new DateTime(2026, 4, 16, 11, 0, 0, DateTimeKind.Utc), TransactionsGenerated = 6, InvoicesGenerated = 3, BillsGenerated = 2, RecurringExpenseInstancesGenerated = 1, EventsEmitted = 2 }]
++        };
++        var simulationResponseIndex = 0;
++        var sandboxService = new StubFinanceSandboxAdminService
++        {
++            OnGetSimulationControlsAsync = (_, _) =>
++            {
++                simulationResponseIndex++;
++
++                return Task.FromResult<FinanceSandboxSimulationControlsViewModel?>(simulationResponseIndex switch
++                {
++                    1 => new FinanceSandboxSimulationControlsViewModel
++                    {
++                        ClockMode = "Simulated clock enabled",
++                        ReferenceUtc = new DateTime(2026, 4, 16, 10, 0, 0, DateTimeKind.Utc),
++                        CheckpointLabel = "Ready",
++                        Observation = "Awaiting run"
++                    },
++                    2 => new FinanceSandboxSimulationControlsViewModel
++                    {
++                        ClockMode = "Simulated clock enabled",
++                        ReferenceUtc = new DateTime(2026, 4, 16, 10, 30, 0, DateTimeKind.Utc),
++                        CheckpointLabel = "Progression run is in progress.",
++                        Observation = "Backend status is still refreshing.",
++                        CurrentRun = runningRun,
++                        RunHistory = []
++                    },
++                    _ => new FinanceSandboxSimulationControlsViewModel
++                    {
++                        ClockMode = "Simulated clock enabled",
++                        ReferenceUtc = new DateTime(2026, 4, 16, 11, 0, 0, DateTimeKind.Utc),
++                        CheckpointLabel = "Latest run completed 24h with 1 step.",
++                        Observation = "The progression run completed and generated 12 finance record(s).",
++                        CurrentRun = completedRun,
++                        RunHistory = [completedRun]
++                    }
++                });
++            },
++            OnStartProgressionRunAsync = (_, _) => Task.FromResult(runningRun)
++        };
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId)
++            .Add(x => x.SimulationPollingIntervalMilliseconds, 50));
++
++        cut.WaitForAssertion(() => Assert.Contains("Start progression run", cut.Markup));
++        cut.Find("#progression-run-submit").Click();
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Progression run started for 24 hour(s). Status updates will refresh automatically.", cut.Markup);
++            Assert.Contains("Status refresh is active while the latest progression run is still in progress.", cut.Markup);
++            Assert.Contains("sandbox.progression.running", cut.Markup);
++        });
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("sandbox.progression.completed", cut.Markup);
++            Assert.Contains("generated 12 finance record(s)", cut.Markup);
++            Assert.Contains(">12<", cut.Markup);
++            Assert.DoesNotContain("Status refresh is active while the latest progression run is still in progress.", cut.Markup);
++        });
++
++        Assert.Equal(1, sandboxService.StartProgressionRunCalls);
++        Assert.True(sandboxService.SimulationControlsCalls >= 3);
++    }
++
+     [Fact]
+     public void Sandbox_admin_page_renders_backend_run_history_from_simulation_controls()
+     {
+END_OF_PATCH

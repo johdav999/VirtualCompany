@@ -1,0 +1,126 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -237,7 +237,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && x.TransactionUtc <= asOfUtc)
+-            .Select(x => new TransactionBalanceRow(x.AccountId, x.Amount))
++            .Select(x => new TransactionBalanceRow(x.AccountId, x.TransactionUtc, x.Amount))
+             .ToListAsync(cancellationToken);
+ 
+-        var transactionTotalsByAccount = transactions
++        var transactionsByAccount = transactions
+             .GroupBy(x => x.AccountId)
+-            .ToDictionary(x => x.Key, x => x.Sum(row => row.Amount));
++            .ToDictionary(x => x.Key, x => x.ToList());
+ 
+         return accounts
+             .Select(account =>
+             {
++                var accountTransactions = transactionsByAccount.GetValueOrDefault(account.Id) ?? [];
+                 if (latestBalanceByAccount.TryGetValue(account.Id, out var balance))
+                 {
++                    var postedSinceSnapshot = accountTransactions
++                        .Where(transaction => transaction.TransactionUtc > balance.AsOfUtc)
++                        .Sum(transaction => transaction.Amount);
++
+                     return new FinanceAccountBalanceDto(
+                         account.Id,
+                         account.Code,
+                         account.Name,
+                         account.AccountType,
+-                        balance.Amount,
++                        balance.Amount + postedSinceSnapshot,
+                         balance.Currency,
+-                        balance.AsOfUtc);
++                        asOfUtc);
+                 }
+ 
+-                var postedAmount = transactionTotalsByAccount.GetValueOrDefault(account.Id);
++                var postedAmount = accountTransactions.Sum(transaction => transaction.Amount);
+                 return new FinanceAccountBalanceDto(
+                     account.Id,
+@@ -327,6 +337,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+ 
+     private sealed record TransactionBalanceRow(
+         Guid AccountId,
++        DateTime TransactionUtc,
+         decimal Amount);
+ 
+     private sealed record FinanceAmountRow(
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSummaryCalculationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSummaryCalculationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceSummaryCalculationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSummaryCalculationTests.cs
+@@ -39,6 +39,65 @@ public sealed class FinanceSummaryCalculationTests
+         Assert.Equal("USD", result.Currency);
+     }
+ 
++    [Fact]
++    public async Task Cash_balance_includes_transactions_after_latest_balance_snapshot()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var accountId = Guid.Parse("99999999-9999-9999-9999-999999999999");
++        var vendorId = Guid.Parse("88888888-8888-8888-8888-888888888888");
++
++        dbContext.Companies.Add(new Company(companyId, "Ledger Finance Company"));
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            accountId,
++            companyId,
++            "1000",
++            "Operating Cash",
++            "asset",
++            "USD",
++            0m,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.FinanceCounterparties.Add(new FinanceCounterparty(vendorId, companyId, "Vendor", "vendor", "vendor@example.com"));
++        dbContext.FinanceBalances.Add(new FinanceBalance(
++            Guid.Parse("77777777-7777-7777-7777-777777777777"),
++            companyId,
++            accountId,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++            1000m,
++            "USD"));
++        dbContext.FinanceTransactions.AddRange(
++            new FinanceTransaction(
++                Guid.Parse("66666666-6666-6666-6666-666666666666"),
++                companyId,
++                accountId,
++                vendorId,
++                null,
++                null,
++                new DateTime(2026, 1, 5, 0, 0, 0, DateTimeKind.Utc),
++                "customer_payment",
++                500m,
++                "USD",
++                "Customer receipt",
++                "LEDGER-001"),
++            new FinanceTransaction(
++                Guid.Parse("55555555-5555-5555-5555-555555555555"),
++                companyId,
++                accountId,
++                vendorId,
++                null,
++                null,
++                new DateTime(2026, 1, 8, 0, 0, 0, DateTimeKind.Utc),
++                "office_supplies",
++                -200m,
++                "USD",
++                "Office supplies",
++                "LEDGER-002"));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceReadService(dbContext);
++        var result = await service.GetCashBalanceAsync(new GetFinanceCashBalanceQuery(companyId, new DateTime(2026, 1, 10, 0, 0, 0, DateTimeKind.Utc)), CancellationToken.None);
++
++        Assert.Equal(1300m, result.Amount);
++    }
++
+     [Fact]
+     public async Task Monthly_profit_and_loss_returns_positive_and_negative_net_income_months()
+     {
+END_OF_PATCH

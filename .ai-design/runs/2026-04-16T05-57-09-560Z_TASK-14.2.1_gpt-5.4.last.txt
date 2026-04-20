@@ -1,0 +1,579 @@
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index 8a2e0ac..b8b8ee9 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -170,6 +170,7 @@ static async Task EnsureDatabaseReadyAsync(IServiceProvider services)
+                     [company_id] uniqueidentifier NOT NULL,
+                     [agent_id] uniqueidentifier NOT NULL,
+                     [tool_name] nvarchar(100) NOT NULL,
++                    [tool_version] nvarchar(32) NOT NULL CONSTRAINT [DF_tool_executions_tool_version] DEFAULT ('1.0.0'),
+                     [task_id] uniqueidentifier NULL,
+                     [workflow_instance_id] uniqueidentifier NULL,
+                     [correlation_id] nvarchar(128) NULL,
+@@ -180,6 +181,7 @@ static async Task EnsureDatabaseReadyAsync(IServiceProvider services)
+                     [request_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_executions_request_json] DEFAULT (NCHAR(123) + NCHAR(125)),
+                     [policy_decision_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_executions_policy_decision_json] DEFAULT (NCHAR(123) + NCHAR(125)),
+                     [response_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_executions_response_json] DEFAULT (NCHAR(123) + NCHAR(125)),
++                    [denial_reason] nvarchar(512) NULL,
+                     [started_at] datetime2 NOT NULL,
+                     [completed_at] datetime2 NULL,
+                     [created_at] datetime2 NOT NULL,
+diff --git a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+index 3c7d3a1..1a4d5ed 100644
+--- a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+@@ -154,7 +154,8 @@ public sealed record ToolExecutionRequest(
+     Guid? TaskId = null,
+     Guid? WorkflowInstanceId = null,
+     string? CorrelationId = null,
+-    Guid ExecutionId = default);
++    Guid ExecutionId = default,
++    string? ToolVersion = null);
+ 
+ public sealed record ToolExecutionResult(
+     bool Success,
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+index 10f0b9d..3115565 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -7,7 +7,9 @@ namespace VirtualCompany.Domain.Entities;
+ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+ {
+     private const int ToolNameMaxLength = 100;
++    private const int ToolVersionMaxLength = 32;
+     private const int ScopeMaxLength = 100;
++    private const int DenialReasonMaxLength = 512;
+ 
+     private ToolExecutionAttempt()
+     {
+@@ -27,7 +29,8 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+         Guid? workflowInstanceId = null,
+         string? correlationId = null,
+         DateTime? startedAtUtc = null,
+-        DateTime? completedAtUtc = null)
++        DateTime? completedAtUtc = null,
++        string? toolVersion = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -52,6 +55,7 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+         CompanyId = companyId;
+         AgentId = agentId;
+         ToolName = NormalizeRequired(toolName, nameof(toolName), ToolNameMaxLength);
++        ToolVersion = NormalizeOptional(toolVersion, nameof(toolVersion), ToolVersionMaxLength) ?? "1.0.0";
+         ActionType = actionType;
+         Scope = NormalizeOptional(scope, nameof(scope), ScopeMaxLength);
+         TaskId = taskId;
+@@ -75,6 +79,7 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+     public Guid CompanyId { get; private set; }
+     public Guid AgentId { get; private set; }
+     public string ToolName { get; private set; } = null!;
++    public string ToolVersion { get; private set; } = "1.0.0";
+     public ToolActionType ActionType { get; private set; }
+     public string? Scope { get; private set; }
+     public Guid? TaskId { get; private set; }
+@@ -87,11 +92,12 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+     public Dictionary<string, JsonNode?> RequestPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> PolicyDecision { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> ResultPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public string? DenialReason { get; private set; }
+     public DateTime StartedUtc { get; private set; }
+     public DateTime? CompletedUtc { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public DateTime? ExecutedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
+-    public void MarkDenied(IDictionary<string, JsonNode?>? policyDecision, IDictionary<string, JsonNode?>? resultPayload = null, DateTime? completedAtUtc = null)
++    public void MarkDenied(IDictionary<string, JsonNode?>? policyDecision, IDictionary<string, JsonNode?>? resultPayload = null, DateTime? completedAtUtc = null, string? denialReason = null)
+     {
+         Status = ToolExecutionStatus.Denied;
+         PolicyDecision = CloneNodes(policyDecision);
+         ResultPayload = CloneNodes(resultPayload);
++        DenialReason = NormalizeOptional(denialReason, nameof(denialReason), DenialReasonMaxLength);
+         ApprovalRequestId = null;
+         CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
+         UpdatedUtc = CompletedUtc.Value;
+@@ -112,6 +118,7 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+         ApprovalRequestId = approvalRequestId;
+         PolicyDecision = CloneNodes(policyDecision);
+         ResultPayload = CloneNodes(resultPayload);
++        DenialReason = null;
+         CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
+         UpdatedUtc = CompletedUtc.Value;
+     }
+@@ -126,6 +133,7 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+         Status = ToolExecutionStatus.Executed;
+         PolicyDecision = CloneNodes(policyDecision);
+         ResultPayload = CloneNodes(resultPayload);
++        DenialReason = null;
+         CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
+         ExecutedUtc = CompletedUtc;
+         UpdatedUtc = ExecutedUtc.Value;
+diff --git a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+index 5da24cc..31e9b5d 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+@@ -46,7 +46,8 @@ public sealed class NoOpCompanyToolExecutor : ICompanyToolExecutor
+             request.Scope,
+             request.TaskId,
+             request.WorkflowInstanceId,
+-            request.CorrelationId);
++            request.CorrelationId,
++            request.ToolVersion ?? registration.Version);
+ 
+         var response = await _internalToolContract.ExecuteAsync(
+             new InternalToolExecutionRequest(request.ToolName, context, request.RequestPayload),
+@@ -72,6 +73,7 @@ public sealed class NoOpCompanyToolExecutor : ICompanyToolExecutor
+         var metadata = CloneNodes(response.Metadata);
+         metadata["contractSchemaVersion"] = JsonValue.Create(InternalToolExecutionResponse.SchemaVersion);
+         metadata["executionId"] = JsonValue.Create(executionId);
++        metadata["toolVersion"] = JsonValue.Create(registration.Version);
+ 
+         return response.Success
+             ? ToolExecutionResult.Succeeded(request.ToolName, request.ActionType, payload, metadata)
+@@ -156,46 +158,6 @@ public sealed class NoOpCompanyToolExecutor : ICompanyToolExecutor
+         return ToolExecutionResult.Failed(request.ToolName, request.ActionType, ToolExecutionStatus.Denied.ToStorageValue(), errorCode, userSafeSummary, payload, metadata);
+     }
+ 
+-    private static ToolExecutionResult CreateSchemaDeniedResult(
+-        ToolExecutionRequest request,
+-        Guid executionId,
+-        string errorCode,
+-        string userSafeSummary,
+-        IReadOnlyList<string> schemaErrors,
+-        Dictionary<string, JsonNode?>? responsePayload = null)
+-    {
+-        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-        {
+-            ["schemaVersion"] = JsonValue.Create(ToolExecutionResult.SchemaVersion),
+-            ["status"] = JsonValue.Create(ToolExecutionStatus.Denied.ToStorageValue()),
+-            ["success"] = JsonValue.Create(false),
+-            ["toolName"] = JsonValue.Create(request.ToolName),
+-            ["actionType"] = JsonValue.Create(request.ActionType.ToStorageValue()),
+-            ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
+-            ["userSafeSummary"] = JsonValue.Create(userSafeSummary),
+-            ["executionId"] = JsonValue.Create(executionId),
+-            ["schemaErrors"] = new JsonArray(schemaErrors.Select(JsonValue.Create).ToArray<JsonNode?>())
+-        };
+-
+-        if (responsePayload is not null)
+-        {
+-            payload["responsePayload"] = new JsonObject(CloneNodes(responsePayload)
+-                .Select(pair => KeyValuePair.Create(pair.Key, pair.Value))
+-                .ToArray());
+-        }
+-
+-        var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-        {
+-            ["executionBoundary"] = JsonValue.Create("policy_enforced_tool_executor"),
+-            ["registryDecision"] = JsonValue.Create("deny"),
+-            ["registryReason"] = JsonValue.Create(errorCode),
+-            ["modelOutputTrusted"] = JsonValue.Create(false),
+-            ["executionId"] = JsonValue.Create(executionId)
+-        };
+-
+-        return ToolExecutionResult.Failed(request.ToolName, request.ActionType, ToolExecutionStatus.Denied.ToStorageValue(), errorCode, userSafeSummary, payload, metadata);
+-    }
+-
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
+         nodes is null || nodes.Count == 0
+             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+@@ -263,41 +225,4 @@ public sealed class NoOpInternalCompanyToolContract : IInternalCompanyToolContra
+ 
+         return data.Count > 0;
+     }
+-
+-    private static bool TryCreateFinanceToolData(string toolName, out Dictionary<string, JsonNode?> data)
+-    {
+-        data = toolName switch
+-        {
+-            "get_cash_balance" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-            {
+-                ["cashBalance"] = new JsonObject
+-                {
+-                    ["amount"] = JsonValue.Create(0m),
+-                    ["currency"] = JsonValue.Create("USD"),
+-                    ["accounts"] = new JsonArray()
+-                }
+-            },
+-            "list_transactions" or "list_uncategorized_transactions" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-            {
+-                ["transactions"] = new JsonArray()
+-            },
+-            "list_invoices_awaiting_approval" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-            {
+-                ["invoices"] = new JsonArray()
+-            },
+-            "get_profit_and_loss_summary" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-            {
+-                ["profitAndLossSummary"] = new JsonObject
+-                {
+-                    ["revenue"] = JsonValue.Create(0m),
+-                    ["expenses"] = JsonValue.Create(0m),
+-                    ["netResult"] = JsonValue.Create(0m),
+-                    ["currency"] = JsonValue.Create("USD")
+-                }
+-            },
+-            _ => []
+-        };
+-
+-        return data.Count > 0;
+-    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
+index 3ee972e..762a7e6 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
+@@ -1,5 +1,4 @@
+ using System.Text.Json.Nodes;
+-using System.Text.Json.Nodes;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Domain.Enums;
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+index 2f2f608..ea587b5 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -17,6 +17,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+     private readonly IAgentRuntimeProfileResolver _agentRuntimeProfileResolver;
+     private readonly IPolicyGuardrailEngine _policyGuardrailEngine;
+     private readonly ICompanyToolExecutor _companyToolExecutor;
++    private readonly ICompanyToolRegistry _companyToolRegistry;
+     private readonly IAuditEventWriter _auditEventWriter;
+     private readonly ICorrelationContextAccessor _correlationContextAccessor;
+ 
+@@ -27,6 +28,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         IAgentRuntimeProfileResolver agentRuntimeProfileResolver,
+         IPolicyGuardrailEngine policyGuardrailEngine,
+         ICompanyToolExecutor companyToolExecutor,
++        ICompanyToolRegistry companyToolRegistry,
+         IAuditEventWriter auditEventWriter,
+         ICorrelationContextAccessor correlationContextAccessor)
+     {
+@@ -35,6 +37,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
+         _policyGuardrailEngine = policyGuardrailEngine;
+         _companyToolExecutor = companyToolExecutor;
++        _companyToolRegistry = companyToolRegistry;
+         _auditEventWriter = auditEventWriter;
+         _correlationContextAccessor = correlationContextAccessor;
+     }
+@@ -48,6 +51,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         var executionId = Guid.NewGuid();
+         var actionType = ToolActionTypeValues.Parse(command.ActionType);
+         var actionTypeValue = actionType.ToStorageValue();
++        var toolVersion = ResolveToolVersion(command.ToolName);
+ 
+         var attempt = new ToolExecutionAttempt(
+             executionId,
+@@ -61,7 +65,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             command.TaskId,
+             command.WorkflowInstanceId,
+             correlationId,
+-            startedAtUtc);
++            startedAtUtc,
++            toolVersion: toolVersion);
+ 
+         var runtimeProfile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, agentId, cancellationToken);
+         var policyRequest = new PolicyEvaluationRequest(
+@@ -107,7 +112,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 "policy_denied",
+                 callerMessage,
+                 metadata: BuildExecutionResultMetadata(command, decision, correlationId, executionId, userFacingMessage: callerMessage));
+-            attempt.MarkDenied(serializedDecision, structuredResult.ToStructuredPayload(), DateTime.UtcNow);
++            attempt.MarkDenied(serializedDecision, structuredResult.ToStructuredPayload(), DateTime.UtcNow, callerMessage);
+ 
+             await _auditEventWriter.WriteAsync(
+                 new AuditEventWriteRequest(
+@@ -190,7 +195,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 command.TaskId,
+                 command.WorkflowInstanceId,
+                 correlationId,
+-                executionId),
++                executionId,
++                toolVersion),
+             cancellationToken);
+             result = NormalizeStructuredResult(result, command);
+ 
+@@ -198,7 +204,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             {
+-                attempt.MarkDenied(serializedDecision, result.ToStructuredPayload(), DateTime.UtcNow);
++                attempt.MarkDenied(serializedDecision, result.ToStructuredPayload(), DateTime.UtcNow, result.ErrorMessage ?? result.ErrorCode);
+ 
+                 await _auditEventWriter.WriteAsync(
+                 new AuditEventWriteRequest(
+@@ -568,6 +574,11 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             : _correlationContextAccessor.CorrelationId!;
+     }
++
++    private string ResolveToolVersion(string toolName) =>
++        _companyToolRegistry.TryGetTool(toolName, out var registration) &&
++        !string.IsNullOrWhiteSpace(registration.Version)
++            ? registration.Version : "unknown";
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index b8e9712..de04b64 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -999,6 +999,7 @@ internal sealed class ToolExecutionAttemptConfiguration : IEntityTypeConfigurati
+         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+         builder.Property(x => x.AgentId).HasColumnName("agent_id").IsRequired();
+         builder.Property(x => x.ToolName).HasColumnName("tool_name").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.ToolVersion).HasColumnName("tool_version").HasMaxLength(32).HasDefaultValue("1.0.0").IsRequired();
+         builder.Property(x => x.TaskId).HasColumnName("task_id");
+         builder.Property(x => x.WorkflowInstanceId).HasColumnName("workflow_instance_id");
+         builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
+@@ -1027,6 +1028,7 @@ internal sealed class ToolExecutionAttemptConfiguration : IEntityTypeConfigurati
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
++        builder.Property(x => x.DenialReason).HasColumnName("denial_reason").HasMaxLength(512);
+         builder.Property(x => x.StartedUtc).HasColumnName("started_at").IsRequired();
+         builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+@@ -1758,7 +1760,7 @@ internal sealed class FinancePolicyConfigurationConfiguration : IEntityTypeConfi
+     }
+ }
+ 
+-internal sealed class FinanceAccountConfiguration : IEntityTypeConfiguration<FinanceAccount>
++internal sealed class FinanceAccountConfigurationDuplicate : IEntityTypeConfiguration<FinanceAccount>
+ {
+     public void Configure(EntityTypeBuilder<FinanceAccount> builder)
+     {
+@@ -1791,7 +1793,7 @@ internal sealed class FinanceAccountConfiguration : IEntityTypeConfiguration<Fin
+     }
+ }
+ 
+-internal sealed class FinanceCounterpartyConfiguration : IEntityTypeConfiguration<FinanceCounterparty>
++internal sealed class FinanceCounterpartyConfigurationDuplicate : IEntityTypeConfiguration<FinanceCounterparty>
+ {
+     public void Configure(EntityTypeBuilder<FinanceCounterparty> builder)
+     {
+@@ -1817,7 +1819,7 @@ internal sealed class FinanceCounterpartyConfiguration : IEntityTypeConfiguratio
+     }
+ }
+ 
+-internal sealed class FinanceInvoiceConfiguration : IEntityTypeConfiguration<FinanceInvoice>
++internal sealed class FinanceInvoiceConfigurationDuplicate : IEntityTypeConfiguration<FinanceInvoice>
+ {
+     public void Configure(EntityTypeBuilder<FinanceInvoice> builder)
+     {
+@@ -1852,7 +1854,7 @@ internal sealed class FinanceInvoiceConfiguration : IEntityTypeConfiguration<Fin
+     }
+ }
+ 
+-internal sealed class FinanceTransactionConfiguration : IEntityTypeConfiguration<FinanceTransaction>
++internal sealed class FinanceTransactionConfigurationDuplicate : IEntityTypeConfiguration<FinanceTransaction>
+ {
+     public void Configure(EntityTypeBuilder<FinanceTransaction> builder)
+     {
+@@ -1885,7 +1887,7 @@ internal sealed class FinanceTransactionConfiguration : IEntityTypeConfiguratio
+     }
+ }
+ 
+-internal sealed class FinancePolicyConfigurationConfiguration : IEntityTypeConfiguration<FinancePolicyConfiguration>
++internal sealed class FinancePolicyConfigurationConfigurationDuplicate : IEntityTypeConfiguration<FinancePolicyConfiguration>
+ {
+     public void Configure(EntityTypeBuilder<FinancePolicyConfiguration> builder)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416140000_AddToolExecutionVersionAndDenialReason.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416140000_AddToolExecutionVersionAndDenialReason.cs
+new file mode 100644
+index 0000000..c7303b1
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416140000_AddToolExecutionVersionAndDenialReason.cs
+@@ -0,0 +1,35 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddToolExecutionVersionAndDenialReason : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "tool_version",
++                table: "tool_executions",
++                type: "nvarchar(32)",
++                maxLength: 32,
++                nullable: false,
++                defaultValue: "1.0.0");
++
++            migrationBuilder.AddColumn<string>(
++                name: "denial_reason",
++                table: "tool_executions",
++                type: "nvarchar(512)",
++                maxLength: 512,
++                nullable: true);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropColumn(
++                name: "tool_version",
++                table: "tool_executions");
++
++            migrationBuilder.DropColumn(
++                name: "denial_reason",
++                table: "tool_executions");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+index 6c2f218..4994b3a 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -72,6 +72,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
+         Assert.Equal(ToolExecutionStatus.Denied, attempt.Status);
+         Assert.Equal("wire_transfer", attempt.ToolName);
++        Assert.Equal("unknown", attempt.ToolVersion);
++        Assert.Equal(payload.Message, attempt.DenialReason);
+         Assert.Equal("deny", attempt.PolicyDecision["outcome"]!.GetValue<string>());
+         Assert.Equal(PolicyDecisionSchemaVersions.V1, attempt.PolicyDecision["schemaVersion"]!.GetValue<string>());
+         Assert.Equal(seed.CompanyId, attempt.PolicyDecision["tenant"]!["companyId"]!.GetValue<Guid>());
+@@ -560,6 +562,58 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+         Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
+ 
+         var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>();
+         Assert.NotNull(problem);
+         Assert.Contains("RequestPayload.endpointUrl", problem!.Errors.Keys);
+         Assert.Contains("RequestPayload.headers", problem.Errors.Keys);
+     }
++
++    [Fact]
++    public async Task Finance_read_tool_executes_through_policy_executor_contract_and_persists_versioned_record()
++    {
++        _factory.ToolExecutor.Reset();
++        var seed = await SeedAgentAsync(
++            autonomyLevel: AgentAutonomyLevel.Level2,
++            tools: Payload(
++                ("allowed", new JsonArray(JsonValue.Create("get_cash_balance"))),
++                ("actions", new JsonArray(JsonValue.Create("read")))),
++            scopes: Payload(("read", new JsonArray(JsonValue.Create("finance")))),
++            thresholds: Payload(("approval", new JsonObject { ["cashReadUsd"] = 100000 })),
++            escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))));
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
++        {
++            toolName = "get_cash_balance",
++            actionType = "read",
++            scope = "finance",
++            requestPayload = new { asOfUtc = "2026-04-16T00:00:00Z" }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("executed", payload!.Status);
++        Assert.Equal("allow", payload.PolicyDecision.Outcome);
++        Assert.Equal(1, _factory.ToolExecutor.ExecutionCount);
++
++        var dispatchedRequest = Assert.Single(_factory.ToolExecutor.Requests);
++        Assert.Equal("get_cash_balance", dispatchedRequest.ToolName);
++        Assert.Equal("finance", dispatchedRequest.Scope);
++        Assert.Equal(ToolActionType.Read, dispatchedRequest.Context.ActionType);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
++
++        Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);
++        Assert.Equal("get_cash_balance", attempt.ToolName);
++        Assert.Equal("1.0.0", attempt.ToolVersion);
++        Assert.Equal("2026-04-16T00:00:00Z", attempt.RequestPayload["asOfUtc"]!.GetValue<string>());
++        Assert.Equal("allow", attempt.PolicyDecision["outcome"]!.GetValue<string>());
++        Assert.NotNull(attempt.ResultPayload["data"]!["cashBalance"]);
++        Assert.NotNull(attempt.CompletedUtc);
++        Assert.NotNull(attempt.ExecutedUtc);
++        Assert.Null(attempt.DenialReason);
++    }
+ 
+     private HttpClient CreateAuthenticatedClient()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index f93168d..2635c7c 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -157,6 +157,13 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+         public Task<InternalToolExecutionResponse> ExecuteAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken)
+         {
+             _requests.Enqueue(request);
++            if (TryCreateFinanceToolData(request.ToolName, out var financeData))
++            {
++                return Task.FromResult(InternalToolExecutionResponse.Succeeded(
++                    "Test finance tool execution completed.",
++                    financeData,
++                    BuildMetadata(request)));
++            }
+ 
+             var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+@@ -171,15 +178,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+                 ["executed"] = JsonValue.Create(true)
+             };
+ 
+-            var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-            {
+-                ["contractName"] = JsonValue.Create(nameof(TestCompanyToolExecutor)),
+-                ["companyId"] = JsonValue.Create(request.CompanyId),
+-                ["executionId"] = JsonValue.Create(request.ExecutionId)
+-            };
+-
+-            return Task.FromResult(InternalToolExecutionResponse.Succeeded("Test tool execution completed.", payload, metadata));
++            return Task.FromResult(InternalToolExecutionResponse.Succeeded("Test tool execution completed.", payload, BuildMetadata(request)));
+         }
++
++        private static Dictionary<string, JsonNode?> BuildMetadata(InternalToolExecutionRequest request) =>
++            new(StringComparer.OrdinalIgnoreCase)
++            {
++                ["contractName"] = JsonValue.Create(nameof(TestCompanyToolExecutor)),
++                ["companyId"] = JsonValue.Create(request.CompanyId),
++                ["executionId"] = JsonValue.Create(request.ExecutionId)
++            };
++
++        private static bool TryCreateFinanceToolData(string toolName, out Dictionary<string, JsonNode?> data)
++        {
++            data = toolName switch
++            {
++                "get_cash_balance" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["cashBalance"] = new JsonObject
++                    {
++                        ["amount"] = JsonValue.Create(1234.56m),
++                        ["currency"] = JsonValue.Create("USD"),
++                        ["accounts"] = new JsonArray()
++                    }
++                },
++                "list_transactions" or "list_uncategorized_transactions" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["transactions"] = new JsonArray()
++                },
++                "list_invoices_awaiting_approval" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["invoices"] = new JsonArray()
++                },
++                "get_profit_and_loss_summary" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["profitAndLossSummary"] = new JsonObject
++                    {
++                        ["revenue"] = JsonValue.Create(1000m),
++                        ["expenses"] = JsonValue.Create(750m),
++                        ["netResult"] = JsonValue.Create(250m),
++                        ["currency"] = JsonValue.Create("USD")
++                    }
++                },
++                _ => []
++            };
++
++            return data.Count > 0;
++        }
+     }
+ 
+     public sealed class TestCompanyDocumentStorage : ICompanyDocumentStorage
+END_OF_PATCH

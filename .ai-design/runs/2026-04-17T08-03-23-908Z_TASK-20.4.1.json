@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-20.4.1",
+  "promptPath": ".ai-design/prompts/TASK-20.4.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-17T08:03:23.908Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-17T08-03-23-908Z_TASK-20.4.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-17T08-03-23-908Z_TASK-20.4.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-17T08:13:13.200Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ert.Equal(FinanceEntryProgressStateContractValues.SeedingRequested, problem.ProgressState);\n+\n+        var snapshot = await _factory.ExecuteDbContextAsync(async dbContext =>\n+            await Task.FromResult(dbContext.BackgroundExecutions.Count(x =>\n+                x.CompanyId == seed.CompanyId &&\n+                x.ExecutionType == BackgroundExecutionType.FinanceSeed)));\n+\n+        Assert.Equal(1, snapshot);\n+        var telemetryEvent = Assert.Single(_factory.FinanceSeedTelemetry.Events\n+            .Where(x => x.EventName == FinanceSeedTelemetryEventNames.Requested && x.Context.CompanyId == seed.CompanyId));\n+        Assert.Equal(FinanceEntrySources.FallbackRead, telemetryEvent.Context.TriggerSource);\n+    }\n+\n     [Fact]\n     public async Task Finance_detail_endpoints_surface_route_drilldown_data_and_guard_linked_documents()\n     {\n@@ -521,6 +552,16 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb\n         public string? ApprovalStatus { get; set; }\n         public string? ApprovalAssigneeSummary { get; set; }\n         public decimal Confidence { get; set; }\n+        public bool RequiresHumanApproval { get; set; }\n+        public bool CanNavigateToWorkflow { get; set; }\n+        public bool CanNavigateToApproval { get; set; }\n+    }\n+\n+    private sealed class FinanceInitializationProblemResponse\n+    {\n+        public string Title { get; set; } = string.Empty;\n+        public string Detail { get; set; } = string.Empty;\n+        public string Code { get; set; } = string.Empty;\n+        public string Domain { get; set; } = string.Empty;\n         public bool CanNavigateToWorkflow { get; set; }\n         public bool CanNavigateToApproval { get; set; }\n+        public bool CanTriggerSeed { get; set; }\n+        public bool SeedRequested { get; set; }\n+        public bool SeedJobActive { get; set; }\n+        public string ProgressState { get; set; } = string.Empty;\n     }\n \n     private sealed class SeedAnomalyResponse\nEND_OF_PATCH\n",
+  "stderrTail": "ryProgressStateContractValues.SeedingRequested, problem.ProgressState);\n+\n+        var snapshot = await _factory.ExecuteDbContextAsync(async dbContext =>\n+            await Task.FromResult(dbContext.BackgroundExecutions.Count(x =>\n+                x.CompanyId == seed.CompanyId &&\n+                x.ExecutionType == BackgroundExecutionType.FinanceSeed)));\n+\n+        Assert.Equal(1, snapshot);\n+        var telemetryEvent = Assert.Single(_factory.FinanceSeedTelemetry.Events\n+            .Where(x => x.EventName == FinanceSeedTelemetryEventNames.Requested && x.Context.CompanyId == seed.CompanyId));\n+        Assert.Equal(FinanceEntrySources.FallbackRead, telemetryEvent.Context.TriggerSource);\n+    }\n+\n     [Fact]\n     public async Task Finance_detail_endpoints_surface_route_drilldown_data_and_guard_linked_documents()\n     {\n@@ -521,6 +552,16 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb\n         public string? ApprovalStatus { get; set; }\n         public string? ApprovalAssigneeSummary { get; set; }\n         public decimal Confidence { get; set; }\n+        public bool RequiresHumanApproval { get; set; }\n+        public bool CanNavigateToWorkflow { get; set; }\n+        public bool CanNavigateToApproval { get; set; }\n+    }\n+\n+    private sealed class FinanceInitializationProblemResponse\n+    {\n+        public string Title { get; set; } = string.Empty;\n+        public string Detail { get; set; } = string.Empty;\n+        public string Code { get; set; } = string.Empty;\n+        public string Domain { get; set; } = string.Empty;\n         public bool CanNavigateToWorkflow { get; set; }\n         public bool CanNavigateToApproval { get; set; }\n+        public bool CanTriggerSeed { get; set; }\n+        public bool SeedRequested { get; set; }\n+        public bool SeedJobActive { get; set; }\n+        public string ProgressState { get; set; } = string.Empty;\n     }\n \n     private sealed class SeedAnomalyResponse\nEND_OF_PATCH\ntokens used\n297,914\n",
+  "verbosityMode": "summary"
+}

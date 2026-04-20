@@ -72,11 +72,27 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<InsightAcknowledgment> InsightAcknowledgments => Set<InsightAcknowledgment>();
     public DbSet<DashboardDepartmentConfig> DashboardDepartmentConfigs => Set<DashboardDepartmentConfig>();
     public DbSet<DashboardWidgetConfig> DashboardWidgetConfigs => Set<DashboardWidgetConfig>();
+    public DbSet<FinanceAccount> FinanceAccounts => Set<FinanceAccount>();
+    public DbSet<FinanceTransaction> FinanceTransactions => Set<FinanceTransaction>();
+    public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();
+    public DbSet<FinanceCounterparty> FinanceCounterparties => Set<FinanceCounterparty>();
+    public DbSet<FinanceBill> FinanceBills => Set<FinanceBill>();
+    public DbSet<FinanceBalance> FinanceBalances => Set<FinanceBalance>();
+    public DbSet<FinancePolicyConfiguration> FinancePolicyConfigurations => Set<FinancePolicyConfiguration>();
+    public DbSet<FinanceSeedAnomaly> FinanceSeedAnomalies => Set<FinanceSeedAnomaly>();
+    public DbSet<FinanceSimulationStepLog> FinanceSimulationStepLogs => Set<FinanceSimulationStepLog>();
+    public DbSet<FinanceSeedBackfillRun> FinanceSeedBackfillRuns => Set<FinanceSeedBackfillRun>();
+    public DbSet<FinanceSeedBackfillAttempt> FinanceSeedBackfillAttempts => Set<FinanceSeedBackfillAttempt>();
+    public DbSet<CompanySimulationState> CompanySimulationStates => Set<CompanySimulationState>();
+    public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
+    public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
+    public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
 
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
+        ValidateCompanyOwnedMutations();
         var companiesToInvalidate = CaptureDashboardInvalidationCompanies();
         var result = await base.SaveChangesAsync(cancellationToken);
 
@@ -89,6 +105,24 @@ public sealed class VirtualCompanyDbContext : DbContext
         }
 
         return result;
+    }
+
+    private void ValidateCompanyOwnedMutations()
+    {
+        var currentCompanyId = CurrentCompanyId;
+        if (!currentCompanyId.HasValue)
+        {
+            return;
+        }
+
+        var invalidEntry = ChangeTracker.Entries<ICompanyOwnedEntity>()
+            .FirstOrDefault(entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted &&
+                entry.Entity.CompanyId != currentCompanyId.Value);
+
+        if (invalidEntry is not null)
+        {
+            throw new InvalidOperationException("Tenant-scoped records cannot be changed from a different company context.");
+        }
     }
 
     private IReadOnlyList<Guid> CaptureDashboardInvalidationCompanies() =>
@@ -113,7 +147,16 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is TenantBriefingDefault ||
                 entry.Entity is DashboardDepartmentConfig ||
                 entry.Entity is DashboardWidgetConfig ||
-                entry.Entity is Alert)
+                entry.Entity is Alert ||
+                entry.Entity is FinanceAccount ||
+                entry.Entity is FinanceTransaction ||
+                entry.Entity is FinanceInvoice ||
+                entry.Entity is FinanceBill ||
+                entry.Entity is FinanceBalance ||
+                entry.Entity is FinanceCounterparty ||
+                entry.Entity is FinancePolicyConfiguration ||
+                entry.Entity is FinanceSeedAnomaly ||
+                entry.Entity is FinanceSimulationStepLog)
             .Select(entry =>
             {
                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
@@ -257,5 +300,44 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<InsightAcknowledgment>()
             .HasQueryFilter(acknowledgment =>
                 CurrentCompanyId.HasValue && acknowledgment.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceAccount>()
+            .HasQueryFilter(account =>
+                CurrentCompanyId.HasValue && account.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceTransaction>()
+            .HasQueryFilter(transaction =>
+                CurrentCompanyId.HasValue && transaction.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceInvoice>()
+            .HasQueryFilter(invoice =>
+                CurrentCompanyId.HasValue && invoice.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceBill>()
+            .HasQueryFilter(bill =>
+                CurrentCompanyId.HasValue && bill.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceBalance>()
+            .HasQueryFilter(balance =>
+                CurrentCompanyId.HasValue && balance.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceCounterparty>()
+            .HasQueryFilter(counterparty =>
+                CurrentCompanyId.HasValue && counterparty.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinancePolicyConfiguration>()
+            .HasQueryFilter(policy =>
+                CurrentCompanyId.HasValue && policy.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceSeedAnomaly>()
+            .HasQueryFilter(anomaly =>
+                CurrentCompanyId.HasValue && anomaly.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceSimulationStepLog>()
+            .HasQueryFilter(log =>
+                CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanySimulationState>()
+            .HasQueryFilter(state =>
+                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanySimulationRunHistory>()
+            .HasQueryFilter(history =>
+                CurrentCompanyId.HasValue && history.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanySimulationRunTransition>()
+            .HasQueryFilter(transition =>
+                CurrentCompanyId.HasValue && transition.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanySimulationRunDayLog>()
+            .HasQueryFilter(log =>
+                CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
     }
 }

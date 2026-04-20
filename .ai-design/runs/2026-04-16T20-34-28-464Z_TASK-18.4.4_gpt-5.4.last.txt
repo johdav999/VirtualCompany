@@ -1,0 +1,802 @@
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 5cc40d0..cf16999 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -101,7 +101,7 @@
+ 
+         @if (dashboard.Finance is not null)
+         {
+-            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide" data-testid="executive-cockpit-finance-widget">
+                 <div class="cockpit-card__header">
+                     <div>
+                         <h3 class="h5 mb-1">Finance health</h3>
+@@ -112,12 +112,12 @@
+                 @WidgetStatus("finance")
+ 
+                 <div class="finance-summary-grid mt-3">
+-                    <article class="wizard-card finance-metric-card finance-metric-card--hero">
++                    <article class="wizard-card finance-metric-card finance-metric-card--hero" data-testid="executive-cockpit-cash-position">
+                         <span class="dashboard-kicker">Cash position</span>
+                         <div class="finance-metric-card__value">@dashboard.Finance.CashPosition.DisplayValue</div>
+-                        <div class="@SummaryKpiTrendClass(dashboard.Finance.CashPosition.TrendDirection)">
++                        <div class="@SummaryKpiTrendClass(dashboard.Finance.CashPosition.TrendDirection)" data-testid="executive-cockpit-cash-position-trend">
+                             <span aria-hidden="true">@TrendGlyph(dashboard.Finance.CashPosition.TrendDirection)</span>
+                             <span>@dashboard.Finance.CashPosition.TrendDisplay</span>
+                         </div>
+-                        <p class="text-body-secondary mb-0">Last refreshed @dashboard.Finance.CashPosition.LastRefreshedUtc.ToLocalTime():g</p>
++                        <p class="text-body-secondary mb-0" data-testid="executive-cockpit-cash-position-last-refreshed">Last refreshed @dashboard.Finance.CashPosition.LastRefreshedUtc.ToLocalTime():g</p>
+                         <a class="mt-3" href="@dashboard.Finance.CashPosition.Route">Open cash detail</a>
+                         @if (FinanceActions("view_cash_position").Any())
+                         {
+@@ -127,6 +127,7 @@
+                                     @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && HasDrillRoute(action.Route))
+                                     {
+                                         <a class="btn btn-outline-primary" href="@action.Route">@action.Label</a>
++                                        
+                                     }
+                                     else
+                                     {
+@@ -134,17 +135,18 @@
+                                                 type="button"
+                                                 @onclick="() => ExecuteFinanceActionAsync(action)"
+                                                 disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
++                                        
+                                     }
+                                 }
+                             </div>
+                         }
+                     </article>
+ 
+-                    <article class="wizard-card finance-metric-card">
++                    <article class="wizard-card finance-metric-card" data-testid="executive-cockpit-runway">
+                         <span class="dashboard-kicker">Runway</span>
+                         <div class="finance-metric-card__value finance-metric-card__value--compact">@dashboard.Finance.Runway.DisplayValue</div>
+-                        <div class="finance-risk-pill finance-risk-pill--@NormalizeCssToken(dashboard.Finance.Runway.StatusLabel)">@dashboard.Finance.Runway.StatusLabel</div>
+-                        <a class="mt-3" href="@dashboard.Finance.Runway.Route">Review runway detail</a>
++                        <div class="finance-risk-pill finance-risk-pill--@NormalizeCssToken(dashboard.Finance.Runway.StatusLabel)" data-testid="executive-cockpit-runway-status">@dashboard.Finance.Runway.StatusLabel</div>
++                        <a class="mt-3" href="@dashboard.Finance.Runway.Route" data-testid="executive-cockpit-runway-detail-link">Review runway detail</a>
+                         @if (FinanceActions("inspect_anomaly", "open_finance_summary").Any())
+                         {
+                             <div class="dashboard-actions mt-3">
+@@ -152,13 +154,17 @@
+                                 {
+                                     @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && HasDrillRoute(action.Route))
+                                     {
+-                                        <a class="btn btn-outline-primary" href="@action.Route">@action.Label</a>
++                                        <a class="btn btn-outline-primary"
++                                           href="@action.Route"
++                                           data-testid="@($"finance-action-{NormalizeCssToken(action.Key)}")">@action.Label</a>
+                                     }
+                                     else
+                                     {
+                                         <button class="btn btn-outline-primary"
+                                                 type="button"
++                                                data-testid="@($"finance-action-{NormalizeCssToken(action.Key)}")"
+                                                 @onclick="() => ExecuteFinanceActionAsync(action)"
+                                                 disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
++                                        
+                                     }
+                                 }
+                             </div>
+@@ -167,7 +173,7 @@
+ 
+                 @if (dashboard.Finance.LowCashAlert is not null)
+                 {
+-                    <section class="wizard-card mt-3">
++                    <section class="wizard-card mt-3" data-testid="executive-cockpit-low-cash-alert">
+                         <div class="cockpit-card__header">
+                             <div>
+                                 <span class="badge text-bg-warning">@dashboard.Finance.LowCashAlert.Severity</span>
+@@ -175,7 +181,7 @@
+                                 <p class="mb-0">@dashboard.Finance.LowCashAlert.Summary</p>
+                             </div>
+-                            <a class="btn btn-outline-secondary btn-sm" href="@dashboard.Finance.LowCashAlert.Route">Open detail</a>
++                            <a class="btn btn-outline-secondary btn-sm" href="@dashboard.Finance.LowCashAlert.Route" data-testid="executive-cockpit-low-cash-alert-open-detail">Open detail</a>
+                         </div>
+                         @if (dashboard.Finance.LowCashAlert.ContributingFactors.Count > 0)
+                         {
+@@ -220,7 +226,7 @@
+                 {
+                     <div class="dashboard-actions mt-3">
+                         @foreach (var link in dashboard.Finance.DeepLinks)
+                         {
+-                            <a class="btn btn-outline-secondary" href="@link.Route">@link.Label</a>
++                            <a class="btn btn-outline-secondary" href="@link.Route" data-testid="@($"finance-deep-link-{NormalizeCssToken(link.Key)}")">@link.Label</a>
+                         }
+                     </div>
+                 }
+@@ -129,14 +129,16 @@
+                                 {
+                                     @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && HasDrillRoute(action.Route))
+                                     {
+-                                        <a class="btn btn-outline-primary" href="@action.Route">@action.Label</a>
++                                        <a class="btn btn-outline-primary" href="@action.Route" data-testid="@($"finance-action-{NormalizeCssToken(action.Key)}")">@action.Label</a>
+                                     }
+                                     else
+                                     {
+                                         <button class="btn btn-outline-primary"
+                                                 type="button"
++                                                data-testid="@($"finance-action-{NormalizeCssToken(action.Key)}")"
+                                                 @onclick="() => ExecuteFinanceActionAsync(action)"
+                                                 disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
++                                        
+                                     }
+                                 }
+                             </div>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor b/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor
+index 3f6cb1c..ebac73b 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor
+@@ -20,7 +20,7 @@
+     }
+     else if (detail is not null)
+     {
+-        <section class="finance-detail-grid">
++        <section class="finance-detail-grid" data-testid="low-cash-alert-detail">
+             <article class="wizard-card finance-metric-card finance-metric-card--hero">
+                 <span class="dashboard-kicker">@detail.Severity</span>
+                 <h2 class="h4 mt-2 mb-2">Low-cash summary</h2>
+@@ -28,7 +28,7 @@
+                 <small class="text-body-secondary">Status: @detail.Status</small>
+             </article>
+ 
+-            <article class="wizard-card finance-state-card">
++            <article class="wizard-card finance-state-card" data-testid="low-cash-alert-actions">
+                 <span class="dashboard-kicker">Actions</span>
+                 @if (!string.IsNullOrWhiteSpace(financeActionStatusMessage))
+                 {
+@@ -42,16 +42,18 @@
+                     @foreach (var action in detail.AvailableActions)
+                     {
+                         @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(action.Route))
+                         {
+-                            <a class="btn btn-outline-primary" href="@action.Route">@action.Label</a>
++                            <a class="btn btn-outline-primary" href="@action.Route" data-testid="@($"finance-alert-action-{action.Key.Trim().ToLowerInvariant().Replace("_", "-")}")">@action.Label</a>
+                         }
+                         else
+                         {
+-                            <button class="btn btn-outline-primary" type="button" @onclick="() => ExecuteFinanceActionAsync(action)" disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
++                            <button class="btn btn-outline-primary" type="button" data-testid="@($"finance-alert-action-{action.Key.Trim().ToLowerInvariant().Replace("_", "-")}")" @onclick="() => ExecuteFinanceActionAsync(action)" disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
+                         }
+                     }
+                 </div>
+             </article>
+ 
+-            <article class="wizard-card finance-state-card">
++            <article class="wizard-card finance-state-card" data-testid="low-cash-alert-links">
+                 <span class="dashboard-kicker">Links</span>
+                 <h2 class="h5 mt-2">Finance drill-downs</h2>
+                 <p class="text-body-secondary mb-0">Keep the active company context while moving into the workspace, summary, anomaly workbench, or cash detail.</p>
+                 <div class="dashboard-actions mt-3">
+                     @foreach (var link in detail.Links)
+                     {
+-                        <a class="btn btn-outline-secondary" href="@link.Route">@link.Label</a>
++                        <a class="btn btn-outline-secondary" href="@link.Route" data-testid="@($"finance-alert-link-{link.Key.Trim().ToLowerInvariant().Replace("_", "-")}")">@link.Label</a>
+                     }
+                 </div>
+             </article>
+         </section>
+ 
+-        <section class="wizard-card finance-anomaly-section mt-4">
++        <section class="wizard-card finance-anomaly-section mt-4" data-testid="low-cash-alert-factors">
+             <h2 class="h5 mb-2">Contributing factors</h2>
+             @if (detail.ContributingFactors.Count == 0)
+             {
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
+index 8b63c17..c4568d5 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
+@@ -25,8 +25,11 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+         Assert.NotNull(dashboard);
+         Assert.NotNull(dashboard!.Finance);
+         Assert.Equal("critical", dashboard.Finance!.Runway.Status, ignoreCase: true);
++        Assert.Equal("Critical", dashboard.Finance.Runway.StatusLabel);
++        Assert.False(string.IsNullOrWhiteSpace(dashboard.Finance.Runway.DisplayValue));
+         Assert.Equal("USD 400.00", dashboard.Finance.CashPosition.DisplayValue);
++        Assert.False(string.IsNullOrWhiteSpace(dashboard.Finance.CashPosition.TrendDisplay));
++        Assert.NotEqual(default, dashboard.Finance.CashPosition.LastRefreshedUtc);
+         Assert.NotNull(dashboard.Finance.LowCashAlert);
++        Assert.False(string.IsNullOrWhiteSpace(dashboard.Finance.LowCashAlert!.Summary));
+         Assert.NotEmpty(dashboard.Finance.LowCashAlert!.ContributingFactors);
+         Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "finance_workspace" && x.Route.Contains("/finance?companyId=", StringComparison.OrdinalIgnoreCase));
+         Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "anomaly_workbench" && x.Route.Contains("/finance/anomalies", StringComparison.OrdinalIgnoreCase));
+@@ -72,6 +75,34 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Finance_action_orchestration_endpoints_allow_authorized_owner_and_reject_unauthorized_employee()
++    {
++        var seed = await SeedFinanceCockpitCompanyAsync();
++
++        using var ownerClient = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, seed.OwnerDisplayName);
++        var dashboardResponse = await ownerClient.GetAsync($"/api/companies/{seed.CompanyId}/executive-cockpit");
++        Assert.Equal(HttpStatusCode.OK, dashboardResponse.StatusCode);
++
++        var dashboard = await dashboardResponse.Content.ReadFromJsonAsync<FinanceCockpitDashboardResponse>();
++        Assert.NotNull(dashboard?.Finance);
++
++        var postActions = dashboard!.Finance!.AvailableActions
++            .Where(action => !string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
++            .ToArray();
++
++        Assert.Contains(postActions, action => action.Key == "review_invoice");
++        Assert.Contains(postActions, action => action.Key == "inspect_anomaly");
++        Assert.Contains(postActions, action => action.Key == "view_cash_position");
++        Assert.All(postActions, action => Assert.False(string.IsNullOrWhiteSpace(action.OrchestrationEndpoint)));
++
++        foreach (var action in postActions)
++        {
++            Assert.Equal(HttpStatusCode.OK, (await ownerClient.PostAsJsonAsync(action.OrchestrationEndpoint!, new { })).StatusCode);
++        }
++
++        using var employeeClient = CreateAuthenticatedClient(seed.EmployeeSubject, seed.EmployeeEmail, seed.EmployeeDisplayName);
++        foreach (var action in postActions)
++        {
++            Assert.Equal(HttpStatusCode.Forbidden, (await employeeClient.PostAsJsonAsync(action.OrchestrationEndpoint!, new { })).StatusCode);
++        }
++    }
++
+     [Fact]
+     public void Runway_classifier_maps_thresholds_to_expected_statuses()
+     {
+@@ -132,11 +163,16 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+     private sealed class FinanceCockpitCashResponse
+     {
+         public string DisplayValue { get; set; } = string.Empty;
++        public string TrendDisplay { get; set; } = string.Empty;
++        public DateTime LastRefreshedUtc { get; set; }
+     }
+ 
+     private sealed class FinanceCockpitRunwayResponse
+     {
+         public string Status { get; set; } = string.Empty;
++        public string DisplayValue { get; set; } = string.Empty;
++        public string StatusLabel { get; set; } = string.Empty;
+     }
+ 
+     private sealed class FinanceAlertDetailResponse
+@@ -144,12 +180,14 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+     {
+         public Guid AlertId { get; set; }
++        public string Summary { get; set; } = string.Empty;
+         public List<string> ContributingFactors { get; set; } = [];
+         public List<FinanceCockpitActionResponse> AvailableActions { get; set; } = [];
+         public List<FinanceCockpitLinkResponse> Links { get; set; } = [];
+     }
+ 
+     private sealed class FinanceCockpitActionResponse
+     {
+         public string Key { get; set; } = string.Empty;
++        public string HttpMethod { get; set; } = string.Empty;
+         public string? OrchestrationEndpoint { get; set; }
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+new file mode 100644
+index 0000000..3b4c467
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+@@ -0,0 +1,294 @@
++using System.Net;
++using System.Net.Http.Json;
++using Bunit;
++using Bunit.TestDoubles;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Web.Pages;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ExecutiveCockpitDashboardPageTests
++{
++    private static readonly DateTime DashboardGeneratedUtc = new(2026, 4, 16, 8, 30, 0, DateTimeKind.Utc);
++    private static readonly DateTime CashLastRefreshedUtc = new(2026, 4, 16, 8, 15, 0, DateTimeKind.Utc);
++
++    [Fact]
++    public void Executive_cockpit_finance_widget_renders_cash_runway_alert_links_and_actions()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        var alertId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
++        var invoiceId = Guid.Parse("7edb1408-42d4-4a79-9aa2-3a2d2c84da3f");
++        var transactionId = Guid.Parse("f749fce1-6277-4ca3-b4ee-fae9016f2cc8");
++        var dashboard = CreateDashboard(companyId, CreateFinanceSection(companyId, alertId, invoiceId, transactionId, "critical", "Critical", "22 days"));
++
++        using var harness = CreateDashboardHarness(companyId, dashboard);
++        harness.Navigation.NavigateTo($"http://localhost/executive-cockpit?companyId={companyId:D}");
++
++        var cut = RenderDashboard(harness, companyId, dashboard.CompanyName);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("USD 125,400.25", cut.Find("[data-testid='executive-cockpit-cash-position']").TextContent);
++            Assert.Contains("USD 18,500.00 vs previous 30 days", cut.Find("[data-testid='executive-cockpit-cash-position-trend']").TextContent);
++            Assert.Contains($"Last refreshed {CashLastRefreshedUtc.ToLocalTime():g}", cut.Find("[data-testid='executive-cockpit-cash-position-last-refreshed']").TextContent);
++
++            var runwayStatus = cut.Find("[data-testid='executive-cockpit-runway-status']");
++            Assert.Contains("22 days", cut.Find("[data-testid='executive-cockpit-runway']").TextContent);
++            Assert.Contains("Critical", runwayStatus.TextContent);
++            Assert.Contains("finance-risk-pill--critical", runwayStatus.ClassName);
++
++            Assert.Contains("Cash runway dropped below the critical threshold.", cut.Find("[data-testid='executive-cockpit-low-cash-alert']").TextContent);
++            Assert.Contains("Average monthly burn is USD 18,500.00.", cut.Find("[data-testid='executive-cockpit-low-cash-alert']").TextContent);
++            Assert.Equal(
++                FinanceRoutes.BuildAlertDetailPath(alertId, companyId),
++                cut.Find("[data-testid='executive-cockpit-low-cash-alert-open-detail']").GetAttribute("href"));
++
++            Assert.Equal(
++                FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId),
++                cut.Find("[data-testid='finance-deep-link-finance-workspace']").GetAttribute("href"));
++            Assert.Equal(
++                FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, companyId),
++                cut.Find("[data-testid='finance-deep-link-anomaly-workbench']").GetAttribute("href"));
++            Assert.Equal(
++                FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId),
++                cut.Find("[data-testid='finance-deep-link-cash-detail']").GetAttribute("href"));
++
++            Assert.Equal(
++                FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId),
++                cut.Find("[data-testid='finance-action-open-finance-summary']").GetAttribute("href"));
++            Assert.Equal("Review invoice", cut.Find("[data-testid='finance-action-review-invoice']").TextContent.Trim());
++            Assert.Equal("Inspect anomaly", cut.Find("[data-testid='finance-action-inspect-anomaly']").TextContent.Trim());
++            Assert.Equal("View cash position", cut.Find("[data-testid='finance-action-view-cash-position']").TextContent.Trim());
++        });
++    }
++
++    [Theory]
++    [InlineData("healthy", "Healthy", "180 days", "finance-risk-pill--healthy")]
++    [InlineData("warning", "Warning", "65 days", "finance-risk-pill--warning")]
++    [InlineData("critical", "Critical", "22 days", "finance-risk-pill--critical")]
++    public void Executive_cockpit_runway_widget_applies_threshold_status_styling(
++        string runwayStatus,
++        string runwayLabel,
++        string runwayDisplay,
++        string expectedClass)
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        var dashboard = CreateDashboard(
++            companyId,
++            CreateFinanceSection(
++                companyId,
++                Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e"),
++                Guid.Parse("7edb1408-42d4-4a79-9aa2-3a2d2c84da3f"),
++                Guid.Parse("f749fce1-6277-4ca3-b4ee-fae9016f2cc8"),
++                runwayStatus,
++                runwayLabel,
++                runwayDisplay));
++
++        using var harness = CreateDashboardHarness(companyId, dashboard);
++        var cut = RenderDashboard(harness, companyId, dashboard.CompanyName);
++
++        cut.WaitForAssertion(() =>
++        {
++            var statusPill = cut.Find("[data-testid='executive-cockpit-runway-status']");
++            Assert.Contains(runwayLabel, statusPill.TextContent);
++            Assert.Contains(expectedClass, statusPill.ClassName);
++            Assert.Contains(runwayDisplay, cut.Find("[data-testid='executive-cockpit-runway']").TextContent);
++        });
++    }
++
++    [Fact]
++    public void Executive_cockpit_finance_actions_call_backend_orchestration_endpoints_and_follow_routes()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        var alertId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
++        var invoiceId = Guid.Parse("7edb1408-42d4-4a79-9aa2-3a2d2c84da3f");
++        var transactionId = Guid.Parse("f749fce1-6277-4ca3-b4ee-fae9016f2cc8");
++        var dashboard = CreateDashboard(companyId, CreateFinanceSection(companyId, alertId, invoiceId, transactionId, "critical", "Critical", "22 days"));
++
++        using var harness = CreateDashboardHarness(
++            companyId,
++            dashboard,
++            (request, _) => Task.FromResult(request.RequestUri?.AbsolutePath switch
++            {
++                var path when request.Method == HttpMethod.Post &&
++                               path == $"/internal/companies/{companyId:D}/finance/invoices/{invoiceId:D}/review-workflow" =>
++                    CreateJsonResponse(new { workflowInstanceId = Guid.NewGuid() }),
++                var path when request.Method == HttpMethod.Post &&
++                               path == $"/internal/companies/{companyId:D}/finance/transactions/{transactionId:D}/anomaly-evaluation" =>
++                    CreateJsonResponse(new { evaluationId = Guid.NewGuid() }),
++                var path when request.Method == HttpMethod.Post &&
++                               path == $"/internal/companies/{companyId:D}/finance/cash-position/evaluation" =>
++                    CreateJsonResponse(new FinanceCashPositionResponse
++                    {
++                        CompanyId = companyId,
++                        AsOfUtc = CashLastRefreshedUtc,
++                        AvailableBalance = 125400.25m,
++                        Currency = "USD",
++                        AverageMonthlyBurn = 18500m,
++                        EstimatedRunwayDays = 22,
++                        Classification = "cash_position",
++                        RiskLevel = "critical",
++                        RecommendedAction = "Escalate",
++                        Rationale = "Runway below policy threshold.",
++                        Confidence = 0.94m,
++                        SourceWorkflow = "cash-position-evaluation"
++                    }),
++                _ => CreateNotFoundResponse()
++            }));
++
++        harness.Navigation.NavigateTo($"http://localhost/executive-cockpit?companyId={companyId:D}");
++        var cut = RenderDashboard(harness, companyId, dashboard.CompanyName);
++
++        cut.WaitForAssertion(() => Assert.Equal(0, harness.FinanceRequests.Count));
++
++        cut.Find("[data-testid='finance-action-review-invoice']").Click();
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains(harness.FinanceRequests, request => request.Path == $"/internal/companies/{companyId:D}/finance/invoices/{invoiceId:D}/review-workflow");
++            Assert.Equal(companyId.ToString(), harness.FinanceRequests.Last().CompanyHeaderValue);
++            Assert.Equal($"http://localhost{FinanceRoutes.BuildInvoiceReviewDetailPath(invoiceId, companyId)}", harness.Navigation.Uri);
++        });
++
++        cut.Find("[data-testid='finance-action-inspect-anomaly']").Click();
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains(harness.FinanceRequests, request => request.Path == $"/internal/companies/{companyId:D}/finance/transactions/{transactionId:D}/anomaly-evaluation");
++            Assert.Equal($"http://localhost{FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, companyId)}", harness.Navigation.Uri);
++        });
++
++        cut.Find("[data-testid='finance-action-view-cash-position']").Click();
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains(harness.FinanceRequests, request => request.Path == $"/internal/companies/{companyId:D}/finance/cash-position/evaluation");
++            Assert.Equal($"http://localhost{FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)}", harness.Navigation.Uri);
++            Assert.Contains("Cash position refreshed.", cut.Markup);
++        });
++    }
++
++    [Fact]
++    public void Executive_cockpit_hides_finance_section_when_backend_omits_finance_payload()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        var dashboard = CreateDashboard(companyId, finance: null);
++
++        using var harness = CreateDashboardHarness(companyId, dashboard);
++        var cut = RenderDashboard(harness, companyId, dashboard.CompanyName);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Empty(cut.FindAll("[data-testid='executive-cockpit-finance-widget']"));
++            Assert.DoesNotContain("Review invoice", cut.Markup);
++            Assert.DoesNotContain("Inspect anomaly", cut.Markup);
++            Assert.DoesNotContain("View cash position", cut.Markup);
++            Assert.DoesNotContain("Open finance summary", cut.Markup);
++        });
++    }
++
++    private static IRenderedComponent<ExecutiveCockpitDashboard> RenderDashboard(
++        DashboardHarness harness,
++        Guid companyId,
++        string companyName) =>
++        harness.Context.RenderComponent<ExecutiveCockpitDashboard>(parameters => parameters
++            .Add(x => x.CompanyId, companyId)
++            .Add(x => x.CompanyName, companyName));
++
++    private static DashboardHarness CreateDashboardHarness(
++        Guid companyId,
++        ExecutiveCockpitDashboardViewModel dashboard,
++        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? financeHandler = null)
++    {
++        var context = new TestContext();
++        var financeRequests = new List<CapturedFinanceRequest>();
++        context.Services.AddLogging();
++
++        context.Services.AddSingleton(new ExecutiveCockpitApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            return Task.FromResult(request.RequestUri?.AbsolutePath switch
++            {
++                var path when request.Method == HttpMethod.Get &&
++                               path == $"/api/companies/{companyId:D}/executive-cockpit" =>
++                    CreateJsonResponse(dashboard),
++                var path when request.Method == HttpMethod.Get &&
++                               path == $"/api/companies/{companyId:D}/executive-cockpit/kpis" =>
++                    CreateJsonResponse(new ExecutiveCockpitKpiDashboardViewModel
++                    {
++                        CompanyId = companyId,
++                        GeneratedAtUtc = DashboardGeneratedUtc,
++                        StartUtc = DashboardGeneratedUtc.AddDays(-7),
++                        EndUtc = DashboardGeneratedUtc
++                    }),
++                var path when request.Method == HttpMethod.Get &&
++                               path == $"/api/companies/{companyId:D}/executive-cockpit/widgets/finance" =>
++                    CreateJsonResponse(new ExecutiveCockpitWidgetPayloadViewModel<ExecutiveCockpitFinanceViewModel>
++                    {
++                        CompanyId = companyId,
++                        WidgetKey = "finance",
++                        GeneratedAtUtc = DashboardGeneratedUtc,
++                        Payload = dashboard.Finance
++                    }),
++                _ => CreateNotFoundResponse()
++            });
++        })) { BaseAddress = new Uri("http://localhost/") }));
++
++        context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, cancellationToken) =>
++        {
++            financeRequests.Add(new CapturedFinanceRequest(
++                request.RequestUri?.AbsolutePath ?? string.Empty,
++                request.Headers.TryGetValues("X-Company-Id", out var values) ? values.Single() : null));
++
++            return financeHandler is null
++                ? Task.FromResult(CreateNotFoundResponse())
++                : financeHandler(request, cancellationToken);
++        })) { BaseAddress = new Uri("http://localhost/") }));
++
++        return new DashboardHarness(context, context.Services.GetRequiredService<FakeNavigationManager>(), financeRequests);
++    }
++
++    private static ExecutiveCockpitDashboardViewModel CreateDashboard(Guid companyId, ExecutiveCockpitFinanceViewModel? finance) =>
++        new()
++        {
++            CompanyId = companyId,
++            CompanyName = "Contoso Labs",
++            GeneratedAtUtc = DashboardGeneratedUtc,
++            Finance = finance,
++            SummaryKpis = [],
++            PendingApprovals = new ExecutiveCockpitPendingApprovalsViewModel
++            {
++                TotalCount = 0,
++                Route = $"/approvals?companyId={companyId:D}"
++            },
++            Alerts = [],
++            DepartmentKpis = [],
++            DepartmentSections = [],
++            RecentActivity = [],
++            SetupState = new ExecutiveCockpitSetupStateViewModel
++            {
++                IsInitialSetupEmpty = true
++            },
++            EmptyStateFlags = new ExecutiveCockpitEmptyStateFlagsViewModel
++            {
++                NoAgents = true,
++                NoWorkflows = true,
++                NoKnowledge = true,
++                NoRecentActivity = true,
++                NoPendingApprovals = true,
++                NoAlerts = finance?.LowCashAlert is null
++            }
++        };
++
++    private static ExecutiveCockpitFinanceViewModel CreateFinanceSection(
++        Guid companyId,
++        Guid alertId,
++        Guid invoiceId,
++        Guid transactionId,
++        string runwayStatus,
++        string runwayLabel,
++        string runwayDisplayValue) =>
++        new()
++        {
++            CashPosition = new ExecutiveCockpitFinanceCashWidgetViewModel
++            {
++                Amount = 125400.25m,
++                Currency = "USD",
++                DisplayValue = "USD 125,400.25",
++                TrendDirection = "down",
++                TrendAmount = -18500m,
++                TrendDisplay = "USD 18,500.00 vs previous 30 days",
++                LastRefreshedUtc = CashLastRefreshedUtc,
++                Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)
++            },
++            Runway = new ExecutiveCockpitFinanceRunwayWidgetViewModel
++            {
++                EstimatedRunwayDays = runwayStatus == "healthy" ? 180 : runwayStatus == "warning" ? 65 : 22,
++                DisplayValue = runwayDisplayValue,
++                Status = runwayStatus,
++                StatusLabel = runwayLabel,
++                Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)
++            },
++            LowCashAlert = new ExecutiveCockpitFinanceAlertDetailViewModel
++            {
++                AlertId = alertId,
++                Severity = "warning",
++                Status = "open",
++                Summary = "Cash runway dropped below the critical threshold.",
++                ContributingFactors =
++                [
++                    "Available cash is USD 42,000.00.",
++                    "Average monthly burn is USD 18,500.00."
++                ],
++                AvailableActions =
++                [
++                    new ExecutiveCockpitFinanceActionViewModel
++                    {
++                        Key = "open_finance_summary",
++                        Label = "Open finance summary",
++                        IsEnabled = true,
++                        Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId),
++                        HttpMethod = "GET"
++                    }
++                ],
++                Links =
++                [
++                    new ExecutiveCockpitDeepLinkViewModel
++                    {
++                        Key = "finance_workspace",
++                        Label = "Finance workspace",
++                        Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)
++                    },
++                    new ExecutiveCockpitDeepLinkViewModel
++                    {
++                        Key = "anomaly_workbench",
++                        Label = "Anomaly workbench",
++                        Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, companyId)
++                    },
++                    new ExecutiveCockpitDeepLinkViewModel
++                    {
++                        Key = "cash_detail",
++                        Label = "Cash detail",
++                        Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)
++                    }
++                ],
++                Route = FinanceRoutes.BuildAlertDetailPath(alertId, companyId)
++            },
++            AvailableActions =
++            [
++                new ExecutiveCockpitFinanceActionViewModel
++                {
++                    Key = "review_invoice",
++                    Label = "Review invoice",
++                    IsEnabled = true,
++                    Route = FinanceRoutes.BuildInvoiceReviewDetailPath(invoiceId, companyId),
++                    HttpMethod = "POST",
++                    TargetId = invoiceId
++                },
++                new ExecutiveCockpitFinanceActionViewModel
++                {
++                    Key = "view_cash_position",
++                    Label = "View cash position",
++                    IsEnabled = true,
++                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId),
++                    HttpMethod = "POST"
++                },
++                new ExecutiveCockpitFinanceActionViewModel
++                {
++                    Key = "inspect_anomaly",
++                    Label = "Inspect anomaly",
++                    IsEnabled = true,
++                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, companyId),
++                    HttpMethod = "POST",
++                    TargetId = transactionId
++                },
++                new ExecutiveCockpitFinanceActionViewModel
++                {
++                    Key = "open_finance_summary",
++                    Label = "Open finance summary",
++                    IsEnabled = true,
++                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId),
++                    HttpMethod = "GET"
++                }
++            ],
++            DeepLinks =
++            [
++                new ExecutiveCockpitDeepLinkViewModel { Key = "finance_workspace", Label = "Finance workspace", Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId) },
++                new ExecutiveCockpitDeepLinkViewModel { Key = "anomaly_workbench", Label = "Anomaly workbench", Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, companyId) },
++                new ExecutiveCockpitDeepLinkViewModel { Key = "cash_detail", Label = "Cash detail", Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId) }
++            ]
++        };
++
++    private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>
++        new(HttpStatusCode.OK)
++        {
++            Content = JsonContent.Create(payload)
++        };
++
++    private static HttpResponseMessage CreateNotFoundResponse() => new(HttpStatusCode.NotFound);
++
++    private sealed record DashboardHarness(
++        TestContext Context,
++        FakeNavigationManager Navigation,
++        List<CapturedFinanceRequest> FinanceRequests) : IDisposable
++    {
++        public void Dispose() => Context.Dispose();
++    }
++
++    private sealed record CapturedFinanceRequest(string Path, string? CompanyHeaderValue);
++
++    private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler
++    {
++        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
++
++        public AsyncStubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
++        {
++            _handler = handler;
++        }
++
++        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
++            _handler(request, cancellationToken);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/LowCashAlertPageTests.cs b/tests/VirtualCompany.Api.Tests/LowCashAlertPageTests.cs
+index a7a14cb..b5d4a51 100644
+--- a/tests/VirtualCompany.Api.Tests/LowCashAlertPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/LowCashAlertPageTests.cs
+@@ -61,21 +61,25 @@ public sealed class LowCashAlertPageTests
+ 
+         cut.WaitForAssertion(() =>
+         {
+-            Assert.Contains("Low-cash summary", cut.Markup);
+-            Assert.Contains("Cash runway dropped below the critical threshold.", cut.Markup);
+-            Assert.Contains("Average monthly burn is USD 18,500.00.", cut.Markup);
+-
+-            var hrefs = cut.FindAll("a")
+-                .Select(link => link.GetAttribute("href"))
+-                .OfType<string>()
+-                .ToArray();
+-
+-            Assert.Contains($"/finance/monthly-summary?companyId={companyId:D}", hrefs);
+-            Assert.Contains($"/finance/cash-position?companyId={companyId:D}", hrefs);
++            Assert.Contains("Cash runway dropped below the critical threshold.", cut.Find("[data-testid='low-cash-alert-detail']").TextContent);
++            Assert.Contains("Average monthly burn is USD 18,500.00.", cut.Find("[data-testid='low-cash-alert-factors']").TextContent);
++            Assert.Equal(
++                $"/finance?companyId={companyId:D}",
++                cut.Find("[data-testid='finance-alert-link-finance-workspace']").GetAttribute("href"));
++            Assert.Equal(
++                $"/finance/monthly-summary?companyId={companyId:D}",
++                cut.Find("[data-testid='finance-alert-link-finance-summary']").GetAttribute("href"));
++            Assert.Equal(
++                $"/finance/anomalies?companyId={companyId:D}",
++                cut.Find("[data-testid='finance-alert-link-anomaly-workbench']").GetAttribute("href"));
++            Assert.Equal(
++                $"/finance/cash-position?companyId={companyId:D}",
++                cut.Find("[data-testid='finance-alert-link-cash-detail']").GetAttribute("href"));
++            Assert.Equal(
++                $"/finance/monthly-summary?companyId={companyId:D}",
++                cut.Find("[data-testid='finance-alert-action-open-finance-summary']").GetAttribute("href"));
+         });
+ 
+-        var reviewInvoiceButton = cut.FindAll("button")
+-            .Single(button => button.TextContent.Contains("Review invoice", StringComparison.Ordinal));
+-
++        var reviewInvoiceButton = cut.Find("[data-testid='finance-alert-action-review-invoice']");
+         reviewInvoiceButton.Click();
+ 
+         cut.WaitForAssertion(() =>
+@@ -141,6 +145,18 @@ public sealed class LowCashAlertPageTests
+                 {
+                     Key = "finance_summary",
+                     Label = "Finance summary",
++                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId)
++                },
++                new ExecutiveCockpitDeepLinkViewModel
++                {
++                    Key = "finance_workspace",
++                    Label = "Finance workspace",
++                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)
++                },
++                new ExecutiveCockpitDeepLinkViewModel
++                {
++                    Key = "anomaly_workbench",
++                    Label = "Anomaly workbench",
++                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, companyId)
++                },
++                new ExecutiveCockpitDeepLinkViewModel
++                {
++                    Key = "cash_detail",
++                    Label = "Cash detail",
+                     Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId)
+-                },
+-                new ExecutiveCockpitDeepLinkViewModel
+-                {
+-                    Key = "cash_detail",
+-                    Label = "Cash detail",
+-                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)
+                 }
+             ],
+             Route = FinanceRoutes.BuildAlertDetailPath(alertId, companyId)
+diff --git a/tests/VirtualCompany.Api.Tests/LowCashAlertPageTests.cs b/tests/VirtualCompany.Api.Tests/LowCashAlertPageTests.cs
+index b5d4a51..b8ce76d 100644
+--- a/tests/VirtualCompany.Api.Tests/LowCashAlertPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/LowCashAlertPageTests.cs
+@@ -156,7 +156,7 @@ public sealed class LowCashAlertPageTests
+                 {
+                     Key = "cash_detail",
+                     Label = "Cash detail",
+-                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId)
++                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)
+                 }
+             ],
+             Route = FinanceRoutes.BuildAlertDetailPath(alertId, companyId)
+END_OF_PATCH

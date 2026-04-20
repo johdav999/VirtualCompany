@@ -1,0 +1,62 @@
+diff --git a/src/VirtualCompany.Application/Agents/InternalToolContracts.cs b/src/VirtualCompany.Application/Agents/InternalToolContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Agents/InternalToolContracts.cs
++++ b/src/VirtualCompany.Application/Agents/InternalToolContracts.cs
+@@ -10,7 +10,8 @@ public sealed record InternalToolExecutionContext(
+     string? Scope,
+     Guid? TaskId = null,
+     Guid? WorkflowInstanceId = null,
+-    string? CorrelationId = null);
++    string? CorrelationId = null,
++    string? ToolVersion = null);
+ 
+ public sealed record InternalToolExecutionRequest(
+     string ToolName,
+@@ -25,6 +26,7 @@ public sealed record InternalToolExecutionRequest(
+     public Guid? TaskId => Context.TaskId;
+     public Guid? WorkflowInstanceId => Context.WorkflowInstanceId;
+     public string? CorrelationId => Context.CorrelationId;
++    public string? ToolVersion => Context.ToolVersion;
+ }
+ 
+ public sealed record InternalToolExecutionResponse(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs b/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
+@@ -405,6 +405,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             ["toolName"] = JsonValue.Create(request.ToolName),
+             ["actionType"] = JsonValue.Create(request.ActionType),
+             ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
++            ["toolVersion"] = string.IsNullOrWhiteSpace(request.ToolVersion) ? null : JsonValue.Create(request.ToolVersion),
+             ["typedBoundary"] = JsonValue.Create(true)
+         };
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -705,6 +705,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal("get_cash_balance", dispatchedRequest.ToolName);
+         Assert.Equal("finance", dispatchedRequest.Scope);
+         Assert.Equal(ToolActionType.Read, dispatchedRequest.Context.ActionType);
++        Assert.Equal("1.0.0", dispatchedRequest.ToolVersion);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -176,7 +176,8 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+             new(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["contractName"] = JsonValue.Create(nameof(TestCompanyToolExecutor)),
+                 ["companyId"] = JsonValue.Create(request.CompanyId),
+-                ["executionId"] = JsonValue.Create(request.ExecutionId)
++                ["executionId"] = JsonValue.Create(request.ExecutionId),
++                ["toolVersion"] = string.IsNullOrWhiteSpace(request.ToolVersion) ? null : JsonValue.Create(request.ToolVersion)
+             };
+ 
+         private static bool TryCreateFinanceToolData(string toolName, out Dictionary<string, JsonNode?> data)
+END_OF_PATCH

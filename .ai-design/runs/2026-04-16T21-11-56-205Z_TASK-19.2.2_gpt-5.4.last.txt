@@ -1,0 +1,1079 @@
+diff --git a/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs b/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
+index 8f9da9f..46b64fd 100644
+--- a/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
++++ b/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
+@@ -7,6 +7,53 @@ public sealed class FinanceSandboxDatasetGenerationResponse
+     public IReadOnlyList<string> AvailableProfiles { get; set; } = [];
+ }
+ 
++public static class FinanceSandboxSeedGenerationModes
++{
++    public const string Refresh = "refresh";
++    public const string RefreshWithAnomalies = "refresh_with_anomalies";
++
++    private static readonly string[] AllowedModeValues =
++    [
++        Refresh,
++        RefreshWithAnomalies
++    ];
++
++    private static readonly HashSet<string> AllowedModeSet = new(AllowedModeValues, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues => AllowedModeValues;
++
++    public static string Normalize(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    public static bool IsSupported(string? value) =>
++        !string.IsNullOrWhiteSpace(value) &&
++        AllowedModeSet.Contains(Normalize(value));
++}
++
++public sealed class FinanceSandboxSeedGenerationRequest
++{
++    public Guid CompanyId { get; set; }
++    public int SeedValue { get; set; }
++    public DateTime AnchorDateUtc { get; set; }
++    public string GenerationMode { get; set; } = FinanceSandboxSeedGenerationModes.Refresh;
++}
++
++public sealed class FinanceSandboxSeedGenerationResponse
++{
++    public Guid CompanyId { get; set; }
++    public int SeedValue { get; set; }
++    public DateTime AnchorDateUtc { get; set; }
++    public string GenerationMode { get; set; } = string.Empty;
++    public bool Succeeded { get; set; }
++    public int CreatedCount { get; set; }
++    public int UpdatedCount { get; set; }
++    public string Message { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceSandboxSeedGenerationIssueResponse> Errors { get; set; } = [];
++    public IReadOnlyList<FinanceSandboxSeedGenerationIssueResponse> Warnings { get; set; } = [];
++    public IReadOnlyList<FinanceSandboxSeedGenerationIssueResponse> ReferentialIntegrityErrors { get; set; } = [];
++}
++
++public sealed class FinanceSandboxSeedGenerationIssueResponse
++{
++    public string Code { get; set; } = string.Empty;
++    public string Message { get; set; } = string.Empty;
++}
++
+ public sealed class FinanceSandboxAnomalyInjectionResponse
+ {
+     public string Mode { get; set; } = string.Empty;
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+index bb55d08..2ab4726 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+@@ -16,20 +16,113 @@
+     else
+     {
+         <section class="finance-summary-stack" aria-label="Finance sandbox administration sections">
+-            <FinanceSandboxAdminSection TSection="FinanceSandboxDatasetGenerationViewModel"
+-                                        CompanyId="@AccessState.CompanyId!.Value"
+-                                        Kicker="Sandbox dataset"
+-                                        Title="Dataset generation"
+-                                        Description="Review the active seed profile, cadence, and data coverage used by the finance sandbox."
+-                                        LoadingTitle="Loading dataset generation"
+-                                        LoadingMessage="Resolving the current sandbox dataset generation profile."
+-                                        EmptyTitle="Dataset generation is not configured"
+-                                        EmptyMessage="No dataset generation profile is available for the active company."
+-                                        ErrorTitle="Dataset generation is unavailable"
+-                                        Loader="@LoadDatasetGenerationAsync">
+-                <ChildContent Context="dataset">
+-                    <dl class="row mb-0">
+-                        <dt class="col-sm-4">Profile</dt>
+-                        <dd class="col-sm-8">@dataset.ProfileName</dd>
++            <article class="wizard-card">
++                <div class="mb-3">
++                    <span class="dashboard-kicker">Seed generation</span>
++                    <h2 class="h5 mb-2">Generate sandbox seed dataset</h2>
++                    <p class="text-body-secondary mb-0">Generate a finance sandbox seed dataset for the active company, review the generation summary, and inspect validation issues inline before retrying.</p>
++                </div>
++
++                @if (!string.IsNullOrWhiteSpace(_seedGenerationErrorMessage))
++                {
++                    <div class="alert alert-danger" role="alert">
++                        @_seedGenerationErrorMessage
++                    </div>
++                }
++
++                <EditForm EditContext="@_seedGenerationEditContext" OnValidSubmit="@HandleSeedGenerationSubmitAsync">
++                    <DataAnnotationsValidator />
++                    <ValidationSummary />
++
++                    <div id="seed-generation-form" class="row g-3">
++                        <div class="col-md-6">
++                            <label class="form-label" for="seed-company">Company</label>
++                            <input id="seed-company" class="form-control" value="@_seedGenerationForm.CompanyName" disabled />
++                            <ValidationMessage For="@(() => _seedGenerationForm.CompanyId)" />
++                        </div>
++                        <div class="col-md-3">
++                            <label class="form-label" for="seed-value">Seed value</label>
++                            <InputNumber id="seed-value" class="form-control" @bind-Value="_seedGenerationForm.SeedValue" disabled="@_isSubmittingSeedGeneration" />
++                            <ValidationMessage For="@(() => _seedGenerationForm.SeedValue)" />
++                        </div>
++                        <div class="col-md-3">
++                            <label class="form-label" for="anchor-date">Anchor date</label>
++                            <InputDate id="anchor-date" class="form-control" @bind-Value="_seedGenerationForm.AnchorDateUtc" disabled="@_isSubmittingSeedGeneration" />
++                            <ValidationMessage For="@(() => _seedGenerationForm.AnchorDateUtc)" />
++                        </div>
++                        <div class="col-md-6">
++                            <label class="form-label" for="generation-mode">Generation mode</label>
++                            <InputSelect id="generation-mode" class="form-select" @bind-Value="_seedGenerationForm.GenerationMode" disabled="@_isSubmittingSeedGeneration">
++                                @foreach (var option in _generationModeOptions)
++                                {
++                                    <option value="@option.Value">@option.Label</option>
++                                }
++                            </InputSelect>
++                            <div class="form-text">@SelectedGenerationModeDescription</div>
++                            <ValidationMessage For="@(() => _seedGenerationForm.GenerationMode)" />
++                        </div>
++                        <div class="col-12 d-flex align-items-center gap-3">
++                            <button id="seed-generate-submit" type="submit" class="btn btn-primary" disabled="@_isSubmittingSeedGeneration">
++                                @(_isSubmittingSeedGeneration ? "Generating dataset..." : "Generate seed dataset")
++                            </button>
++                            @if (_isSubmittingSeedGeneration)
++                            {
++                                <span class="text-body-secondary">Duplicate submissions are disabled until the current request completes.</span>
++                            }
++                        </div>
++                    </div>
++                </EditForm>
++
++                @if (_seedGenerationResult is not null)
++                {
++                    <div class="mt-4" aria-live="polite">
++                        <div class="alert @(_seedGenerationResult.Succeeded ? "alert-success" : "alert-danger")" role="status">
++                            @_seedGenerationResult.Message
++                        </div>
++
++                        <div class="row g-3 mb-3">
++                            <div class="col-sm-6 col-lg-3">
++                                <div class="border rounded p-3 h-100">
++                                    <div class="text-body-secondary small">Created</div>
++                                    <div class="fs-4 fw-semibold">@_seedGenerationResult.CreatedCount</div>
++                                </div>
++                            </div>
++                            <div class="col-sm-6 col-lg-3">
++                                <div class="border rounded p-3 h-100">
++                                    <div class="text-body-secondary small">Updated</div>
++                                    <div class="fs-4 fw-semibold">@_seedGenerationResult.UpdatedCount</div>
++                                </div>
++                            </div>
++                        </div>
++
++                        @if (_seedGenerationResult.ReferentialIntegrityErrors.Count > 0)
++                        {
++                            <div class="mb-3">
++                                <h3 class="h6">Referential integrity errors</h3>
++                                <ul class="mb-0">
++                                    @foreach (var issue in _seedGenerationResult.ReferentialIntegrityErrors)
++                                    {
++                                        <li>@issue.Message</li>
++                                    }
++                                </ul>
++                            </div>
++                        }
++
++                        @if (_seedGenerationResult.Errors.Count > 0)
++                        {
++                            <div class="mb-3">
++                                <h3 class="h6">Validation errors</h3>
++                                <ul class="mb-0">
++                                    @foreach (var issue in _seedGenerationResult.Errors)
++                                    {
++                                        <li>@issue.Message</li>
++                                    }
++                                </ul>
++                            </div>
++                        }
++
++                        @if (_seedGenerationResult.Warnings.Count > 0)
++                        {
++                            <div>
++                                <h3 class="h6">Warnings</h3>
++                                <ul class="mb-0">
++                                    @foreach (var issue in _seedGenerationResult.Warnings)
++                                    {
++                                        <li>@issue.Message</li>
++                                    }
++                                </ul>
++                            </div>
++                        }
++                        else if (_seedGenerationResult.Succeeded && _seedGenerationResult.Errors.Count == 0 && _seedGenerationResult.ReferentialIntegrityErrors.Count == 0)
++                        {
++                            <p class="text-success mb-0">Validation completed without errors or warnings.</p>
++                        }
++                    </div>
++                }
++            </article>
++
++            <div @key="_datasetGenerationSectionVersion">
++                <FinanceSandboxAdminSection TSection="FinanceSandboxDatasetGenerationViewModel"
++                                            CompanyId="@AccessState.CompanyId!.Value"
++                                            Kicker="Sandbox dataset"
++                                            Title="Dataset generation"
++                                            Description="Review the active seed profile, cadence, and data coverage used by the finance sandbox."
++                                            LoadingTitle="Loading dataset generation"
++                                            LoadingMessage="Resolving the current sandbox dataset generation profile."
++                                            EmptyTitle="Dataset generation is not configured"
++                                            EmptyMessage="No dataset generation profile is available for the active company."
++                                            ErrorTitle="Dataset generation is unavailable"
++                                            Loader="@LoadDatasetGenerationAsync">
++                    <ChildContent Context="dataset">
++                        <dl class="row mb-0">
++                            <dt class="col-sm-4">Profile</dt>
++                            <dd class="col-sm-8">@dataset.ProfileName</dd>
+                         <dt class="col-sm-4">Last refresh</dt>
+                         <dd class="col-sm-8">@dataset.LastGeneratedUtc.ToString("u")</dd>
+                         <dt class="col-sm-4">Coverage</dt>
+@@ -44,8 +137,8 @@
+                             }
+                         </ul>
+                     </div>
+-                </ChildContent>
+-            </FinanceSandboxAdminSection>
++                    </ChildContent>
++                </FinanceSandboxAdminSection>
++            </div>
+ 
+             <FinanceSandboxAdminSection TSection="FinanceSandboxAnomalyInjectionViewModel"
+                                         CompanyId="@AccessState.CompanyId!.Value"
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+index d80986c..6b2ea4f 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+@@ -1,8 +1,22 @@
++using System.ComponentModel.DataAnnotations;
++using Microsoft.AspNetCore.Components.Forms;
+ using VirtualCompany.Shared;
+ using VirtualCompany.Web.Services;
+ 
+ namespace VirtualCompany.Web.Pages.Finance;
+ 
+-public partial class SandboxAdminPage : FinancePageBase
++public partial class SandboxAdminPage : FinancePageBase, IDisposable
+ {
+     [Inject] private IFinanceSandboxAdminService SandboxAdminService { get; set; } = default!;
++
++    private readonly SeedGenerationFormModel _seedGenerationForm = new();
++    private readonly IReadOnlyList<GenerationModeOption> _generationModeOptions =
++    [
++        new(FinanceSandboxSeedGenerationModes.Refresh, "Replace existing dataset", "Generate a clean sandbox dataset for the active company."),
++        new(FinanceSandboxSeedGenerationModes.RefreshWithAnomalies, "Replace and inject anomalies", "Generate the dataset and add anomaly scenarios for validation coverage.")
++    ];
++    private EditContext _seedGenerationEditContext = default!;
++    private ValidationMessageStore _seedGenerationMessageStore = default!;
++    private FinanceSandboxSeedGenerationViewModel? _seedGenerationResult;
++    private string? _seedGenerationErrorMessage;
++    private bool _isSubmittingSeedGeneration;
++    private int _datasetGenerationSectionVersion;
+ 
+     private bool HasSandboxAdminAccess =>
+         AccessState.IsAllowed &&
+@@ -10,6 +24,92 @@ public partial class SandboxAdminPage : FinancePageBase
+ 
+     private string BuildFinanceHomeHref() =>
+         FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId);
++
++    private string SelectedGenerationModeDescription =>
++        _generationModeOptions.FirstOrDefault(option => string.Equals(option.Value, _seedGenerationForm.GenerationMode, StringComparison.OrdinalIgnoreCase))?.Description
++        ?? "Select how the sandbox dataset should be generated.";
++
++    protected override void OnInitialized()
++    {
++        _seedGenerationEditContext = new EditContext(_seedGenerationForm);
++        _seedGenerationMessageStore = new ValidationMessageStore(_seedGenerationEditContext);
++        _seedGenerationEditContext.OnValidationRequested += HandleSeedGenerationValidationRequested;
++        _seedGenerationEditContext.OnFieldChanged += HandleSeedGenerationFieldChanged;
++    }
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        if (AccessState.CompanyId is Guid companyId)
++        {
++            _seedGenerationForm.CompanyId = companyId;
++            _seedGenerationForm.CompanyName = AccessState.CompanyName ?? "Active company";
++        }
++
++        if (_seedGenerationForm.AnchorDateUtc == default)
++        {
++            _seedGenerationForm.AnchorDateUtc = DateTime.UtcNow.Date;
++        }
++    }
++
++    private async Task HandleSeedGenerationSubmitAsync()
++    {
++        if (_isSubmittingSeedGeneration || AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        ClearSeedGenerationValidation();
++        _seedGenerationResult = null;
++        _seedGenerationErrorMessage = null;
++        _isSubmittingSeedGeneration = true;
++
++        try
++        {
++            var result = await SandboxAdminService.GenerateSeedDatasetAsync(
++                new FinanceSandboxSeedGenerationCommand
++                {
++                    CompanyId = companyId,
++                    SeedValue = _seedGenerationForm.SeedValue,
++                    AnchorDateUtc = NormalizeAnchorDate(_seedGenerationForm.AnchorDateUtc),
++                    GenerationMode = _seedGenerationForm.GenerationMode
++                });
++
++            _seedGenerationResult = result;
++            if (result.Succeeded)
++            {
++                _datasetGenerationSectionVersion++;
++            }
++        }
++        catch (FinanceApiValidationException ex)
++        {
++            ApplySeedGenerationValidation(ex.Errors);
++            _seedGenerationErrorMessage = string.IsNullOrWhiteSpace(ex.Message)
++                ? "The finance API rejected the seed dataset request. Update the highlighted fields and try again."
++                : ex.Message;
++        }
++        catch (FinanceApiException ex)
++        {
++            _seedGenerationErrorMessage = ex.Message;
++        }
++        finally
++        {
++            _isSubmittingSeedGeneration = false;
++        }
++    }
++
++    private void HandleSeedGenerationValidationRequested(object? sender, ValidationRequestedEventArgs e) =>
++        ClearSeedGenerationValidation();
++
++    private void HandleSeedGenerationFieldChanged(object? sender, FieldChangedEventArgs e)
++    {
++        _seedGenerationMessageStore.Clear(e.FieldIdentifier);
++        _seedGenerationEditContext.NotifyValidationStateChanged();
++    }
++
++    private void ClearSeedGenerationValidation()
++    {
++        _seedGenerationMessageStore.Clear();
++        _seedGenerationEditContext.NotifyValidationStateChanged();
++    }
++
++    private static DateTime NormalizeAnchorDate(DateTime value) =>
++        DateTime.SpecifyKind(value.Date, DateTimeKind.Utc);
+ 
+     private Task<FinanceSandboxDatasetGenerationViewModel?> LoadDatasetGenerationAsync(Guid companyId, CancellationToken cancellationToken) =>
+         SandboxAdminService.GetDatasetGenerationAsync(companyId, cancellationToken);
+@@ -23,4 +123,72 @@ public partial class SandboxAdminPage : FinancePageBase
+ 
+     private Task<FinanceSandboxDomainEventsViewModel?> LoadDomainEventsAsync(Guid companyId, CancellationToken cancellationToken) =>
+         SandboxAdminService.GetDomainEventsAsync(companyId, cancellationToken);
++
++    private void ApplySeedGenerationValidation(IReadOnlyDictionary<string, string[]> errors)
++    {
++        foreach (var (key, messages) in errors)
++        {
++            var fieldName = ResolveSeedGenerationFieldName(key);
++            var fieldIdentifier = string.IsNullOrWhiteSpace(fieldName)
++                ? new FieldIdentifier(_seedGenerationForm, string.Empty)
++                : new FieldIdentifier(_seedGenerationForm, fieldName);
++            _seedGenerationMessageStore.Add(fieldIdentifier, messages);
++        }
++
++        _seedGenerationEditContext.NotifyValidationStateChanged();
++    }
++
++    private static string ResolveSeedGenerationFieldName(string key)
++    {
++        if (key.Contains(nameof(FinanceSandboxSeedGenerationRequest.CompanyId), StringComparison.OrdinalIgnoreCase))
++        {
++            return nameof(SeedGenerationFormModel.CompanyId);
++        }
++
++        if (key.Contains(nameof(FinanceSandboxSeedGenerationRequest.SeedValue), StringComparison.OrdinalIgnoreCase))
++        {
++            return nameof(SeedGenerationFormModel.SeedValue);
++        }
++
++        if (key.Contains(nameof(FinanceSandboxSeedGenerationRequest.AnchorDateUtc), StringComparison.OrdinalIgnoreCase) ||
++            key.Contains("SeedAnchorUtc", StringComparison.OrdinalIgnoreCase))
++        {
++            return nameof(SeedGenerationFormModel.AnchorDateUtc);
++        }
++
++        if (key.Contains(nameof(FinanceSandboxSeedGenerationRequest.GenerationMode), StringComparison.OrdinalIgnoreCase))
++        {
++            return nameof(SeedGenerationFormModel.GenerationMode);
++        }
++
++        return string.Empty;
++    }
++
++    public void Dispose()
++    {
++        _seedGenerationEditContext.OnValidationRequested -= HandleSeedGenerationValidationRequested;
++        _seedGenerationEditContext.OnFieldChanged -= HandleSeedGenerationFieldChanged;
++    }
++
++    private sealed class SeedGenerationFormModel
++    {
++        public Guid CompanyId { get; set; }
++        public string CompanyName { get; set; } = string.Empty;
++
++        [Range(1, int.MaxValue, ErrorMessage = "Enter a positive seed value.")]
++        public int SeedValue { get; set; } = 302;
++
++        [Required(ErrorMessage = "Select an anchor date.")]
++        public DateTime AnchorDateUtc { get; set; }
++
++        [Required(ErrorMessage = "Select a generation mode.")]
++        public string GenerationMode { get; set; } = FinanceSandboxSeedGenerationModes.Refresh;
++    }
++
++    private sealed record GenerationModeOption(
++        string Value,
++        string Label,
++        string Description);
+ }
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index c72ce11..7e6df1c 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -87,6 +87,15 @@ public sealed class FinanceApiClient
+             ? Task.FromResult<FinanceSandboxDatasetGenerationResponse?>(null)
+             : GetAsync<FinanceSandboxDatasetGenerationResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/dataset-generation", allowNotFound: true, cancellationToken);
+ 
++    public Task<FinanceSandboxSeedGenerationResponse> GenerateSandboxSeedDatasetAsync(
++        Guid companyId,
++        FinanceSandboxSeedGenerationRequest request,
++        CancellationToken cancellationToken = default)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<FinanceSandboxSeedGenerationRequest, FinanceSandboxSeedGenerationResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/sandbox-admin/seed-generation", request, cancellationToken);
++    }
++
+     public Task<FinanceSandboxAnomalyInjectionResponse?> GetSandboxAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+             ? Task.FromResult<FinanceSandboxAnomalyInjectionResponse?>(null)
+diff --git a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+index a5703fb..b4781d7 100644
+--- a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
++++ b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+@@ -4,6 +4,7 @@ namespace VirtualCompany.Web.Services;
+ public interface IFinanceSandboxAdminService
+ {
+     Task<FinanceSandboxDatasetGenerationViewModel?> GetDatasetGenerationAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<FinanceSandboxSeedGenerationViewModel> GenerateSeedDatasetAsync(FinanceSandboxSeedGenerationCommand command, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxAnomalyInjectionViewModel?> GetAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxSimulationControlsViewModel?> GetSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxToolExecutionVisibilityViewModel?> GetToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default);
+@@ -29,6 +30,25 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             AvailableProfiles = response.AvailableProfiles
+         };
+     }
++
++    public async Task<FinanceSandboxSeedGenerationViewModel> GenerateSeedDatasetAsync(FinanceSandboxSeedGenerationCommand command, CancellationToken cancellationToken = default)
++    {
++        var response = await _financeApiClient.GenerateSandboxSeedDatasetAsync(command.CompanyId, new FinanceSandboxSeedGenerationRequest
++        {
++            CompanyId = command.CompanyId,
++            SeedValue = command.SeedValue,
++            AnchorDateUtc = command.AnchorDateUtc,
++            GenerationMode = command.GenerationMode
++        }, cancellationToken);
++
++        return new FinanceSandboxSeedGenerationViewModel
++        {
++            Succeeded = response.Succeeded,
++            CreatedCount = response.CreatedCount,
++            UpdatedCount = response.UpdatedCount,
++            Message = response.Message,
++            Errors = response.Errors.Select(MapSeedGenerationIssue).ToArray(),
++            Warnings = response.Warnings.Select(MapSeedGenerationIssue).ToArray(),
++            ReferentialIntegrityErrors = response.ReferentialIntegrityErrors.Select(MapSeedGenerationIssue).ToArray()
++        };
++    }
+ 
+     public async Task<FinanceSandboxAnomalyInjectionViewModel?> GetAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken = default)
+     {
+@@ -85,6 +105,12 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             OccurredAtUtc = response.OccurredAtUtc
+         };
+ }
++
++    private static FinanceSandboxSeedGenerationIssueViewModel MapSeedGenerationIssue(FinanceSandboxSeedGenerationIssueResponse response) =>
++        new()
++        {
++            Code = response.Code,
++            Message = response.Message
++        };
+ 
+ public sealed record FinanceSandboxSectionState<TSection>(bool IsLoading, string? ErrorMessage, TSection? Value)
+     where TSection : class
+@@ -96,6 +122,27 @@ public sealed record FinanceSandboxSectionState<TSection>(bool IsLoading, string
+     public static FinanceSandboxSectionState<TSection> Failure(string errorMessage) => new(false, errorMessage, null);
+ }
+ 
++public sealed class FinanceSandboxSeedGenerationCommand
++{
++    public Guid CompanyId { get; set; }
++    public int SeedValue { get; set; }
++    public DateTime AnchorDateUtc { get; set; }
++    public string GenerationMode { get; set; } = FinanceSandboxSeedGenerationModes.Refresh;
++}
++
++public sealed class FinanceSandboxSeedGenerationViewModel
++{
++    public bool Succeeded { get; set; }
++    public int CreatedCount { get; set; }
++    public int UpdatedCount { get; set; }
++    public string Message { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceSandboxSeedGenerationIssueViewModel> Errors { get; set; } = [];
++    public IReadOnlyList<FinanceSandboxSeedGenerationIssueViewModel> Warnings { get; set; } = [];
++    public IReadOnlyList<FinanceSandboxSeedGenerationIssueViewModel> ReferentialIntegrityErrors { get; set; } = [];
++}
++
++public sealed class FinanceSandboxSeedGenerationIssueViewModel
++{
++    public string Code { get; set; } = string.Empty;
++    public string Message { get; set; } = string.Empty;
++}
++
+ public sealed class FinanceSandboxDatasetGenerationViewModel
+ {
+     public string ProfileName { get; set; } = string.Empty;
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index e2fd7c4..035869c 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -495,6 +495,43 @@ public sealed class InternalFinanceController : ControllerBase
+                     request.AnomalyScenarioProfile),
+                 cancellationToken));
+ 
++    [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
++    [HttpPost("sandbox-admin/seed-generation")]
++    public async Task<ActionResult<FinanceSandboxSeedGenerationResponse>> GenerateSandboxSeedDatasetAsync(
++        Guid companyId,
++        [FromBody] FinanceSandboxSeedGenerationRequest request,
++        CancellationToken cancellationToken)
++    {
++        var validationErrors = ValidateSandboxSeedGenerationRequest(companyId, request);
++        if (validationErrors.Count > 0)
++        {
++            return ValidationProblem(new ValidationProblemDetails(validationErrors)
++            {
++                Title = "Finance validation failed",
++                Detail = "Update the seed generation request and try again.",
++                Status = StatusCodes.Status400BadRequest,
++                Instance = HttpContext.Request.Path
++            });
++        }
++
++        var normalizedMode = FinanceSandboxSeedGenerationModes.Normalize(request.GenerationMode);
++        var command = normalizedMode switch
++        {
++            FinanceSandboxSeedGenerationModes.Refresh => new FinanceSeedBootstrapCommand(
++                companyId,
++                request.SeedValue,
++                request.AnchorDateUtc,
++                ReplaceExisting: true,
++                InjectAnomalies: false),
++            FinanceSandboxSeedGenerationModes.RefreshWithAnomalies => new FinanceSeedBootstrapCommand(
++                companyId,
++                request.SeedValue,
++                request.AnchorDateUtc,
++                ReplaceExisting: true,
++                InjectAnomalies: true,
++                AnomalyScenarioProfile: "baseline"),
++            _ => throw new InvalidOperationException("Unsupported sandbox seed generation mode.")
++        };
++
++        return await ExecuteWriteAsync(async () => BuildSandboxSeedGenerationResponse(await _financeSeedBootstrapService.GenerateAsync(command, cancellationToken), normalizedMode));
++    }
++
+     [HttpGet("simulation/clock")]
+     public async Task<ActionResult<CompanySimulationClockDto>> GetSimulationClockAsync(
+         Guid companyId,
+@@ -569,6 +606,95 @@ public sealed class InternalFinanceController : ControllerBase
+             () => BuildSandboxDomainEventsAsync(companyId, cancellationToken),
+             "Finance sandbox domain events were not found.");
+ 
++    private static FinanceSandboxSeedGenerationResponse BuildSandboxSeedGenerationResponse(
++        FinanceSeedBootstrapResultDto result,
++        string generationMode)
++    {
++        var referentialIntegrityErrors = result.ValidationErrors
++            .Where(x => IsReferentialIntegrityCode(x.Code))
++            .Select(MapSeedGenerationIssue)
++            .ToArray();
++        var validationErrors = result.ValidationErrors
++            .Where(x => !IsReferentialIntegrityCode(x.Code))
++            .Select(MapSeedGenerationIssue)
++            .ToArray();
++        var warnings = result.Anomalies
++            .Select(MapSeedGenerationWarning)
++            .ToArray();
++        var succeeded = result.ValidationErrors.Count == 0;
++
++        return new FinanceSandboxSeedGenerationResponse
++        {
++            CompanyId = result.CompanyId,
++            SeedValue = result.SeedValue,
++            AnchorDateUtc = result.WindowEndUtc,
++            GenerationMode = generationMode,
++            Succeeded = succeeded,
++            CreatedCount = succeeded ? CountCreatedSeedRecords(result) : 0,
++            UpdatedCount = 0,
++            Message = succeeded
++                ? "Seed dataset generated successfully. Review the summary and validation results below."
++                : "Seed dataset generation returned validation issues. Resolve the reported problems and retry the request.",
++            Errors = validationErrors,
++            Warnings = warnings,
++            ReferentialIntegrityErrors = referentialIntegrityErrors
++        };
++    }
++
++    private static Dictionary<string, string[]> ValidateSandboxSeedGenerationRequest(
++        Guid companyId,
++        FinanceSandboxSeedGenerationRequest request)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++
++        if (request.CompanyId == Guid.Empty)
++        {
++            errors[nameof(FinanceSandboxSeedGenerationRequest.CompanyId)] = ["Select a company before generating a seed dataset."];
++        }
++        else if (request.CompanyId != companyId)
++        {
++            errors[nameof(FinanceSandboxSeedGenerationRequest.CompanyId)] = ["The selected company does not match the active company context."];
++        }
++
++        if (request.SeedValue <= 0)
++        {
++            errors[nameof(FinanceSandboxSeedGenerationRequest.SeedValue)] = ["Enter a positive seed value."];
++        }
++
++        if (request.AnchorDateUtc == default)
++        {
++            errors[nameof(FinanceSandboxSeedGenerationRequest.AnchorDateUtc)] = ["Select an anchor date for the generated dataset."];
++        }
++
++        if (!FinanceSandboxSeedGenerationModes.IsSupported(request.GenerationMode))
++        {
++            errors[nameof(FinanceSandboxSeedGenerationRequest.GenerationMode)] = ["Select a supported generation mode."];
++        }
++
++        return errors;
++    }
++
++    private static int CountCreatedSeedRecords(FinanceSeedBootstrapResultDto result) =>
++        result.AccountCount +
++        result.CounterpartyCount +
++        result.InvoiceCount +
++        result.BillCount +
++        result.RecurringExpenseCount +
++        result.TransactionCount +
++        result.BalanceCount +
++        result.DocumentCount +
++        result.Anomalies.Count +
++        1;
++
++    private static FinanceSandboxSeedGenerationIssueResponse MapSeedGenerationIssue(FinanceSeedValidationErrorDto error) =>
++        new()
++        {
++            Code = error.Code,
++            Message = error.Message
++        };
++
++    private static FinanceSandboxSeedGenerationIssueResponse MapSeedGenerationWarning(FinanceSeedAnomalyDto anomaly) =>
++        new()
++        {
++            Code = $"anomaly.{anomaly.AnomalyType}",
++            Message = $"Injected validation scenario '{HumanizeReviewToken(anomaly.AnomalyType)}' affecting {anomaly.AffectedRecordIds.Count} record(s)."
++        };
++
+     private async Task<FinanceSandboxDatasetGenerationResponse?> BuildSandboxDatasetGenerationAsync(
+         Guid companyId,
+         CancellationToken cancellationToken)
+@@ -784,6 +910,28 @@ public sealed class InternalFinanceController : ControllerBase
+                 .ToArray()
+         };
+     }
++
++    private static bool IsReferentialIntegrityCode(string? code)
++    {
++        if (string.IsNullOrWhiteSpace(code))
++        {
++            return false;
++        }
++
++        return code.StartsWith("accounts.", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("counterparties.", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("documents.", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("invoices.counterparty", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("invoices.document", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("bills.counterparty", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("bills.document", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("recurring.supplier", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("recurring.category", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("transactions.account", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("transactions.counterparty", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("transactions.invoice", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("transactions.bill", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("transactions.document", StringComparison.OrdinalIgnoreCase) ||
++               code.StartsWith("balances.account", StringComparison.OrdinalIgnoreCase);
++    }
+ 
+     private static FinanceInvoiceReviewListItemResponse MapInvoiceReviewListItem(
+         FinanceInvoiceDto invoice,
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs b/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs
+index 2f76478..308d882 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs
+@@ -2,6 +2,7 @@ using System.Net;
+ using System.Net.Http.Json;
+ using VirtualCompany.Web.Services;
+ using Xunit;
++using VirtualCompany.Shared;
+ 
+ namespace VirtualCompany.Api.Tests;
+ 
+@@ -31,6 +32,34 @@ public sealed class FinanceApiClientTenantContextTests
+         });
+     }
+ 
++    [Fact]
++    public async Task Seed_generation_mutation_includes_the_active_company_header_and_payload()
++    {
++        var companyId = Guid.NewGuid();
++        var request = new FinanceSandboxSeedGenerationRequest
++        {
++            CompanyId = companyId,
++            SeedValue = 302,
++            AnchorDateUtc = new DateTime(2026, 4, 15, 0, 0, 0, DateTimeKind.Utc),
++            GenerationMode = FinanceSandboxSeedGenerationModes.RefreshWithAnomalies
++        };
++        var handler = new RecordingSeedGenerationHttpMessageHandler();
++        using var httpClient = new HttpClient(handler)
++        {
++            BaseAddress = new Uri("http://localhost/")
++        };
++
++        var financeClient = new FinanceApiClient(httpClient);
++        await financeClient.GenerateSandboxSeedDatasetAsync(companyId, request);
++
++        Assert.NotNull(handler.CapturedRequest);
++        Assert.Equal($"/internal/companies/{companyId}/finance/sandbox-admin/seed-generation", handler.CapturedRequest!.Path);
++        Assert.Equal(companyId.ToString(), handler.CapturedRequest.CompanyHeaderValue);
++        Assert.NotNull(handler.CapturedRequest.Payload);
++        Assert.Equal(companyId, handler.CapturedRequest.Payload!.CompanyId);
++        Assert.Equal(302, handler.CapturedRequest.Payload.SeedValue);
++        Assert.Equal(FinanceSandboxSeedGenerationModes.RefreshWithAnomalies, handler.CapturedRequest.Payload.GenerationMode);
++    }
++
+     private sealed class RecordingFinanceHttpMessageHandler : HttpMessageHandler
+     {
+         private readonly Guid _companyId;
+@@ -136,6 +165,43 @@ public sealed class FinanceApiClientTenantContextTests
+                 Content = JsonContent.Create(payload)
+             };
+     }
++
++    private sealed class RecordingSeedGenerationHttpMessageHandler : HttpMessageHandler
++    {
++        public CapturedSeedGenerationRequest? CapturedRequest { get; private set; }
++
++        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
++        {
++            CapturedRequest = new CapturedSeedGenerationRequest(
++                request.RequestUri?.AbsolutePath ?? string.Empty,
++                request.Headers.TryGetValues("X-Company-Id", out var values) ? values.Single() : null,
++                request.Content is null ? null : await request.Content.ReadFromJsonAsync<FinanceSandboxSeedGenerationRequest>(cancellationToken: cancellationToken));
++
++            return new HttpResponseMessage(HttpStatusCode.OK)
++            {
++                Content = JsonContent.Create(new FinanceSandboxSeedGenerationResponse
++                {
++                    CompanyId = CapturedRequest.Payload?.CompanyId ?? Guid.Empty,
++                    SeedValue = CapturedRequest.Payload?.SeedValue ?? 0,
++                    AnchorDateUtc = CapturedRequest.Payload?.AnchorDateUtc ?? DateTime.UtcNow,
++                    GenerationMode = CapturedRequest.Payload?.GenerationMode ?? string.Empty,
++                    Succeeded = true,
++                    CreatedCount = 42,
++                    UpdatedCount = 0,
++                    Message = "Seed dataset generated successfully."
++                })
++            };
++        }
++    }
+ 
+     private sealed record CapturedRequest(
+         string Path,
+         string PathPrefix,
+         string? CompanyHeaderValue);
++
++    private sealed record CapturedSeedGenerationRequest(
++        string Path,
++        string? CompanyHeaderValue,
++        FinanceSandboxSeedGenerationRequest? Payload);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+index 887b275..e448308 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+@@ -3,6 +3,7 @@ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+ using Xunit;
++using VirtualCompany.Shared;
+ 
+ namespace VirtualCompany.Api.Tests;
+ 
+@@ -66,6 +67,31 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+         Assert.Contains("transactions", payload.CoverageSummary, StringComparison.OrdinalIgnoreCase);
+         Assert.NotEmpty(payload.AvailableProfiles);
+     }
++
++    [Fact]
++    public async Task Seed_generation_endpoint_returns_summary_counts_and_warnings_for_sandbox_admins()
++    {
++        var seed = await SeedSandboxAdminCompanyAsync();
++        var identity = seed.GetIdentity("owner");
++        using var client = CreateAuthenticatedClient(identity.Subject, identity.Email, identity.DisplayName);
++
++        var response = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/seed-generation",
++            new FinanceSandboxSeedGenerationRequest
++            {
++                CompanyId = seed.CompanyId,
++                SeedValue = 1919,
++                AnchorDateUtc = new DateTime(2026, 4, 15, 0, 0, 0, DateTimeKind.Utc),
++                GenerationMode = FinanceSandboxSeedGenerationModes.RefreshWithAnomalies
++            });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<FinanceSandboxSeedGenerationResponse>();
++        Assert.NotNull(payload);
++        Assert.True(payload!.Succeeded);
++        Assert.True(payload.CreatedCount > 0);
++        Assert.Equal(0, payload.UpdatedCount);
++        Assert.NotEmpty(payload.Warnings);
++    }
+ 
+     private async Task<SandboxAdminEndpointSeed> SeedSandboxAdminCompanyAsync()
+     {
+@@ -160,12 +186,4 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+                 displayName);
+         }
+     }
+-
+-    private sealed class FinanceSandboxDatasetGenerationResponse
+-    {
+-        public string ProfileName { get; set; } = string.Empty;
+-        public DateTime LastGeneratedUtc { get; set; }
+-        public string CoverageSummary { get; set; } = string.Empty;
+-        public List<string> AvailableProfiles { get; set; } = [];
+-    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+index a7af9d6..b4308f4 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+@@ -5,6 +5,7 @@ using Bunit.TestDoubles;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Web.Pages.Finance;
+ using VirtualCompany.Web.Services;
++using VirtualCompany.Shared;
+ using Xunit;
+ 
+ namespace VirtualCompany.Api.Tests;
+@@ -99,6 +100,106 @@ public sealed class FinanceSandboxAdminPageTests
+         Assert.Equal(1, sandboxService.DomainEventsCalls);
+     }
+ 
++    [Fact]
++    public void Sandbox_admin_page_submits_seed_generation_once_and_disables_duplicate_submissions_while_pending()
++    {
++        var companyId = Guid.Parse("2eecf389-2c65-4976-a636-4259fa8fd22b");
++        var generationSource = new TaskCompletionSource<FinanceSandboxSeedGenerationViewModel>(TaskCreationOptions.RunContinuationsAsynchronously);
++        FinanceSandboxSeedGenerationCommand? capturedCommand = null;
++        var sandboxService = new StubFinanceSandboxAdminService
++        {
++            OnGenerateSeedDatasetAsync = (command, _) =>
++            {
++                capturedCommand = command;
++                return generationSource.Task;
++            }
++        };
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId));
++
++        cut.Find("#seed-value").Change("913");
++        cut.Find("#anchor-date").Change("2026-04-15");
++        cut.Find("#generation-mode").Change(FinanceSandboxSeedGenerationModes.RefreshWithAnomalies);
++        cut.Find("form").Submit();
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.True(cut.Find("#seed-generate-submit").HasAttribute("disabled"));
++            Assert.Contains("Generating dataset...", cut.Markup);
++        });
++
++        cut.Find("form").Submit();
++
++        Assert.Equal(1, sandboxService.GenerateSeedDatasetCalls);
++        Assert.NotNull(capturedCommand);
++        Assert.Equal(companyId, capturedCommand!.CompanyId);
++        Assert.Equal(913, capturedCommand.SeedValue);
++        Assert.Equal(new DateTime(2026, 4, 15, 0, 0, 0, DateTimeKind.Utc), capturedCommand.AnchorDateUtc);
++        Assert.Equal(FinanceSandboxSeedGenerationModes.RefreshWithAnomalies, capturedCommand.GenerationMode);
++    }
++
++    [Fact]
++    public void Sandbox_admin_page_renders_seed_generation_summary_after_successful_submission()
++    {
++        var companyId = Guid.Parse("22d5a332-f4dc-4f56-bf95-0019901e1621");
++        var sandboxService = new StubFinanceSandboxAdminService
++        {
++            OnGenerateSeedDatasetAsync = (_, _) => Task.FromResult(new FinanceSandboxSeedGenerationViewModel
++            {
++                Succeeded = true,
++                CreatedCount = 87,
++                UpdatedCount = 0,
++                Message = "Seed dataset generated successfully.",
++                Errors = [],
++                Warnings = [],
++                ReferentialIntegrityErrors = []
++            })
++        };
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId));
++
++        cut.Find("form").Submit();
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Seed dataset generated successfully.", cut.Markup);
++            Assert.Contains(">87<", cut.Markup);
++            Assert.Contains(">0<", cut.Markup);
++            Assert.Contains("Validation completed without errors or warnings.", cut.Markup);
++        });
++    }
++
++    [Fact]
++    public void Sandbox_admin_page_renders_validation_results_inline_when_generation_returns_issues()
++    {
++        var companyId = Guid.Parse("f93040a4-8457-4dfe-a792-0f71d4524c6f");
++        var sandboxService = new StubFinanceSandboxAdminService
++        {
++            OnGenerateSeedDatasetAsync = (_, _) => Task.FromResult(new FinanceSandboxSeedGenerationViewModel
++            {
++                Succeeded = false,
++                CreatedCount = 0,
++                UpdatedCount = 0,
++                Message = "Seed dataset generation returned validation issues. Resolve the reported problems and retry the request.",
++                Errors = [new FinanceSandboxSeedGenerationIssueViewModel { Code = "transactions.window", Message = "Transactions must be inside the seeded history window." }],
++                Warnings = [new FinanceSandboxSeedGenerationIssueViewModel { Code = "anomaly.duplicate_vendor_charge", Message = "Injected validation scenario 'duplicate vendor charge' affecting 2 record(s)." }],
++                ReferentialIntegrityErrors = [new FinanceSandboxSeedGenerationIssueViewModel { Code = "transactions.account", Message = "Transactions must reference valid accounts." }]
++            })
++        };
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId));
++
++        cut.Find("form").Submit();
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Referential integrity errors", cut.Markup);
++            Assert.Contains("Transactions must reference valid accounts.", cut.Markup);
++            Assert.Contains("Validation errors", cut.Markup);
++            Assert.Contains("Transactions must be inside the seeded history window.", cut.Markup);
++            Assert.Contains("Warnings", cut.Markup);
++            Assert.Contains("Injected validation scenario 'duplicate vendor charge' affecting 2 record(s).", cut.Markup);
++        });
++    }
++
++    [Fact]
++    public void Sandbox_admin_page_shows_inline_error_when_seed_generation_api_fails()
++    {
++        var companyId = Guid.Parse("2f212236-4943-4f9d-a323-dbb9f697020a");
++        var sandboxService = new StubFinanceSandboxAdminService
++        {
++            OnGenerateSeedDatasetAsync = (_, _) => throw new FinanceApiException("The web app could not reach the finance backend. Start the API project and retry the request.")
++        };
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId));
++
++        cut.Find("form").Submit();
++
++        cut.WaitForAssertion(() =>
++            Assert.Contains("The web app could not reach the finance backend. Start the API project and retry the request.", cut.Markup));
++    }
++
+     private static SandboxAdminHarness CreateHarness(Guid companyId, string membershipRole, StubFinanceSandboxAdminService sandboxService)
+     {
+         var context = new TestContext();
+@@ -170,6 +271,7 @@ public sealed class FinanceSandboxAdminPageTests
+         public Func<Guid, CancellationToken, Task<FinanceSandboxSimulationControlsViewModel?>>? OnGetSimulationControlsAsync { get; init; }
+         public Func<Guid, CancellationToken, Task<FinanceSandboxToolExecutionVisibilityViewModel?>>? OnGetToolExecutionVisibilityAsync { get; init; }
+         public Func<Guid, CancellationToken, Task<FinanceSandboxDomainEventsViewModel?>>? OnGetDomainEventsAsync { get; init; }
++        public Func<FinanceSandboxSeedGenerationCommand, CancellationToken, Task<FinanceSandboxSeedGenerationViewModel>>? OnGenerateSeedDatasetAsync { get; init; }
+ 
+         public int DatasetGenerationCalls { get; private set; }
+         public int AnomalyInjectionCalls { get; private set; }
+@@ -177,6 +279,7 @@ public sealed class FinanceSandboxAdminPageTests
+         public int ToolExecutionVisibilityCalls { get; private set; }
+         public int DomainEventsCalls { get; private set; }
+ 
++        public int GenerateSeedDatasetCalls { get; private set; }
+         public int TotalCalls =>
+             DatasetGenerationCalls +
+             AnomalyInjectionCalls +
+@@ -214,6 +317,14 @@ public sealed class FinanceSandboxAdminPageTests
+                 ? OnGetDomainEventsAsync(companyId, cancellationToken)
+                 : Task.FromResult<FinanceSandboxDomainEventsViewModel?>(null);
+         }
++
++        public Task<FinanceSandboxSeedGenerationViewModel> GenerateSeedDatasetAsync(FinanceSandboxSeedGenerationCommand command, CancellationToken cancellationToken = default)
++        {
++            GenerateSeedDatasetCalls++;
++            return OnGenerateSeedDatasetAsync is not null
++                ? OnGenerateSeedDatasetAsync(command, cancellationToken)
++                : Task.FromResult(new FinanceSandboxSeedGenerationViewModel());
++        }
+     }
+ 
+     private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler
+@@ -228,4 +339,4 @@ public sealed class FinanceSandboxAdminPageTests
+         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+             _handler(request, cancellationToken);
+     }
+-}
++}
+END_OF_PATCH

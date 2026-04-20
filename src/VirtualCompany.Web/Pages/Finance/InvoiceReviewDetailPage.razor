@@ -1,0 +1,27 @@
+@page "/finance/reviews/{InvoiceId:guid}"
+@inherits FinancePageBase
+
+<PageTitle>Invoice Review Detail</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Invoice review detail"
+    Description="Review the recommendation result and available finance actions for a single invoice."
+    LoadingMessage="Loading invoice review detail...">
+    <InvoiceReviewDetailContent
+        IsLoading="@IsDetailLoading"
+        IsSubmitting="@IsSubmittingAction"
+        ErrorMessage="@(DetailErrorMessage)"
+        StatusMessage="@ActionStatusMessage"
+        Detail="@ReviewDetail"
+        CompanyId="@AccessState.CompanyId"
+        BackToListHref="@BackToListHref"
+        SourceInvoiceHref="@SourceInvoiceHref"
+        RelatedApprovalHref="@RelatedApprovalHref"
+        OnRetry="@ReloadAsync"
+        OnApprove="@ApproveAsync"
+        OnReject="@RejectAsync"
+        OnSendForFollowUp="@SendForFollowUpAsync" />
+</FinancePageLayout>

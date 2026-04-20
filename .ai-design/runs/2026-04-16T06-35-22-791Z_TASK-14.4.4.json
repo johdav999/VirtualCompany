@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-14.4.4",
+  "promptPath": ".ai-design/prompts/TASK-14.4.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T06:35:22.791Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T06-35-22-791Z_TASK-14.4.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T06-35-22-791Z_TASK-14.4.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T06:38:34.729Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "Limit: 25),\n+            CancellationToken.None);\n+        Assert.NotEmpty(bills);\n+        Assert.All(bills, bill =>\n+        {\n+            Assert.False(string.IsNullOrWhiteSpace(bill.BillNumber));\n+            Assert.False(string.IsNullOrWhiteSpace(bill.Status));\n+        });\n+\n+        var balances = await provider.GetBalancesAsync(\n+            new GetFinanceBalancesQuery(companyId, new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc)),\n+            CancellationToken.None);\n+        Assert.NotEmpty(balances);\n+        Assert.All(balances, balance =>\n+        {\n+            Assert.False(string.IsNullOrWhiteSpace(balance.AccountCode));\n+            Assert.False(string.IsNullOrWhiteSpace(balance.Currency));\n+        });\n+\n         var categoryRecommendation = await provider.RecommendTransactionCategoryAsync(\n             CreateFinanceToolRequest(\n                 companyId,\n@@ -176,6 +229,20 @@ public sealed class FinanceToolProviderBoundaryTests\n                 item.Value,\n                 StringComparer.OrdinalIgnoreCase));\n \n+    private static string[] GetOrchestrationBoundaryFiles()\n+    {\n+        var repositoryRoot = FindRepositoryRoot();\n+        return Directory\n+            .EnumerateFiles(Path.Combine(repositoryRoot, \"src\", \"VirtualCompany.Application\", \"Orchestration\"), \"*.cs\", SearchOption.AllDirectories)\n+            .Concat(\n+            [\n+                Path.Combine(repositoryRoot, \"src\", \"VirtualCompany.Application\", \"Agents\", \"AgentToolOrchestrationExecutor.cs\"),\n+                Path.Combine(repositoryRoot, \"src\", \"VirtualCompany.Application\", \"Agents\", \"CompanyAgentToolExecutionContracts.cs\"),\n+                Path.Combine(repositoryRoot, \"src\", \"VirtualCompany.Infrastructure\", \"Companies\", \"InternalCompanyToolContract.cs\")\n+            ])\n+            .Where(File.Exists)\n+            .ToArray();\n+    }\n+\n     private static string FindRepositoryRoot()\n     {\n         var directory = new DirectoryInfo(AppContext.BaseDirectory);\nEND_OF_PATCH\n",
+  "stderrTail": "      CancellationToken.None);\n+        Assert.NotEmpty(bills);\n+        Assert.All(bills, bill =>\n+        {\n+            Assert.False(string.IsNullOrWhiteSpace(bill.BillNumber));\n+            Assert.False(string.IsNullOrWhiteSpace(bill.Status));\n+        });\n+\n+        var balances = await provider.GetBalancesAsync(\n+            new GetFinanceBalancesQuery(companyId, new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc)),\n+            CancellationToken.None);\n+        Assert.NotEmpty(balances);\n+        Assert.All(balances, balance =>\n+        {\n+            Assert.False(string.IsNullOrWhiteSpace(balance.AccountCode));\n+            Assert.False(string.IsNullOrWhiteSpace(balance.Currency));\n+        });\n+\n         var categoryRecommendation = await provider.RecommendTransactionCategoryAsync(\n             CreateFinanceToolRequest(\n                 companyId,\n@@ -176,6 +229,20 @@ public sealed class FinanceToolProviderBoundaryTests\n                 item.Value,\n                 StringComparer.OrdinalIgnoreCase));\n \n+    private static string[] GetOrchestrationBoundaryFiles()\n+    {\n+        var repositoryRoot = FindRepositoryRoot();\n+        return Directory\n+            .EnumerateFiles(Path.Combine(repositoryRoot, \"src\", \"VirtualCompany.Application\", \"Orchestration\"), \"*.cs\", SearchOption.AllDirectories)\n+            .Concat(\n+            [\n+                Path.Combine(repositoryRoot, \"src\", \"VirtualCompany.Application\", \"Agents\", \"AgentToolOrchestrationExecutor.cs\"),\n+                Path.Combine(repositoryRoot, \"src\", \"VirtualCompany.Application\", \"Agents\", \"CompanyAgentToolExecutionContracts.cs\"),\n+                Path.Combine(repositoryRoot, \"src\", \"VirtualCompany.Infrastructure\", \"Companies\", \"InternalCompanyToolContract.cs\")\n+            ])\n+            .Where(File.Exists)\n+            .ToArray();\n+    }\n+\n     private static string FindRepositoryRoot()\n     {\n         var directory = new DirectoryInfo(AppContext.BaseDirectory);\nEND_OF_PATCH\ntokens used\n62,611\n",
+  "verbosityMode": "summary"
+}

@@ -80,6 +80,8 @@ public sealed class Company
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         Name = NormalizeRequired(name, nameof(name), 200);
         CreatedUtc = DateTime.UtcNow;
+        FinanceSeedStatus = FinanceSeedingState.NotSeeded;
+        FinanceSeedStatusUpdatedUtc = CreatedUtc;
         UpdatedUtc = CreatedUtc;
     }
 
@@ -97,6 +99,9 @@ public sealed class Company
     public int? OnboardingCurrentStep { get; private set; }
     public string? OnboardingTemplateId { get; private set; }
     public CompanyOnboardingStatus OnboardingStatus { get; private set; } = CompanyOnboardingStatus.NotStarted;
+    public FinanceSeedingState FinanceSeedStatus { get; private set; } = FinanceSeedingState.NotSeeded;
+    public DateTime FinanceSeedStatusUpdatedUtc { get; private set; }
+    public DateTime? FinanceSeededUtc { get; private set; }
     public DateTime? OnboardingLastSavedUtc { get; private set; }
     public DateTime? OnboardingCompletedUtc { get; private set; }
     public DateTime? OnboardingAbandonedUtc { get; private set; }
@@ -177,6 +182,19 @@ public sealed class Company
         UpdatedUtc = OnboardingAbandonedUtc.Value;
     }
 
+    public void SetFinanceSeedStatus(FinanceSeedingState status, DateTime? statusUpdatedUtc = null, DateTime? seededUtc = null)
+    {
+        FinanceSeedingStateValues.EnsureSupported(status, nameof(status));
+
+        var normalizedStatusUpdatedUtc = NormalizeUtc(statusUpdatedUtc ?? DateTime.UtcNow);
+        FinanceSeedStatus = status;
+        FinanceSeedStatusUpdatedUtc = normalizedStatusUpdatedUtc;
+        FinanceSeededUtc = status == FinanceSeedingState.Seeded
+            ? NormalizeUtc(seededUtc ?? normalizedStatusUpdatedUtc)
+            : null;
+        UpdatedUtc = normalizedStatusUpdatedUtc;
+    }
+
     private static string NormalizeRequired(string value, string name, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -208,6 +226,11 @@ public sealed class Company
 
         return trimmed;
     }
+
+    private static DateTime NormalizeUtc(DateTime value) =>
+        value.Kind == DateTimeKind.Utc
+            ? value
+            : value.ToUniversalTime();
 }
 
 public sealed class CompanyMembership

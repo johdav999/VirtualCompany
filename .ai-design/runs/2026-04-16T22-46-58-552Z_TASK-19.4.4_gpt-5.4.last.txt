@@ -1,0 +1,584 @@
+diff --git a/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs b/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
+--- a/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
++++ b/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
+@@ -215,6 +215,7 @@ public sealed class FinanceTransparencyEventDetailResponse
+     public string EntityId { get; set; } = string.Empty;
+     public string EntityReference { get; set; } = string.Empty;
+     public string PayloadSummary { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceTransparencyRelatedRecordResponse> RelatedRecords { get; set; } = [];
+     public IReadOnlyList<FinanceTransparencyTriggerTraceItemResponse> TriggerConsumptionTrace { get; set; } = [];
+ }
+ 
+@@ -261,10 +262,21 @@ public sealed class FinanceTransparencyToolExecutionDetailResponse
+     public string OriginatingEntityReference { get; set; } = string.Empty;
+     public Guid? TaskId { get; set; }
+     public Guid? WorkflowInstanceId { get; set; }
++    public IReadOnlyList<FinanceTransparencyRelatedRecordResponse> RelatedRecords { get; set; } = [];
+ }
+ 
+ public sealed class FinanceTransparencyTriggerTraceItemResponse
+ {
+     public string SourceType { get; set; } = string.Empty;
+     public string SourceId { get; set; } = string.Empty;
+     public string DisplayName { get; set; } = string.Empty;
+     public string Reference { get; set; } = string.Empty;
+ }
++
++public sealed class FinanceTransparencyRelatedRecordResponse
++{
++    public string RelationshipType { get; set; } = string.Empty;
++    public string TargetType { get; set; } = string.Empty;
++    public string TargetId { get; set; } = string.Empty;
++    public string DisplayText { get; set; } = string.Empty;
++    public string Reference { get; set; } = string.Empty;
++    public string ResolutionSource { get; set; } = string.Empty;
++}
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -1398,6 +1398,8 @@ public sealed class InternalFinanceController : ControllerBase
+         {
+             return null;
+         }
++
++        var relatedRecords = await BuildExecutionRelatedRecordsAsync(companyId, attempt, cancellationToken);
+ 
+         var (originatingEntityType, originatingEntityId, originatingEntityReference) = ResolveOriginatingEntity(attempt);
+         return new FinanceTransparencyToolExecutionDetailResponse
+@@ -1415,7 +1417,8 @@ public sealed class InternalFinanceController : ControllerBase
+             OriginatingFinanceActionDisplay = BuildOriginatingFinanceActionDisplay(originatingEntityReference),
+             OriginatingEntityId = originatingEntityId,
+             OriginatingEntityReference = originatingEntityReference,
+             TaskId = attempt.TaskId,
+-            WorkflowInstanceId = attempt.WorkflowInstanceId
++            WorkflowInstanceId = attempt.WorkflowInstanceId,
++            RelatedRecords = relatedRecords
+         };
+     }
+@@ -1457,6 +1460,8 @@ public sealed class InternalFinanceController : ControllerBase
+         {
+             return null;
+         }
++
++        var relatedRecords = await BuildEventRelatedRecordsAsync(companyId, auditEvent, cancellationToken);
+ 
+         return new FinanceTransparencyEventDetailResponse
+         {
+@@ -1467,7 +1472,8 @@ public sealed class InternalFinanceController : ControllerBase
+             EntityType = auditEvent.TargetType,
+             EntityId = auditEvent.TargetId,
+             EntityReference = BuildAuditEntityReference(auditEvent),
+             PayloadSummary = BuildAuditPayloadSummary(auditEvent),
++            RelatedRecords = relatedRecords,
+             TriggerConsumptionTrace = BuildTriggerConsumptionTrace(auditEvent)
+         };
+     }
+@@ -1478,6 +1484,211 @@ public sealed class InternalFinanceController : ControllerBase
+             .Select(registration => registration.ToolName)
+             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+ 
++    private async Task<IReadOnlyList<FinanceTransparencyRelatedRecordResponse>> BuildExecutionRelatedRecordsAsync(
++        Guid companyId,
++        ToolExecutionAttempt attempt,
++        CancellationToken cancellationToken)
++    {
++        var records = new List<FinanceTransparencyRelatedRecordResponse>();
++
++        AddRelatedRecord(
++            records,
++            "approval_request",
++            "approval_request",
++            attempt.ApprovalRequestId?.ToString("D"),
++            BuildApprovalRequestDisplay(attempt.ApprovalRequestId),
++            attempt.ApprovalRequestId is Guid approvalRequestId ? $"Approval request {approvalRequestId:D}" : string.Empty,
++            "explicit_link");
++
++        if (attempt.TaskId is Guid taskId)
++        {
++            AddRelatedRecord(
++                records,
++                "task",
++                "work_task",
++                taskId.ToString("D"),
++                $"Task {taskId:D}",
++                "Execution task context",
++                "explicit_link");
++        }
++
++        if (attempt.WorkflowInstanceId is Guid workflowInstanceId)
++        {
++            AddRelatedRecord(
++                records,
++                "workflow",
++                "workflow_instance",
++                workflowInstanceId.ToString("D"),
++                $"Workflow {workflowInstanceId:D}",
++                "Workflow context",
++                "explicit_link");
++        }
++
++        var (originatingEntityType, originatingEntityId, originatingEntityReference) = ResolveOriginatingEntity(attempt);
++        AddRelatedRecord(
++            records,
++            "finance_action",
++            originatingEntityType,
++            originatingEntityId?.ToString("D"),
++            BuildOriginatingFinanceActionDisplay(originatingEntityReference),
++            originatingEntityReference,
++            "payload_reference");
++
++        var relatedEvents = await _dbContext.AuditEvents
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                (x.RelatedToolExecutionAttemptId == attempt.Id ||
++                 (!string.IsNullOrWhiteSpace(attempt.CorrelationId) &&
++                  x.CorrelationId != null &&
++                  x.CorrelationId == attempt.CorrelationId)))
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(12)
++            .ToListAsync(cancellationToken);
++
++        foreach (var auditEvent in relatedEvents)
++        {
++            AddRelatedRecord(
++                records,
++                "event",
++                "audit_event",
++                auditEvent.Id.ToString("D"),
++                auditEvent.Action,
++                BuildAuditEntityReference(auditEvent),
++                auditEvent.RelatedToolExecutionAttemptId == attempt.Id ? "audit_link" : "correlation");
++
++            AddRelatedRecord(
++                records,
++                "approval_request",
++                "approval_request",
++                auditEvent.RelatedApprovalRequestId?.ToString("D"),
++                BuildApprovalRequestDisplay(auditEvent.RelatedApprovalRequestId),
++                "Approval observed in related event",
++                "audit_link");
++
++            AddRelatedRecord(
++                records,
++                "finance_action",
++                auditEvent.TargetType,
++                auditEvent.TargetId,
++                BuildAuditEntityReference(auditEvent),
++                BuildAuditEntityReference(auditEvent),
++                string.IsNullOrWhiteSpace(auditEvent.CorrelationId) ? "audit_target" : "correlation");
++        }
++
++        return OrderRelatedRecords(records);
++    }
++
++    private async Task<IReadOnlyList<FinanceTransparencyRelatedRecordResponse>> BuildEventRelatedRecordsAsync(
++        Guid companyId,
++        AuditEvent auditEvent,
++        CancellationToken cancellationToken)
++    {
++        var records = new List<FinanceTransparencyRelatedRecordResponse>();
++
++        AddRelatedRecord(
++            records,
++            "affected_entity",
++            auditEvent.TargetType,
++            auditEvent.TargetId,
++            BuildAuditEntityReference(auditEvent),
++            BuildAuditEntityReference(auditEvent),
++            "audit_target");
++
++        AddRelatedRecord(
++            records,
++            "approval_request",
++            "approval_request",
++            auditEvent.RelatedApprovalRequestId?.ToString("D"),
++            BuildApprovalRequestDisplay(auditEvent.RelatedApprovalRequestId),
++            "Approval recorded directly on the event",
++            "explicit_link");
++
++        if (auditEvent.RelatedTaskId is Guid taskId)
++        {
++            AddRelatedRecord(
++                records,
++                "task",
++                "work_task",
++                taskId.ToString("D"),
++                $"Task {taskId:D}",
++                "Task context recorded on the event",
++                "explicit_link");
++        }
++
++        if (auditEvent.RelatedWorkflowInstanceId is Guid workflowInstanceId)
++        {
++            AddRelatedRecord(
++                records,
++                "workflow",
++                "workflow_instance",
++                workflowInstanceId.ToString("D"),
++                $"Workflow {workflowInstanceId:D}",
++                "Workflow context recorded on the event",
++                "explicit_link");
++        }
++
++        var relatedAttempts = await _dbContext.ToolExecutionAttempts
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                (x.Id == auditEvent.RelatedToolExecutionAttemptId ||
++                 (!string.IsNullOrWhiteSpace(auditEvent.CorrelationId) &&
++                  x.CorrelationId != null &&
++                  x.CorrelationId == auditEvent.CorrelationId)))
++            .OrderByDescending(x => x.ExecutedUtc ?? x.CompletedUtc ?? x.StartedUtc)
++            .Take(12)
++            .ToListAsync(cancellationToken);
++
++        foreach (var attempt in relatedAttempts)
++        {
++            AddRelatedRecord(
++                records,
++                "tool_execution",
++                "tool_execution",
++                attempt.Id.ToString("D"),
++                BuildToolExecutionDisplay(attempt),
++                BuildToolExecutionReference(attempt),
++                auditEvent.RelatedToolExecutionAttemptId == attempt.Id ? "explicit_link" : "correlation");
++
++            AddRelatedRecord(
++                records,
++                "approval_request",
++                "approval_request",
++                attempt.ApprovalRequestId?.ToString("D"),
++                BuildApprovalRequestDisplay(attempt.ApprovalRequestId),
++                "Approval attached to related tool execution",
++                "execution_link");
++
++            var (originatingEntityType, originatingEntityId, originatingEntityReference) = ResolveOriginatingEntity(attempt);
++            AddRelatedRecord(
++                records,
++                "finance_action",
++                originatingEntityType,
++                originatingEntityId?.ToString("D"),
++                BuildOriginatingFinanceActionDisplay(originatingEntityReference),
++                originatingEntityReference,
++                "execution_payload");
++        }
++
++        return OrderRelatedRecords(records);
++    }
++
++    private static void AddRelatedRecord(
++        ICollection<FinanceTransparencyRelatedRecordResponse> records,
++        string relationshipType,
++        string? targetType,
++        string? targetId,
++        string? displayText,
++        string? reference,
++        string resolutionSource)
++    {
++        if (string.IsNullOrWhiteSpace(targetType) || string.IsNullOrWhiteSpace(targetId))
++        {
++            return;
++        }
++
++        var normalizedTargetType = targetType.Trim();
++        var normalizedTargetId = targetId.Trim();
++        if (records.Any(x =>
++                string.Equals(x.RelationshipType, relationshipType, StringComparison.OrdinalIgnoreCase) &&
++                string.Equals(x.TargetType, normalizedTargetType, StringComparison.OrdinalIgnoreCase) &&
++                string.Equals(x.TargetId, normalizedTargetId, StringComparison.OrdinalIgnoreCase)))
++        {
++            return;
++        }
++
++        records.Add(new FinanceTransparencyRelatedRecordResponse
++        {
++            RelationshipType = relationshipType,
++            TargetType = normalizedTargetType,
++            TargetId = normalizedTargetId,
++            DisplayText = string.IsNullOrWhiteSpace(displayText) ? $"{NormalizeTransparencyToken(normalizedTargetType)} {normalizedTargetId}" : displayText.Trim(),
++            Reference = string.IsNullOrWhiteSpace(reference) ? string.Empty : TruncateSummary(reference.Trim(), 180),
++            ResolutionSource = resolutionSource
++        });
++    }
++
+     private static bool IsFinanceToolExecution(ToolExecutionAttempt attempt, HashSet<string> financeToolNames) =>
+         string.Equals(attempt.Scope, "finance", StringComparison.OrdinalIgnoreCase) ||
+         financeToolNames.Contains(attempt.ToolName);
+@@ -1573,6 +1784,31 @@ public sealed class InternalFinanceController : ControllerBase
+     private static string BuildOriginatingFinanceActionDisplay(string? originatingEntityReference) =>
+         string.IsNullOrWhiteSpace(originatingEntityReference) ? "Not available" : originatingEntityReference.Trim();
+-    }
++
++    private static string BuildToolExecutionDisplay(ToolExecutionAttempt attempt)
++    {
++        var version = string.IsNullOrWhiteSpace(attempt.ToolVersion) ? "unversioned" : attempt.ToolVersion;
++        return $"{attempt.ToolName} ({version})";
++    }
++
++    private static string BuildToolExecutionReference(ToolExecutionAttempt attempt) =>
++        TruncateSummary(
++            $"{NormalizeTransparencyToken(attempt.Status.ToString())} at {(attempt.ExecutedUtc ?? attempt.CompletedUtc ?? attempt.StartedUtc):u}",
++            120);
++
++    private static IReadOnlyList<FinanceTransparencyRelatedRecordResponse> OrderRelatedRecords(
++        IEnumerable<FinanceTransparencyRelatedRecordResponse> records) =>
++        records
++            .OrderBy(record => record.RelationshipType switch
++            {
++                "affected_entity" => 0,
++                "finance_action" => 1,
++                "approval_request" => 2,
++                "tool_execution" => 3,
++                "event" => 4,
++                "workflow" => 5,
++                "task" => 6,
++                _ => 99
++            })
++            .ThenBy(record => record.DisplayText, StringComparer.OrdinalIgnoreCase)
++            .ToArray();
+ 
+     private static string SummarizePayload(IReadOnlyDictionary<string, JsonNode?> payload, IReadOnlyList<string> preferredKeys)
+     {
+diff --git a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+--- a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
++++ b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+@@ -260,7 +260,8 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             OriginatingFinanceActionDisplay = response.OriginatingFinanceActionDisplay,
+             OriginatingEntityId = response.OriginatingEntityId,
+             OriginatingEntityReference = response.OriginatingEntityReference,
+             TaskId = response.TaskId,
+-            WorkflowInstanceId = response.WorkflowInstanceId
++            WorkflowInstanceId = response.WorkflowInstanceId,
++            RelatedRecords = response.RelatedRecords.Select(MapTransparencyRelatedRecord).ToArray()
+         };
+ 
+     private static FinanceTransparencyEventListItemViewModel MapTransparencyEventItem(FinanceTransparencyEventListItemResponse response) =>
+@@ -347,7 +348,8 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             EntityId = response.EntityId,
+             EntityReference = response.EntityReference,
+             PayloadSummary = response.PayloadSummary,
++            RelatedRecords = response.RelatedRecords.Select(MapTransparencyRelatedRecord).ToArray(),
+             TriggerConsumptionTrace = response.TriggerConsumptionTrace.Select(MapTransparencyTraceItem).ToArray()
+         };
++
++    private static FinanceTransparencyRelatedRecordViewModel MapTransparencyRelatedRecord(FinanceTransparencyRelatedRecordResponse response) =>
++        new()
++        {
++            RelationshipType = response.RelationshipType,
++            TargetType = response.TargetType,
++            TargetId = response.TargetId,
++            DisplayText = response.DisplayText,
++            Reference = response.Reference,
++            ResolutionSource = response.ResolutionSource
++        };
+ }
+@@ -595,6 +607,7 @@ public sealed class FinanceTransparencyToolExecutionDetailViewModel
+     public string OriginatingEntityReference { get; set; } = string.Empty;
+     public Guid? TaskId { get; set; }
+     public Guid? WorkflowInstanceId { get; set; }
++    public IReadOnlyList<FinanceTransparencyRelatedRecordViewModel> RelatedRecords { get; set; } = [];
+ }
+ 
+ public sealed class FinanceSandboxToolExecutionVisibilityViewModel
+@@ -639,6 +652,7 @@ public sealed class FinanceTransparencyEventDetailViewModel
+     public string EntityId { get; set; } = string.Empty;
+     public string EntityReference { get; set; } = string.Empty;
+     public string PayloadSummary { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceTransparencyRelatedRecordViewModel> RelatedRecords { get; set; } = [];
+     public IReadOnlyList<FinanceTransparencyTriggerTraceItemViewModel> TriggerConsumptionTrace { get; set; } = [];
+ }
+ 
+@@ -649,3 +663,13 @@ public sealed class FinanceTransparencyTriggerTraceItemViewModel
+     public string DisplayName { get; set; } = string.Empty;
+     public string Reference { get; set; } = string.Empty;
+ }
++
++public sealed class FinanceTransparencyRelatedRecordViewModel
++{
++    public string RelationshipType { get; set; } = string.Empty;
++    public string TargetType { get; set; } = string.Empty;
++    public string TargetId { get; set; } = string.Empty;
++    public string DisplayText { get; set; } = string.Empty;
++    public string Reference { get; set; } = string.Empty;
++    public string ResolutionSource { get; set; } = string.Empty;
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinanceTransparencyPageBase.cs b/src/VirtualCompany.Web/Pages/Finance/FinanceTransparencyPageBase.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/FinanceTransparencyPageBase.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/FinanceTransparencyPageBase.cs
+@@ -46,6 +46,24 @@ public abstract class FinanceTransparencyPageBase : FinancePageBase
+         detail.OriginatingEntityId is Guid entityId
+             ? BuildFinanceEntityHref(detail.OriginatingEntityType, entityId.ToString("D", CultureInfo.InvariantCulture))
+             : null;
++
++    protected string? BuildRelatedRecordHref(FinanceTransparencyRelatedRecordViewModel record) =>
++        NormalizeToken(record.TargetType) switch
++        {
++            "approval_request" => Guid.TryParse(record.TargetId, out var approvalRequestId) ? BuildApprovalHref(approvalRequestId) : null,
++            "tool_execution" or "tool_execution_attempt" or "agent_tool_execution" => Guid.TryParse(record.TargetId, out var executionId) ? BuildExecutionDetailHref(executionId) : null,
++            "audit_event" => Guid.TryParse(record.TargetId, out var eventId) ? BuildEventDetailHref(eventId) : null,
++            "work_task" or "task" => Guid.TryParse(record.TargetId, out var taskId) ? BuildTaskHref(taskId) : null,
++            "workflow_instance" => Guid.TryParse(record.TargetId, out var workflowInstanceId) ? BuildWorkflowHref(workflowInstanceId) : null,
++            _ => BuildFinanceEntityHref(record.TargetType, record.TargetId)
++        };
++
++    protected static string BuildRelatedRecordTitle(FinanceTransparencyRelatedRecordViewModel record)
++    {
++        var label = FormatLabel(record.RelationshipType);
++        return string.Equals(label, "n/a", StringComparison.OrdinalIgnoreCase)
++            ? FormatValue(record.DisplayText)
++            : $"{label}: {FormatValue(record.DisplayText)}";
++    }
+ 
+     protected static string FormatLabel(string? value) =>
+         string.IsNullOrWhiteSpace(value)
+diff --git a/src/VirtualCompany.Web/Pages/Finance/TransparencyEventsPage.razor b/src/VirtualCompany.Web/Pages/Finance/TransparencyEventsPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/TransparencyEventsPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/TransparencyEventsPage.razor
+@@ -99,6 +99,36 @@
+                         <h3 class="h6">Payload summary</h3>
+                         <p class="mb-4">@SelectedEvent.PayloadSummary</p>
+ 
++                        <h3 class="h6">Related records</h3>
++                        @if (SelectedEvent.RelatedRecords.Count == 0)
++                        {
++                            <p class="text-body-secondary mb-4">No related execution, approval, or finance action links are available for this event.</p>
++                        }
++                        else
++                        {
++                            <div class="mb-4">
++                                @foreach (var record in SelectedEvent.RelatedRecords)
++                                {
++                                    var href = BuildRelatedRecordHref(record);
++
++                                    <div class="border rounded p-3 mb-2">
++                                        <div class="d-flex justify-content-between gap-3 align-items-start">
++                                            <div>
++                                                <div class="fw-semibold">@BuildRelatedRecordTitle(record)</div>
++                                                @if (!string.IsNullOrWhiteSpace(record.Reference))
++                                                {
++                                                    <div class="small text-body-secondary">@record.Reference</div>
++                                                }
++                                                <div class="small text-body-secondary">Resolved via @FormatLabel(record.ResolutionSource)</div>
++                                            </div>
++                                            @if (!string.IsNullOrWhiteSpace(href))
++                                            {
++                                                <a class="btn btn-outline-secondary btn-sm" href="@href">Open</a>
++                                            }
++                                        </div>
++                                    </div>
++                                }
++                            </div>
++                        }
++
+                         <h3 class="h6">Trigger consumption trace</h3>
+                         @if (SelectedEvent.TriggerConsumptionTrace.Count == 0)
+                         {
+diff --git a/src/VirtualCompany.Web/Pages/Finance/TransparencyToolExecutionsPage.razor b/src/VirtualCompany.Web/Pages/Finance/TransparencyToolExecutionsPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/TransparencyToolExecutionsPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/TransparencyToolExecutionsPage.razor
+@@ -84,10 +84,6 @@
+                     }
+                     else
+                     {
+-                        var approvalHref = SelectedExecution.ApprovalRequestId is Guid approvalRequestId ? BuildApprovalHref(approvalRequestId) : null;
+-                        var originatingHref = BuildOriginatingEntityHref(SelectedExecution);
+-                        var workflowHref = SelectedExecution.WorkflowInstanceId is Guid workflowInstanceId ? BuildWorkflowHref(workflowInstanceId) : null;
+-                        var taskHref = SelectedExecution.TaskId is Guid taskId ? BuildTaskHref(taskId) : null;
+ 
+                         <h2 class="h5">Execution detail</h2>
+                         <dl class="mb-4">
+@@ -111,27 +107,32 @@
+                         <h3 class="h6">Response summary</h3>
+                         <p class="mb-4">@SelectedExecution.ResponseSummary</p>
+ 
+-                        <h3 class="h6">Related links</h3>
+-                        @if (string.IsNullOrWhiteSpace(approvalHref) && string.IsNullOrWhiteSpace(originatingHref) && string.IsNullOrWhiteSpace(workflowHref) && string.IsNullOrWhiteSpace(taskHref))
++                        <h3 class="h6">Related records</h3>
++                        @if (SelectedExecution.RelatedRecords.Count == 0)
+                         {
+-                            <p class="text-body-secondary mb-0">No related approval request or originating finance action link is available for this execution.</p>
++                            <p class="text-body-secondary mb-0">No related approval request, event, or originating finance action link is available for this execution.</p>
+                         }
+                         else
+                         {
+-                            <div class="dashboard-actions">
+-                                @if (!string.IsNullOrWhiteSpace(approvalHref))
+-                                {
+-                                    <a class="btn btn-outline-secondary" href="@approvalHref">Open approval request</a>
+-                                }
+-                                @if (!string.IsNullOrWhiteSpace(originatingHref))
+-                                {
+-                                    <a class="btn btn-outline-secondary" href="@originatingHref">Open originating finance action</a>
+-                                }
+-                                @if (!string.IsNullOrWhiteSpace(workflowHref))
+-                                {
+-                                    <a class="btn btn-outline-secondary" href="@workflowHref">Open workflow instance</a>
+-                                }
+-                                @if (!string.IsNullOrWhiteSpace(taskHref))
++                            @foreach (var record in SelectedExecution.RelatedRecords)
++                            {
++                                var href = BuildRelatedRecordHref(record);
++
++                                <div class="border rounded p-3 mb-2">
++                                    <div class="d-flex justify-content-between gap-3 align-items-start">
++                                        <div>
++                                            <div class="fw-semibold">@BuildRelatedRecordTitle(record)</div>
++                                            @if (!string.IsNullOrWhiteSpace(record.Reference))
++                                            {
++                                                <div class="small text-body-secondary">@record.Reference</div>
++                                            }
++                                            <div class="small text-body-secondary">Resolved via @FormatLabel(record.ResolutionSource)</div>
++                                        </div>
++                                        @if (!string.IsNullOrWhiteSpace(href))
++                                        {
++                                            <a class="btn btn-outline-secondary btn-sm" href="@href">Open</a>
++                                        }
++                                    </div>
++                                </div>
++                            }
+-                                {
+-                                    <a class="btn btn-outline-secondary" href="@taskHref">Open related task</a>
+-                                }
+-                            </div>
+                         }
+                     }
+                 </div>
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+@@ -253,6 +253,16 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+         Assert.Equal(seed.TransparencyApprovalRequestId, executionDetail.ApprovalRequestId);
+         Assert.Contains(seed.TransparencyApprovalRequestId.ToString("D"), executionDetail.ApprovalRequestDisplay, StringComparison.OrdinalIgnoreCase);
+         Assert.Equal("finance_invoice", executionDetail.OriginatingEntityType);
++        Assert.Contains(
++            executionDetail.RelatedRecords,
++            item => item.RelationshipType == "approval_request" &&
++                    item.TargetType == "approval_request" &&
++                    item.TargetId == seed.TransparencyApprovalRequestId.ToString("D"));
++        Assert.Contains(
++            executionDetail.RelatedRecords,
++            item => item.RelationshipType == "event" &&
++                    item.TargetType == "audit_event" &&
++                    item.TargetId == seed.TransparencyEventId.ToString("D"));
+         Assert.True(executionDetail.OriginatingEntityId.HasValue);
+         Assert.Contains("invoice", executionDetail.OriginatingFinanceActionDisplay, StringComparison.OrdinalIgnoreCase);
+ 
+@@ -278,6 +288,16 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+         Assert.Equal(seed.TransparencyEventId, eventDetail!.Id);
+         Assert.Equal("finance.invoice.approval.requested", eventDetail.EventType);
+         Assert.Equal(seed.TransparencyCorrelationId, eventDetail.CorrelationId);
++        Assert.Contains(
++            eventDetail.RelatedRecords,
++            item => item.RelationshipType == "tool_execution" &&
++                    item.TargetType == "tool_execution" &&
++                    item.TargetId == seed.TransparencyExecutionId.ToString("D"));
++        Assert.Contains(
++            eventDetail.RelatedRecords,
++            item => item.RelationshipType == "approval_request" &&
++                    item.TargetType == "approval_request" &&
++                    item.TargetId == seed.TransparencyApprovalRequestId.ToString("D"));
+         Assert.Contains("awaiting approval", eventDetail.PayloadSummary, StringComparison.OrdinalIgnoreCase);
+         Assert.NotEmpty(eventDetail.TriggerConsumptionTrace);
+     }
+END_OF_PATCH

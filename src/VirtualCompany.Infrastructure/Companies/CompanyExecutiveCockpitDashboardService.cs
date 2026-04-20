@@ -1,7 +1,12 @@
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Cockpit;
+using VirtualCompany.Application.Finance;
+using VirtualCompany.Shared;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Tenancy;
@@ -19,6 +24,11 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
     private readonly IDepartmentDashboardConfigurationService _departmentDashboardConfigurationService;
     private readonly IExecutiveCockpitDashboardCache _cache;
+    private readonly IExecutiveCockpitFinanceAdapter _financeAdapter;
+    private readonly ISignalEngine _signalEngine;
+    private readonly IAuthorizationService _authorizationService;
+    private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly IFinanceCashPositionWorkflowService _financeCashPositionWorkflowService;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<CompanyExecutiveCockpitDashboardService> _logger;
 
@@ -27,6 +37,11 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
         ICompanyMembershipContextResolver membershipContextResolver,
         IDepartmentDashboardConfigurationService departmentDashboardConfigurationService,
         IExecutiveCockpitDashboardCache cache,
+        IExecutiveCockpitFinanceAdapter financeAdapter,
+        ISignalEngine signalEngine,
+        IAuthorizationService authorizationService,
+        IHttpContextAccessor httpContextAccessor,
+        IFinanceCashPositionWorkflowService financeCashPositionWorkflowService,
         TimeProvider timeProvider,
         ILogger<CompanyExecutiveCockpitDashboardService> logger)
     {
@@ -34,6 +49,11 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
         _membershipContextResolver = membershipContextResolver;
         _departmentDashboardConfigurationService = departmentDashboardConfigurationService;
         _cache = cache;
+        _financeAdapter = financeAdapter;
+        _signalEngine = signalEngine;
+        _authorizationService = authorizationService;
+        _httpContextAccessor = httpContextAccessor;
+        _financeCashPositionWorkflowService = financeCashPositionWorkflowService;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -56,9 +76,20 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
         {
             _logger.LogDebug("Executive cockpit dashboard cache hit for company {CompanyId}.", query.CompanyId);
             var cachedVisibleSections = await GetVisibleDepartmentSectionsAsync(query.CompanyId, cancellationToken);
+            var canViewFinance = await CanViewFinanceAsync(query.CompanyId, membership, cancellationToken);
+            var currentCashPosition = canViewFinance
+                ? await _financeCashPositionWorkflowService.EvaluateAsync(
+                    new EvaluateFinanceCashPositionWorkflowCommand(query.CompanyId),
+                    cancellationToken)
+                : null;
+            var finance = canViewFinance
+                ? await _financeAdapter.GetAsync(query.CompanyId, cancellationToken)
+                : null;
             return cached.Dashboard with
             {
                 CacheTimestampUtc = cached.CachedAtUtc,
+                CashPosition = currentCashPosition,
+                Finance = finance,
                 DepartmentSections = cachedVisibleSections
             };
         }
@@ -72,6 +103,24 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
         var cacheableDashboard = dashboard with { CacheTimestampUtc = null, DepartmentSections = [] };
         await _cache.SetDashboardAsync(scope, new CachedExecutiveCockpitDashboardDto(query.CompanyId, cachedAtUtc, cacheableDashboard), cancellationToken);
         return cacheableDashboard with { DepartmentSections = visibleSections };
+    }
+
+    public async Task<ExecutiveCockpitFinanceAlertDetailDto?> GetFinanceAlertDetailAsync(
+        GetExecutiveCockpitFinanceAlertDetailQuery query,
+        CancellationToken cancellationToken)
+    {
+        if (query.CompanyId == Guid.Empty || query.AlertId == Guid.Empty)
+        {
+            throw new ArgumentException("Company id and alert id are required.", nameof(query));
+        }
+
+        var membership = await RequireMembershipAsync(query.CompanyId, cancellationToken);
+        if (!await CanViewFinanceAsync(query.CompanyId, membership, cancellationToken))
+        {
+            throw new UnauthorizedAccessException("Finance detail access requires finance.view permission.");
+        }
+
+        return await _financeAdapter.GetAlertDetailAsync(query.CompanyId, query.AlertId, cancellationToken);
     }
 
     public async Task<ExecutiveCockpitWidgetPayloadDto> GetWidgetAsync(
@@ -115,13 +164,16 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
         var dashboard = await GetAsync(new GetExecutiveCockpitDashboardQuery(query.CompanyId), cancellationToken);
         object payload = query.WidgetKey.Trim().ToLowerInvariant() switch
         {
+            ExecutiveCockpitWidgetKeys.BusinessSignals => dashboard.BusinessSignals,
             ExecutiveCockpitWidgetKeys.SummaryKpis => dashboard.SummaryKpis,
             ExecutiveCockpitWidgetKeys.DailyBriefing => dashboard.DailyBriefing,
             ExecutiveCockpitWidgetKeys.PendingApprovals => dashboard.PendingApprovals,
             ExecutiveCockpitWidgetKeys.Alerts => dashboard.Alerts,
             ExecutiveCockpitWidgetKeys.DepartmentKpis => dashboard.DepartmentKpis,
             ExecutiveCockpitWidgetKeys.DepartmentSections => dashboard.DepartmentSections,
+            ExecutiveCockpitWidgetKeys.CashPosition => dashboard.CashPosition,
             ExecutiveCockpitWidgetKeys.RecentActivity => dashboard.RecentActivity,
+            ExecutiveCockpitWidgetKeys.Finance => dashboard.Finance,
             ExecutiveCockpitWidgetKeys.Kpis => dashboard.DepartmentKpis,
             _ => throw new KeyNotFoundException("Dashboard widget not found.")
         };
@@ -181,7 +233,26 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
             .AsNoTracking()
             .CountAsync(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending, cancellationToken);
 
+        var businessSignals = await _signalEngine.GenerateSignals(companyId, cancellationToken);
         var summaryKpis = await BuildSummaryKpisAsync(companyId, nowUtc, pendingApprovalCount, cancellationToken);
+        var canViewFinance = await CanViewFinanceAsync(companyId, await RequireMembershipAsync(companyId, cancellationToken), cancellationToken);
+        FinanceCashPositionDto? cashPosition = null;
+        ExecutiveCockpitFinanceDto? finance = null;
+        if (canViewFinance)
+        {
+            try
+            {
+                cashPosition = await _financeCashPositionWorkflowService.EvaluateAsync(
+                    new EvaluateFinanceCashPositionWorkflowCommand(companyId),
+                    cancellationToken);
+                finance = await _financeAdapter.GetAsync(companyId, cancellationToken);
+            }
+            catch (FinanceNotInitializedException)
+            {
+                cashPosition = null;
+                finance = null;
+            }
+        }
 
         var pendingApprovals = new ExecutiveCockpitPendingApprovalsDto(
             pendingApprovalCount,
@@ -198,12 +269,31 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
                 .ToList(),
             $"/approvals?companyId={companyId}&status=pending");
 
+        var domainAlerts = await _dbContext.Alerts
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId &&
+                        x.Status != AlertStatus.Resolved &&
+                        x.Status != AlertStatus.Closed)
+            .OrderByDescending(x => x.LastDetectedUtc ?? x.UpdatedUtc)
+            .Take(AlertLimit)
+            .Select(x => new ExecutiveCockpitAlertDto(
+                x.Id,
+                x.Severity.ToStorageValue(),
+                x.Title,
+                x.Summary,
+                "alert",
+                TryResolveFinanceAlertSourceId(x),
+                x.LastDetectedUtc ?? x.UpdatedUtc,
+                BuildAlertRoute(companyId, x)))
+            .ToListAsync(cancellationToken);
+
         var workflowAlerts = await _dbContext.WorkflowExceptions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.Status == WorkflowExceptionStatus.Open)
             .OrderByDescending(x => x.OccurredUtc)
-            .Take(5)
+            .Take(Math.Max(0, AlertLimit - domainAlerts.Count))
             .Select(x => new ExecutiveCockpitAlertDto(
                 x.Id,
                 "high",
@@ -213,7 +303,6 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
                 x.Id,
                 x.OccurredUtc,
                 $"/workflows?companyId={companyId}&workflowInstanceId={x.WorkflowInstanceId}&exceptionId={x.Id}"))
-            .Take(AlertLimit)
             .ToListAsync(cancellationToken);
 
         var taskAlerts = await _dbContext.WorkTasks
@@ -223,7 +312,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
                 x.CompanyId == companyId &&
                 (x.Status == WorkTaskStatus.Blocked || x.Status == WorkTaskStatus.Failed))
             .OrderByDescending(x => x.UpdatedUtc)
-            .Take(Math.Max(0, AlertLimit - workflowAlerts.Count))
+            .Take(Math.Max(0, AlertLimit - domainAlerts.Count - workflowAlerts.Count))
             .Select(x => new ExecutiveCockpitAlertDto(
                 x.Id,
                 x.Status == WorkTaskStatus.Failed ? "high" : "medium",
@@ -235,7 +324,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
                 $"/tasks?companyId={companyId}&taskId={x.Id}"))
             .ToListAsync(cancellationToken);
 
-        var alerts = workflowAlerts.Concat(taskAlerts)
+        var alerts = domainAlerts.Concat(workflowAlerts).Concat(taskAlerts)
             .OrderByDescending(x => x.OccurredUtc)
             .Take(AlertLimit)
             .ToList();
@@ -361,9 +450,12 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
             companyId,
             company.Name,
             nowUtc,
+            businessSignals,
             null,
             summaryKpis,
             dailyBriefing,
+            cashPosition,
+            finance,
             pendingApprovals,
             alerts,
             departmentKpis,
@@ -577,6 +669,18 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
         };
     }
 
+    private static string BuildAlertRoute(Guid companyId, Domain.Entities.Alert alert) =>
+        IsFinanceCashAlert(alert)
+            ? $"/finance/alerts/{alert.Id:D}?companyId={companyId:D}"
+            : $"/dashboard?companyId={companyId:D}";
+
+    private static Guid? TryResolveFinanceAlertSourceId(Domain.Entities.Alert alert) =>
+        IsFinanceCashAlert(alert) ? alert.Id : alert.Id;
+
+    private static bool IsFinanceCashAlert(Domain.Entities.Alert alert) =>
+        !string.IsNullOrWhiteSpace(alert.Fingerprint) &&
+        alert.Fingerprint.StartsWith("finance-cash-position:", StringComparison.OrdinalIgnoreCase);
+
     private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
     {
         var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
@@ -586,6 +690,21 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
         }
 
         return membership;
+    }
+
+    private async Task<bool> CanViewFinanceAsync(
+        Guid companyId,
+        ResolvedCompanyMembershipContext membership,
+        CancellationToken cancellationToken)
+    {
+        if (!FinanceAccess.CanView(membership.MembershipRole.ToStorageValue()))
+        {
+            return false;
+        }
+
+        var principal = _httpContextAccessor.HttpContext?.User;
+        return principal?.Identity?.IsAuthenticated == true &&
+               (await _authorizationService.AuthorizeAsync(principal, companyId, CompanyPolicies.FinanceView)).Succeeded;
     }
 }
 

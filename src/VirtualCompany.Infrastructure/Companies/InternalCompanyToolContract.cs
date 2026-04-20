@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Approvals;
 using VirtualCompany.Application.Documents;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Tasks;
 using VirtualCompany.Domain.Enums;
 
@@ -14,17 +15,23 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
     private readonly ICompanyTaskCommandService _taskCommandService;
     private readonly IApprovalRequestService _approvalRequestService;
     private readonly ICompanyKnowledgeSearchService _knowledgeSearchService;
+    private readonly IFinanceToolProvider _financeToolProvider;
+    private readonly IFinanceTransactionAnomalyDetectionService _financeAnomalyDetectionService;
 
     public InternalCompanyToolContract(
         ICompanyTaskQueryService taskQueryService,
         ICompanyTaskCommandService taskCommandService,
         IApprovalRequestService approvalRequestService,
-        ICompanyKnowledgeSearchService knowledgeSearchService)
+        ICompanyKnowledgeSearchService knowledgeSearchService,
+        IFinanceToolProvider financeToolProvider,
+        IFinanceTransactionAnomalyDetectionService financeAnomalyDetectionService)
     {
         _taskQueryService = taskQueryService;
         _taskCommandService = taskCommandService;
         _approvalRequestService = approvalRequestService;
         _knowledgeSearchService = knowledgeSearchService;
+        _financeToolProvider = financeToolProvider;
+        _financeAnomalyDetectionService = financeAnomalyDetectionService;
     }
 
     public async Task<InternalToolExecutionResponse> ExecuteAsync(
@@ -55,6 +62,16 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
                 "tasks.update_status" => await ExecuteTaskStatusUpdateAsync(request, cancellationToken),
                 "approvals.create_request" => await ExecuteApprovalCreateRequestAsync(request, cancellationToken),
                 "knowledge.search" => await ExecuteKnowledgeSearchAsync(request, cancellationToken),
+                "get_cash_balance" => await ExecuteGetCashBalanceAsync(request, cancellationToken),
+                "list_transactions" => await ExecuteListTransactionsAsync(request, cancellationToken),
+                "list_uncategorized_transactions" => await ExecuteListUncategorizedTransactionsAsync(request, cancellationToken),
+                "list_invoices_awaiting_approval" => await ExecuteListInvoicesAwaitingApprovalAsync(request, cancellationToken),
+                "get_profit_and_loss_summary" => await ExecuteGetProfitAndLossSummaryAsync(request, cancellationToken),
+                "recommend_transaction_category" => await ExecuteRecommendTransactionCategoryAsync(request, cancellationToken),
+                "recommend_invoice_approval_decision" => await ExecuteRecommendInvoiceApprovalDecisionAsync(request, cancellationToken),
+                "evaluate_transaction_anomaly" => await ExecuteEvaluateTransactionAnomalyAsync(request, cancellationToken),
+                "categorize_transaction" => await ExecuteCategorizeTransactionAsync(request, cancellationToken),
+                "approve_invoice" => await ExecuteApproveInvoiceAsync(request, cancellationToken),
                 _ => Failed("unsupported_internal_tool", "The requested internal tool is not available.")
             };
         }
@@ -69,6 +86,10 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         catch (CompanyKnowledgeSearchValidationException)
         {
             return Failed("knowledge_search_validation_failed", "The knowledge search request was not valid.");
+        }
+        catch (ArgumentException)
+        {
+            return Failed("finance_tool_validation_failed", "The finance tool request was not valid.");
         }
         catch (KeyNotFoundException)
         {
@@ -283,6 +304,308 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
             Metadata(request, "knowledge_search_service"));
     }
 
+    private async Task<InternalToolExecutionResponse> ExecuteGetCashBalanceAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var balance = await _financeToolProvider.GetCashBalanceAsync(
+            new GetFinanceCashBalanceQuery(request.CompanyId, ReadDateTime(request.Payload, "asOfUtc")),
+            cancellationToken);
+
+        return InternalToolExecutionResponse.Succeeded(
+            "Cash balance was retrieved.",
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["cashBalance"] = Serialize(balance),
+                ["amount"] = JsonValue.Create(balance.Amount),
+                ["currency"] = JsonValue.Create(balance.Currency),
+                ["asOfUtc"] = JsonValue.Create(balance.AsOfUtc)
+            },
+            Metadata(request, "finance_tool_provider"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteListTransactionsAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var transactions = await _financeToolProvider.GetTransactionsAsync(
+            new GetFinanceTransactionsQuery(
+                request.CompanyId,
+                ReadDateTime(request.Payload, "startUtc"),
+                ReadDateTime(request.Payload, "endUtc"),
+                ReadInt(request.Payload, "limit") ?? 100),
+            cancellationToken);
+
+        return InternalToolExecutionResponse.Succeeded(
+            "Finance transactions were retrieved.",
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["transactions"] = Serialize(transactions),
+                ["count"] = JsonValue.Create(transactions.Count)
+            },
+            Metadata(request, "finance_tool_provider"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteListUncategorizedTransactionsAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var transactions = await _financeToolProvider.GetTransactionsAsync(
+            new GetFinanceTransactionsQuery(
+                request.CompanyId,
+                ReadDateTime(request.Payload, "startUtc"),
+                ReadDateTime(request.Payload, "endUtc"),
+                ReadInt(request.Payload, "limit") ?? 100),
+            cancellationToken);
+
+        var uncategorized = transactions
+            .Where(transaction =>
+                string.IsNullOrWhiteSpace(transaction.TransactionType) ||
+                string.Equals(transaction.TransactionType, "uncategorized", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        return InternalToolExecutionResponse.Succeeded(
+            "Uncategorized finance transactions were retrieved.",
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["transactions"] = Serialize(uncategorized),
+                ["count"] = JsonValue.Create(uncategorized.Count)
+            },
+            Metadata(request, "finance_tool_provider"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteListInvoicesAwaitingApprovalAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var invoices = await _financeToolProvider.GetInvoicesAsync(
+            new GetFinanceInvoicesQuery(
+                request.CompanyId,
+                ReadDateTime(request.Payload, "startUtc"),
+                ReadDateTime(request.Payload, "endUtc"),
+                ReadInt(request.Payload, "limit") ?? 100),
+            cancellationToken);
+
+        var awaitingApproval = invoices
+            .Where(invoice =>
+                string.Equals(invoice.Status, "awaiting_approval", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(invoice.Status, "pending_approval", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(invoice.Status, "pending", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        return InternalToolExecutionResponse.Succeeded(
+            "Invoices awaiting approval were retrieved.",
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["invoices"] = Serialize(awaitingApproval),
+                ["count"] = JsonValue.Create(awaitingApproval.Count)
+            },
+            Metadata(request, "finance_tool_provider"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteGetProfitAndLossSummaryAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var summary = await _financeToolProvider.GetMonthlyProfitAndLossAsync(
+            new GetFinanceMonthlyProfitAndLossQuery(
+                request.CompanyId,
+                ReadInt(request.Payload, "year") ?? DateTime.UtcNow.Year,
+                ReadInt(request.Payload, "month") ?? DateTime.UtcNow.Month),
+            cancellationToken);
+
+        return InternalToolExecutionResponse.Succeeded(
+            "Profit and loss summary was retrieved.",
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["profitAndLossSummary"] = Serialize(summary),
+                ["revenue"] = JsonValue.Create(summary.Revenue),
+                ["expenses"] = JsonValue.Create(summary.Expenses),
+                ["netResult"] = JsonValue.Create(summary.NetResult),
+                ["currency"] = JsonValue.Create(summary.Currency)
+            },
+            Metadata(request, "finance_tool_provider"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteRecommendTransactionCategoryAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Recommend, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var transactionId = ReadGuid(request.Payload, "transactionId");
+        if (!transactionId.HasValue)
+        {
+            return Failed("transaction_id_required", "A transaction id is required to recommend a category.");
+        }
+
+        var recommendation = await _financeToolProvider.RecommendTransactionCategoryAsync(request, cancellationToken);
+        return InternalToolExecutionResponse.Succeeded(
+            "Transaction category recommendation was prepared.",
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["recommendation"] = new JsonObject
+                {
+                    ["transactionId"] = JsonValue.Create(recommendation.TransactionId),
+                    ["recommendedCategory"] = JsonValue.Create(recommendation.RecommendedCategory),
+                    ["confidence"] = JsonValue.Create(recommendation.Confidence)
+                }
+            },
+            Metadata(request, "finance_tool_provider"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteRecommendInvoiceApprovalDecisionAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Recommend, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var invoiceId = ReadGuid(request.Payload, "invoiceId");
+        if (!invoiceId.HasValue)
+        {
+            return Failed("invoice_id_required", "An invoice id is required to recommend an approval decision.");
+        }
+
+        var recommendation = await _financeToolProvider.RecommendInvoiceApprovalDecisionAsync(request, cancellationToken);
+        return InternalToolExecutionResponse.Succeeded(
+            "Invoice approval recommendation was prepared.",
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["recommendation"] = new JsonObject
+                {
+                    ["invoiceId"] = JsonValue.Create(recommendation.InvoiceId),
+                    ["recommendedStatus"] = JsonValue.Create(recommendation.RecommendedStatus),
+                    ["confidence"] = JsonValue.Create(recommendation.Confidence)
+                }
+            },
+            Metadata(request, "finance_tool_provider"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteEvaluateTransactionAnomalyAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Recommend, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var transactionId = ReadGuid(request.Payload, "transactionId");
+        if (!transactionId.HasValue)
+        {
+            return Failed("transaction_id_required", "A transaction id is required to evaluate anomalies.");
+        }
+
+        var evaluation = await _financeAnomalyDetectionService.EvaluateAsync(
+            new EvaluateFinanceTransactionAnomalyCommand(
+                request.CompanyId,
+                transactionId.Value,
+                ReadGuid(request.Payload, "workflowInstanceId"),
+                request.AgentId),
+            cancellationToken);
+
+        return InternalToolExecutionResponse.Succeeded(
+            "Transaction anomaly evaluation was completed.",
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["anomalyEvaluation"] = Serialize(evaluation),
+                ["isAnomalous"] = JsonValue.Create(evaluation.IsAnomalous),
+                ["anomalyCount"] = JsonValue.Create(evaluation.Anomalies.Count)
+            },
+            Metadata(request, "finance_anomaly_detection_service"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteCategorizeTransactionAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Execute, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var transactionId = ReadGuid(request.Payload, "transactionId");
+        var category = ReadString(request.Payload, "category");
+        if (!transactionId.HasValue || string.IsNullOrWhiteSpace(category))
+        {
+            return Failed("transaction_category_required", "A transaction id and category are required.");
+        }
+
+        var transaction = await _financeToolProvider.UpdateTransactionCategoryAsync(
+            new UpdateFinanceTransactionCategoryCommand(request.CompanyId, transactionId.Value, category),
+            cancellationToken);
+
+        return InternalToolExecutionResponse.Succeeded(
+            "Transaction category was updated.",
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["transaction"] = Serialize(transaction),
+                ["transactionId"] = JsonValue.Create(transaction.Id),
+                ["category"] = JsonValue.Create(transaction.TransactionType)
+            },
+            Metadata(request, "finance_tool_provider"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteApproveInvoiceAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Execute, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var invoiceId = ReadGuid(request.Payload, "invoiceId");
+        var status = ReadString(request.Payload, "status") ?? "approved";
+        if (!invoiceId.HasValue)
+        {
+            return Failed("invoice_id_required", "An invoice id is required to approve an invoice.");
+        }
+
+        var invoice = await _financeToolProvider.UpdateInvoiceApprovalStatusAsync(
+            new UpdateFinanceInvoiceApprovalStatusCommand(request.CompanyId, invoiceId.Value, status),
+            cancellationToken);
+
+        return InternalToolExecutionResponse.Succeeded(
+            "Invoice approval status was updated.",
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["invoice"] = Serialize(invoice),
+                ["invoiceId"] = JsonValue.Create(invoice.Id),
+                ["status"] = JsonValue.Create(invoice.Status)
+            },
+            Metadata(request, "finance_tool_provider"));
+    }
+
     private static bool EnsureAction(
         InternalToolExecutionRequest request,
         ToolActionType expectedAction,
@@ -313,6 +636,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
             ["toolName"] = JsonValue.Create(request.ToolName),
             ["actionType"] = JsonValue.Create(request.ActionType),
             ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
+            ["toolVersion"] = string.IsNullOrWhiteSpace(request.ToolVersion) ? null : JsonValue.Create(request.ToolVersion),
             ["typedBoundary"] = JsonValue.Create(true)
         };
 

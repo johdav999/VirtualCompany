@@ -1,0 +1,165 @@
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceToolProviderBoundaryTests.cs b/tests/VirtualCompany.Api.Tests/FinanceToolProviderBoundaryTests.cs
+index 2e6d5f1..8e9d7f4 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceToolProviderBoundaryTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceToolProviderBoundaryTests.cs
+@@ -10,29 +10,63 @@ namespace VirtualCompany.Api.Tests;
+ 
+ public sealed class FinanceToolProviderBoundaryTests
+ {
++    private static readonly IReadOnlyDictionary<string, string> RegisteredFinanceToolProviderOperations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
++    {
++        ["get_cash_balance"] = nameof(IFinanceToolProvider.GetCashBalanceAsync),
++        ["list_transactions"] = nameof(IFinanceToolProvider.GetTransactionsAsync),
++        ["list_uncategorized_transactions"] = nameof(IFinanceToolProvider.GetTransactionsAsync),
++        ["list_invoices_awaiting_approval"] = nameof(IFinanceToolProvider.GetInvoicesAsync),
++        ["get_profit_and_loss_summary"] = nameof(IFinanceToolProvider.GetMonthlyProfitAndLossAsync),
++        ["recommend_transaction_category"] = nameof(IFinanceToolProvider.RecommendTransactionCategoryAsync),
++        ["recommend_invoice_approval_decision"] = nameof(IFinanceToolProvider.RecommendInvoiceApprovalDecisionAsync),
++        ["categorize_transaction"] = nameof(IFinanceToolProvider.UpdateTransactionCategoryAsync),
++        ["approve_invoice"] = nameof(IFinanceToolProvider.UpdateInvoiceApprovalStatusAsync)
++    };
++
++    private static readonly string[] ForbiddenOrchestrationFinanceReferences =
++    [
++        "IFinanceReadService",
++        "IFinanceCommandService",
++        "CompanyFinanceReadService",
++        "CompanyFinanceCommandService",
++        "VirtualCompany.Infrastructure.Finance",
++        "VirtualCompany.Domain.Entities",
++        "FinanceAccount",
++        "FinanceBalance",
++        "FinanceBill",
++        "FinanceCounterparty",
++        "FinanceInvoice",
++        "FinancePolicyConfiguration",
++        "FinanceTransaction"
++    ];
++
+     [Fact]
+     public void Orchestration_tool_contract_does_not_depend_on_internal_finance_services()
+     {
+-        var repositoryRoot = FindRepositoryRoot();
+-        var checkedFiles = Directory
+-            .EnumerateFiles(Path.Combine(repositoryRoot, "src", "VirtualCompany.Application", "Orchestration"), "*.cs", SearchOption.AllDirectories)
+-            .Concat(
+-            [
+-                Path.Combine(repositoryRoot, "src", "VirtualCompany.Infrastructure", "Companies", "InternalCompanyToolContract.cs")
+-            ])
+-            .ToArray();
++        var checkedFiles = GetOrchestrationBoundaryFiles();
+ 
+         Assert.NotEmpty(checkedFiles);
+ 
++        var violations = new List<string>();
+         foreach (var file in checkedFiles)
+         {
+             var source = File.ReadAllText(file);
+-            Assert.DoesNotContain("IFinanceReadService", source, StringComparison.Ordinal);
+-            Assert.DoesNotContain("IFinanceCommandService", source, StringComparison.Ordinal);
+-            Assert.DoesNotContain("CompanyFinanceReadService", source, StringComparison.Ordinal);
+-            Assert.DoesNotContain("CompanyFinanceCommandService", source, StringComparison.Ordinal);
+-            Assert.DoesNotContain("VirtualCompany.Domain.Entities", source, StringComparison.Ordinal);
++            violations.AddRange(ForbiddenOrchestrationFinanceReferences
++                .Where(reference => source.Contains(reference, StringComparison.Ordinal))
++                .Select(reference => $"{Path.GetFileName(file)} directly references {reference}."));
+         }
++
++        Assert.False(
++            violations.Count > 0,
++            "Finance tool orchestration must depend on IFinanceToolProvider only. Violations: " + string.Join(" ", violations));
++    }
++
++    [Fact]
++    public void Internal_company_tool_contract_dispatches_registered_finance_tools_through_provider_boundary()
++    {
++        var repositoryRoot = FindRepositoryRoot();
++        var source = File.ReadAllText(Path.Combine(repositoryRoot, "src", "VirtualCompany.Infrastructure", "Companies", "InternalCompanyToolContract.cs"));
++
++        foreach (var (toolName, providerMethod) in RegisteredFinanceToolProviderOperations)
++        {
++            Assert.Contains($"\"{toolName}\"", source, StringComparison.Ordinal);
++            Assert.Contains($"_financeToolProvider.{providerMethod}", source, StringComparison.Ordinal);
++        }
+     }
+ 
+     [Fact]
+@@ -40,17 +74,9 @@ public sealed class FinanceToolProviderBoundaryTests
+     {
+         var providerMethods = typeof(VirtualCompany.Application.Finance.IFinanceToolProvider)
+             .GetMethods()
+-            .Select(method => method.Name)
+             .ToHashSet(StringComparer.Ordinal);
+ 
+-        Assert.Contains("GetCashBalanceAsync", providerMethods);
+-        Assert.Contains("GetTransactionsAsync", providerMethods);
+-        Assert.Contains("GetInvoicesAsync", providerMethods);
+-        Assert.Contains("GetMonthlyProfitAndLossAsync", providerMethods);
+-        Assert.Contains("RecommendTransactionCategoryAsync", providerMethods);
+-        Assert.Contains("RecommendInvoiceApprovalDecisionAsync", providerMethods);
+-        Assert.Contains("UpdateTransactionCategoryAsync", providerMethods);
+-        Assert.Contains("UpdateInvoiceApprovalStatusAsync", providerMethods);
++        Assert.All(RegisteredFinanceToolProviderOperations.Values.Distinct(StringComparer.Ordinal), methodName => Assert.Contains(methodName, providerMethods));
+         Assert.Contains("GetExpenseBreakdownAsync", providerMethods);
+         Assert.Contains("GetBillsAsync", providerMethods);
+         Assert.Contains("GetBalancesAsync", providerMethods);
+@@ -119,6 +145,33 @@ public sealed class FinanceToolProviderBoundaryTests
+         Assert.Equal(profitAndLoss.Revenue - profitAndLoss.Expenses, profitAndLoss.NetResult);
+         Assert.False(string.IsNullOrWhiteSpace(profitAndLoss.Currency));
+ 
++        var expenseBreakdown = await provider.GetExpenseBreakdownAsync(
++            new GetFinanceExpenseBreakdownQuery(
++                companyId,
++                new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc)),
++            CancellationToken.None);
++        Assert.Equal(companyId, expenseBreakdown.CompanyId);
++        Assert.True(expenseBreakdown.TotalExpenses > 0);
++        Assert.NotEmpty(expenseBreakdown.Categories);
++
++        var bills = await provider.GetBillsAsync(
++            new GetFinanceBillsQuery(companyId, Limit: 25),
++            CancellationToken.None);
++        Assert.NotEmpty(bills);
++        Assert.All(bills, bill =>
++        {
++            Assert.False(string.IsNullOrWhiteSpace(bill.BillNumber));
++            Assert.False(string.IsNullOrWhiteSpace(bill.Status));
++        });
++
++        var balances = await provider.GetBalancesAsync(
++            new GetFinanceBalancesQuery(companyId, new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc)),
++            CancellationToken.None);
++        Assert.NotEmpty(balances);
++        Assert.All(balances, balance =>
++        {
++            Assert.False(string.IsNullOrWhiteSpace(balance.AccountCode));
++            Assert.False(string.IsNullOrWhiteSpace(balance.Currency));
++        });
++
+         var categoryRecommendation = await provider.RecommendTransactionCategoryAsync(
+             CreateFinanceToolRequest(
+                 companyId,
+@@ -176,6 +229,20 @@ public sealed class FinanceToolProviderBoundaryTests
+                 item.Value,
+                 StringComparer.OrdinalIgnoreCase));
+ 
++    private static string[] GetOrchestrationBoundaryFiles()
++    {
++        var repositoryRoot = FindRepositoryRoot();
++        return Directory
++            .EnumerateFiles(Path.Combine(repositoryRoot, "src", "VirtualCompany.Application", "Orchestration"), "*.cs", SearchOption.AllDirectories)
++            .Concat(
++            [
++                Path.Combine(repositoryRoot, "src", "VirtualCompany.Application", "Agents", "AgentToolOrchestrationExecutor.cs"),
++                Path.Combine(repositoryRoot, "src", "VirtualCompany.Application", "Agents", "CompanyAgentToolExecutionContracts.cs"),
++                Path.Combine(repositoryRoot, "src", "VirtualCompany.Infrastructure", "Companies", "InternalCompanyToolContract.cs")
++            ])
++            .Where(File.Exists)
++            .ToArray();
++    }
++
+     private static string FindRepositoryRoot()
+     {
+         var directory = new DirectoryInfo(AppContext.BaseDirectory);
+END_OF_PATCH

@@ -1,0 +1,310 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 2d660c7..5afc580 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -35,7 +35,7 @@ public static class ExecutiveCockpitWidgetKeys
+ 
+     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+     {
+-        SummaryKpis, DailyBriefing, PendingApprovals, Alerts, DepartmentKpis, DepartmentSections, CashPosition, RecentActivity, Kpis
++        SummaryKpis, DailyBriefing, PendingApprovals, Alerts, DepartmentKpis, DepartmentSections, CashPosition, RecentActivity, Finance, Kpis
+     };
+ }
+ 
+@@ -82,6 +82,7 @@ public sealed record ExecutiveCockpitFinanceAlertDetailDto(
+     string Severity,
+     string Status,
+     IReadOnlyList<string> ContributingFactors,
++    IReadOnlyList<ExecutiveCockpitFinanceActionDto> AvailableActions,
+     IReadOnlyList<ExecutiveCockpitDeepLinkDto> Links,
+     string Route);
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 34e0ef2..12305ad 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -192,7 +192,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+                 x.Title,
+                 x.Summary,
+                 "alert",
+-                x.Id,
++                TryResolveFinanceAlertSourceId(x),
+                 x.LastDetectedUtc ?? x.UpdatedUtc,
+-                $"/dashboard?companyId={companyId}"))
++                BuildAlertRoute(companyId, x)))
+             .ToListAsync(cancellationToken);
+ 
+         var workflowAlerts = await _dbContext.WorkflowExceptions
+@@ -443,6 +443,26 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+             _ => null
+         };
+     }
++
++    private static string BuildAlertRoute(Guid companyId, Domain.Entities.Alert alert) =>
++        IsFinanceCashAlert(alert)
++            ? $"/finance/alerts/{alert.Id:D}?companyId={companyId:D}"
++            : $"/dashboard?companyId={companyId:D}";
++
++    private static Guid? TryResolveFinanceAlertSourceId(Domain.Entities.Alert alert) =>
++        IsFinanceCashAlert(alert) ? alert.Id : alert.Id;
++
++    private static bool IsFinanceCashAlert(Domain.Entities.Alert alert) =>
++        alert.Fingerprint.StartsWith("finance-cash-position:", StringComparison.OrdinalIgnoreCase);
+ 
+     private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
+index 458b070..26c96d9 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
+@@ -91,6 +91,7 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
+             alert.Severity.ToStorageValue(),
+             alert.Status.ToStorageValue(),
+             BuildContributingFactors(alert),
++            await BuildActionsAsync(companyId, membership?.MembershipRole.ToStorageValue() ?? string.Empty, cancellationToken),
+             BuildDeepLinks(companyId),
+             BuildAlertDetailRoute(companyId, alert.Id));
+     }
+@@ -192,13 +193,14 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
+     private static IReadOnlyList<ExecutiveCockpitDeepLinkDto> BuildDeepLinks(Guid companyId) =>
+     [
+         new ExecutiveCockpitDeepLinkDto("finance_workspace", "Finance workspace", $"/finance?companyId={companyId:D}"),
++        new ExecutiveCockpitDeepLinkDto("finance_summary", "Finance summary", $"/finance/monthly-summary?companyId={companyId:D}"),
+         new ExecutiveCockpitDeepLinkDto("anomaly_workbench", "Anomaly workbench", $"/finance/anomalies?companyId={companyId:D}"),
+         new ExecutiveCockpitDeepLinkDto("cash_detail", "Cash detail", $"/finance/cash-position?companyId={companyId:D}")
+     ];
+ 
+     private static string BuildCashPositionRoute(Guid companyId) => $"/finance/cash-position?companyId={companyId:D}";
+     private static string BuildAnomalyWorkbenchRoute(Guid companyId) => $"/finance/anomalies?companyId={companyId:D}";
+-    private static string BuildFinanceSummaryRoute(Guid companyId) => $"/finance/monthly-summary?companyId={companyId:D}";
++    private static string BuildFinanceSummaryRoute(Guid companyId) => $"/finance/monthly-summary?companyId={companyId:D}";
+     private static string BuildInvoiceReviewRoute(Guid companyId, Guid invoiceId) => $"/finance/reviews/{invoiceId:D}?companyId={companyId:D}";
+     private static string BuildAlertDetailRoute(Guid companyId, Guid alertId) => $"/finance/alerts/{alertId:D}?companyId={companyId:D}";
+ 
+diff --git a/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor b/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor
+index 0e1f285..9af69f9 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor
+@@ -29,8 +29,34 @@
+                 <small class="text-body-secondary">Status: @detail.Status</small>
+             </article>
+ 
++            <article class="wizard-card finance-state-card">
++                <span class="dashboard-kicker">Actions</span>
++                @if (!string.IsNullOrWhiteSpace(financeActionStatusMessage))
++                {
++                    <div class="alert alert-success mt-3 mb-0">@financeActionStatusMessage</div>
++                }
++                @if (!string.IsNullOrWhiteSpace(financeActionErrorMessage))
++                {
++                    <div class="alert alert-warning mt-3 mb-0">@financeActionErrorMessage</div>
++                }
++                <div class="dashboard-actions mt-3">
++                    @foreach (var action in detail.AvailableActions)
++                    {
++                        @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(action.Route))
++                        {
++                            <a class="btn btn-outline-primary" href="@action.Route">@action.Label</a>
++                        }
++                        else
++                        {
++                            <button class="btn btn-outline-primary" type="button" @onclick="() => ExecuteFinanceActionAsync(action)" disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
++                        }
++                    }
++                </div>
++            </article>
++
+             <article class="wizard-card finance-state-card">
+                 <span class="dashboard-kicker">Links</span>
++                <h2 class="h5 mt-2">Finance drill-downs</h2>
++                <p class="text-body-secondary mb-0">Keep the active company context while moving into the workspace, summary, anomaly workbench, or cash detail.</p>
+                 <div class="dashboard-actions mt-3">
+                     @foreach (var link in detail.Links)
+                     {
+diff --git a/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor.cs
+index 3063045..9f203e5 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor.cs
+@@ -6,12 +6,19 @@ namespace VirtualCompany.Web.Pages.Finance;
+ public partial class LowCashAlertPage : FinancePageBase
+ {
+     [Inject] private ExecutiveCockpitApiClient ExecutiveCockpitApiClient { get; set; } = default!;
++    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
++    [Inject] private NavigationManager Navigation { get; set; } = default!;
+ 
+     [Parameter] public Guid AlertId { get; set; }
+ 
+     private ExecutiveCockpitFinanceAlertDetailViewModel? detail;
+     private bool isDetailLoading;
+     private string? detailErrorMessage;
++    private string? financeActionStatusMessage;
++    private string? financeActionErrorMessage;
++    private string? activeFinanceActionKey;
++
++    private bool IsFinanceActionRunning(string actionKey) =>
++        string.Equals(activeFinanceActionKey, actionKey, StringComparison.OrdinalIgnoreCase);
+ 
+     protected override async Task OnParametersSetAsync()
+     {
+@@ -19,6 +26,8 @@ public partial class LowCashAlertPage : FinancePageBase
+ 
+         detail = null;
+         detailErrorMessage = null;
++        financeActionStatusMessage = null;
++        financeActionErrorMessage = null;
+         if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid)
+         {
+             return;
+@@ -46,4 +55,45 @@ public partial class LowCashAlertPage : FinancePageBase
+             isDetailLoading = false;
+         }
+     }
++
++    private async Task ExecuteFinanceActionAsync(ExecutiveCockpitFinanceActionViewModel action)
++    {
++        if (AccessState.CompanyId is not Guid companyId || !action.IsEnabled)
++        {
++            return;
++        }
++
++        activeFinanceActionKey = action.Key;
++        financeActionStatusMessage = null;
++        financeActionErrorMessage = null;
++
++        try
++        {
++            switch (action.Key)
++            {
++                case "review_invoice" when action.TargetId is Guid invoiceId:
++                    await FinanceApiClient.StartInvoiceReviewWorkflowAsync(companyId, invoiceId);
++                    financeActionStatusMessage = "Invoice review started.";
++                    break;
++                case "inspect_anomaly" when action.TargetId is Guid transactionId:
++                    await FinanceApiClient.EvaluateTransactionAnomalyAsync(companyId, transactionId);
++                    financeActionStatusMessage = "Anomaly inspection submitted.";
++                    break;
++                case "view_cash_position":
++                    await FinanceApiClient.EvaluateCashPositionAsync(companyId);
++                    financeActionStatusMessage = "Cash position refreshed.";
++                    break;
++            }
++
++            await ReloadAsync();
++            if (!string.IsNullOrWhiteSpace(action.Route))
++            {
++                Navigation.NavigateTo(action.Route);
++            }
++        }
++        catch (FinanceApiException ex)
++        {
++            financeActionErrorMessage = ex.Message;
++        }
++        finally
++        {
++            activeFinanceActionKey = null;
++        }
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+index 198f8db..e147042 100644
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -413,6 +413,7 @@ public sealed class ExecutiveCockpitFinanceAlertDetailViewModel
+     public string Severity { get; set; } = string.Empty;
+     public string Status { get; set; } = string.Empty;
+     public List<string> ContributingFactors { get; set; } = [];
++    public List<ExecutiveCockpitFinanceActionViewModel> AvailableActions { get; set; } = [];
+     public List<ExecutiveCockpitDeepLinkViewModel> Links { get; set; } = [];
+     public string Route { get; set; } = string.Empty;
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
+index 35d0e52..5c98aae 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
+@@ -26,6 +26,7 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+         Assert.NotEmpty(dashboard.Finance.LowCashAlert!.ContributingFactors);
+         Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "finance_workspace" && x.Route.Contains("/finance?companyId=", StringComparison.OrdinalIgnoreCase));
+         Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "anomaly_workbench" && x.Route.Contains("/finance/anomalies", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "finance_summary" && x.Route.Contains("/finance/monthly-summary", StringComparison.OrdinalIgnoreCase));
+         Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "cash_detail" && x.Route.Contains("/finance/cash-position", StringComparison.OrdinalIgnoreCase));
+         Assert.Contains(dashboard.Finance.AvailableActions, x => x.Key == "review_invoice" && x.OrchestrationEndpoint!.Contains("/review-workflow", StringComparison.OrdinalIgnoreCase));
+         Assert.Contains(dashboard.Finance.AvailableActions, x => x.Key == "inspect_anomaly" && x.OrchestrationEndpoint!.Contains("/anomaly-evaluation", StringComparison.OrdinalIgnoreCase));
+@@ -37,6 +38,10 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+         Assert.NotNull(alertDetail);
+         Assert.Equal(dashboard.Finance.LowCashAlert.AlertId, alertDetail!.AlertId);
+         Assert.NotEmpty(alertDetail.ContributingFactors);
++        Assert.NotEmpty(alertDetail.AvailableActions);
++        Assert.Contains(alertDetail.AvailableActions, x => x.Key == "open_finance_summary");
++        Assert.Contains(alertDetail.Links, x => x.Key == "finance_summary" && x.Route.Contains("/finance/monthly-summary", StringComparison.OrdinalIgnoreCase));
+         Assert.Contains(alertDetail.Links, x => x.Route.Contains("/finance/cash-position", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(dashboard.Alerts, x => x.Route is not null && x.Route.Contains("/finance/alerts/", StringComparison.OrdinalIgnoreCase));
+     }
+ 
+     [Fact]
+@@ -56,6 +61,12 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+         Assert.Equal(FinanceRunwayHealthStatus.Critical, Application.Cockpit.ExecutiveCockpitFinanceRunwayStatusClassifier.Classify(20, 90, 30));
+     }
+ 
++    [Fact]
++    public void Finance_widget_key_is_registered_for_widget_refresh_requests()
++    {
++        Assert.Contains(Application.Cockpit.ExecutiveCockpitWidgetKeys.Finance, Application.Cockpit.ExecutiveCockpitWidgetKeys.All);
++    }
++
+     private async Task<FinanceCockpitSeed> SeedFinanceCockpitCompanyAsync()
+     {
+         var ownerUserId = Guid.NewGuid();
+@@ -161,9 +172,16 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+     {
+         public Guid CompanyId { get; set; }
+         public object? CashPosition { get; set; }
++        public List<ExecutiveAlertResponse> Alerts { get; set; } = [];
+         public FinanceCockpitSectionResponse? Finance { get; set; }
+     }
+ 
++    private sealed class ExecutiveAlertResponse
++    {
++        public string Title { get; set; } = string.Empty;
++        public string? Route { get; set; }
++    }
++
+     private sealed class FinanceCockpitSectionResponse
+     {
+         public FinanceCockpitCashResponse CashPosition { get; set; } = new();
+@@ -188,6 +206,7 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+     {
+         public Guid AlertId { get; set; }
+         public List<string> ContributingFactors { get; set; } = [];
++        public List<FinanceCockpitActionResponse> AvailableActions { get; set; } = [];
+         public List<FinanceCockpitLinkResponse> Links { get; set; } = [];
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
+index a18e2b7..90f61be 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
+@@ -17,6 +17,7 @@ public sealed class FinanceRouteRegistrationTests
+     [InlineData(typeof(MonthlySummaryPage), FinanceRoutes.MonthlySummary)]
+     [InlineData(typeof(AnomaliesPage), FinanceRoutes.Anomalies)]
+     [InlineData(typeof(AnomalyDetailPage), FinanceRoutes.AnomalyDetail)]
++    [InlineData(typeof(LowCashAlertPage), FinanceRoutes.AlertDetail)]
+     public void Finance_pages_register_expected_routes(Type componentType, string expectedRoute)
+     {
+         var routes = componentType.GetCustomAttributes(inherit: false)
+@@ -40,4 +41,14 @@ public sealed class FinanceRouteRegistrationTests
+         Assert.Contains(FinanceRoutes.MonthlySummary, routes);
+         Assert.Contains(FinanceRoutes.Anomalies, routes);
+     }
++
++    [Fact]
++    public void Finance_alert_detail_routes_preserve_company_context()
++    {
++        var companyId = Guid.NewGuid();
++        var alertId = Guid.NewGuid();
++
++        var route = FinanceRoutes.BuildAlertDetailPath(alertId, companyId);
++
++        Assert.Equal($"/finance/alerts/{alertId:D}?companyId={companyId:D}", route);
++    }
+ }
+END_OF_PATCH

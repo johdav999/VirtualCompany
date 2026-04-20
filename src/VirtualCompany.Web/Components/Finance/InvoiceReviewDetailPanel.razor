@@ -1,0 +1,185 @@
+@using System.Globalization
+@using VirtualCompany.Web.Services
+
+<section class="invoice-review-detail-panel">
+    @if (!string.IsNullOrWhiteSpace(StatusMessage))
+    {
+        <div class="alert alert-success mb-0" role="status">@StatusMessage</div>
+    }
+
+    @if (SelectedItem is null)
+    {
+        <div class="invoice-review-detail-panel__empty">
+            <span class="dashboard-kicker">Context panel</span>
+            <h2 class="h4 mb-2">Select an invoice to review</h2>
+            <p class="text-body-secondary mb-3">Choose a row in the workbench to inspect recommendation context, supporting history, and approval actions.</p>
+
+            <dl class="kv-list mb-0">
+                <dt>Visible invoices</dt>
+                <dd>@VisibleInvoiceCount</dd>
+                <dt>High-risk items</dt>
+                <dd>@HighRiskCount</dd>
+                <dt>Needs attention</dt>
+                <dd>@NeedsAttentionCount</dd>
+            </dl>
+        </div>
+    }
+    else if (IsLoading)
+    {
+        <FinanceLoadingState Title="Loading invoice review" Message="Fetching the latest finance review result for the selected invoice." />
+    }
+    else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <FinanceErrorState Title="Invoice review unavailable" Message="@(ErrorMessage!)" RetryText="Retry" OnRetry="@OnRetry" />
+    }
+    else if (Detail is null)
+    {
+        <FinanceEmptyState Title="No review result available" Message="The selected invoice does not currently have a finance review result to display." />
+    }
+    else
+    {
+        var recommendation = InvoiceWorkflowPresentation.ResolveRecommendationDetails(Detail);
+        var workflowHistory = InvoiceWorkflowPresentation.NormalizeWorkflowHistory(Detail.WorkflowHistory);
+
+        <header class="invoice-review-detail-panel__header">
+            <div>
+                <span class="dashboard-kicker">Selected invoice</span>
+                <h2 class="h4 mb-1">@Detail.InvoiceNumber</h2>
+                <p class="text-body-secondary mb-0">@Detail.SupplierName</p>
+            </div>
+            <div class="text-end">
+                <div class="invoice-review-detail-panel__amount">@FormatCurrency(Detail.Amount, Detail.Currency)</div>
+                <div class="small text-body-secondary">Updated @FormatDateTime(Detail.LastUpdatedUtc)</div>
+            </div>
+        </header>
+
+        <section class="invoice-review-detail-panel__section" aria-label="Recommendation">
+            <h3 class="h5">Recommendation</h3>
+            <dl class="kv-list mb-0">
+                <dt>Recommended action</dt>
+                <dd>@FormatLabel(recommendation?.RecommendedAction ?? Detail.RecommendedAction)</dd>
+                <dt>Risk level</dt>
+                <dd><span class="@BuildRiskBadgeClass(recommendation?.Risk ?? Detail.RiskLevel)">@FormatLabel(recommendation?.Risk ?? Detail.RiskLevel)</span></dd>
+                <dt>Confidence</dt>
+                <dd>@FormatConfidence(recommendation?.Confidence ?? Detail.Confidence)</dd>
+                <dt>Review status</dt>
+                <dd>@FormatLabel(recommendation?.CurrentWorkflowStatus ?? Detail.RecommendationStatus)</dd>
+            </dl>
+        </section>
+
+        <section class="invoice-review-detail-panel__section" aria-label="Why flagged">
+            <h3 class="h5">Why it was flagged</h3>
+            <p class="mb-0">@(recommendation?.RationaleSummary ?? Detail.RecommendationSummary)</p>
+        </section>
+
+        <section class="invoice-review-detail-panel__section" aria-label="Supporting context">
+            <h3 class="h5">Supporting context</h3>
+            <div class="invoice-review-support-list">
+                <div class="invoice-review-support-item">
+                    <strong>Supplier summary</strong>
+                    <span>@Detail.SupplierName has @workflowHistory.Count workflow event@(workflowHistory.Count == 1 ? string.Empty : "s") in this review trail.</span>
+                </div>
+                <div class="invoice-review-support-item">
+                    <strong>Related items</strong>
+                    <span>
+                        @if (Detail.RelatedApprovalId.HasValue)
+                        {
+                            <text>Approval workflow is linked for this invoice.</text>
+                        }
+                        else
+                        {
+                            <text>No related approval has been linked yet.</text>
+                        }
+                    </span>
+                </div>
+                <div class="invoice-review-support-item">
+                    <strong>Linked documents</strong>
+                    <span>
+                        @if (!string.IsNullOrWhiteSpace(SourceInvoiceHref))
+                        {
+                            <text>Source invoice details are available.</text>
+                        }
+                        else
+                        {
+                            <text>No linked finance document route is currently exposed here.</text>
+                        }
+                    </span>
+                </div>
+            </div>
+
+            @if (workflowHistory.Count > 0)
+            {
+                <div class="invoice-review-detail-panel__history">
+                    @foreach (var entry in workflowHistory.Take(3))
+                    {
+                        <div class="invoice-review-history-item">
+                            <strong>@entry.EventType</strong>
+                            <span>@FormatActorOrSource(entry.ActorOrSourceDisplayName)</span>
+                            <span>@FormatDateTime(entry.OccurredAtUtc)</span>
+                        </div>
+                    }
+                </div>
+            }
+        </section>
+
+        <section class="invoice-review-detail-panel__section" aria-label="Actions">
+            <h3 class="h5">Actions</h3>
+            <div class="invoice-review-detail-panel__actions">
+                <button class="btn btn-primary" type="button" disabled="@(!Detail.Actions.CanApprove || IsSubmitting)" @onclick="OnApprove">Approve</button>
+                <button class="btn btn-outline-secondary" type="button" disabled="@(!Detail.Actions.CanReject || IsSubmitting)" @onclick="OnReject">Reject</button>
+                <button class="btn btn-outline-secondary" type="button" disabled="@(!Detail.Actions.CanSendForFollowUp || IsSubmitting)" @onclick="OnSendForFollowUp">Request more info</button>
+                <a class="btn btn-outline-primary" href="@FullDetailHref">View full details</a>
+            </div>
+        </section>
+    }
+</section>
+
+@code {
+    [Parameter] public FinanceInvoiceReviewListItemResponse? SelectedItem { get; set; }
+    [Parameter] public FinanceInvoiceReviewDetailResponse? Detail { get; set; }
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public bool IsSubmitting { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public string? StatusMessage { get; set; }
+    [Parameter] public int VisibleInvoiceCount { get; set; }
+    [Parameter] public int HighRiskCount { get; set; }
+    [Parameter] public int NeedsAttentionCount { get; set; }
+    [Parameter] public string FullDetailHref { get; set; } = "#";
+    [Parameter] public string? SourceInvoiceHref { get; set; }
+    [Parameter] public EventCallback OnRetry { get; set; }
+    [Parameter] public EventCallback OnApprove { get; set; }
+    [Parameter] public EventCallback OnReject { get; set; }
+    [Parameter] public EventCallback OnSendForFollowUp { get; set; }
+
+    private static string FormatLabel(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "n/a"
+            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+    private static string FormatCurrency(decimal amount, string currency) =>
+        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+
+    private static string FormatDateTime(DateTime value) =>
+        value == default
+            ? "Unknown time"
+            : value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+
+    private static string FormatConfidence(decimal confidence) =>
+        $"{Math.Clamp(confidence, 0m, 1m):P0}";
+
+    private static string FormatActorOrSource(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "System" : value.Trim();
+
+    private static string BuildRiskBadgeClass(string? riskLevel) =>
+        $"finance-risk-pill {ResolveRiskClass(riskLevel)}";
+
+    private static string ResolveRiskClass(string? riskLevel) =>
+        riskLevel?.Trim().ToLowerInvariant() switch
+        {
+            "critical" => "finance-risk-pill--critical",
+            "high" => "finance-risk-pill--high",
+            "medium" => "finance-risk-pill--medium",
+            "low" => "finance-risk-pill--low",
+            _ => "finance-risk-pill--neutral"
+        };
+}

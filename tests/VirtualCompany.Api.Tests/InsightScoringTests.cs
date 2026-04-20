@@ -32,18 +32,22 @@ public sealed class InsightScoringTests
     }
 
     [Fact]
-    public void Equal_scores_use_stable_tie_breakers()
+    public void Equal_priority_and_due_items_use_impact_then_source_id_tie_breakers()
     {
-        var now = new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc);
         var companyId = Guid.NewGuid();
-        var laterKey = Candidate(companyId, ActionInsightType.Risk, ActionInsightTargetType.Alert, "z-key", now.AddHours(8), ActionInsightSlaState.OnTrack, now.AddMinutes(2));
-        var earlierKey = Candidate(companyId, ActionInsightType.Risk, ActionInsightTargetType.Alert, "a-key", now.AddHours(8), ActionInsightSlaState.OnTrack, now.AddMinutes(2));
-        var earliestCreated = Candidate(companyId, ActionInsightType.Risk, ActionInsightTargetType.Alert, "m-key", now.AddHours(8), ActionInsightSlaState.OnTrack, now.AddMinutes(1));
-        var earliestDue = Candidate(companyId, ActionInsightType.Risk, ActionInsightTargetType.Alert, "x-key", now.AddHours(4), ActionInsightSlaState.OnTrack, now.AddMinutes(3));
+        var dueUtc = new DateTime(2026, 4, 14, 16, 0, 0, DateTimeKind.Utc);
+        var ordered = ActionQueueOrdering.Order(
+        [
+            ScoredCandidate(companyId, "null-due", Guid.Parse("44444444-4444-4444-4444-444444444444"), null, 95, ActionInsightPriority.High),
+            ScoredCandidate(companyId, "lower-impact", Guid.Parse("33333333-3333-3333-3333-333333333333"), dueUtc, 70, ActionInsightPriority.High),
+            ScoredCandidate(companyId, "higher-id", Guid.Parse("22222222-2222-2222-2222-222222222222"), dueUtc, 90, ActionInsightPriority.High),
+            ScoredCandidate(companyId, "earlier-id", Guid.Parse("11111111-1111-1111-1111-111111111111"), dueUtc, 90, ActionInsightPriority.High),
+            ScoredCandidate(companyId, "lower-priority", Guid.Parse("55555555-5555-5555-5555-555555555555"), dueUtc, 100, ActionInsightPriority.Medium)
+        ]);
 
-        var ordered = _scoring.Prioritize([laterKey, earlierKey, earliestCreated, earliestDue], now);
-
-        Assert.Equal(["x-key", "m-key", "a-key", "z-key"], ordered.Select(x => x.Candidate.InsightKey).ToArray());
+        Assert.Equal(
+            ["earlier-id", "higher-id", "lower-impact", "null-due", "lower-priority"],
+            ordered.Select(x => x.Candidate.InsightKey).ToArray());
     }
 
     [Theory]
@@ -83,6 +87,32 @@ public sealed class InsightScoringTests
 
         Assert.Equal(InsightKey.For(companyId, ActionInsightType.Task, sourceId, 3), InsightKey.For(companyId, ActionInsightType.Task, sourceId, 3));
     }
+
+    private static ScoredInsightCandidate ScoredCandidate(
+        Guid companyId,
+        string key,
+        Guid sourceId,
+        DateTime? dueUtc,
+        int impactScore,
+        ActionInsightPriority priority) =>
+        new(
+            new InsightCandidate(
+                key,
+                companyId,
+                ActionInsightType.Task,
+                ActionInsightTargetType.Task.ToStorageValue(),
+                sourceId,
+                ActionInsightTargetType.Task,
+                sourceId,
+                "Insight",
+                "Reason",
+                "Owner",
+                dueUtc,
+                dueUtc.HasValue ? ActionInsightSlaState.OnTrack : ActionInsightSlaState.None,
+                new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc)),
+            impactScore,
+            impactScore,
+            priority);
 
     private static InsightCandidate Candidate(
         Guid companyId,

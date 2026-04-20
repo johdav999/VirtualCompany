@@ -1,0 +1,1459 @@
+diff --git a/src/VirtualCompany.Api/Controllers/ActionInsightsController.cs b/src/VirtualCompany.Api/Controllers/ActionInsightsController.cs
+index 06cb317..8f7be58 100644
+--- a/src/VirtualCompany.Api/Controllers/ActionInsightsController.cs
++++ b/src/VirtualCompany.Api/Controllers/ActionInsightsController.cs
+@@ -13,6 +13,8 @@ public sealed class ActionInsightsController : ControllerBase
+ {
+     private readonly IActionInsightService _insights;
+ 
++    private const int DefaultTopActionCount = 5;
++    private const int DefaultPageSize = 25;
+     public ActionInsightsController(IActionInsightService insights)
+     {
+         _insights = insights;
+@@ -32,6 +34,34 @@ public sealed class ActionInsightsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("top")]
++    public async Task<ActionResult<IReadOnlyList<ActionQueueItemDto>>> GetTopActionsAsync(
++        Guid companyId,
++        [FromQuery] int count = DefaultTopActionCount,
++        CancellationToken cancellationToken = default)
++    {
++        try
++        {
++            return Ok(await _insights.GetTopActionsAsync(companyId, count, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<ActionQueuePageDto>> GetAllActionsAsync(
++        Guid companyId,
++        [FromQuery] int pageNumber = 1,
++        [FromQuery] int pageSize = DefaultPageSize,
++        CancellationToken cancellationToken = default)
++    {
++        try
++        {
++            return Ok(await _insights.GetAllActionsAsync(companyId, pageNumber, pageSize, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpPost("{insightKey}/acknowledgment")]
+     public async Task<ActionResult<ActionQueueItemDto?>> AcknowledgeAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Application/Insights/InsightContracts.cs b/src/VirtualCompany.Application/Insights/InsightContracts.cs
+index 2d33ce2..2de1fd8 100644
+--- a/src/VirtualCompany.Application/Insights/InsightContracts.cs
++++ b/src/VirtualCompany.Application/Insights/InsightContracts.cs
+@@ -15,6 +15,7 @@ public sealed record ActionQueueItemDto(
+     DateTime? DueUtc,
+     string SlaState,
+     int PriorityScore,
++    int ImpactScore,
+     string Priority,
+     string DeepLink,
+     bool IsAcknowledged,
+@@ -22,6 +23,15 @@ public sealed record ActionQueueItemDto(
+     string StableSortKey);
+ 
+ public sealed record AcknowledgeInsightCommand(string InsightKey);
++
++public sealed record ActionQueuePageDto(
++    IReadOnlyList<ActionQueueItemDto> Items,
++    int PageNumber,
++    int PageSize,
++    int TotalCount,
++    int TotalPages,
++    bool HasPreviousPage,
++    bool HasNextPage);
+ 
+ public sealed record InsightCandidate(
+     string InsightKey,
+@@ -58,6 +68,10 @@ public interface IActionInsightService
+ {
+     Task<IReadOnlyList<ActionQueueItemDto>> GetActionQueueAsync(Guid companyId, CancellationToken cancellationToken);
+ 
++    Task<IReadOnlyList<ActionQueueItemDto>> GetTopActionsAsync(Guid companyId, int count, CancellationToken cancellationToken);
++
++    Task<ActionQueuePageDto> GetAllActionsAsync(Guid companyId, int pageNumber, int pageSize, CancellationToken cancellationToken);
++
+     Task<ActionQueueItemDto?> AcknowledgeAsync(Guid companyId, string insightKey, CancellationToken cancellationToken);
+ }
+ 
+@@ -82,14 +96,42 @@ public sealed class DefaultInsightScoringService : IInsightScoringService
+     }
+ 
+     public IReadOnlyList<ScoredInsightCandidate> Prioritize(IEnumerable<InsightCandidate> candidates, DateTime nowUtc) =>
+-        candidates
+-            .Select(candidate => Score(candidate, nowUtc))
+-            .OrderByDescending(scored => scored.PriorityScore)
++        ActionQueueOrdering.Order(candidates.Select(candidate => Score(candidate, nowUtc)));
++
++    private static int SourceWeight(ActionInsightType type) =>
++        type switch
++        {
++            ActionInsightType.Approval => 55,
++            ActionInsightType.BlockedWorkflow => 50,
++            ActionInsightType.Risk => 45,
++            ActionInsightType.Task => 40,
++            ActionInsightType.Opportunity => 25,
++            _ => 0
++        };
++
++    private static int SlaWeight(ActionInsightSlaState state) =>
++        state switch
++        {
++            ActionInsightSlaState.Breached => 35,
++            ActionInsightSlaState.DueSoon => 20,
++            ActionInsightSlaState.OnTrack => 5,
++            _ => 0
++        };
++
++    private static int DueTimeWeight(DateTime? dueUtc, DateTime nowUtc)
++    {
++        if (!dueUtc.HasValue)
++        {
++            return 0;
++        }
++
++        var remaining = dueUtc.Value - nowUtc;
++        if (remaining <= TimeSpan.Zero)
++        {
++            return 20;
++        }
++
++        if (remaining <= TimeSpan.FromHours(4))
++        {
++            return 15;
++        }
++
++        if (remaining <= TimeSpan.FromDays(1))
++        {
++            return 8;
++        }
++
++        return 0;
++    }
++
++    private static int SeverityWeight(int severityWeight) => Math.Clamp(severityWeight, 0, 20);
++
++    private static int OccurrenceWeight(int occurrenceCount) => Math.Clamp(Math.Max(occurrenceCount, 1) - 1, 0, 5);
++}
++
++public static class ActionQueueOrdering
++{
++    public static IReadOnlyList<ScoredInsightCandidate> Order(IEnumerable<ScoredInsightCandidate> candidates) =>
++        candidates
++            .OrderByDescending(scored => (int)scored.Priority)
++            .ThenBy(scored => scored.Candidate.DueUtc.HasValue ? 0 : 1)
+             .ThenBy(scored => scored.Candidate.DueUtc ?? DateTime.MaxValue)
+-            // Equal priority uses immutable action identity fields so refreshes keep the same ordering.
++            .ThenByDescending(scored => scored.PriorityScore)
+             .ThenBy(scored => scored.Candidate.CreatedUtc)
+             .ThenBy(scored => scored.Candidate.InsightKey, StringComparer.Ordinal)
+-            .ThenBy(scored => scored.Candidate.TargetId)
+             .ToList();
+-
+-    private static int SourceWeight(ActionInsightType type) =>
+-        type switch
+-        {
+-            ActionInsightType.Approval => 55,
+-            ActionInsightType.BlockedWorkflow => 50,
+-            ActionInsightType.Risk => 45,
+-            ActionInsightType.Task => 40,
+-            ActionInsightType.Opportunity => 25,
+-            _ => 0
+-        };
+-
+-    private static int SlaWeight(ActionInsightSlaState state) =>
+-        state switch
+-        {
+-            ActionInsightSlaState.Breached => 35,
+-            ActionInsightSlaState.DueSoon => 20,
+-            ActionInsightSlaState.OnTrack => 5,
+-            _ => 0
+-        };
+-
+-    private static int DueTimeWeight(DateTime? dueUtc, DateTime nowUtc)
+-    {
+-        if (!dueUtc.HasValue)
+-        {
+-            return 0;
+-        }
+-
+-        var remaining = dueUtc.Value - nowUtc;
+-        if (remaining <= TimeSpan.Zero)
+-        {
+-            return 20;
+-        }
+-
+-        if (remaining <= TimeSpan.FromHours(4))
+-        {
+-            return 15;
+-        }
+-
+-        if (remaining <= TimeSpan.FromDays(1))
+-        {
+-            return 8;
+-        }
+-
+-        return 0;
+-    }
+-
+-    private static int SeverityWeight(int severityWeight) => Math.Clamp(severityWeight, 0, 20);
+-
+-    private static int OccurrenceWeight(int occurrenceCount) => Math.Clamp(Math.Max(occurrenceCount, 1) - 1, 0, 5);
+ }
+ 
+ public sealed class DefaultActionDeepLinkResolver : IActionDeepLinkResolver
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
+index 0ee5917..f7da96a 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
+@@ -8,8 +8,12 @@ namespace VirtualCompany.Infrastructure.Companies;
+ 
+ public sealed class CompanyActionInsightService : IActionInsightService
+ {
++    private const int DefaultTopActionCount = 5;
++    private const int DefaultPageSize = 25;
++    private const int MaxPageSize = 100;
+     private const int MaxCandidatesPerSource = 50;
+     private readonly VirtualCompanyDbContext _dbContext;
++
+     private readonly ICompanyContextAccessor _companyContextAccessor;
+     private readonly ICurrentUserAccessor _currentUserAccessor;
+     private readonly IInsightScoringService _scoringService;
+@@ -30,20 +34,44 @@ public sealed class CompanyActionInsightService : IActionInsightService
+         _timeProvider = timeProvider;
+     }
+ 
+-    public async Task<IReadOnlyList<ActionQueueItemDto>> GetActionQueueAsync(Guid companyId, CancellationToken cancellationToken)
++    public Task<IReadOnlyList<ActionQueueItemDto>> GetActionQueueAsync(Guid companyId, CancellationToken cancellationToken) =>
++        GetOrderedQueueAsync(companyId, cancellationToken);
++
++    public async Task<IReadOnlyList<ActionQueueItemDto>> GetTopActionsAsync(Guid companyId, int count, CancellationToken cancellationToken)
+     {
+-        var userId = ResolveUserId();
+-        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+-        var candidates = await GetCandidatesAsync(companyId, nowUtc, cancellationToken);
++        var normalizedCount = Math.Clamp(count <= 0 ? DefaultTopActionCount : count, 1, MaxPageSize);
++        var queue = await GetOrderedQueueAsync(companyId, cancellationToken);
++        return queue.Take(normalizedCount).ToList();
++    }
+ 
+-        var keys = candidates.Select(candidate => candidate.InsightKey).Distinct(StringComparer.Ordinal).ToArray();
+-        var acknowledgments = await _dbContext.InsightAcknowledgments
+-            .Where(ack => ack.CompanyId == companyId && ack.UserId == userId && keys.Contains(ack.InsightKey))
+-            .ToDictionaryAsync(ack => ack.InsightKey, ack => ack.AcknowledgedUtc, StringComparer.Ordinal, cancellationToken);
++    public async Task<ActionQueuePageDto> GetAllActionsAsync(Guid companyId, int pageNumber, int pageSize, CancellationToken cancellationToken)
++    {
++        var normalizedPageNumber = pageNumber <= 0 ? 1 : pageNumber;
++        var normalizedPageSize = Math.Clamp(pageSize <= 0 ? DefaultPageSize : pageSize, 1, MaxPageSize);
++        var queue = await GetOrderedQueueAsync(companyId, cancellationToken);
++        var totalCount = queue.Count;
++        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)normalizedPageSize);
++        var items = queue
++            .Skip((normalizedPageNumber - 1) * normalizedPageSize)
++            .Take(normalizedPageSize)
++            .ToList();
+ 
+-        return _scoringService
+-            .Prioritize(candidates, nowUtc)
+-            .Select(scored => Map(scored, acknowledgments))
+-            .ToList();
++        return new ActionQueuePageDto(
++            items,
++            normalizedPageNumber,
++            normalizedPageSize,
++            totalCount,
++            totalPages,
++            normalizedPageNumber > 1 && totalPages > 0,
++            totalPages > 0 && normalizedPageNumber < totalPages);
++    }
++
++    public async Task<ActionQueueItemDto?> AcknowledgeAsync(Guid companyId, string insightKey, CancellationToken cancellationToken)
++    {
++        var userId = ResolveUserId();
++        var normalizedKey = NormalizeInsightKey(insightKey);
++        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++
++        var candidates = await GetCandidatesAsync(companyId, nowUtc, cancellationToken);
++        if (!candidates.Any(candidate => string.Equals(candidate.InsightKey, normalizedKey, StringComparison.Ordinal)))
++        {
++            return null;
++        }
++
++        var existing = await _dbContext.InsightAcknowledgments.SingleOrDefaultAsync(
++            ack => ack.CompanyId == companyId && ack.UserId == userId && ack.InsightKey == normalizedKey,
++            cancellationToken);
++
++        if (existing is null)
++        {
++            _dbContext.InsightAcknowledgments.Add(new InsightAcknowledgment(Guid.NewGuid(), companyId, userId, normalizedKey, nowUtc));
++        }
++        else
++        {
++            existing.MarkAcknowledged(nowUtc);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        var queue = await GetOrderedQueueAsync(companyId, cancellationToken);
++        return queue.FirstOrDefault(item => string.Equals(item.InsightKey, normalizedKey, StringComparison.Ordinal));
+     }
+ 
+-    public async Task<ActionQueueItemDto?> AcknowledgeAsync(Guid companyId, string insightKey, CancellationToken cancellationToken)
++    private async Task<IReadOnlyList<ActionQueueItemDto>> GetOrderedQueueAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var userId = ResolveUserId();
+-        var normalizedKey = NormalizeInsightKey(insightKey);
+         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+-
+         var candidates = await GetCandidatesAsync(companyId, nowUtc, cancellationToken);
+-        if (!candidates.Any(candidate => string.Equals(candidate.InsightKey, normalizedKey, StringComparison.Ordinal)))
+-        {
+-            return null;
+-        }
++        var ordered = _scoringService.Prioritize(candidates, nowUtc);
+ 
+-        var existing = await _dbContext.InsightAcknowledgments.SingleOrDefaultAsync(
+-            ack => ack.CompanyId == companyId && ack.UserId == userId && ack.InsightKey == normalizedKey,
+-            cancellationToken);
+-
+-        if (existing is null)
+-        {
+-            _dbContext.InsightAcknowledgments.Add(new InsightAcknowledgment(Guid.NewGuid(), companyId, userId, normalizedKey, nowUtc));
+-        }
+-        else
+-        {
+-            existing.MarkAcknowledged(nowUtc);
+-        }
+-
+-        await _dbContext.SaveChangesAsync(cancellationToken);
+-
+-        var queue = await GetActionQueueAsync(companyId, cancellationToken);
+-        return queue.FirstOrDefault(item => string.Equals(item.InsightKey, normalizedKey, StringComparison.Ordinal));
++        var keys = ordered.Select(candidate => candidate.Candidate.InsightKey).Distinct(StringComparer.Ordinal).ToArray();
++        var acknowledgments = await _dbContext.InsightAcknowledgments
++            .Where(ack => ack.CompanyId == companyId && ack.UserId == userId && keys.Contains(ack.InsightKey))
++            .ToDictionaryAsync(ack => ack.InsightKey, ack => ack.AcknowledgedUtc, StringComparer.Ordinal, cancellationToken);
++
++        return ordered
++            .Select(scored => Map(scored, acknowledgments))
++            .ToList();
+     }
+ 
+     private async Task<IReadOnlyList<InsightCandidate>> GetCandidatesAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken)
+@@ -247,6 +275,7 @@ public sealed class CompanyActionInsightService : IActionInsightService
+             candidate.DueUtc,
+             candidate.SlaState.ToStorageValue(),
+             scored.PriorityScore,
++            scored.PriorityScore,
+             scored.Priority.ToStorageValue(),
+             deepLink.Href,
+             acknowledged,
+diff --git a/src/VirtualCompany.Web/Components/TopActionsList.razor b/src/VirtualCompany.Web/Components/TopActionsList.razor
+new file mode 100644
+index 0000000..d7b7605
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/TopActionsList.razor
+@@ -0,0 +1,163 @@
++@implements IDisposable
++@inject ActionInsightApiClient ActionInsightApiClient
++
++@if (CompanyId == Guid.Empty)
++{
++    <section class="wizard-card dashboard-summary">
++        <span class="dashboard-kicker">Action queue</span>
++        <p class="text-body-secondary mb-0">Select a company context to load prioritized actions.</p>
++    </section>
++}
++else if (isLoading)
++{
++    <section class="wizard-card dashboard-summary" aria-busy="true">
++        <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
++            <div>
++                <span class="dashboard-kicker">Action queue</span>
++                <h2 class="h4 mb-1">Top prioritized actions</h2>
++                <p class="text-body-secondary mb-0">Loading the highest-priority work for this workspace.</p>
++            </div>
++            <a class="btn btn-outline-primary btn-sm disabled" aria-disabled="true" tabindex="-1">View full queue</a>
++        </div>
++        <p class="text-body-secondary mb-0">Loading actions...</p>
++    </section>
++}
++else if (!string.IsNullOrWhiteSpace(errorMessage))
++{
++    <section class="wizard-card dashboard-summary" data-testid="top-actions-panel">
++        <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
++            <div>
++                <span class="dashboard-kicker">Action queue</span>
++                <h2 class="h4 mb-1">Top prioritized actions</h2>
++            </div>
++            <a class="btn btn-outline-primary btn-sm" data-testid="view-full-queue-link" href="@QueuePath">View full queue</a>
++        </div>
++        <div class="alert alert-danger mb-0">@errorMessage</div>
++    </section>
++}
++else
++{
++    <section class="wizard-card dashboard-summary" data-testid="top-actions-panel">
++        <div class="d-flex justify-content-between align-items-start gap-3 mb-4">
++            <div>
++                <span class="dashboard-kicker">Action queue</span>
++                <h2 class="h4 mb-1">Top prioritized actions</h2>
++                <p class="text-body-secondary mb-0">The five highest-priority actions across approvals, tasks, workflows, and alerts.</p>
++            </div>
++            <a class="btn btn-outline-primary btn-sm" data-testid="view-full-queue-link" href="@QueuePath">View full queue</a>
++        </div>
++
++        @if (items.Count == 0)
++        {
++            <p class="text-body-secondary mb-0">No actionable insights need attention right now.</p>
++        }
++        else
++        {
++            <div class="list-group">
++                @foreach (var item in items)
++                {
++                    <article class="list-group-item" data-testid="top-action-item">
++                        <div class="d-flex justify-content-between align-items-start gap-3">
++                            <div class="flex-grow-1">
++                                <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
++                                    <span class="badge text-bg-dark">@FormatPriority(item.Priority)</span>
++                                    <span class="text-body-secondary small">@FormatInsightType(item.Type)</span>
++                                </div>
++                                <h3 class="h6 mb-1">@item.Title</h3>
++                                <p class="text-body-secondary mb-2">@item.Reason</p>
++                                <div class="small text-body-secondary d-flex flex-wrap gap-3">
++                                    <span>Owner: @item.Owner</span>
++                                    <span>@FormatDueState(item)</span>
++                                    <span>Impact: @item.ImpactScore</span>
++                                </div>
++                            </div>
++                            <a class="btn btn-sm btn-outline-primary" href="@item.DeepLink">Open work</a>
++                        </div>
++                    </article>
++                }
++            </div>
++        }
++    </section>
++}
++
++@code {
++    [Parameter] public Guid CompanyId { get; set; }
++    [Parameter] public int Count { get; set; } = 5;
++
++    private CancellationTokenSource? loadCancellationTokenSource;
++    private bool isLoading = true;
++    private string? errorMessage;
++    private IReadOnlyList<ActionQueueItemViewModel> items = Array.Empty<ActionQueueItemViewModel>();
++    private string QueuePath => $"/queue?companyId={CompanyId:D}";
++
++    protected override async Task OnParametersSetAsync()
++    {
++        loadCancellationTokenSource?.Cancel();
++        loadCancellationTokenSource?.Dispose();
++        loadCancellationTokenSource = new CancellationTokenSource();
++
++        isLoading = true;
++        errorMessage = null;
++        items = Array.Empty<ActionQueueItemViewModel>();
++
++        if (CompanyId == Guid.Empty)
++        {
++            isLoading = false;
++            return;
++        }
++
++        try
++        {
++            items = await ActionInsightApiClient.GetTopActionsAsync(
++                CompanyId,
++                Count,
++                loadCancellationTokenSource.Token);
++        }
++        catch (OperationCanceledException) when (loadCancellationTokenSource.IsCancellationRequested)
++        {
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            if (loadCancellationTokenSource is { IsCancellationRequested: false })
++            {
++                isLoading = false;
++            }
++        }
++    }
++
++    public void Dispose()
++    {
++        loadCancellationTokenSource?.Cancel();
++        loadCancellationTokenSource?.Dispose();
++    }
++
++    private static string FormatPriority(string priority) =>
++        priority.Replace("_", " ", StringComparison.Ordinal).ToUpperInvariant();
++
++    private static string FormatInsightType(string type) =>
++        type.Replace("_", " ", StringComparison.Ordinal);
++
++    private static string FormatDueState(ActionQueueItemViewModel item)
++    {
++        var sla = item.SlaState.Replace("_", " ", StringComparison.Ordinal);
++        if (item.DueUtc is not DateTime dueUtc)
++        {
++            return $"SLA: {sla}";
++        }
++
++        return $"{sla}: {dueUtc.ToLocalTime():g}";
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index 9cf1d3f..8cadc85 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -1,6 +1,5 @@
+ @page "/dashboard"
+ @rendermode InteractiveServer
+ @inject OnboardingApiClient ApiClient
+-@inject ActionInsightApiClient ActionInsightApiClient
+ @inject NavigationManager Navigation
+ @using Microsoft.AspNetCore.Components
+ 
+@@ -73,8 +72,8 @@ else
+                     <div class="workspace-overview-grid mt-4">
+                         <article class="workspace-overview-card">
+                             <span class="dashboard-kicker">Operations</span>
+-                            <strong>@actionQueue.Count active item@(actionQueue.Count == 1 ? string.Empty : "s")</strong>
+-                            <p class="text-body-secondary mb-0">Live work prioritized across approvals, finance, and workflow follow-ups.</p>
++                            <strong>Prioritized action list</strong>
++                            <p class="text-body-secondary mb-0">The inline queue below keeps the five highest-priority actions visible in the main dashboard flow.</p>
+                         </article>
+                         <article class="workspace-overview-card">
+                             <span class="dashboard-kicker">Briefings</span>
+@@ -126,6 +125,11 @@ else
+                 {
+                     <TodayFocusPanel CompanyId="selectedCompanyId" UserId="currentUserId" />
+                 }
++
++                @if (CompanyId is Guid selectedCompanyIdForQueue)
++                {
++                    <TopActionsList CompanyId="selectedCompanyIdForQueue" />
++                }
+ 
+                 @if (CompanyId is Guid selectedCompanyId)
+                 {
+@@ -133,39 +137,6 @@ else
+                 }
+             </div>
+ 
+-            <aside class="company-dashboard-rail">
+-                <div class="wizard-card wizard-card--compact action-queue">
+-                    <div class="action-queue__header">
+-                        <div>
+-                            <span class="dashboard-kicker">Action queue</span>
+-                            <h2 class="h5 mb-0">Prioritized operational work</h2>
+-                        </div>
+-                        <span class="text-body-secondary">@actionQueue.Count item@(actionQueue.Count == 1 ? string.Empty : "s")</span>
+-                    </div>
+-
+-                    @if (actionQueue.Count == 0)
+-                    {
+-                        <p class="text-body-secondary mb-0">No actionable insights need attention right now.</p>
+-                    }
+-                    else
+-                    {
+-                        <div class="action-queue__list">
+-                            @foreach (var item in actionQueue)
+-                            {
+-                                <article class="action-queue__item @(item.IsAcknowledged ? "action-queue__item--acknowledged" : string.Empty)">
+-                                    <div class="action-queue__topline">
+-                                        <span class="action-queue__priority action-queue__priority--@item.Priority">@FormatPriority(item.Priority)</span>
+-                                        <span class="text-body-secondary">@FormatInsightType(item.Type)</span>
+-                                    </div>
+-                                    <h3 class="h6 mb-1">@item.Title</h3>
+-                                    <p class="mb-2">@item.Reason</p>
+-                                    <div class="action-queue__meta">
+-                                        <span>Owner: @item.Owner</span>
+-                                        <span>@FormatDueState(item)</span>
+-                                        <span>Score: @item.PriorityScore</span>
+-                                    </div>
+-                                    <div class="action-queue__actions">
+-                                        <a class="btn btn-sm btn-outline-primary" href="@item.DeepLink">Open work</a>
+-                                        <button class="btn btn-sm btn-outline-secondary" disabled="@item.IsAcknowledged" @onclick="() => AcknowledgeAsync(item)">
+-                                            @(item.IsAcknowledged ? "Acknowledged" : "Acknowledge")
+-                                        </button>
+-                                    </div>
+-                                </article>
+-                            }
+-                        </div>
+-                    }
+-                </div>
+-
++            <aside class="company-dashboard-rail">
+                 <div class="wizard-card wizard-card--compact">
+                     <h2 class="h5">Executive briefings</h2>
+                     @if (briefings?.Daily is null && briefings?.Weekly is null)
+@@ -228,7 +199,6 @@ else
+     private CompanyAccessViewModel? companyAccess;
+     private CompanyDashboardEntryViewModel? dashboardEntry;
+     private DashboardBriefingCardViewModel? briefings;
+-    private List<ActionQueueItemViewModel> actionQueue = [];
+     private string? errorMessage;
+     private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
+     private string AgentRosterPath => CompanyId is Guid companyId ? $"/agents?companyId={companyId}" : "/agents";
+@@ -249,7 +219,6 @@ else
+             companyAccess = null;
+             dashboardEntry = null;
+             briefings = null;
+-            actionQueue = [];
+ 
+             if (CompanyId is not Guid companyId)
+             {
+@@ -273,7 +242,6 @@ else
+             companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
+             dashboardEntry = companyAccess is null ? null : await ApiClient.GetDashboardEntryAsync(companyId);
+             briefings = companyAccess is null ? null : await ApiClient.GetLatestBriefingsAsync(companyId);
+-            actionQueue = companyAccess is null ? [] : (await ActionInsightApiClient.GetQueueAsync(companyId)).ToList();
+ 
+             if (dashboardEntry?.RequiresOnboarding == true)
+             {
+@@ -286,25 +254,10 @@ else
+             errorMessage = ex.Message;
+             companyAccess = null;
+             briefings = null;
+-            actionQueue = [];
+             dashboardEntry = null;
+         }
+         finally
+         {
+             isLoading = false;
+         }
+     }
+-
+-    private async Task AcknowledgeAsync(ActionQueueItemViewModel item)
+-    {
+-        if (CompanyId is not Guid companyId)
+-        {
+-            return;
+-        }
+-
+-        var acknowledged = await ActionInsightApiClient.AcknowledgeAsync(companyId, item.InsightKey);
+-        if (acknowledged is not null)
+-        {
+-            item.IsAcknowledged = acknowledged.IsAcknowledged;
+-            item.AcknowledgedAt = acknowledged.AcknowledgedAt;
+-        }
+-    }
+@@ -337,18 +290,4 @@ else
+             : $"{reference.Label} ({reference.Status})";
+ 
+-    private static string FormatPriority(string priority) =>
+-        priority.Replace("_", " ", StringComparison.Ordinal).ToUpperInvariant();
+-
+-    private static string FormatInsightType(string type) =>
+-        type.Replace("_", " ", StringComparison.Ordinal);
+-
+-    private static string FormatDueState(ActionQueueItemViewModel item)
+-    {
+-        var sla = item.SlaState.Replace("_", " ", StringComparison.Ordinal);
+-        if (item.DueUtc is not DateTime dueUtc)
+-        {
+-            return $"SLA: {sla}";
+-        }
+-
+-        return $"{sla}: {dueUtc.ToLocalTime():g}";
+-    }
+-
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Queue.razor b/src/VirtualCompany.Web/Pages/Queue.razor
+new file mode 100644
+index 0000000..ad4f31f
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Queue.razor
+@@ -0,0 +1,260 @@
++@page "/queue"
++@rendermode InteractiveServer
++@inject OnboardingApiClient OnboardingApiClient
++@inject ActionInsightApiClient ActionInsightApiClient
++@inject NavigationManager Navigation
++
++<PageTitle>Action Queue</PageTitle>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Action queue</h1>
++        <p class="text-body-secondary mb-0">Loading tenant-scoped prioritized actions...</p>
++    </section>
++}
++else if (CompanyId is null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="wizard-card">
++            <h1>Select a company</h1>
++            <p class="text-body-secondary">Choose the company where you want to review the full action queue.</p>
++
++            @if (activeMemberships.Count == 0)
++            {
++                <p class="mb-0">No active company memberships are available yet.</p>
++            }
++            else
++            {
++                <div class="template-grid">
++                    @foreach (var membership in activeMemberships)
++                    {
++                        <a class="template-card text-decoration-none text-reset" href="@BuildQueueUri(membership.CompanyId, 1, DefaultPageSize)">
++                            <strong>@membership.CompanyName</strong>
++                            <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
++                        </a>
++                    }
++                </div>
++            }
++        </div>
++    </section>
++}
++else
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <div class="d-flex justify-content-between align-items-start gap-3">
++                    <div>
++                        <span class="dashboard-kicker">Action queue</span>
++                        <h1>@(companyAccess?.CompanyName ?? "Action queue")</h1>
++                        <p class="text-body-secondary mb-0">All prioritized actions for the selected company, ordered deterministically for stable paging.</p>
++                    </div>
++                    @if (CompanyId is Guid companyId)
++                    {
++                        <a class="btn btn-outline-secondary" href="@($"/dashboard?companyId={companyId:D}")">Back to dashboard</a>
++                    }
++                </div>
++
++                @if (!string.IsNullOrWhiteSpace(errorMessage))
++                {
++                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
++                }
++                else if (queuePage?.Items.Count == 0)
++                {
++                    <p class="text-body-secondary mt-4 mb-0">No actionable insights need attention right now.</p>
++                }
++                else if (queuePage is not null)
++                {
++                    <div class="d-flex justify-content-between align-items-center mt-4 mb-3">
++                        <span class="text-body-secondary">
++                            Showing page @queuePage.PageNumber of @(queuePage.TotalPages == 0 ? 1 : queuePage.TotalPages)
++                            | @queuePage.TotalCount total item@(queuePage.TotalCount == 1 ? string.Empty : "s")
++                        </span>
++                    </div>
++
++                    <div class="list-group">
++                        @foreach (var item in queuePage.Items)
++                        {
++                            <article class="list-group-item">
++                                <div class="d-flex justify-content-between align-items-start gap-3">
++                                    <div class="flex-grow-1">
++                                        <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
++                                            <span class="badge text-bg-dark">@FormatPriority(item.Priority)</span>
++                                            <span class="text-body-secondary small">@FormatInsightType(item.Type)</span>
++                                        </div>
++                                        <h2 class="h6 mb-1">@item.Title</h2>
++                                        <p class="text-body-secondary mb-2">@item.Reason</p>
++                                        <div class="small text-body-secondary d-flex flex-wrap gap-3">
++                                            <span>Owner: @item.Owner</span>
++                                            <span>@FormatDueState(item)</span>
++                                            <span>Impact: @item.ImpactScore</span>
++                                        </div>
++                                    </div>
++                                    <a class="btn btn-sm btn-outline-primary" href="@item.DeepLink">Open work</a>
++                                </div>
++                            </article>
++                        }
++                    </div>
++
++                    @if (queuePage.TotalPages > 1)
++                    {
++                        <div class="dashboard-actions mt-4">
++                            @if (queuePage.HasPreviousPage)
++                            {
++                                <a class="btn btn-outline-secondary" href="@BuildQueueUri(CompanyId!.Value, queuePage.PageNumber - 1, queuePage.PageSize)">Previous</a>
++                            }
++                            else
++                            {
++                                <button class="btn btn-outline-secondary" disabled>Previous</button>
++                            }
++
++                            @if (queuePage.HasNextPage)
++                            {
++                                <a class="btn btn-outline-primary" href="@BuildQueueUri(CompanyId!.Value, queuePage.PageNumber + 1, queuePage.PageSize)">Next</a>
++                            }
++                            else
++                            {
++                                <button class="btn btn-outline-primary" disabled>Next</button>
++                            }
++                        </div>
++                    }
++                }
++            </div>
++        </div>
++    </section>
++}
++
++@code {
++    private const int DefaultPageSize = 20;
++    private const int MaxPageSize = 100;
++
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "pageNumber")]
++    public int PageNumber { get; set; } = 1;
++
++    [SupplyParameterFromQuery(Name = "pageSize")]
++    public int PageSize { get; set; } = DefaultPageSize;
++
++    private bool isLoading = true;
++    private string? errorMessage;
++    private CurrentUserContextViewModel? currentUser;
++    private CompanyAccessViewModel? companyAccess;
++    private PagedActionQueueResultViewModel? queuePage;
++
++    private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
++        currentUser?.Memberships
++            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
++            .ToList()
++        ?? [];
++
++    protected override async Task OnParametersSetAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        companyAccess = null;
++        queuePage = null;
++
++        try
++        {
++            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
++            if (CompanyId is null && currentUser?.ActiveCompany is not null)
++            {
++                Navigation.NavigateTo(BuildQueueUri(currentUser.ActiveCompany.CompanyId, 1, NormalizePageSize(PageSize)), replace: true);
++                return;
++            }
++
++            if (CompanyId is Guid companyId)
++            {
++                companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
++                if (companyAccess is not null)
++                {
++                    queuePage = await ActionInsightApiClient.GetAllActionsAsync(
++                        companyId,
++                        NormalizePageNumber(PageNumber),
++                        NormalizePageSize(PageSize));
++                }
++            }
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++            queuePage = null;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private static int NormalizePageNumber(int pageNumber) => pageNumber <= 0 ? 1 : pageNumber;
++
++    private static int NormalizePageSize(int pageSize) => Math.Clamp(pageSize <= 0 ? DefaultPageSize : pageSize, 1, MaxPageSize);
++
++    private static string BuildQueueUri(Guid companyId, int pageNumber, int pageSize) =>
++        $"/queue?companyId={companyId:D}&pageNumber={NormalizePageNumber(pageNumber)}&pageSize={NormalizePageSize(pageSize)}";
++
++    private static string FormatPriority(string priority) =>
++        priority.Replace("_", " ", StringComparison.Ordinal).ToUpperInvariant();
++
++    private static string FormatInsightType(string type) =>
++        type.Replace("_", " ", StringComparison.Ordinal);
++
++    private static string FormatDueState(ActionQueueItemViewModel item)
++    {
++        var sla = item.SlaState.Replace("_", " ", StringComparison.Ordinal);
++        if (item.DueUtc is not DateTime dueUtc)
++        {
++            return $"SLA: {sla}";
++        }
++
++        return $"{sla}: {dueUtc.ToLocalTime():g}";
++    }
++}
+diff --git a/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs b/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
+index 86c4b66..e08e14b 100644
+--- a/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
+@@ -15,14 +15,43 @@ public sealed class ActionInsightApiClient
+         _useOfflineMode = useOfflineMode;
+     }
+ 
+-    public Task<IReadOnlyList<ActionQueueItemViewModel>> GetQueueAsync(Guid companyId, CancellationToken cancellationToken = default)
++    public Task<IReadOnlyList<ActionQueueItemViewModel>> GetQueueAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<IReadOnlyList<ActionQueueItemViewModel>>(OrderQueue(EnsureOfflineQueue(companyId)))
++            : GetAsync<IReadOnlyList<ActionQueueItemViewModel>>($"api/companies/{companyId}/action-insights/queue", cancellationToken);
++
++    public Task<IReadOnlyList<ActionQueueItemViewModel>> GetTopActionsAsync(
++        Guid companyId,
++        int count = 5,
++        CancellationToken cancellationToken = default)
+     {
+         if (_useOfflineMode)
+         {
+-            if (_offlineItems.Count == 0)
+-            {
+-                _offlineItems.AddRange(OfflineQueue(companyId));
+-            }
++            var normalizedCount = Math.Max(1, count);
++            return Task.FromResult<IReadOnlyList<ActionQueueItemViewModel>>(
++                OrderQueue(EnsureOfflineQueue(companyId))
++                    .Take(normalizedCount)
++                    .ToList());
++        }
++
++        return GetAsync<IReadOnlyList<ActionQueueItemViewModel>>(
++            $"api/companies/{companyId}/action-insights/top?count={Math.Max(1, count)}",
++            cancellationToken);
++    }
++
++    public Task<PagedActionQueueResultViewModel> GetAllActionsAsync(
++        Guid companyId,
++        int pageNumber = 1,
++        int pageSize = 25,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            var normalizedPageNumber = pageNumber <= 0 ? 1 : pageNumber;
++            var normalizedPageSize = Math.Clamp(pageSize <= 0 ? 25 : pageSize, 1, 100);
++            var ordered = OrderQueue(EnsureOfflineQueue(companyId));
++            var totalCount = ordered.Count;
++            var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)normalizedPageSize);
++            var items = ordered.Skip((normalizedPageNumber - 1) * normalizedPageSize).Take(normalizedPageSize).ToList();
+ 
+-            return Task.FromResult<IReadOnlyList<ActionQueueItemViewModel>>(_offlineItems.ToList());
++            return Task.FromResult(new PagedActionQueueResultViewModel
++            {
++                Items = items,
++                PageNumber = normalizedPageNumber,
++                PageSize = normalizedPageSize,
++                TotalCount = totalCount,
++                TotalPages = totalPages,
++                HasPreviousPage = normalizedPageNumber > 1 && totalPages > 0,
++                HasNextPage = totalPages > 0 && normalizedPageNumber < totalPages
++            });
+         }
+ 
+-        return GetAsync<IReadOnlyList<ActionQueueItemViewModel>>($"api/companies/{companyId}/action-insights/queue", cancellationToken);
++        return GetAsync<PagedActionQueueResultViewModel>(
++            $"api/companies/{companyId}/action-insights?pageNumber={Math.Max(1, pageNumber)}&pageSize={Math.Clamp(pageSize <= 0 ? 25 : pageSize, 1, 100)}",
++            cancellationToken);
+     }
+ 
+     public async Task<ActionQueueItemViewModel?> AcknowledgeAsync(Guid companyId, string insightKey, CancellationToken cancellationToken = default)
+@@ -80,6 +109,36 @@ public sealed class ActionInsightApiClient
+         var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
+         return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
+     }
++
++    private IReadOnlyList<ActionQueueItemViewModel> EnsureOfflineQueue(Guid companyId)
++    {
++        if (_offlineItems.Count == 0)
++        {
++            _offlineItems.AddRange(OfflineQueue(companyId));
++        }
++
++        return _offlineItems;
++    }
++
++    private static IReadOnlyList<ActionQueueItemViewModel> OrderQueue(IEnumerable<ActionQueueItemViewModel> items) =>
++        items
++            .OrderByDescending(item => PriorityRank(item.Priority))
++            .ThenBy(item => item.DueUtc.HasValue ? 0 : 1)
++            .ThenBy(item => item.DueUtc ?? DateTime.MaxValue)
++            .ThenByDescending(item => item.ImpactScore)
++            .ThenBy(item => item.StableSortKey, StringComparer.Ordinal)
++            .ToList();
++
++    private static int PriorityRank(string priority) =>
++        priority.Trim().ToLowerInvariant() switch
++        {
++            "critical" => 4,
++            "high" => 3,
++            "medium" => 2,
++            "low" => 1,
++            _ => 0
++        };
+ 
+     private static IReadOnlyList<ActionQueueItemViewModel> OfflineQueue(Guid companyId) =>
+     [
+@@ -101,6 +160,7 @@ public sealed class ActionInsightApiClient
+             DueUtc = DateTime.UtcNow.AddHours(2),
+             SlaState = "due_soon",
+             PriorityScore = 90,
++            ImpactScore = 90,
+             Priority = "critical",
+             DeepLink = $"/approvals?companyId={companyId}&approvalId=d0131d57-1895-4b75-9624-9b8b04d8a116",
+             StableSortKey = $"{companyId:N}:approval:d0131d5718954b7596249b8b04d8a116:v0"
+@@ -120,6 +180,7 @@ public sealed class ActionInsightApiClient
+             DueUtc = DateTime.UtcNow.AddHours(4),
+             SlaState = "due_soon",
+             PriorityScore = 75,
++            ImpactScore = 75,
+             Priority = "high",
+             DeepLink = $"/tasks?companyId={companyId}&taskId=21fa1767-fd77-42d7-a4d5-c6d50ec8bf5b",
+             StableSortKey = $"{companyId:N}:task:21fa1767fd7742d7a4d5c6d50ec8bf5b:v0"
+@@ -139,6 +200,7 @@ public sealed class ActionInsightApiClient
+             DueUtc = DateTime.UtcNow.AddHours(1),
+             SlaState = "due_soon",
+             PriorityScore = 85,
++            ImpactScore = 85,
+             Priority = "high",
+             DeepLink = $"/workflows?companyId={companyId}&workflowInstanceId=2cf1da39-93ad-4543-bdd2-3862eedec738",
+             StableSortKey = $"{companyId:N}:blocked_workflow:2cf1da3993ad4543bdd23862eedec738:v0"
+@@ -165,6 +227,7 @@ public sealed class ActionQueueItemViewModel
+     public DateTime? DueUtc { get; set; }
+     public string SlaState { get; set; } = string.Empty;
+     public int PriorityScore { get; set; }
++    public int ImpactScore { get; set; }
+     public string Priority { get; set; } = string.Empty;
+     public string DeepLink { get; set; } = string.Empty;
+     public bool IsAcknowledged { get; set; }
+@@ -172,3 +235,15 @@ public sealed class ActionQueueItemViewModel
+     public string StableSortKey { get; set; } = string.Empty;
+ }
++
++public sealed class PagedActionQueueResultViewModel
++{
++    public List<ActionQueueItemViewModel> Items { get; set; } = [];
++    public int PageNumber { get; set; }
++    public int PageSize { get; set; }
++    public int TotalCount { get; set; }
++    public int TotalPages { get; set; }
++    public bool HasPreviousPage { get; set; }
++    public bool HasNextPage { get; set; }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs b/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
+index 6a0f163..5ba7a9b 100644
+--- a/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
+@@ -77,6 +77,52 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
+         Assert.DoesNotContain(otherTenantQueue!, item => item.InsightKey == target.InsightKey);
+     }
+ 
++    [Fact]
++    public async Task Top_endpoint_returns_first_five_items_using_required_priority_order()
++    {
++        var seed = await SeedPrioritizedTaskQueueAsync();
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com");
++
++        var items = await client.GetFromJsonAsync<List<ActionQueueItemResponse>>(
++            $"/api/companies/{seed.CompanyId}/action-insights/top?count=5");
++
++        Assert.NotNull(items);
++        Assert.Equal(
++            new[]
++            {
++                "Overdue critical release",
++                "Due soon critical release",
++                "Due soon normal supplier task",
++                "Due soon low supplier task",
++                "Medium due follow-up"
++            },
++            items!.Select(item => item.Title).ToArray());
++        Assert.Equal(5, items.Count);
++    }
++
++    [Fact]
++    public async Task Paginated_endpoint_returns_stable_non_overlapping_pages()
++    {
++        var seed = await SeedPrioritizedTaskQueueAsync();
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com");
++
++        var pageOne = await client.GetFromJsonAsync<ActionQueuePageResponse>(
++            $"/api/companies/{seed.CompanyId}/action-insights?pageNumber=1&pageSize=2");
++        var pageTwo = await client.GetFromJsonAsync<ActionQueuePageResponse>(
++            $"/api/companies/{seed.CompanyId}/action-insights?pageNumber=2&pageSize=2");
++        var repeatedPageTwo = await client.GetFromJsonAsync<ActionQueuePageResponse>(
++            $"/api/companies/{seed.CompanyId}/action-insights?pageNumber=2&pageSize=2");
++        var otherTenantPage = await client.GetFromJsonAsync<ActionQueuePageResponse>(
++            $"/api/companies/{seed.OtherCompanyId}/action-insights?pageNumber=1&pageSize=10");
++
++        Assert.NotNull(pageOne);
++        Assert.NotNull(pageTwo);
++        Assert.NotNull(repeatedPageTwo);
++        Assert.Equal(7, pageOne!.TotalCount);
++        Assert.Equal(4, pageOne.TotalPages);
++        Assert.Equal(pageTwo!.Items.Select(item => item.InsightKey), repeatedPageTwo!.Items.Select(item => item.InsightKey));
++        Assert.Empty(pageOne.Items.Select(item => item.InsightKey).Intersect(pageTwo.Items.Select(item => item.InsightKey)));
++        Assert.Equal(new[] { "Due soon normal supplier task", "Due soon low supplier task" }, pageTwo.Items.Select(item => item.Title).ToArray());
++        Assert.Empty(otherTenantPage!.Items);
++    }
++
+     private HttpClient CreateAuthenticatedClient(string subject, string email)
+     {
+         var client = _factory.CreateClient();
+@@ -178,6 +224,84 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
+         return new ActionQueueSeed(companyId, otherCompanyId);
+     }
+ 
++    private async Task<ActionQueueSeed> SeedPrioritizedTaskQueueAsync()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Priority Queue Company"),
++                new Company(otherCompanyId, "Other Priority Queue Company"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(agentId, companyId, "ops", "Operations Lead", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
++
++            dbContext.WorkTasks.AddRange(
++                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Overdue critical release", WorkTaskPriority.High, DateTime.UtcNow.AddHours(-1)),
++                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Due soon critical release", WorkTaskPriority.High, DateTime.UtcNow.AddHours(1)),
++                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Due soon normal supplier task", WorkTaskPriority.Normal, DateTime.UtcNow.AddHours(2)),
++                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Due soon low supplier task", WorkTaskPriority.Low, DateTime.UtcNow.AddHours(2)),
++                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Medium due follow-up", WorkTaskPriority.Low, DateTime.UtcNow.AddHours(12)),
++                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Medium no due follow-up", WorkTaskPriority.High, null),
++                BuildTask(Guid.NewGuid(), companyId, userId, agentId, "Low no due follow-up", WorkTaskPriority.Low, null),
++                BuildTask(Guid.NewGuid(), otherCompanyId, userId, null, "Other tenant follow-up", WorkTaskPriority.High, DateTime.UtcNow.AddHours(1)));
++
++            return Task.CompletedTask;
++        });
++
++        return new ActionQueueSeed(companyId, otherCompanyId);
++    }
++
++    private static WorkTask BuildTask(
++        Guid taskId,
++        Guid companyId,
++        Guid userId,
++        Guid? assignedAgentId,
++        string title,
++        WorkTaskPriority priority,
++        DateTime? dueUtc)
++    {
++        var task = new WorkTask(
++            taskId,
++            companyId,
++            "queue-test",
++            title,
++            "Priority ordering test task.",
++            priority,
++            assignedAgentId,
++            null,
++            "user",
++            userId);
++
++        if (dueUtc.HasValue)
++        {
++            task.SetDueDate(dueUtc.Value);
++        }
++
++        return task;
++    }
++
+     private sealed record ActionQueueSeed(Guid CompanyId, Guid OtherCompanyId);
+ 
++    private sealed class ActionQueuePageResponse
++    {
++        public List<ActionQueueItemResponse> Items { get; set; } = [];
++        public int PageNumber { get; set; }
++        public int PageSize { get; set; }
++        public int TotalCount { get; set; }
++        public int TotalPages { get; set; }
++        public bool HasPreviousPage { get; set; }
++        public bool HasNextPage { get; set; }
++    }
++
+     private sealed class ActionQueueItemResponse
+     {
+         public string InsightKey { get; set; } = string.Empty;
+@@ -192,6 +316,7 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
+         public DateTime? DueUtc { get; set; }
+         public string SlaState { get; set; } = string.Empty;
+         public int PriorityScore { get; set; }
++        public int ImpactScore { get; set; }
+         public string Priority { get; set; } = string.Empty;
+         public string DeepLink { get; set; } = string.Empty;
+         public bool IsAcknowledged { get; set; }
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs b/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs
+new file mode 100644
+index 0000000..49d0d8b
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs
+@@ -0,0 +1,164 @@
++using System.Net;
++using System.Net.Http.Json;
++using Bunit;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Web.Pages;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class DashboardPageTests
++{
++    [Fact]
++    public void Dashboard_renders_top_actions_inline_below_todays_focus_and_removes_legacy_sidebar_queue()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        using var context = CreateContext(companyId);
++
++        var cut = context.RenderComponent<Dashboard>(parameters => parameters
++            .Add(component => component.CompanyId, companyId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.NotNull(cut.Find("[data-testid='today-focus-panel']"));
++            Assert.NotNull(cut.Find("[data-testid='top-actions-panel']"));
++            Assert.NotNull(cut.Find("[data-testid='view-full-queue-link']"));
++            Assert.DoesNotContain("Prioritized operational work", cut.Markup);
++            Assert.Empty(cut.FindAll(".action-queue"));
++        });
++
++        Assert.Contains($"/queue?companyId={companyId:D}", cut.Find("[data-testid='view-full-queue-link']").GetAttribute("href"));
++        Assert.True(
++            cut.Markup.IndexOf("data-testid=\"today-focus-panel\"", StringComparison.Ordinal) <
++            cut.Markup.IndexOf("data-testid=\"top-actions-panel\"", StringComparison.Ordinal));
++    }
++
++    private static TestContext CreateContext(Guid companyId)
++    {
++        var context = new TestContext();
++        context.Services.AddLogging();
++
++        var onboardingHttpClient = new HttpClient(new AsyncStubHttpMessageHandler(request =>
++        {
++            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
++            return Task.FromResult(path switch
++            {
++                "/api/auth/me" => CreateJsonResponse(new CurrentUserContextViewModel
++                {
++                    User = new CurrentUserViewModel
++                    {
++                        Id = Guid.Parse("11111111-1111-1111-1111-111111111111"),
++                        Email = "founder@example.com",
++                        DisplayName = "Founder",
++                        AuthProvider = "dev-header",
++                        AuthSubject = "founder"
++                    },
++                    Memberships =
++                    [
++                        new CompanyMembershipViewModel
++                        {
++                            MembershipId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
++                            CompanyId = companyId,
++                            CompanyName = "Contoso Labs",
++                            MembershipRole = "owner",
++                            Status = "active"
++                        }
++                    ]
++                }),
++                "/api/onboarding/progress" => new HttpResponseMessage(HttpStatusCode.NotFound),
++                var candidate when candidate == $"/api/companies/{companyId:D}/access" => CreateJsonResponse(new CompanyAccessViewModel
++                {
++                    CompanyId = companyId,
++                    CompanyName = "Contoso Labs",
++                    MembershipRole = "owner",
++                    Status = "active"
++                }),
++                var candidate when candidate == $"/api/companies/{companyId:D}/dashboard-entry" => CreateJsonResponse(new CompanyDashboardEntryViewModel
++                {
++                    CompanyId = companyId,
++                    CompanyName = "Contoso Labs",
++                    RequiresOnboarding = false,
++                    ShowStarterGuidance = false
++                }),
++                var candidate when candidate == $"/api/companies/{companyId:D}/briefings/latest" => CreateJsonResponse(new DashboardBriefingCardViewModel()),
++                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
++            });
++        }))
++        {
++            BaseAddress = new Uri("http://localhost/")
++        };
++
++        context.Services.AddSingleton(new OnboardingApiClient(onboardingHttpClient));
++        context.Services.AddSingleton(new ActionInsightApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, useOfflineMode: true));
++        context.Services.AddSingleton(new TodayFocusApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, useOfflineMode: true));
++        context.Services.AddSingleton(new ExecutiveCockpitApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, useOfflineMode: true));
++        context.Services.AddSingleton(new FinanceApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, logger: null, useOfflineMode: true));
++
++        return context;
++    }
++
++    private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>
++        new(HttpStatusCode.OK)
++        {
++            Content = JsonContent.Create(payload)
++        };
++
++    private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler
++    {
++        private readonly Func<HttpRequestMessage, Task<HttpResponseMessage>> _handler;
++
++        public AsyncStubHttpMessageHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler)
++        {
++            _handler = handler;
++        }
++
++        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
++            _handler(request);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs
+new file mode 100644
+index 0000000..b5214e7
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs
+@@ -0,0 +1,187 @@
++using System.Net;
++using System.Net.Http.Json;
++using Bunit;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Web.Components;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class TopActionsListTests
++{
++    [Fact]
++    public void Component_renders_top_five_items_and_visible_full_queue_link()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        var items = new[]
++        {
++            Item(companyId, "approval-1", "critical", 95, DateTime.UtcNow.AddMinutes(-30), "Approval required"),
++            Item(companyId, "task-1", "critical", 90, DateTime.UtcNow.AddHours(1), "Resolve blocked release"),
++            Item(companyId, "task-2", "high", 81, DateTime.UtcNow.AddHours(2), "Review supplier escalation"),
++            Item(companyId, "task-3", "high", 75, DateTime.UtcNow.AddHours(2), "Contact customer"),
++            Item(companyId, "task-4", "medium", 60, DateTime.UtcNow.AddHours(8), "Prepare handoff"),
++            Item(companyId, "task-5", "low", 10, null, "Deferred follow-up")
++        };
++
++        using var context = CreateContext(_ => CreateJsonResponse(items));
++        var cut = context.RenderComponent<TopActionsList>(parameters => parameters
++            .Add(component => component.CompanyId, companyId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Equal(5, cut.FindAll("[data-testid='top-action-item']").Count);
++            Assert.Contains("Approval required", cut.Markup);
++            Assert.Contains("Resolve blocked release", cut.Markup);
++            Assert.Contains("Review supplier escalation", cut.Markup);
++            Assert.Contains("Contact customer", cut.Markup);
++            Assert.Contains("Prepare handoff", cut.Markup);
++            Assert.DoesNotContain("Deferred follow-up", cut.Markup);
++        });
++
++        Assert.Equal($"/queue?companyId={companyId:D}", cut.Find("[data-testid='view-full-queue-link']").GetAttribute("href"));
++    }
++
++    [Fact]
++    public void Component_shows_empty_state_and_still_exposes_full_queue_link()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++
++        using var context = CreateContext(_ => CreateJsonResponse(Array.Empty<ActionQueueItemViewModel>()));
++        var cut = context.RenderComponent<TopActionsList>(parameters => parameters
++            .Add(component => component.CompanyId, companyId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("No actionable insights need attention right now.", cut.Markup);
++            Assert.NotNull(cut.Find("[data-testid='view-full-queue-link']"));
++        });
++    }
++
++    private static ActionQueueItemViewModel Item(
++        Guid companyId,
++        string suffix,
++        string priority,
++        int impactScore,
++        DateTime? dueUtc,
++        string title) =>
++        new()
++        {
++            InsightKey = $"{companyId:N}:{suffix}",
++            CompanyId = companyId,
++            Type = "task",
++            SourceEntityType = "task",
++            SourceEntityId = Guid.NewGuid(),
++            TargetType = "task",
++            TargetId = Guid.NewGuid(),
++            Title = title,
++            Reason = $"Reason for {title}",
++            Owner = "Operations",
++            DueUtc = dueUtc,
++            SlaState = dueUtc.HasValue ? "due_soon" : "none",
++            PriorityScore = impactScore,
++            ImpactScore = impactScore,
++            Priority = priority,
++            DeepLink = $"/tasks?companyId={companyId:D}&taskId={Guid.NewGuid():D}",
++            StableSortKey = $"{priority}:{impactScore}:{suffix}"
++        };
++
++    private static TestContext CreateContext(Func<HttpRequestMessage, HttpResponseMessage> responseFactory)
++    {
++        var context = new TestContext();
++        context.Services.AddLogging();
++        context.Services.AddSingleton(new ActionInsightApiClient(
++            new HttpClient(new AsyncStubHttpMessageHandler((request, _) => Task.FromResult(responseFactory(request))))
++            {
++                BaseAddress = new Uri("http://localhost/")
++            }));
++        return context;
++    }
++
++    private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>
++        new(HttpStatusCode.OK)
++        {
++            Content = JsonContent.Create(payload)
++        };
++
++    private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler
++    {
++        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
++
++        public AsyncStubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
++        {
++            _handler = handler;
++        }
++
++        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
++            _handler(request, cancellationToken);
++    }
++}
+END_OF_PATCH

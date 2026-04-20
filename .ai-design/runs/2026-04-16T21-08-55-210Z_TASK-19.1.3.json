@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-19.1.3",
+  "promptPath": ".ai-design/prompts/TASK-19.1.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T21:08:55.210Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T21-08-55-210Z_TASK-19.1.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T21-08-55-210Z_TASK-19.1.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T21:11:22.234Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "  TestIdentity Tester,\n         TestIdentity Approver,\n         TestIdentity Employee)\n     {\n@@ -135,6 +141,7 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<\n                 \"owner\" => Owner,\n                 \"admin\" => Admin,\n                 \"manager\" => Manager,\n+                \"tester\" => Tester,\n                 \"finance_approver\" => Approver,\n                 \"employee\" => Employee,\n                 _ => throw new ArgumentOutOfRangeException(nameof(role), role, \"Unsupported sandbox admin test role.\")\ndiff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs\nindex 6e37baf..2f2ba6b 100644\n--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs\n@@ -25,6 +25,25 @@ public sealed class FinanceSandboxAdminPageTests\n         Assert.Equal(0, sandboxService.TotalCalls);\n     }\n \n+    [Fact]\n+    public void Sandbox_admin_page_allows_tester_memberships_to_load_admin_sections()\n+    {\n+        var companyId = Guid.Parse(\"6dbd9307-4ab8-43d6-9458-6db64f927f68\");\n+        var sandboxService = new StubFinanceSandboxAdminService();\n+\n+        using var harness = CreateHarness(companyId, \"tester\", sandboxService);\n+        harness.Navigation.NavigateTo($\"http://localhost/finance/sandbox-admin?companyId={companyId:D}\");\n+\n+        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters\n+            .Add(x => x.CompanyId, companyId));\n+\n+        cut.WaitForAssertion(() =>\n+        {\n+            Assert.Contains(\"Finance sandbox admin\", cut.Markup);\n+            Assert.Contains(\"Dataset generation is not configured\", cut.Markup);\n+        });\n+\n+        Assert.Equal(5, sandboxService.TotalCalls);\n+    }\n+\n     [Fact]\n     public void Sandbox_admin_page_sections_load_independently_and_support_loading_empty_error_and_content_states()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "r,\n         TestIdentity Approver,\n         TestIdentity Employee)\n     {\n@@ -135,6 +141,7 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<\n                 \"owner\" => Owner,\n                 \"admin\" => Admin,\n                 \"manager\" => Manager,\n+                \"tester\" => Tester,\n                 \"finance_approver\" => Approver,\n                 \"employee\" => Employee,\n                 _ => throw new ArgumentOutOfRangeException(nameof(role), role, \"Unsupported sandbox admin test role.\")\ndiff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs\nindex 6e37baf..2f2ba6b 100644\n--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs\n@@ -25,6 +25,25 @@ public sealed class FinanceSandboxAdminPageTests\n         Assert.Equal(0, sandboxService.TotalCalls);\n     }\n \n+    [Fact]\n+    public void Sandbox_admin_page_allows_tester_memberships_to_load_admin_sections()\n+    {\n+        var companyId = Guid.Parse(\"6dbd9307-4ab8-43d6-9458-6db64f927f68\");\n+        var sandboxService = new StubFinanceSandboxAdminService();\n+\n+        using var harness = CreateHarness(companyId, \"tester\", sandboxService);\n+        harness.Navigation.NavigateTo($\"http://localhost/finance/sandbox-admin?companyId={companyId:D}\");\n+\n+        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters\n+            .Add(x => x.CompanyId, companyId));\n+\n+        cut.WaitForAssertion(() =>\n+        {\n+            Assert.Contains(\"Finance sandbox admin\", cut.Markup);\n+            Assert.Contains(\"Dataset generation is not configured\", cut.Markup);\n+        });\n+\n+        Assert.Equal(5, sandboxService.TotalCalls);\n+    }\n+\n     [Fact]\n     public void Sandbox_admin_page_sections_load_independently_and_support_loading_empty_error_and_content_states()\n     {\nEND_OF_PATCH\ntokens used\n118,673\n",
+  "verbosityMode": "summary"
+}

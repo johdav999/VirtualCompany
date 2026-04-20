@@ -1,0 +1,988 @@
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor b/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor
+index 4e0fb54..d6c9c4b 100644
+--- a/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor
+@@ -13,7 +13,7 @@
+         <div class="finance-snapshot-card__empty mt-3" data-testid="finance-snapshot-empty">
+             <p class="text-body-secondary mb-3">Finance data is missing or incomplete for this workspace.</p>
+             <a class="btn btn-primary"
+                data-testid="connect-accounting-cta"
+-               href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)"
++               href="@DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.Home, "open-workspace", "this-month")"
+                @onclick="NavigateToFinanceHomeAsync"
+                @onclick:preventDefault="true">Connect accounting</a>
+         </div>
+@@ -35,11 +35,11 @@
+         <p class="text-body-secondary mt-3 mb-0">Burn rate: @FormatCurrency(Snapshot.BurnRate, Snapshot.Currency) per day. Snapshot time: @Snapshot.AsOfUtc.ToLocalTime():g</p>
+         <div class="dashboard-actions mt-3">
+             <a class="btn btn-sm btn-outline-primary"
+-               href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, CompanyId)"
++               href="@DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.CashPosition, "view-cash-position", "this-month")"
+                @onclick="NavigateToCashPositionAsync"
+                @onclick:preventDefault="true">Open cash position</a>
+             <a class="btn btn-sm btn-outline-secondary"
+-               href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)"
++               href="@DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.Home, "open-workspace", "this-month")"
+                @onclick="NavigateToFinanceHomeAsync"
+                @onclick:preventDefault="true">Open finance workspace</a>
+         </div>
+@@ -72,7 +72,7 @@
+ 
+     private async Task NavigateToFinanceHomeAsync()
+     {
+-        var route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId);
++        var route = DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.Home, "open-workspace", "this-month");
+         if (OnActionClick.HasDelegate)
+         {
+             await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext("finance-snapshot", "open-finance-home", route, Label: "Finance workspace"));
+@@ -84,7 +84,7 @@
+ 
+     private async Task NavigateToCashPositionAsync()
+     {
+-        var route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, CompanyId);
++        var route = DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.CashPosition, "view-cash-position", "this-month");
+         if (OnActionClick.HasDelegate)
+         {
+             await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext("finance-snapshot", "open-cash-position", route, Label: "Cash position"));
+diff --git a/src/VirtualCompany.Web/Pages/Approvals.razor b/src/VirtualCompany.Web/Pages/Approvals.razor
+index 16dad61..8758f6d 100644
+--- a/src/VirtualCompany.Web/Pages/Approvals.razor
++++ b/src/VirtualCompany.Web/Pages/Approvals.razor
+@@ -1,9 +1,10 @@
+ @page "/approvals"
+ @inject ApprovalApiClient ApprovalApiClient
+ @inject InboxApiClient InboxApiClient
+ @inject OnboardingApiClient OnboardingApiClient
+ @inject NavigationManager Navigation
+ @using Microsoft.AspNetCore.Components
++@using VirtualCompany.Web.Services
+ 
+ <PageTitle>Approvals</PageTitle>
+ 
+@@ -21,7 +22,7 @@ else if (CompanyId is null)
+                 {
+                     <div class="template-grid mt-4">
+                         @foreach (var membership in ActiveMemberships)
+                         {
+-                            <a class="template-card text-decoration-none text-reset" href="@($"/approvals?companyId={membership.CompanyId}")">
++                            <a class="template-card text-decoration-none text-reset" href="@BuildApprovalsUri(membership.CompanyId, null, null, null, Source)">
+                                 <strong>@membership.CompanyName</strong>
+                                 <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
+                             </a>
+@@ -49,18 +50,22 @@ else
+                         <input type="hidden" name="companyId" value="@CompanyId" />
+                     @if (ApprovalId is Guid approvalId)
+                     {
+                         <input type="hidden" name="approvalId" value="@approvalId" />
+                     }
++                    @if (!string.IsNullOrWhiteSpace(Source))
++                    {
++                        <input type="hidden" name="source" value="@Source" />
++                    }
+                     <div>
+                         <label class="form-label" for="approval-status-filter">Status</label>
+                         <select id="approval-status-filter" class="form-select" name="status">
+-                            <option value="" selected="@string.IsNullOrWhiteSpace(Status)">All approvals</option>
+-                            <option value="pending" selected="@IsSelected(Status, "pending")">Pending</option>
+-                            <option value="approved" selected="@IsSelected(Status, "approved")">Approved</option>
+-                            <option value="rejected" selected="@IsSelected(Status, "rejected")">Rejected</option>
++                            <option value="" selected="@false">All approvals</option>
++                            <option value="pending" selected="@IsSelected(StatusOrDefault, "pending")">Pending</option>
++                            <option value="approved" selected="@IsSelected(StatusOrDefault, "approved")">Approved</option>
++                            <option value="rejected" selected="@IsSelected(StatusOrDefault, "rejected")">Rejected</option>
+                         </select>
+                     </div>
+                     <div class="dashboard-actions">
+                         <button class="btn btn-primary" type="submit">Apply filter</button>
+-                        <a class="btn btn-outline-secondary" href="@($"/approvals?companyId={CompanyId}")">Clear</a>
++                        <a class="btn btn-outline-secondary" href="@BuildApprovalsUri(CompanyId!.Value, null, null, null, Source)">Clear</a>
+                     </div>
+                 </form>
+ 
+@@ -177,12 +182,18 @@ else
+     [SupplyParameterFromQuery(Name = "status")]
+     public string? Status { get; set; }
+ 
++    [SupplyParameterFromQuery(Name = DashboardRoutes.FilterQueryKey)]
++    public string? Filter { get; set; }
++
++    [SupplyParameterFromQuery(Name = DashboardRoutes.SourceQueryKey)]
++    public string? Source { get; set; }
++
+     private bool isLoading = true;
+     private bool isDeciding;
+     private CurrentUserContextViewModel? currentUser;
+     private CompanyAccessViewModel? companyAccess;
+     private List<ApprovalRequestViewModel> approvals = [];
+     private ApprovalRequestViewModel? selectedApproval;
+     private string? decisionComment;
+     private string? errorMessage;
+@@ -228,7 +239,7 @@ else
+         }
+ 
+         selectedApproval = IsPendingInboxFilter ? await InboxApiClient.GetPendingApprovalDetailAsync(companyId, approvalId) : await ApprovalApiClient.GetAsync(companyId, approvalId);
+         decisionComment = null;
+-        Navigation.NavigateTo($"/approvals?companyId={companyId}&approvalId={approvalId}", replace: true);
++        Navigation.NavigateTo(BuildApprovalsUri(companyId, Filter, StatusOrDefault, approvalId, Source), replace: true);
+     }
+ 
+     private async Task DecideAsync(string decision)
+@@ -302,11 +313,37 @@ else
+         selectedApproval?.Id == approval.Id
+             ? "list-group-item list-group-item-action active"
+             : "list-group-item list-group-item-action";
+ 
+     private string? StatusOrDefault =>
+-        string.IsNullOrWhiteSpace(Status)
+-            ? "pending"
+-            : Status.Trim();
++        NormalizeApprovalStatus(Status, Filter);
+ 
+     private bool IsPendingInboxFilter => string.Equals(StatusOrDefault, "pending", StringComparison.OrdinalIgnoreCase);
+ 
+     private static bool IsSelected(string? currentValue, string expectedValue) =>
+         string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);
++
++    private static string NormalizeApprovalStatus(string? status, string? filter)
++    {
++        if (!string.IsNullOrWhiteSpace(status))
++        {
++            return status.Trim();
++        }
++
++        return filter?.Trim().ToLowerInvariant() switch
++        {
++            "approved" => "approved",
++            "rejected" => "rejected",
++            _ => "pending"
++        };
++    }
++
++    private static string? NormalizeApprovalFilter(string? filter, string? status)
++    {
++        if (!string.IsNullOrWhiteSpace(filter))
++        {
++            return filter.Trim().ToLowerInvariant();
++        }
++
++        return string.IsNullOrWhiteSpace(status) ? null : status.Trim().ToLowerInvariant();
++    }
++
++    private static string BuildApprovalsUri(Guid companyId, string? filter, string? status, Guid? approvalId, string? source) =>
++        DashboardRoutes.BuildApprovalsPath(companyId, NormalizeApprovalFilter(filter, status), approvalId, source);
+ 
+     private static bool IsPending(ApprovalRequestViewModel approval) =>
+         string.Equals(approval.Status, "pending", StringComparison.OrdinalIgnoreCase);
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index 66a8019..68534d6 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -53,7 +53,7 @@ else
+ {
+     <section class="py-4 dashboard-hero">
+-        <div class="company-dashboard-layout company-dashboard-layout--single">
++        <div class="company-dashboard-layout">
+             <div class="company-dashboard-main">
+                 <section class="wizard-card dashboard-summary dashboard-summary--workspace" data-testid="company-health-banner">
+                     <span class="dashboard-kicker">Company health</span>
+@@ -78,7 +78,7 @@ else
+                         <article class="workspace-overview-card">
+                             <span class="dashboard-kicker">Actions</span>
+                             <strong>Priority queue ready</strong>
+-                            <p class="text-body-secondary mb-0">Todayƒ?Ts focus and the top action queue stay above the fold for fast triage.</p>
++                            <p class="text-body-secondary mb-0">Today's focus and the top action queue stay above the fold for fast triage.</p>
+                         </article>
+                         <article class="workspace-overview-card">
+                             <span class="dashboard-kicker">Telemetry</span>
+@@ -129,19 +129,22 @@ else
+                     }
+                 </section>
+ 
+-                @if (CompanyId is Guid selectedCompanyId && currentUser?.User.Id is Guid currentUserId)
+-                {
+-                    <TodayFocusPanel CompanyId="selectedCompanyId"
+-                                     UserId="currentUserId"
+-                                     OnActionClick="HandleDashboardActionAsync" />
+-                }
+-
+-                @if (CompanyId is Guid selectedCompanyIdForQueue)
++                @if (CompanyId is Guid selectedCompanyId)
+                 {
+-                    <TopActionsList CompanyId="selectedCompanyIdForQueue"
+-                                    Count="5"
+-                                    OnActionClick="HandleDashboardActionAsync" />
+-                }
++                    <div class="dashboard-two-column-row">
++                        @if (currentUser?.User.Id is Guid currentUserId)
++                        {
++                            <TodayFocusPanel CompanyId="selectedCompanyId"
++                                             UserId="currentUserId"
++                                             OnActionClick="HandleDashboardActionAsync" />
++                        }
++
++                        <TopActionsList CompanyId="selectedCompanyId"
++                                        Count="5"
++                                        OnActionClick="HandleDashboardActionAsync" />
++                    </div>
++                }
+ 
+                 @if (CompanyId is Guid selectedCompanyId)
+                 {
+                     <ExecutiveCockpitDashboard CompanyId="selectedCompanyId"
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 2941d2c..265a14b 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -137,7 +137,8 @@
+                 </div>
+             </article>
+         </div>
+ 
+-        <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide" data-testid="agent-activity-panel">
++        <div class="dashboard-two-column-row dashboard-two-column-row--supporting">
++        <article class="wizard-card wizard-card--compact cockpit-card" data-testid="agent-activity-panel">
+             <div class="cockpit-card__header">
+                 <div>
+                     <h2 class="h5 mb-1">Agent activity</h2>
+@@ -174,9 +175,9 @@
+                 }
+             }
+         </article>
+ 
+-        <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide" data-testid="department-cards-panel">
++        <article class="wizard-card wizard-card--compact cockpit-card" data-testid="department-cards-panel">
+             <div class="cockpit-card__header">
+                 <div>
+                     <h2 class="h5 mb-1">Department cards</h2>
+                     <p class="text-body-secondary mb-0">Department dashboards remain compact, showing only the most meaningful non-zero signals.</p>
+@@ -214,6 +215,7 @@
+                 }
+             </div>
+         </article>
++        </div>
+     }
+ </section>
+ 
+@@ -246,9 +248,9 @@
+ 
+     private string DashboardPath => DashboardRoutes.EnsureCompanyContext("/dashboard", CompanyId, "/dashboard");
+     private string AgentsPath => DashboardRoutes.EnsureCompanyContext("/agents", CompanyId, "/agents");
+-    private string TasksPath => DashboardRoutes.EnsureCompanyContext("/tasks", CompanyId, "/tasks");
++    private string TasksPath => DashboardRoutes.BuildTasksPath(CompanyId, filter: "today");
+     private string WorkflowsPath => DashboardRoutes.EnsureCompanyContext("/workflows", CompanyId, "/workflows");
+-    private string ApprovalsPath => DashboardRoutes.EnsureCompanyContext("/approvals", CompanyId, "/approvals");
++    private string ApprovalsPath => DashboardRoutes.BuildApprovalsPath(CompanyId);
+     private string QueuePath => QueueRoutes.BuildPath(CompanyId);
+     private string ActivityFeedPath => DashboardRoutes.EnsureCompanyContext("/activity-feed", CompanyId, "/activity-feed");
+     private string ResolvedCompanyName => !string.IsNullOrWhiteSpace(CompanyName)
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePageBase.cs b/src/VirtualCompany.Web/Pages/Finance/FinancePageBase.cs
+index 1089d29..7a57adf 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/FinancePageBase.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePageBase.cs
+@@ -13,6 +13,15 @@ public abstract class FinancePageBase : ComponentBase
+     [SupplyParameterFromQuery(Name = FinanceRoutes.CompanyIdQueryKey)]
+     public Guid? CompanyId { get; set; }
+ 
++    [SupplyParameterFromQuery(Name = DashboardRoutes.SourceQueryKey)]
++    public string? Source { get; set; }
++
++    [SupplyParameterFromQuery(Name = DashboardRoutes.ActionQueryKey)]
++    public string? Action { get; set; }
++
++    [SupplyParameterFromQuery(Name = DashboardRoutes.RangeQueryKey)]
++    public string? Range { get; set; }
++
+     protected bool IsLoading { get; private set; } = true;
+     protected CurrentUserContextViewModel? CurrentUserContext { get; private set; }
+     protected string? ErrorMessage { get; private set; }
+diff --git a/src/VirtualCompany.Web/Pages/Tasks.razor b/src/VirtualCompany.Web/Pages/Tasks.razor
+index 4b66883..3890d00 100644
+--- a/src/VirtualCompany.Web/Pages/Tasks.razor
++++ b/src/VirtualCompany.Web/Pages/Tasks.razor
+@@ -4,6 +4,7 @@
+ @inject OnboardingApiClient OnboardingApiClient
+ @inject TaskApiClient TaskApiClient
+ @inject NavigationManager Navigation
++@using VirtualCompany.Web.Services
+ 
+ <PageTitle>Tasks</PageTitle>
+ 
+@@ -24,7 +25,7 @@ else if (CompanyId is null)
+             {
+                 <div class="template-grid">
+                     @foreach (var membership in activeMemberships)
+                     {
+-                        <a class="template-card text-decoration-none text-reset" href="@BuildTasksUri(membership.CompanyId, null, null, null, ReturnUrl)">
++                        <a class="template-card text-decoration-none text-reset" href="@BuildTasksUri(membership.CompanyId, EffectiveStatus, null, null, ReturnUrl, Filter, Source)">
+                             <strong>@membership.CompanyName</strong>
+                             <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
+                         </a>
+@@ -59,22 +60,30 @@ else
+                     {
+                         <input type="hidden" name="returnUrl" value="@NormalizedReturnUrl" />
+                     }
++                    @if (!string.IsNullOrWhiteSpace(Source))
++                    {
++                        <input type="hidden" name="source" value="@Source" />
++                    }
+                     <div>
+                         <label class="form-label" for="task-status-filter">Status</label>
+                         <select id="task-status-filter" class="form-select" name="status">
+-                            <option value="" selected="@string.IsNullOrWhiteSpace(Status)">All tasks</option>
++                            <option value="" selected="@false">All tasks</option>
+                             @foreach (var status in SupportedStatuses)
+                             {
+-                                <option value="@status" selected="@IsSelected(Status, status)">@ToDisplayText(status)</option>
++                                <option value="@status" selected="@IsSelected(EffectiveStatus, status)">@ToDisplayText(status)</option>
+                             }
+                         </select>
+                     </div>
+                     <div>
+                         <label class="form-label" for="agent-filter">Assigned agent id</label>
+                         <input id="agent-filter" class="form-control" name="assignedAgentId" value="@AssignedAgentId" />
+                     </div>
+                     <div class="dashboard-actions">
+                         <button class="btn btn-primary" type="submit">Apply filters</button>
+-                        <a class="btn btn-outline-secondary" href="@BuildTasksUri(CompanyId!.Value, null, null, null, ReturnUrl)">Clear</a>
++                        <a class="btn btn-outline-secondary" href="@BuildTasksUri(CompanyId!.Value, null, null, null, ReturnUrl, null, Source)">Clear</a>
++                    </div>
++
++                    @if (!string.IsNullOrWhiteSpace(Filter))
++                    {
++                        <input type="hidden" name="filter" value="@Filter" />
+                     </div>
+                 </form>
+ 
+@@ -91,7 +100,7 @@ else
+                     <div class="list-group mt-4">
+                         @foreach (var task in tasks)
+                         {
+-                            <a class="@GetTaskListItemClass(task)" href="@BuildTasksUri(task.CompanyId, Status, AssignedAgentId, task.Id, ReturnUrl)">
++                            <a class="@GetTaskListItemClass(task)" href="@BuildTasksUri(task.CompanyId, EffectiveStatus, AssignedAgentId, task.Id, ReturnUrl, Filter, Source)">
+                                 <div class="d-flex w-100 justify-content-between gap-3">
+                                     <div>
+                                         <strong>@task.Title</strong>
+@@ -136,7 +145,7 @@ else
+                         <ul class="list-unstyled mb-0">
+                             @foreach (var subtask in selectedTask.Subtasks)
+                             {
+                                 <li class="mb-2">
+-                                    <a href="@BuildTasksUri(subtask.CompanyId, null, null, subtask.Id, ReturnUrl)">@subtask.Title</a>
++                                    <a href="@BuildTasksUri(subtask.CompanyId, EffectiveStatus, null, subtask.Id, ReturnUrl, Filter, Source)">@subtask.Title</a>
+                                     <span class="text-body-secondary"> - @ToDisplayText(subtask.Status)</span>
+                                 </li>
+                             }
+@@ -168,12 +177,18 @@ else
+     [SupplyParameterFromQuery(Name = "status")]
+     public string? Status { get; set; }
+ 
++    [SupplyParameterFromQuery(Name = DashboardRoutes.FilterQueryKey)]
++    public string? Filter { get; set; }
++
+     [SupplyParameterFromQuery(Name = "assignedAgentId")]
+     public Guid? AssignedAgentId { get; set; }
+ 
+     [SupplyParameterFromQuery(Name = "returnUrl")]
+     public string? ReturnUrl { get; set; }
+ 
++    [SupplyParameterFromQuery(Name = DashboardRoutes.SourceQueryKey)]
++    public string? Source { get; set; }
++
+     private bool isLoading = true;
+     private string? errorMessage;
+     private CurrentUserContextViewModel? currentUser;
+@@ -182,6 +197,7 @@ else
+ 
+     private string? NormalizedReturnUrl => ReturnUrlNavigation.NormalizeLocalReturnUrl(ReturnUrl);
+ 
++    private string? EffectiveStatus => NormalizeTaskStatus(Status, Filter);
+     private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
+         currentUser?.Memberships
+             .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+@@ -197,14 +213,14 @@ else
+         try
+         {
+             currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+             if (CompanyId is null && currentUser?.ActiveCompany is not null)
+             {
+-                Navigation.NavigateTo(BuildTasksUri(currentUser.ActiveCompany.CompanyId, Status, AssignedAgentId, TaskId, ReturnUrl), replace: true);
++                Navigation.NavigateTo(BuildTasksUri(currentUser.ActiveCompany.CompanyId, EffectiveStatus, AssignedAgentId, TaskId, ReturnUrl, Filter, Source), replace: true);
+                 return;
+             }
+ 
+             if (CompanyId is Guid companyId)
+             {
+                 companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+-                var result = await TaskApiClient.ListAsync(companyId, Status, AssignedAgentId);
++                var result = await TaskApiClient.ListAsync(companyId, EffectiveStatus, AssignedAgentId);
+                 tasks = result.Items.ToList();
+                 selectedTask = TaskId is Guid taskId
+                     ? await TaskApiClient.GetAsync(companyId, taskId)
+@@ -232,19 +248,31 @@ else
+         status?.Trim().ToLowerInvariant() switch
+         {
+             "blocked" or "failed" => "text-bg-danger",
+             "awaiting_approval" => "text-bg-warning",
+             "completed" => "text-bg-success",
+             "in_progress" => "text-bg-primary",
+             _ => "text-bg-secondary"
+         };
+ 
+-    private static string BuildTasksUri(Guid companyId, string? status, Guid? assignedAgentId, Guid? taskId, string? returnUrl)
++    private static string? NormalizeTaskStatus(string? status, string? filter)
+     {
+-        var query = new List<string> { $"companyId={companyId}" };
+-        if (!string.IsNullOrWhiteSpace(status)) query.Add($"status={Uri.EscapeDataString(status)}");
+-        if (assignedAgentId is Guid agentId) query.Add($"assignedAgentId={agentId}");
+-        if (taskId is Guid selectedTaskId) query.Add($"taskId={selectedTaskId}");
+-        var normalizedReturnUrl = ReturnUrlNavigation.NormalizeLocalReturnUrl(returnUrl);
+-        if (!string.IsNullOrWhiteSpace(normalizedReturnUrl))
++        if (!string.IsNullOrWhiteSpace(status))
+         {
+-            query.Add($"returnUrl={Uri.EscapeDataString(normalizedReturnUrl)}");
++            return status.Trim();
+         }
+-        return $"/tasks?{string.Join("&", query)}";
++
++        return filter?.Trim().ToLowerInvariant() switch
++        {
++            "blocked" => "blocked",
++            "awaiting-approval" => "awaiting_approval",
++            "today" => "pending",
++            _ => null
++        };
+     }
++
++    private static string BuildTasksUri(Guid companyId, string? status, Guid? assignedAgentId, Guid? taskId, string? returnUrl, string? filter, string? source) =>
++        DashboardRoutes.BuildTasksPath(
++            companyId,
++            filter: filter,
++            status: status,
++            taskId: taskId,
++            assignedAgentId: assignedAgentId,
++            returnUrl: returnUrl,
++            source: source);
+ }
+diff --git a/src/VirtualCompany.Web/Services/DashboardRoutes.cs b/src/VirtualCompany.Web/Services/DashboardRoutes.cs
+index 6ceca4a..75acb65 100644
+--- a/src/VirtualCompany.Web/Services/DashboardRoutes.cs
++++ b/src/VirtualCompany.Web/Services/DashboardRoutes.cs
+@@ -1,5 +1,7 @@
++using System.Web;
++
+ namespace VirtualCompany.Web.Services;
+ 
+ public static class DashboardRoutes
+ {
+     private static readonly string[] CompanyScopedPrefixes =
+@@ -15,13 +17,53 @@ public static class DashboardRoutes
+         "/briefing-preferences"
+     ];
+ 
++    public const string DashboardSource = "dashboard";
++    public const string FilterQueryKey = "filter";
++    public const string StatusQueryKey = "status";
++    public const string SourceQueryKey = "source";
++    public const string ActionQueryKey = "action";
++    public const string RangeQueryKey = "range";
++    public const string ViewQueryKey = "view";
++
++    public static string BuildApprovalsPath(Guid? companyId, string? filter = "pending", Guid? approvalId = null, string? source = DashboardSource)
++    {
++        var normalizedFilter = NormalizeApprovalFilter(filter) ?? "pending";
++        return WithQuery(
++            "/approvals",
++            ("companyId", companyId?.ToString("D")),
++            (FilterQueryKey, normalizedFilter),
++            (StatusQueryKey, MapApprovalFilterToStatus(normalizedFilter)),
++            ("approvalId", approvalId?.ToString("D")),
++            (SourceQueryKey, source));
++    }
++
++    public static string BuildTasksPath(
++        Guid? companyId,
++        string? filter = null,
++        string? status = null,
++        Guid? taskId = null,
++        string? view = null,
++        Guid? assignedAgentId = null,
++        string? returnUrl = null,
++        string? source = DashboardSource)
++    {
++        var normalizedFilter = NormalizeTaskFilter(filter);
++        var normalizedStatus = NormalizeTaskStatus(status, normalizedFilter);
++        if (normalizedFilter is null && normalizedStatus is null && taskId is null && assignedAgentId is null)
++        {
++            normalizedFilter = "today";
++            normalizedStatus = MapTaskFilterToStatus(normalizedFilter);
++        }
++
++        return WithQuery("/tasks",
++            ("companyId", companyId?.ToString("D")),
++            (FilterQueryKey, normalizedFilter),
++            (StatusQueryKey, normalizedStatus),
++            ("assignedAgentId", assignedAgentId?.ToString("D")),
++            ("taskId", taskId?.ToString("D")),
++            (ViewQueryKey, view),
++            ("returnUrl", ReturnUrlNavigation.NormalizeLocalReturnUrl(returnUrl)),
++            (SourceQueryKey, source));
++    }
++
++    public static string BuildFinancePath(Guid? companyId, string path, string? action = null, string? range = null, string? source = DashboardSource) =>
++        WithQuery(EnsureLeadingSlash(path), ("companyId", companyId?.ToString("D")), (ActionQueryKey, action), (RangeQueryKey, range), (SourceQueryKey, source));
++
+     public static string NormalizeFocusTarget(string? route, Guid? companyId)
+     {
+         var fallback = companyId is Guid resolvedCompanyId
+             ? $"/dashboard?companyId={resolvedCompanyId:D}"
+             : "/dashboard";
+@@ -36,22 +78,32 @@ public static class DashboardRoutes
+             candidate = "/" + candidate.TrimStart('/');
+         }
+ 
+         candidate = NormalizeKnownRoute(candidate, companyId);
++        candidate = EnsureCompanyId(candidate, companyId);
++        return EnsureDashboardContext(candidate);
++    }
+ 
++    private static string EnsureCompanyId(string candidate, Guid? companyId)
++    {
+         if (companyId is not Guid resolvedCompanyId ||
+             candidate.Contains("companyId=", StringComparison.OrdinalIgnoreCase) ||
+             !CompanyScopedPrefixes.Any(prefix => candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+         {
+             return candidate;
+         }
+ 
+         var separator = candidate.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+         return $"{candidate}{separator}companyId={resolvedCompanyId:D}";
+     }
+ 
+     private static string NormalizeKnownRoute(string? route, Guid? companyId)
+     {
+         var candidate = string.IsNullOrWhiteSpace(route) ? "/dashboard" : route.Trim();
+ 
+         if (candidate.StartsWith("/dashboard/briefings", StringComparison.OrdinalIgnoreCase))
+         {
+             return "/briefing-preferences";
+@@ -59,13 +111,142 @@ public static class DashboardRoutes
+ 
+         if (TryExtractGuid(candidate, "/tasks/detail/", out var taskId))
+         {
+-            return $"/tasks?taskId={taskId:D}&view=detail";
++            return BuildTasksPath(companyId, taskId: taskId, view: "detail");
+         }
+ 
+         if (TryExtractGuid(candidate, "/finance/invoices/review/", out var invoiceId))
+         {
+             return FinanceRoutes.BuildInvoiceReviewDetailPath(invoiceId, companyId);
+         }
+ 
+         return candidate;
+     }
++
++    private static string EnsureDashboardContext(string route)
++    {
++        if (route.StartsWith("/approvals", StringComparison.OrdinalIgnoreCase))
++        {
++            return EnsureApprovalContext(route);
++        }
++
++        if (route.StartsWith("/tasks", StringComparison.OrdinalIgnoreCase))
++        {
++            return EnsureTaskContext(route);
++        }
++
++        if (route.StartsWith("/finance", StringComparison.OrdinalIgnoreCase))
++        {
++            return EnsureFinanceContext(route);
++        }
++
++        return route;
++    }
++
++    private static string EnsureApprovalContext(string route)
++    {
++        var filter = NormalizeApprovalFilter(GetQueryValue(route, FilterQueryKey) ?? GetQueryValue(route, StatusQueryKey)) ?? "pending";
++        return WithQuery(
++            route,
++            (FilterQueryKey, filter),
++            (StatusQueryKey, GetQueryValue(route, StatusQueryKey) ?? MapApprovalFilterToStatus(filter)),
++            (SourceQueryKey, GetQueryValue(route, SourceQueryKey) ?? DashboardSource));
++    }
++
++    private static string EnsureTaskContext(string route)
++    {
++        var filter = NormalizeTaskFilter(GetQueryValue(route, FilterQueryKey));
++        var status = NormalizeTaskStatus(GetQueryValue(route, StatusQueryKey), filter);
++        var hasTaskSelection = !string.IsNullOrWhiteSpace(GetQueryValue(route, "taskId")) || !string.IsNullOrWhiteSpace(GetQueryValue(route, "assignedAgentId"));
++
++        if (filter is null && status is null && !hasTaskSelection)
++        {
++            filter = "today";
++            status = MapTaskFilterToStatus(filter);
++        }
++
++        return WithQuery(
++            route,
++            (FilterQueryKey, filter),
++            (StatusQueryKey, status),
++            (SourceQueryKey, GetQueryValue(route, SourceQueryKey) ?? DashboardSource));
++    }
++
++    private static string EnsureFinanceContext(string route)
++    {
++        var path = GetPath(route);
++        var action = GetQueryValue(route, ActionQueryKey);
++        var range = GetQueryValue(route, RangeQueryKey);
++
++        if (string.IsNullOrWhiteSpace(action))
++        {
++            action =
++                path.StartsWith(FinanceRoutes.Reviews, StringComparison.OrdinalIgnoreCase) ? "review" :
++                path.StartsWith(FinanceRoutes.Anomalies, StringComparison.OrdinalIgnoreCase) ? "investigate" :
++                path.StartsWith(FinanceRoutes.CashPosition, StringComparison.OrdinalIgnoreCase) ? "view-cash-position" :
++                string.Equals(path, FinanceRoutes.Home, StringComparison.OrdinalIgnoreCase) ? "open-workspace" :
++                "open";
++        }
++
++        if (string.IsNullOrWhiteSpace(range) &&
++            (string.Equals(path, FinanceRoutes.Home, StringComparison.OrdinalIgnoreCase) ||
++             path.StartsWith(FinanceRoutes.CashPosition, StringComparison.OrdinalIgnoreCase) ||
++             path.StartsWith(FinanceRoutes.MonthlySummary, StringComparison.OrdinalIgnoreCase)))
++        {
++            range = "this-month";
++        }
++
++        return WithQuery(
++            route,
++            (ActionQueryKey, action),
++            (RangeQueryKey, range),
++            (SourceQueryKey, GetQueryValue(route, SourceQueryKey) ?? DashboardSource));
++    }
++
++    private static string? NormalizeApprovalFilter(string? filter) =>
++        string.IsNullOrWhiteSpace(filter)
++            ? null
++            : filter.Trim().ToLowerInvariant() switch
++            {
++                "approved" => "approved",
++                "rejected" => "rejected",
++                _ => "pending"
++            };
++
++    private static string? NormalizeTaskFilter(string? filter) =>
++        string.IsNullOrWhiteSpace(filter)
++            ? null
++            : filter.Trim().ToLowerInvariant() switch
++            {
++                "blocked" => "blocked",
++                "awaiting_approval" or "awaiting-approval" => "awaiting-approval",
++                "today" => "today",
++                _ => filter.Trim().ToLowerInvariant()
++            };
++
++    private static string? NormalizeTaskStatus(string? status, string? filter)
++    {
++        if (!string.IsNullOrWhiteSpace(status))
++        {
++            return status.Trim();
++        }
++
++        return MapTaskFilterToStatus(filter);
++    }
++
++    private static string MapApprovalFilterToStatus(string filter) =>
++        filter.Equals("approved", StringComparison.OrdinalIgnoreCase) ? "approved" :
++        filter.Equals("rejected", StringComparison.OrdinalIgnoreCase) ? "rejected" :
++        "pending";
++
++    private static string? MapTaskFilterToStatus(string? filter) =>
++        filter?.Trim().ToLowerInvariant() switch
++        {
++            "blocked" => "blocked",
++            "awaiting-approval" => "awaiting_approval",
++            "today" => "pending",
++            _ => null
++        };
++
++    private static string GetPath(string route)
++    {
++        var uri = new Uri($"http://localhost{EnsureLeadingSlash(route)}", UriKind.Absolute);
++        return uri.AbsolutePath;
++    }
++
++    private static string? GetQueryValue(string route, string key)
++    {
++        var uri = new Uri($"http://localhost{EnsureLeadingSlash(route)}", UriKind.Absolute);
++        var query = HttpUtility.ParseQueryString(uri.Query);
++        return query[key];
++    }
+ 
+     private static bool TryExtractGuid(string route, string prefix, out Guid value) =>
+         Guid.TryParse(route.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+             ? route[prefix.Length..].Split(['/', '?', '#'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()
+             : null, out value);
++
++    private static string WithQuery(string route, params (string Key, string? Value)[] parameters)
++    {
++        var uri = new Uri($"http://localhost{EnsureLeadingSlash(route)}", UriKind.Absolute);
++        var query = HttpUtility.ParseQueryString(uri.Query);
++
++        foreach (var (key, value) in parameters)
++        {
++            if (!string.IsNullOrWhiteSpace(value))
++            {
++                query[key] = value;
++            }
++        }
++
++        var queryString = query.ToString();
++        return string.IsNullOrWhiteSpace(queryString)
++            ? $"{uri.AbsolutePath}{uri.Fragment}"
++            : $"{uri.AbsolutePath}?{queryString}{uri.Fragment}";
++    }
++
++    private static string EnsureLeadingSlash(string route) =>
++        route.StartsWith("/", StringComparison.Ordinal) ? route : "/" + route.TrimStart('/');
+ }
+diff --git a/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs b/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs
+index 5a98372..952f393 100644
+--- a/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs
++++ b/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs
+@@ -26,6 +26,7 @@ public sealed class DashboardTelemetrySession
+     public string PageName { get; }
+     public Guid? CompanyId { get; }
+     public DateTime? FirstActionAtUtc { get; private set; }
++    public double? TimeToFirstActionMilliseconds { get; private set; }
+     public bool HasRecordedFirstAction => FirstActionAtUtc.HasValue;
+     public double MaxScrollDepthPercentage => _maxScrollDepthPercentage;
+ 
+@@ -45,8 +46,9 @@ public sealed class DashboardTelemetrySession
+         }
+ 
+         FirstActionAtUtc = DateTime.UtcNow;
+-        TimeToFirstAction.Record(Math.Max(0, (FirstActionAtUtc.Value - _sessionStartedUtc).TotalMilliseconds), Tags(context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label));
++        TimeToFirstActionMilliseconds = Math.Max(0, (FirstActionAtUtc.Value - _sessionStartedUtc).TotalMilliseconds);
++        TimeToFirstAction.Record(TimeToFirstActionMilliseconds.Value, Tags(context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label));
+         FirstActionTimestamp.Add(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Tags(context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label));
+     }
+ 
+     public void RecordScrollDepth(double depthPercentage)
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 8e8a538..282ea5a 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -103,6 +103,12 @@ code {
+     gap: 1.25rem;
+ }
+ 
++.company-dashboard-layout {
++    display: grid;
++    gap: 1.25rem;
++    grid-template-columns: minmax(0, 1fr);
++}
++
+ .company-dashboard-layout--single {
+     grid-template-columns: minmax(0, 1fr);
+ }
+@@ -139,6 +145,18 @@ code {
+     display: grid;
+     gap: 1.25rem;
+ }
++
++.dashboard-two-column-row {
++    display: grid;
++    gap: 1.25rem;
++    grid-template-columns: repeat(2, minmax(0, 1fr));
++}
++
++.dashboard-two-column-row > * {
++    min-width: 0;
++}
++
++.dashboard-two-column-row--supporting {
++    align-items: start;
++}
+ 
+ .dashboard-snapshot-grid {
+     display: grid;
+@@ -147,6 +165,10 @@ code {
+ }
+ 
+ @media (max-width: 991.98px) {
++    .dashboard-two-column-row {
++        grid-template-columns: 1fr;
++    }
++
+     .dashboard-snapshot-grid {
+         grid-template-columns: 1fr;
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardRoutesTests.cs b/tests/VirtualCompany.Api.Tests/DashboardRoutesTests.cs
+new file mode 100644
+index 0000000..85cf7c7
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/DashboardRoutesTests.cs
+@@ -0,0 +1,48 @@
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class DashboardRoutesTests
++{
++    [Fact]
++    public void Build_approvals_path_includes_dashboard_context_parameters()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++
++        var route = DashboardRoutes.BuildApprovalsPath(companyId);
++
++        Assert.Equal(
++            $"/approvals?companyId={companyId:D}&filter=pending&status=pending&source=dashboard",
++            route);
++    }
++
++    [Fact]
++    public void Ensure_company_context_preserves_task_selection_and_adds_dashboard_source()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        var taskId = Guid.Parse("22222222-2222-2222-2222-222222222222");
++
++        var route = DashboardRoutes.EnsureCompanyContext($"/tasks?taskId={taskId:D}", companyId, "/tasks");
++
++        Assert.Contains($"companyId={companyId:D}", route, StringComparison.Ordinal);
++        Assert.Contains($"taskId={taskId:D}", route, StringComparison.Ordinal);
++        Assert.Contains("source=dashboard", route, StringComparison.Ordinal);
++        Assert.DoesNotContain("filter=today", route, StringComparison.Ordinal);
++    }
++
++    [Fact]
++    public void Ensure_company_context_adds_finance_action_context()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++
++        var route = DashboardRoutes.EnsureCompanyContext(
++            FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId),
++            companyId,
++            FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId));
++
++        Assert.Contains($"companyId={companyId:D}", route, StringComparison.Ordinal);
++        Assert.Contains("action=view-cash-position", route, StringComparison.Ordinal);
++        Assert.Contains("range=this-month", route, StringComparison.Ordinal);
++        Assert.Contains("source=dashboard", route, StringComparison.Ordinal);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs b/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs
+index e6b68d1..b1b5e0b 100644
+--- a/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs
+@@ -13,6 +13,19 @@ public sealed class DashboardTelemetrySessionTests
+         Assert.True(session.HasRecordedFirstAction);
+         Assert.Equal(firstAction, session.FirstActionAtUtc);
+     }
+ 
++    [Fact]
++    public void Focus_click_records_time_to_first_action_metric()
++    {
++        var session = new DashboardTelemetrySession("dashboard", Guid.NewGuid());
++
++        session.RecordFocusItemClick(
++            "approval-1",
++            "approval",
++            "/approvals?filter=pending&status=pending&source=dashboard",
++            "Review approval");
++
++        Assert.NotNull(session.TimeToFirstActionMilliseconds);
++        Assert.True(session.TimeToFirstActionMilliseconds >= 0);
++    }
++
+     [Fact]
+     public void Scroll_depth_only_moves_forward()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+index 59cb1e0..243d776 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+@@ -38,22 +38,22 @@ public sealed class ExecutiveCockpitDashboardPageTests
+             Assert.Contains("Cash runway dropped below the critical threshold.", cut.Find("[data-testid='executive-cockpit-low-cash-alert']").TextContent);
+             Assert.Contains("Average monthly burn is USD 18,500.00.", cut.Find("[data-testid='executive-cockpit-low-cash-alert']").TextContent);
+             Assert.Equal(
+-                FinanceRoutes.BuildAlertDetailPath(alertId, companyId),
++                DashboardRoutes.EnsureCompanyContext(FinanceRoutes.BuildAlertDetailPath(alertId, companyId), companyId, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)),
+                 cut.Find("[data-testid='executive-cockpit-low-cash-alert-open-detail']").GetAttribute("href"));
+ 
+             Assert.Equal(
+-                FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId),
++                DashboardRoutes.EnsureCompanyContext(FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId), companyId, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)),
+                 cut.Find("[data-testid='finance-deep-link-finance-workspace']").GetAttribute("href"));
+             Assert.Equal(
+-                FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, companyId),
++                DashboardRoutes.EnsureCompanyContext(FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, companyId), companyId, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)),
+                 cut.Find("[data-testid='finance-deep-link-anomaly-workbench']").GetAttribute("href"));
+             Assert.Equal(
+-                FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId),
++                DashboardRoutes.EnsureCompanyContext(FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId), companyId, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)),
+                 cut.Find("[data-testid='finance-deep-link-cash-detail']").GetAttribute("href"));
+ 
+             Assert.Equal(
+-                FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId),
++                DashboardRoutes.EnsureCompanyContext(FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId), companyId, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)),
+                 cut.Find("[data-testid='finance-action-open-finance-summary']").GetAttribute("href"));
+             Assert.Equal("Review invoice", cut.Find("[data-testid='finance-action-review-invoice']").TextContent.Trim());
+             Assert.Equal("Inspect anomaly", cut.Find("[data-testid='finance-action-inspect-anomaly']").TextContent.Trim());
+             Assert.Equal("View cash position", cut.Find("[data-testid='finance-action-view-cash-position']").TextContent.Trim());
+@@ -150,19 +150,19 @@ public sealed class ExecutiveCockpitDashboardPageTests
+         cut.Find("[data-testid='finance-action-review-invoice']").Click();
+         cut.WaitForAssertion(() =>
+         {
+             Assert.Contains(harness.FinanceRequests, request => request.Path == $"/internal/companies/{companyId:D}/finance/invoices/{invoiceId:D}/review-workflow");
+             Assert.Equal(companyId.ToString(), harness.FinanceRequests.Last().CompanyHeaderValue);
+-            Assert.Equal($"http://localhost{FinanceRoutes.BuildInvoiceReviewDetailPath(invoiceId, companyId)}", harness.Navigation.Uri);
++            Assert.Equal($"http://localhost{DashboardRoutes.EnsureCompanyContext(FinanceRoutes.BuildInvoiceReviewDetailPath(invoiceId, companyId), companyId, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId))}", harness.Navigation.Uri);
+         });
+ 
+         cut.Find("[data-testid='finance-action-inspect-anomaly']").Click();
+         cut.WaitForAssertion(() =>
+         {
+             Assert.Contains(harness.FinanceRequests, request => request.Path == $"/internal/companies/{companyId:D}/finance/transactions/{transactionId:D}/anomaly-evaluation");
+-            Assert.Equal($"http://localhost{FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, companyId)}", harness.Navigation.Uri);
++            Assert.Equal($"http://localhost{DashboardRoutes.EnsureCompanyContext(FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, companyId), companyId, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId))}", harness.Navigation.Uri);
+         });
+ 
+         cut.Find("[data-testid='finance-action-view-cash-position']").Click();
+         cut.WaitForAssertion(() =>
+         {
+             Assert.Contains(harness.FinanceRequests, request => request.Path == $"/internal/companies/{companyId:D}/finance/cash-position/evaluation");
+-            Assert.Equal($"http://localhost{FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)}", harness.Navigation.Uri);
++            Assert.Equal($"http://localhost{DashboardRoutes.EnsureCompanyContext(FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId), companyId, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId))}", harness.Navigation.Uri);
+             Assert.Contains("Cash position refreshed.", cut.Markup);
+         });
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSnapshotCardTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSnapshotCardTests.cs
+index 032b909..0ac9948 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSnapshotCardTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSnapshotCardTests.cs
+@@ -28,7 +28,7 @@ public sealed class FinanceSnapshotCardTests
+ 
+         var cta = cut.Find("[data-testid='connect-accounting-cta']");
+         Assert.Equal("Connect accounting", cta.TextContent.Trim());
+-        Assert.Equal(FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId), cta.GetAttribute("href"));
++        Assert.Equal(DashboardRoutes.BuildFinancePath(companyId, FinanceRoutes.Home, "open-workspace", "this-month"), cta.GetAttribute("href"));
+         Assert.NotEmpty(cut.FindAll("[data-testid='finance-snapshot-empty']"));
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/TodayFocusPanelTests.cs b/tests/VirtualCompany.Api.Tests/TodayFocusPanelTests.cs
+index d50b3a2..db65d35 100644
+--- a/tests/VirtualCompany.Api.Tests/TodayFocusPanelTests.cs
++++ b/tests/VirtualCompany.Api.Tests/TodayFocusPanelTests.cs
+@@ -106,7 +106,7 @@ public sealed class TodayFocusPanelTests
+ 
+         cut.FindAll("[data-testid='today-focus-cta']")[1].Click();
+ 
+-        Assert.Equal($"http://localhost{items[1].NavigationTarget}", navigation.Uri);
++        Assert.Equal($"http://localhost{DashboardRoutes.NormalizeFocusTarget(items[1].NavigationTarget, companyId)}", navigation.Uri);
+     }
+ 
+     [Fact]
+END_OF_PATCH

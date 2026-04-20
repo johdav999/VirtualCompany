@@ -1,0 +1,464 @@
+diff --git a/src/VirtualCompany.Application/Insights/InsightContracts.cs b/src/VirtualCompany.Application/Insights/InsightContracts.cs
+--- a/src/VirtualCompany.Application/Insights/InsightContracts.cs
++++ b/src/VirtualCompany.Application/Insights/InsightContracts.cs
+@@ -34,7 +34,8 @@ public sealed record InsightCandidate(
+ public sealed record ScoredInsightCandidate(
+     InsightCandidate Candidate,
+     int PriorityScore,
++    int ImpactScore,
+     ActionInsightPriority Priority);
+ 
+ public sealed record ActionDeepLinkTarget(ActionInsightTargetType TargetType, Guid TargetId);
+@@ -89,6 +90,7 @@ public sealed class DefaultInsightScoringService : IInsightScoringService
+         return new ScoredInsightCandidate(
+             candidate,
+             score,
++            score,
+             ActionInsightPriorityValues.FromScore(score));
+     }
+ 
+@@ -139,9 +141,9 @@ public static class ActionQueueOrdering
+             .OrderByDescending(scored => (int)scored.Priority)
+             .ThenBy(scored => scored.Candidate.DueUtc.HasValue ? 0 : 1)
+             .ThenBy(scored => scored.Candidate.DueUtc ?? DateTime.MaxValue)
+-            .ThenByDescending(scored => scored.PriorityScore)
+-            .ThenBy(scored => scored.Candidate.CreatedUtc)
++            .ThenByDescending(scored => scored.ImpactScore)
++            .ThenBy(scored => scored.Candidate.SourceEntityId)
+             .ThenBy(scored => scored.Candidate.InsightKey, StringComparer.Ordinal)
+             .ToList();
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/ActionInsightsController.cs b/src/VirtualCompany.Api/Controllers/ActionInsightsController.cs
+--- a/src/VirtualCompany.Api/Controllers/ActionInsightsController.cs
++++ b/src/VirtualCompany.Api/Controllers/ActionInsightsController.cs
+@@ -45,12 +45,15 @@ public sealed class ActionInsightsController : ControllerBase
+     [HttpGet]
+     public async Task<ActionResult<ActionQueuePageDto>> GetAllActionsAsync(
+         Guid companyId,
++        [FromQuery(Name = "page")] int? page = null,
+         [FromQuery] int pageNumber = 1,
+         [FromQuery] int pageSize = DefaultPageSize,
+         CancellationToken cancellationToken = default)
+     {
+         try
+         {
++            var resolvedPageNumber = page ?? pageNumber;
++
+-            return Ok(await _insights.GetAllActionsAsync(companyId, pageNumber, pageSize, cancellationToken));
++            return Ok(await _insights.GetAllActionsAsync(companyId, resolvedPageNumber, pageSize, cancellationToken));
+         }
+         catch (UnauthorizedAccessException)
+         {
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
+@@ -8,7 +8,7 @@ namespace VirtualCompany.Infrastructure.Companies;
+ 
+ public sealed class CompanyActionInsightService : IActionInsightService
+ {
+-    private const int DefaultTopActionCount = 5;
++    private const int MaxTopActionCount = 5;
+     private const int DefaultPageSize = 25;
+     private const int MaxPageSize = 100;
+     private const int MaxCandidatesPerSource = 50;
+@@ -38,7 +38,7 @@ public sealed class CompanyActionInsightService : IActionInsightService
+ 
+     public async Task<IReadOnlyList<ActionQueueItemDto>> GetTopActionsAsync(Guid companyId, int count, CancellationToken cancellationToken)
+     {
+-        var normalizedCount = Math.Clamp(count <= 0 ? DefaultTopActionCount : count, 1, MaxPageSize);
++        var normalizedCount = Math.Clamp(count <= 0 ? MaxTopActionCount : count, 1, MaxTopActionCount);
+         var queue = await GetOrderedQueueAsync(companyId, cancellationToken);
+         return queue.Take(normalizedCount).ToList();
+     }
+@@ -284,7 +284,7 @@ public sealed class CompanyActionInsightService : IActionInsightService
+             candidate.Reason,
+             candidate.Owner,
+             candidate.DueUtc,
+             candidate.SlaState.ToStorageValue(),
+             scored.PriorityScore,
+-            scored.PriorityScore,
++            scored.ImpactScore,
+             scored.Priority.ToStorageValue(),
+             deepLink.Href,
+             acknowledged,
+diff --git a/src/VirtualCompany.Web/Components/TopActionsList.razor b/src/VirtualCompany.Web/Components/TopActionsList.razor
+--- a/src/VirtualCompany.Web/Components/TopActionsList.razor
++++ b/src/VirtualCompany.Web/Components/TopActionsList.razor
+@@ -74,11 +74,12 @@ else
+     [Parameter] public Guid CompanyId { get; set; }
+     [Parameter] public int Count { get; set; } = 5;
+ 
++    private const int MaxVisibleActions = 5;
+     private CancellationTokenSource? loadCancellationTokenSource;
+     private bool isLoading = true;
+     private string? errorMessage;
+     private IReadOnlyList<ActionQueueItemViewModel> items = Array.Empty<ActionQueueItemViewModel>();
+-    private string QueuePath => $"/queue?companyId={CompanyId:D}";
++    private string QueuePath => QueueRoutes.BuildPath(CompanyId);
+ 
+     protected override async Task OnParametersSetAsync()
+     {
+@@ -97,10 +98,14 @@ else
+ 
+         try
+         {
+-            items = await ActionInsightApiClient.GetTopActionsAsync(
++            var normalizedCount = Math.Clamp(Count <= 0 ? MaxVisibleActions : Count, 1, MaxVisibleActions);
++            var loadedItems = await ActionInsightApiClient.GetTopActionsAsync(
+                 CompanyId,
+-                Count,
++                normalizedCount,
+                 loadCancellationTokenSource.Token);
++
++            items = loadedItems
++                .Take(MaxVisibleActions)
++                .ToList();
+         }
+         catch (OperationCanceledException) when (loadCancellationTokenSource.IsCancellationRequested)
+         {
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -126,7 +126,7 @@ else
+ 
+                 @if (CompanyId is Guid selectedCompanyIdForQueue)
+                 {
+-                    <TopActionsList CompanyId="selectedCompanyIdForQueue" />
++                    <TopActionsList CompanyId="selectedCompanyIdForQueue" Count="5" />
+                 }
+ 
+                 @if (CompanyId is Guid selectedCompanyId)
+diff --git a/src/VirtualCompany.Web/Pages/Queue.razor b/src/VirtualCompany.Web/Pages/Queue.razor
+--- a/src/VirtualCompany.Web/Pages/Queue.razor
++++ b/src/VirtualCompany.Web/Pages/Queue.razor
+@@ -24,7 +24,7 @@ else
+             {
+                 <div class="template-grid">
+                     @foreach (var membership in activeMemberships)
+                     {
+-                        <a class="template-card text-decoration-none text-reset" href="@BuildQueueUri(membership.CompanyId, 1, DefaultPageSize)">
++                        <a class="template-card text-decoration-none text-reset" href="@BuildQueueUri(membership.CompanyId, 1, DefaultPageSize)">
+                             <strong>@membership.CompanyName</strong>
+                             <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
+                         </a>
+@@ -102,6 +102,9 @@ else
+     [SupplyParameterFromQuery(Name = "companyId")]
+     public Guid? CompanyId { get; set; }
+ 
++    [SupplyParameterFromQuery(Name = "page")]
++    public int? Page { get; set; }
++
+     [SupplyParameterFromQuery(Name = "pageNumber")]
+     public int PageNumber { get; set; } = 1;
+ 
+@@ -128,14 +131,15 @@ else
+             currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+             if (CompanyId is null && currentUser?.ActiveCompany is not null)
+             {
+-                Navigation.NavigateTo(BuildQueueUri(currentUser.ActiveCompany.CompanyId, 1, NormalizePageSize(PageSize)), replace: true);
++                Navigation.NavigateTo(BuildQueueUri(currentUser.ActiveCompany.CompanyId, 1, NormalizePageSize(PageSize)), replace: true);
+                 return;
+             }
+ 
+             if (CompanyId is Guid companyId)
+             {
++                var pageNumber = NormalizePageNumber(Page ?? PageNumber);
+                 companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+                 if (companyAccess is not null)
+                 {
+                     queuePage = await ActionInsightApiClient.GetAllActionsAsync(
+                         companyId,
+-                        NormalizePageNumber(PageNumber),
++                        pageNumber,
+                         NormalizePageSize(PageSize));
+                 }
+             }
+@@ -154,8 +158,8 @@ else
+ 
+     private static int NormalizePageSize(int pageSize) => Math.Clamp(pageSize <= 0 ? DefaultPageSize : pageSize, 1, MaxPageSize);
+ 
+     private static string BuildQueueUri(Guid companyId, int pageNumber, int pageSize) =>
+-        $"/queue?companyId={companyId:D}&pageNumber={NormalizePageNumber(pageNumber)}&pageSize={NormalizePageSize(pageSize)}";
++        QueueRoutes.BuildPath(companyId, NormalizePageNumber(pageNumber), NormalizePageSize(pageSize));
+ 
+     private static string FormatPriority(string priority) =>
+         priority.Replace("_", " ", StringComparison.Ordinal).ToUpperInvariant();
+diff --git a/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs b/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
+--- a/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
+@@ -6,6 +6,9 @@ public sealed class ActionInsightApiClient
+ {
+     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+     private readonly HttpClient _httpClient;
++    private const int DefaultTopActionCount = 5;
++    private const int MaxTopActionCount = 5;
++    private const int MaxPageSize = 100;
+     private readonly bool _useOfflineMode;
+     private readonly List<ActionQueueItemViewModel> _offlineItems = [];
+ 
+@@ -21,7 +24,7 @@ public sealed class ActionInsightApiClient
+         int count = 5,
+         CancellationToken cancellationToken = default)
+     {
++        var normalizedCount = Math.Clamp(count <= 0 ? DefaultTopActionCount : count, 1, MaxTopActionCount);
+         if (_useOfflineMode)
+         {
+-            var normalizedCount = Math.Max(1, count);
+             return Task.FromResult<IReadOnlyList<ActionQueueItemViewModel>>(
+                 OrderQueue(EnsureOfflineQueue(companyId))
+                     .Take(normalizedCount)
+@@ -30,7 +33,7 @@ public sealed class ActionInsightApiClient
+         }
+ 
+         return GetAsync<IReadOnlyList<ActionQueueItemViewModel>>(
+-            $"api/companies/{companyId}/action-insights/top?count={Math.Max(1, count)}",
++            $"api/companies/{companyId}/action-insights/top?count={normalizedCount}",
+             cancellationToken);
+     }
+ 
+@@ -41,7 +44,7 @@ public sealed class ActionInsightApiClient
+     {
+         if (_useOfflineMode)
+         {
+             var normalizedPageNumber = pageNumber <= 0 ? 1 : pageNumber;
+-            var normalizedPageSize = Math.Clamp(pageSize <= 0 ? 25 : pageSize, 1, 100);
++            var normalizedPageSize = Math.Clamp(pageSize <= 0 ? 25 : pageSize, 1, MaxPageSize);
+             var ordered = OrderQueue(EnsureOfflineQueue(companyId));
+             var totalCount = ordered.Count;
+             var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)normalizedPageSize);
+@@ -60,7 +63,7 @@ public sealed class ActionInsightApiClient
+         }
+ 
+         return GetAsync<PagedActionQueueResultViewModel>(
+-            $"api/companies/{companyId}/action-insights?pageNumber={Math.Max(1, pageNumber)}&pageSize={Math.Clamp(pageSize <= 0 ? 25 : pageSize, 1, 100)}",
++            $"api/companies/{companyId}/action-insights?pageNumber={Math.Max(1, pageNumber)}&pageSize={Math.Clamp(pageSize <= 0 ? 25 : pageSize, 1, MaxPageSize)}",
+             cancellationToken);
+     }
+@@ -111,8 +114,9 @@ public sealed class ActionInsightApiClient
+             .OrderByDescending(item => PriorityRank(item.Priority))
+             .ThenBy(item => item.DueUtc.HasValue ? 0 : 1)
+             .ThenBy(item => item.DueUtc ?? DateTime.MaxValue)
+-            .ThenByDescending(item => item.ImpactScore)
+-            .ThenBy(item => item.StableSortKey, StringComparer.Ordinal)
++            .ThenByDescending(item => item.ImpactScore)
++            .ThenBy(item => item.SourceEntityId)
++            .ThenBy(item => item.StableSortKey, StringComparer.Ordinal)
+             .ToList();
+ 
+     private static int PriorityRank(string priority) =>
+diff --git a/src/VirtualCompany.Web/Services/QueueRoutes.cs b/src/VirtualCompany.Web/Services/QueueRoutes.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/QueueRoutes.cs
+@@ -0,0 +1,24 @@
++namespace VirtualCompany.Web.Services;
++
++public static class QueueRoutes
++{
++    public const string Home = "/queue";
++    public const string CompanyIdQueryKey = "companyId";
++    public const string PageQueryKey = "page";
++    public const string PageSizeQueryKey = "pageSize";
++
++    public static string BuildPath(Guid? companyId, int? pageNumber = null, int? pageSize = null)
++    {
++        var parameters = new List<string>();
++
++        if (companyId is Guid resolvedCompanyId)
++        {
++            parameters.Add($"{CompanyIdQueryKey}={resolvedCompanyId:D}");
++        }
++
++        if (pageNumber.HasValue) parameters.Add($"{PageQueryKey}={Math.Max(1, pageNumber.Value)}");
++        if (pageSize.HasValue) parameters.Add($"{PageSizeQueryKey}={Math.Max(1, pageSize.Value)}");
++
++        return parameters.Count == 0
++            ? Home
++            : $"{Home}?{string.Join("&", parameters)}";
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs b/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
+--- a/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
+@@ -114,6 +114,25 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
+         Assert.Empty(otherTenantPage!.Items);
+     }
+ 
++    [Fact]
++    public async Task Paginated_endpoint_accepts_page_alias_and_uses_stable_source_id_tie_breaker()
++    {
++        var seed = await SeedDeterministicPaginationQueueAsync();
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com");
++
++        var pageOne = await client.GetFromJsonAsync<ActionQueuePageResponse>(
++            $"/api/companies/{seed.CompanyId}/action-insights?page=1&pageSize=2");
++        var pageTwo = await client.GetFromJsonAsync<ActionQueuePageResponse>(
++            $"/api/companies/{seed.CompanyId}/action-insights?page=2&pageSize=2");
++        var repeatedPageTwo = await client.GetFromJsonAsync<ActionQueuePageResponse>(
++            $"/api/companies/{seed.CompanyId}/action-insights?page=2&pageSize=2");
++
++        Assert.NotNull(pageOne);
++        Assert.NotNull(pageTwo);
++        Assert.NotNull(repeatedPageTwo);
++        Assert.Equal(new[] { "Tied action 1", "Tied action 2" }, pageOne!.Items.Select(item => item.Title).ToArray());
++        Assert.Equal(new[] { "Tied action 3", "Tied action 4" }, pageTwo!.Items.Select(item => item.Title).ToArray());
++        Assert.Equal(pageTwo.Items.Select(item => item.InsightKey), repeatedPageTwo!.Items.Select(item => item.InsightKey));
++    }
++
+     private HttpClient CreateAuthenticatedClient(string subject, string email)
+     {
+         var client = _factory.CreateClient();
+@@ -240,6 +259,32 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
+         return new ActionQueueSeed(companyId, otherCompanyId);
+     }
+ 
++    private async Task<ActionQueueSeed> SeedDeterministicPaginationQueueAsync()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var dueUtc = new DateTime(2026, 4, 14, 16, 0, 0, DateTimeKind.Utc);
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Deterministic Queue Company"),
++                new Company(otherCompanyId, "Other Deterministic Queue Company"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++
++            dbContext.WorkTasks.AddRange(
++                BuildTask(Guid.Parse("11111111-1111-1111-1111-111111111111"), companyId, userId, null, "Tied action 1", WorkTaskPriority.High, dueUtc),
++                BuildTask(Guid.Parse("22222222-2222-2222-2222-222222222222"), companyId, userId, null, "Tied action 2", WorkTaskPriority.High, dueUtc),
++                BuildTask(Guid.Parse("33333333-3333-3333-3333-333333333333"), companyId, userId, null, "Tied action 3", WorkTaskPriority.High, dueUtc),
++                BuildTask(Guid.Parse("44444444-4444-4444-4444-444444444444"), companyId, userId, null, "Tied action 4", WorkTaskPriority.High, dueUtc),
++                BuildTask(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), otherCompanyId, userId, null, "Other tenant tied action", WorkTaskPriority.High, dueUtc));
++
++            return Task.CompletedTask;
++        });
++
++        return new ActionQueueSeed(companyId, otherCompanyId);
++    }
++
+     private static WorkTask BuildTask(
+         Guid taskId,
+         Guid companyId,
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs b/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs
+--- a/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs
+@@ -28,7 +28,7 @@ public sealed class DashboardPageTests
+             Assert.Empty(cut.FindAll(".action-queue"));
+         });
+ 
+-        Assert.Contains($"/queue?companyId={companyId:D}", cut.Find("[data-testid='view-full-queue-link']").GetAttribute("href"));
++        Assert.Equal(QueueRoutes.BuildPath(companyId), cut.Find("[data-testid='view-full-queue-link']").GetAttribute("href"));
+         Assert.True(
+             cut.Markup.IndexOf("data-testid=\"today-focus-panel\"", StringComparison.Ordinal) <
+             cut.Markup.IndexOf("data-testid=\"top-actions-panel\"", StringComparison.Ordinal));
+diff --git a/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs b/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs
+--- a/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs
++++ b/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs
+@@ -27,17 +27,23 @@ public sealed class InsightScoringTests
+     }
+ 
+     [Fact]
+-    public void Equal_scores_use_stable_tie_breakers()
++    public void Equal_priority_and_due_items_use_impact_then_source_id_tie_breakers()
+     {
+-        var now = new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc);
+         var companyId = Guid.NewGuid();
+-        var laterKey = Candidate(companyId, ActionInsightType.Risk, ActionInsightTargetType.Alert, "z-key", now.AddHours(8), ActionInsightSlaState.OnTrack, now.AddMinutes(2));
+-        var earlierKey = Candidate(companyId, ActionInsightType.Risk, ActionInsightTargetType.Alert, "a-key", now.AddHours(8), ActionInsightSlaState.OnTrack, now.AddMinutes(2));
+-        var earliestCreated = Candidate(companyId, ActionInsightType.Risk, ActionInsightTargetType.Alert, "m-key", now.AddHours(8), ActionInsightSlaState.OnTrack, now.AddMinutes(1));
+-        var earliestDue = Candidate(companyId, ActionInsightType.Risk, ActionInsightTargetType.Alert, "x-key", now.AddHours(4), ActionInsightSlaState.OnTrack, now.AddMinutes(3));
+-
+-        var ordered = _scoring.Prioritize([laterKey, earlierKey, earliestCreated, earliestDue], now);
+-
+-        Assert.Equal(["x-key", "m-key", "a-key", "z-key"], ordered.Select(x => x.Candidate.InsightKey).ToArray());
++        var dueUtc = new DateTime(2026, 4, 14, 16, 0, 0, DateTimeKind.Utc);
++        var ordered = ActionQueueOrdering.Order(
++        [
++            ScoredCandidate(companyId, "null-due", Guid.Parse("44444444-4444-4444-4444-444444444444"), null, 95, ActionInsightPriority.High),
++            ScoredCandidate(companyId, "lower-impact", Guid.Parse("33333333-3333-3333-3333-333333333333"), dueUtc, 70, ActionInsightPriority.High),
++            ScoredCandidate(companyId, "higher-id", Guid.Parse("22222222-2222-2222-2222-222222222222"), dueUtc, 90, ActionInsightPriority.High),
++            ScoredCandidate(companyId, "earlier-id", Guid.Parse("11111111-1111-1111-1111-111111111111"), dueUtc, 90, ActionInsightPriority.High),
++            ScoredCandidate(companyId, "lower-priority", Guid.Parse("55555555-5555-5555-5555-555555555555"), dueUtc, 100, ActionInsightPriority.Medium)
++        ]);
++
++        Assert.Equal(
++            ["earlier-id", "higher-id", "lower-impact", "null-due", "lower-priority"],
++            ordered.Select(x => x.Candidate.InsightKey).ToArray());
+     }
+@@ -92,6 +98,26 @@ public sealed class InsightScoringTests
+         Assert.Equal(InsightKey.For(companyId, ActionInsightType.Task, sourceId, 3), InsightKey.For(companyId, ActionInsightType.Task, sourceId, 3));
+     }
+ 
++    private static ScoredInsightCandidate ScoredCandidate(
++        Guid companyId,
++        string key,
++        Guid sourceId,
++        DateTime? dueUtc,
++        int impactScore,
++        ActionInsightPriority priority) =>
++        new(
++            new InsightCandidate(
++                key,
++                companyId,
++                ActionInsightType.Task,
++                ActionInsightTargetType.Task.ToStorageValue(),
++                sourceId,
++                ActionInsightTargetType.Task,
++                sourceId,
++                "Insight",
++                "Reason",
++                "Owner",
++                dueUtc,
++                dueUtc.HasValue ? ActionInsightSlaState.OnTrack : ActionInsightSlaState.None,
++                new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc)),
++            impactScore,
++            impactScore,
++            priority);
++
+     private static InsightCandidate Candidate(
+         Guid companyId,
+         ActionInsightType type,
+diff --git a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs
+--- a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs
++++ b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs
+@@ -35,7 +35,28 @@ public sealed class TopActionsListTests
+             Assert.DoesNotContain("Deferred follow-up", cut.Markup);
+         });
+ 
+-        Assert.Equal($"/queue?companyId={companyId:D}", cut.Find("[data-testid='view-full-queue-link']").GetAttribute("href"));
++        Assert.Equal(QueueRoutes.BuildPath(companyId), cut.Find("[data-testid='view-full-queue-link']").GetAttribute("href"));
++    }
++
++    [Fact]
++    public void Component_caps_requested_top_actions_at_five()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        Uri? requestUri = null;
++        var items = Enumerable.Range(1, 6)
++            .Select(index => Item(companyId, $"task-{index}", "high", 100 - index, DateTime.UtcNow.AddHours(index), $"Action {index}"))
++            .ToArray();
++
++        using var context = CreateContext(request =>
++        {
++            requestUri = request.RequestUri;
++            return CreateJsonResponse(items);
++        });
++
++        var cut = context.RenderComponent<TopActionsList>(parameters => parameters
++            .Add(component => component.CompanyId, companyId)
++            .Add(component => component.Count, 10));
++
++        cut.WaitForAssertion(() => Assert.Equal(5, cut.FindAll("[data-testid='top-action-item']").Count));
++        Assert.NotNull(requestUri);
++        Assert.Contains("count=5", requestUri!.Query, StringComparison.Ordinal);
++        Assert.DoesNotContain("Action 6", cut.Markup);
+     }
+ 
+     [Fact]
+END_OF_PATCH

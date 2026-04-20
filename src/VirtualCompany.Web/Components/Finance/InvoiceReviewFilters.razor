@@ -1,0 +1,81 @@
+<form class="invoice-review-filters" @onsubmit="HandleSubmitAsync" @onsubmit:preventDefault="true">
+    <div class="invoice-review-filters__fields">
+        <label class="invoice-review-filters__field">
+            <span class="form-label">Status</span>
+            <select class="form-select" @bind="Filters.Status">
+                <option value="">All statuses</option>
+                @foreach (var option in StatusOptions)
+                {
+                    <option value="@option">@FormatLabel(option)</option>
+                }
+            </select>
+        </label>
+
+        <label class="invoice-review-filters__field">
+            <span class="form-label">Supplier</span>
+            <input class="form-control" type="text" placeholder="Filter supplier" @bind="Filters.Supplier" />
+        </label>
+
+        <label class="invoice-review-filters__field">
+            <span class="form-label">Risk level</span>
+            <select class="form-select" @bind="Filters.RiskLevel">
+                <option value="">All risk levels</option>
+                @foreach (var option in RiskLevelOptions)
+                {
+                    <option value="@option">@FormatLabel(option)</option>
+                }
+            </select>
+        </label>
+
+        <label class="invoice-review-filters__field">
+            <span class="form-label">Recommendation outcome</span>
+            <select class="form-select" @bind="Filters.RecommendationOutcome">
+                <option value="">All outcomes</option>
+                @foreach (var option in OutcomeOptions)
+                {
+                    <option value="@option">@FormatLabel(option)</option>
+                }
+            </select>
+        </label>
+    </div>
+
+    <div class="invoice-review-filters__toolbar">
+        <div class="invoice-review-filters__chips" role="group" aria-label="Quick filters">
+            <button class="@BuildChipClass(HighRiskOnly)" type="button" @onclick="OnToggleHighRisk">High risk</button>
+            <button class="@BuildChipClass(NeedsApprovalOnly)" type="button" @onclick="OnToggleNeedsApproval">Needs approval</button>
+            <button class="@BuildChipClass(LowConfidenceOnly)" type="button" @onclick="OnToggleLowConfidence">Low confidence</button>
+        </div>
+
+        <div class="invoice-review-filters__actions">
+            <button class="btn btn-primary" type="submit">Apply filters</button>
+            <button class="btn btn-outline-secondary" type="button" @onclick="OnClear">Clear</button>
+        </div>
+    </div>
+</form>
+
+@code {
+    [Parameter, EditorRequired] public InvoiceReviewFilterState Filters { get; set; } = default!;
+    [Parameter] public IReadOnlyList<string> StatusOptions { get; set; } = [];
+    [Parameter] public IReadOnlyList<string> RiskLevelOptions { get; set; } = [];
+    [Parameter] public IReadOnlyList<string> OutcomeOptions { get; set; } = [];
+    [Parameter] public bool HighRiskOnly { get; set; }
+    [Parameter] public bool NeedsApprovalOnly { get; set; }
+    [Parameter] public bool LowConfidenceOnly { get; set; }
+    [Parameter] public EventCallback OnApply { get; set; }
+    [Parameter] public EventCallback OnClear { get; set; }
+    [Parameter] public EventCallback OnToggleHighRisk { get; set; }
+    [Parameter] public EventCallback OnToggleNeedsApproval { get; set; }
+    [Parameter] public EventCallback OnToggleLowConfidence { get; set; }
+
+    private Task HandleSubmitAsync() => OnApply.InvokeAsync();
+
+    private static string BuildChipClass(bool isActive) =>
+        isActive
+            ? "invoice-review-filter-chip invoice-review-filter-chip--active"
+            : "invoice-review-filter-chip";
+
+    private static string FormatLabel(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "n/a"
+            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+}

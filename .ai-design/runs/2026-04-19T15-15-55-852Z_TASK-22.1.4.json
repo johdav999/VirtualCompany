@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-22.1.4",
+  "promptPath": ".ai-design/prompts/TASK-22.1.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-19T15:15:55.852Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-19T15-15-55-852Z_TASK-22.1.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-19T15-15-55-852Z_TASK-22.1.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-19T15:19:25.051Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "each_focus_item_as_a_card_with_title_description_and_cta_button()\r\n+    {\r\n+        var companyId = Guid.Parse(\"4c5cfd22-87fd-4214-b579-fc9e7554ab72\");\r\n+        var items = new[]\r\n+        {\r\n+            new FocusItemViewModel\r\n+            {\r\n+                Id = \"approval-1\",\r\n+                Title = \"Approval required for task\",\r\n+                Description = \"Review the task approval chain.\",\r\n+                ActionType = \"review\",\r\n+                PriorityScore = 100,\r\n+                NavigationTarget = $\"/approvals?companyId={companyId:D}&approvalId=11111111-1111-1111-1111-111111111111\"\r\n+            },\r\n+            new FocusItemViewModel\r\n+            {\r\n+                Id = \"task-1\",\r\n+                Title = \"Resolve blocked task\",\r\n+                Description = \"A task is blocked and needs attention.\",\r\n+                ActionType = \"open\",\r\n+                PriorityScore = 72,\r\n+                NavigationTarget = $\"/tasks/detail/22222222-2222-2222-2222-222222222222?companyId={companyId:D}&view=focus\"\r\n+            }\r\n+        };\r\n+\r\n+        using var context = CreateContext(_ => CreateJsonResponse(items));\r\n+        var cut = context.RenderComponent<TodayFocusPanel>(parameters => parameters.Add(component => component.CompanyId, companyId));\r\n+\r\n+        cut.WaitForAssertion(() => Assert.Equal(items.Length, cut.FindAll(\"[data-testid='today-focus-card']\").Count));\r\n+        Assert.Equal(items.Select(item => item.Title), cut.FindAll(\"[data-testid='today-focus-title']\").Select(element => element.TextContent.Trim()));\r\n+        Assert.Equal(items.Select(item => item.Description), cut.FindAll(\"[data-testid='today-focus-description']\").Select(element => element.TextContent.Trim()));\r\n+        Assert.Equal(new[] { \"Review\", \"Open\" }, cut.FindAll(\"[data-testid='today-focus-cta']\").Select(element => element.TextContent.Trim()).ToArray());\r\n+    }\r\n+\r\n     [Fact]\r\n     public void Panel_shows_empty_state_when_api_returns_no_items()\r\n     {\r\nEND_OF_PATCH\n",
+  "stderrTail": "_card_with_title_description_and_cta_button()\r\n+    {\r\n+        var companyId = Guid.Parse(\"4c5cfd22-87fd-4214-b579-fc9e7554ab72\");\r\n+        var items = new[]\r\n+        {\r\n+            new FocusItemViewModel\r\n+            {\r\n+                Id = \"approval-1\",\r\n+                Title = \"Approval required for task\",\r\n+                Description = \"Review the task approval chain.\",\r\n+                ActionType = \"review\",\r\n+                PriorityScore = 100,\r\n+                NavigationTarget = $\"/approvals?companyId={companyId:D}&approvalId=11111111-1111-1111-1111-111111111111\"\r\n+            },\r\n+            new FocusItemViewModel\r\n+            {\r\n+                Id = \"task-1\",\r\n+                Title = \"Resolve blocked task\",\r\n+                Description = \"A task is blocked and needs attention.\",\r\n+                ActionType = \"open\",\r\n+                PriorityScore = 72,\r\n+                NavigationTarget = $\"/tasks/detail/22222222-2222-2222-2222-222222222222?companyId={companyId:D}&view=focus\"\r\n+            }\r\n+        };\r\n+\r\n+        using var context = CreateContext(_ => CreateJsonResponse(items));\r\n+        var cut = context.RenderComponent<TodayFocusPanel>(parameters => parameters.Add(component => component.CompanyId, companyId));\r\n+\r\n+        cut.WaitForAssertion(() => Assert.Equal(items.Length, cut.FindAll(\"[data-testid='today-focus-card']\").Count));\r\n+        Assert.Equal(items.Select(item => item.Title), cut.FindAll(\"[data-testid='today-focus-title']\").Select(element => element.TextContent.Trim()));\r\n+        Assert.Equal(items.Select(item => item.Description), cut.FindAll(\"[data-testid='today-focus-description']\").Select(element => element.TextContent.Trim()));\r\n+        Assert.Equal(new[] { \"Review\", \"Open\" }, cut.FindAll(\"[data-testid='today-focus-cta']\").Select(element => element.TextContent.Trim()).ToArray());\r\n+    }\r\n+\r\n     [Fact]\r\n     public void Panel_shows_empty_state_when_api_returns_no_items()\r\n     {\r\nEND_OF_PATCH\ntokens used\n149,606\n",
+  "verbosityMode": "verbose"
+}

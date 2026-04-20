@@ -1,0 +1,250 @@
+@implements IDisposable
+@inject ActionInsightApiClient ActionInsightApiClient
+@inject NavigationManager Navigation
+@using VirtualCompany.Web.Services
+
+@if (CompanyId == Guid.Empty)
+{
+    <section class="wizard-card dashboard-summary">
+        @if (!string.IsNullOrWhiteSpace(Kicker))
+        {
+            <span class="dashboard-kicker">@Kicker</span>
+        }
+        <p class="text-body-secondary mb-0">Select a company context to load prioritized actions.</p>
+    </section>
+}
+else if (isLoading)
+{
+    <section class="wizard-card dashboard-summary" aria-busy="true">
+        <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+            <div>
+                @if (!string.IsNullOrWhiteSpace(Kicker))
+                {
+                    <span class="dashboard-kicker">@Kicker</span>
+                }
+                <h2 class="h4 mb-1">@Title</h2>
+                @if (!string.IsNullOrWhiteSpace(Subtitle))
+                {
+                    <p class="text-body-secondary mb-0">@Subtitle</p>
+                }
+            </div>
+            <a class="btn btn-outline-primary btn-sm disabled"
+               aria-disabled="true"
+               tabindex="-1"
+               href="@QueuePath">@QueueLinkLabel</a>
+        </div>
+        <p class="text-body-secondary mb-0">Loading actions...</p>
+    </section>
+}
+else if (!string.IsNullOrWhiteSpace(errorMessage))
+{
+    <section class="wizard-card dashboard-summary" data-testid="top-actions-panel">
+        <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+            <div>
+                @if (!string.IsNullOrWhiteSpace(Kicker))
+                {
+                    <span class="dashboard-kicker">@Kicker</span>
+                }
+                <h2 class="h4 mb-1">@Title</h2>
+            </div>
+            <a class="btn btn-outline-primary btn-sm"
+               data-testid="view-full-queue-link"
+               href="@QueuePath"
+               @onclick='() => NavigateToAsync(QueuePath, "action-queue", "open-full-queue", QueueLinkLabel)'
+               @onclick:preventDefault="true">@QueueLinkLabel</a>
+        </div>
+        <div class="alert alert-danger mb-0">@errorMessage</div>
+    </section>
+}
+else
+{
+    <section class="wizard-card dashboard-summary" data-testid="top-actions-panel">
+        <div class="d-flex justify-content-between align-items-start gap-3 mb-4">
+            <div>
+                @if (!string.IsNullOrWhiteSpace(Kicker))
+                {
+                    <span class="dashboard-kicker">@Kicker</span>
+                }
+                <h2 class="h4 mb-1">@Title</h2>
+                @if (!string.IsNullOrWhiteSpace(Subtitle))
+                {
+                    <p class="text-body-secondary mb-0">@Subtitle</p>
+                }
+            </div>
+            <a class="btn btn-outline-primary btn-sm"
+               data-testid="view-full-queue-link"
+               href="@QueuePath"
+               @onclick='() => NavigateToAsync(QueuePath, "action-queue", "open-full-queue", QueueLinkLabel)'
+               @onclick:preventDefault="true">@QueueLinkLabel</a>
+        </div>
+
+        @if (items.Count == 0)
+        {
+            <p class="text-body-secondary mb-0">No actionable insights need attention right now.</p>
+        }
+        else
+        {
+            <div class="row g-3">
+                @for (var index = 0; index < items.Count; index++)
+                {
+                    var item = items[index];
+                    <div class="col-12 col-lg-6" data-testid="top-action-item">
+                        <ActionCard Title="@item.Title"
+                                    Description="@item.Reason"
+                                    Priority="@item.Priority"
+                                    Context="@BuildContextMeta(item)"
+                                    ActionLabel="@ResolveActionLabel(item)"
+                                    OnClick="@(() => NavigateToItemAsync(item))" />
+                    </div>
+                }
+            </div>
+        }
+    </section>
+}
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public int Count { get; set; } = 5;
+    [Parameter] public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
+    [Parameter] public string? Kicker { get; set; } = "Action queue";
+    [Parameter] public string Title { get; set; } = "Top prioritized actions";
+    [Parameter] public string? Subtitle { get; set; } = "The five highest-priority actions across approvals, tasks, workflows, and alerts.";
+    [Parameter] public string QueueLinkLabel { get; set; } = "View full queue";
+
+    private const int MaxVisibleActions = 5;
+    private CancellationTokenSource? loadCancellationTokenSource;
+    private bool isLoading = true;
+    private string? errorMessage;
+    private IReadOnlyList<ActionQueueItemViewModel> items = Array.Empty<ActionQueueItemViewModel>();
+    private string QueuePath => DashboardRoutes.EnsureCompanyContext(QueueRoutes.BuildPath(CompanyId), CompanyId, QueueRoutes.Home);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        loadCancellationTokenSource?.Cancel();
+        loadCancellationTokenSource?.Dispose();
+        loadCancellationTokenSource = new CancellationTokenSource();
+
+        isLoading = true;
+        errorMessage = null;
+        items = Array.Empty<ActionQueueItemViewModel>();
+
+        if (CompanyId == Guid.Empty)
+        {
+            isLoading = false;
+            return;
+        }
+
+        try
+        {
+            var normalizedCount = Math.Clamp(Count <= 0 ? MaxVisibleActions : Count, 1, MaxVisibleActions);
+            var loadedItems = await ActionInsightApiClient.GetTopActionsAsync(
+                CompanyId,
+                normalizedCount,
+                loadCancellationTokenSource.Token);
+
+            items = loadedItems
+                .Take(MaxVisibleActions)
+                .ToList();
+        }
+        catch (OperationCanceledException) when (loadCancellationTokenSource.IsCancellationRequested)
+        {
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            if (loadCancellationTokenSource is { IsCancellationRequested: false })
+            {
+                isLoading = false;
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        loadCancellationTokenSource?.Cancel();
+        loadCancellationTokenSource?.Dispose();
+    }
+
+    private Task NavigateToItemAsync(ActionQueueItemViewModel item) =>
+        NavigateToAsync(item.DeepLink, "action-queue", item.Type, item.Title);
+
+    private async Task NavigateToAsync(string? route, string area, string actionKey, string? label)
+    {
+        var resolvedRoute = DashboardRoutes.EnsureCompanyContext(route, CompanyId, QueuePath);
+        if (OnActionClick.HasDelegate)
+        {
+            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext(area, actionKey, resolvedRoute, Label: label));
+        }
+
+        Navigation.NavigateTo(resolvedRoute);
+    }
+
+    private static string ResolveActionLabel(ActionQueueItemViewModel item)
+    {
+        if (item.Title.Contains("approve", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Review";
+        }
+
+        if (item.Title.Contains("review", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Review";
+        }
+
+        if (item.Title.Contains("investigate", StringComparison.OrdinalIgnoreCase) ||
+            item.Title.Contains("duplicate", StringComparison.OrdinalIgnoreCase) ||
+            item.Title.Contains("unusual", StringComparison.OrdinalIgnoreCase) ||
+            item.Title.Contains("mismatch", StringComparison.OrdinalIgnoreCase) ||
+            item.Title.Contains("missing", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Investigate";
+        }
+
+        if (item.Title.Contains("resolve", StringComparison.OrdinalIgnoreCase) ||
+            item.Title.Contains("blocked", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Resolve";
+        }
+
+        return item.Type switch
+        {
+            "approval" => "Review",
+            "risk" => "Investigate",
+            "opportunity" => "Review",
+            _ => "Open"
+        };
+    }
+
+    private static string BuildContextMeta(ActionQueueItemViewModel item)
+    {
+        var parts = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(item.Owner))
+        {
+            parts.Add($"Handled by {item.Owner}");
+        }
+
+        var timing = item.SlaState.Trim().ToLowerInvariant() switch
+        {
+            "breached" => "Already overdue",
+            "due_soon" => "Needs attention soon",
+            "on_track" => "On track",
+            _ => null
+        };
+
+        if (!string.IsNullOrWhiteSpace(timing))
+        {
+            parts.Add(timing);
+        }
+
+        if (item.ImpactScore >= 85)
+        {
+            parts.Add("High impact");
+        }
+
+        return string.Join(" | ", parts);
+    }
+}

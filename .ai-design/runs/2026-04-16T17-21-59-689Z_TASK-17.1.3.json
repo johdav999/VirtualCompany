@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-17.1.3",
+  "promptPath": ".ai-design/prompts/TASK-17.1.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T17:21:59.689Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T17-21-59-689Z_TASK-17.1.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T17-21-59-689Z_TASK-17.1.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T17:27:35.686Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "on)]\n+    [InlineData(typeof(TransactionsPage), FinanceRoutes.Transactions)]\n+    [InlineData(typeof(InvoicesPage), FinanceRoutes.Invoices)]\n+    [InlineData(typeof(BalancesPage), FinanceRoutes.Balances)]\n+    [InlineData(typeof(MonthlySummaryPage), FinanceRoutes.MonthlySummary)]\n+    [InlineData(typeof(AnomaliesPage), FinanceRoutes.Anomalies)]\n+    public void Finance_pages_register_expected_routes(Type componentType, string expectedRoute)\n+    {\n+        var routes = componentType.GetCustomAttributes(inherit: false)\n+            .OfType<RouteAttribute>()\n+            .Select(attribute => attribute.Template)\n+            .ToArray();\n+\n+        Assert.Contains(expectedRoute, routes);\n+    }\n+\n+    [Fact]\n+    public void Finance_landing_page_defines_required_shell_links()\n+    {\n+        var routes = FinanceRoutes.SectionPages.Select(route => route.Path).ToArray();\n+\n+        Assert.Equal(6, routes.Length);\n+        Assert.Contains(FinanceRoutes.CashPosition, routes);\n+        Assert.Contains(FinanceRoutes.Transactions, routes);\n+        Assert.Contains(FinanceRoutes.Invoices, routes);\n+        Assert.Contains(FinanceRoutes.Balances, routes);\n+        Assert.Contains(FinanceRoutes.MonthlySummary, routes);\n+        Assert.Contains(FinanceRoutes.Anomalies, routes);\n+    }\n+\n+    [Fact]\n+    public void WithCompanyContext_appends_tenant_scope_to_finance_links()\n+    {\n+        var companyId = Guid.NewGuid();\n+\n+        var financeHref = FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId);\n+        var shellHref = FinanceRoutes.SectionPages[0].BuildPath(companyId);\n+\n+        Assert.Equal($\"/finance?companyId={companyId}\", financeHref);\n+        Assert.Equal($\"/finance/cash-position?companyId={companyId}\", shellHref);\n+    }\n+\n+    [Fact]\n+    public void WithCompanyContext_preserves_plain_route_when_company_scope_is_missing()\n+    {\n+        Assert.Equal(FinanceRoutes.Home, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, null));\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "ta(typeof(TransactionsPage), FinanceRoutes.Transactions)]\n+    [InlineData(typeof(InvoicesPage), FinanceRoutes.Invoices)]\n+    [InlineData(typeof(BalancesPage), FinanceRoutes.Balances)]\n+    [InlineData(typeof(MonthlySummaryPage), FinanceRoutes.MonthlySummary)]\n+    [InlineData(typeof(AnomaliesPage), FinanceRoutes.Anomalies)]\n+    public void Finance_pages_register_expected_routes(Type componentType, string expectedRoute)\n+    {\n+        var routes = componentType.GetCustomAttributes(inherit: false)\n+            .OfType<RouteAttribute>()\n+            .Select(attribute => attribute.Template)\n+            .ToArray();\n+\n+        Assert.Contains(expectedRoute, routes);\n+    }\n+\n+    [Fact]\n+    public void Finance_landing_page_defines_required_shell_links()\n+    {\n+        var routes = FinanceRoutes.SectionPages.Select(route => route.Path).ToArray();\n+\n+        Assert.Equal(6, routes.Length);\n+        Assert.Contains(FinanceRoutes.CashPosition, routes);\n+        Assert.Contains(FinanceRoutes.Transactions, routes);\n+        Assert.Contains(FinanceRoutes.Invoices, routes);\n+        Assert.Contains(FinanceRoutes.Balances, routes);\n+        Assert.Contains(FinanceRoutes.MonthlySummary, routes);\n+        Assert.Contains(FinanceRoutes.Anomalies, routes);\n+    }\n+\n+    [Fact]\n+    public void WithCompanyContext_appends_tenant_scope_to_finance_links()\n+    {\n+        var companyId = Guid.NewGuid();\n+\n+        var financeHref = FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId);\n+        var shellHref = FinanceRoutes.SectionPages[0].BuildPath(companyId);\n+\n+        Assert.Equal($\"/finance?companyId={companyId}\", financeHref);\n+        Assert.Equal($\"/finance/cash-position?companyId={companyId}\", shellHref);\n+    }\n+\n+    [Fact]\n+    public void WithCompanyContext_preserves_plain_route_when_company_scope_is_missing()\n+    {\n+        Assert.Equal(FinanceRoutes.Home, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, null));\n+    }\n+}\nEND_OF_PATCH\ntokens used\n81,045\n",
+  "verbosityMode": "summary"
+}

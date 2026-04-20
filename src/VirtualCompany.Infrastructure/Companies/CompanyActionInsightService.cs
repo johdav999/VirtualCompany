@@ -9,8 +9,12 @@ namespace VirtualCompany.Infrastructure.Companies;
 
 public sealed class CompanyActionInsightService : IActionInsightService
 {
+    private const int MaxTopActionCount = 5;
+    private const int DefaultPageSize = 25;
+    private const int MaxPageSize = 100;
     private const int MaxCandidatesPerSource = 50;
     private readonly VirtualCompanyDbContext _dbContext;
+
     private readonly ICompanyContextAccessor _companyContextAccessor;
     private readonly ICurrentUserAccessor _currentUserAccessor;
     private readonly IInsightScoringService _scoringService;
@@ -33,21 +37,36 @@ public sealed class CompanyActionInsightService : IActionInsightService
         _timeProvider = timeProvider;
     }
 
-    public async Task<IReadOnlyList<ActionQueueItemDto>> GetActionQueueAsync(Guid companyId, CancellationToken cancellationToken)
+    public Task<IReadOnlyList<ActionQueueItemDto>> GetActionQueueAsync(Guid companyId, CancellationToken cancellationToken) =>
+        GetOrderedQueueAsync(companyId, cancellationToken);
+
+    public async Task<IReadOnlyList<ActionQueueItemDto>> GetTopActionsAsync(Guid companyId, int count, CancellationToken cancellationToken)
     {
-        var userId = ResolveUserId();
-        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
-        var candidates = await GetCandidatesAsync(companyId, nowUtc, cancellationToken);
+        var normalizedCount = Math.Clamp(count <= 0 ? MaxTopActionCount : count, 1, MaxTopActionCount);
+        var queue = await GetOrderedQueueAsync(companyId, cancellationToken);
+        return queue.Take(normalizedCount).ToList();
+    }
 
-        var keys = candidates.Select(candidate => candidate.InsightKey).Distinct(StringComparer.Ordinal).ToArray();
-        var acknowledgments = await _dbContext.InsightAcknowledgments
-            .Where(ack => ack.CompanyId == companyId && ack.UserId == userId && keys.Contains(ack.InsightKey))
-            .ToDictionaryAsync(ack => ack.InsightKey, ack => ack.AcknowledgedUtc, StringComparer.Ordinal, cancellationToken);
-
-        return _scoringService
-            .Prioritize(candidates, nowUtc)
-            .Select(scored => Map(scored, acknowledgments))
+    public async Task<ActionQueuePageDto> GetAllActionsAsync(Guid companyId, int pageNumber, int pageSize, CancellationToken cancellationToken)
+    {
+        var normalizedPageNumber = pageNumber <= 0 ? 1 : pageNumber;
+        var normalizedPageSize = Math.Clamp(pageSize <= 0 ? DefaultPageSize : pageSize, 1, MaxPageSize);
+        var queue = await GetOrderedQueueAsync(companyId, cancellationToken);
+        var totalCount = queue.Count;
+        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)normalizedPageSize);
+        var items = queue
+            .Skip((normalizedPageNumber - 1) * normalizedPageSize)
+            .Take(normalizedPageSize)
             .ToList();
+
+        return new ActionQueuePageDto(
+            items,
+            normalizedPageNumber,
+            normalizedPageSize,
+            totalCount,
+            totalPages,
+            normalizedPageNumber > 1 && totalPages > 0,
+            totalPages > 0 && normalizedPageNumber < totalPages);
     }
 
     public async Task<ActionQueueItemDto?> AcknowledgeAsync(Guid companyId, string insightKey, CancellationToken cancellationToken)
@@ -77,8 +96,25 @@ public sealed class CompanyActionInsightService : IActionInsightService
 
         await _dbContext.SaveChangesAsync(cancellationToken);
 
-        var queue = await GetActionQueueAsync(companyId, cancellationToken);
+        var queue = await GetOrderedQueueAsync(companyId, cancellationToken);
         return queue.FirstOrDefault(item => string.Equals(item.InsightKey, normalizedKey, StringComparison.Ordinal));
+    }
+
+    private async Task<IReadOnlyList<ActionQueueItemDto>> GetOrderedQueueAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        var userId = ResolveUserId();
+        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+        var candidates = await GetCandidatesAsync(companyId, nowUtc, cancellationToken);
+        var ordered = _scoringService.Prioritize(candidates, nowUtc);
+
+        var keys = ordered.Select(candidate => candidate.Candidate.InsightKey).Distinct(StringComparer.Ordinal).ToArray();
+        var acknowledgments = await _dbContext.InsightAcknowledgments
+            .Where(ack => ack.CompanyId == companyId && ack.UserId == userId && keys.Contains(ack.InsightKey))
+            .ToDictionaryAsync(ack => ack.InsightKey, ack => ack.AcknowledgedUtc, StringComparer.Ordinal, cancellationToken);
+
+        return ordered
+            .Select(scored => Map(scored, acknowledgments))
+            .ToList();
     }
 
     private async Task<IReadOnlyList<InsightCandidate>> GetCandidatesAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken)
@@ -312,6 +348,7 @@ public sealed class CompanyActionInsightService : IActionInsightService
             candidate.DueUtc,
             candidate.SlaState.ToStorageValue(),
             scored.PriorityScore,
+            scored.ImpactScore,
             scored.Priority.ToStorageValue(),
             deepLink.Href,
             acknowledged,

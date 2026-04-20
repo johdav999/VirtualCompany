@@ -1,0 +1,222 @@
+diff --git a/src/VirtualCompany.Web/Components/Finance/InvoiceReviewDetailContent.razor b/src/VirtualCompany.Web/Components/Finance/InvoiceReviewDetailContent.razor
+index 6bf2977..8fbad3b 100644
+--- a/src/VirtualCompany.Web/Components/Finance/InvoiceReviewDetailContent.razor
++++ b/src/VirtualCompany.Web/Components/Finance/InvoiceReviewDetailContent.razor
+@@ -1,4 +1,5 @@
+ @using System.Globalization
++@using VirtualCompany.Web.Services
+ 
+ @if (IsLoading)
+ {
+@@ -37,7 +38,7 @@ else
+         
+         <section class="mt-4" aria-label="Recommendation details">
+             <h3 class="h5">Recommendation details</h3>
+-            @if (ResolveRecommendationDetails(Detail) is { } recommendationDetails)
++            @if (InvoiceWorkflowPresentation.ResolveRecommendationDetails(Detail) is { } recommendationDetails)
+             {
+                 <dl class="kv-list mb-0">
+                     <dt>Classification</dt>
+@@ -62,9 +63,9 @@ else
+ 
+         <section class="mt-4" aria-label="Workflow history">
+             <h3 class="h5">Workflow history</h3>
+-            @if (Detail.WorkflowHistory is { Count: > 0 })
++            @if (InvoiceWorkflowPresentation.NormalizeWorkflowHistory(Detail.WorkflowHistory) is { Count: > 0 } workflowHistory)
+             {
+                 <div class="list-group list-group-flush">
+-                    @foreach (var entry in Detail.WorkflowHistory)
++                    @foreach (var entry in workflowHistory)
+                     {
+                         <div class="list-group-item px-0">
+                             <div class="d-flex justify-content-between gap-3">
+@@ -137,21 +138,10 @@ else
+     private static string FormatCurrency(decimal amount, string currency) =>
+         $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+ 
+-    private FinanceInvoiceRecommendationDetailsResponse? ResolveRecommendationDetails(FinanceInvoiceReviewDetailResponse detail) =>
+-        detail.RecommendationDetails ??
+-        (string.IsNullOrWhiteSpace(detail.RecommendationSummary) &&
+-         string.IsNullOrWhiteSpace(detail.RecommendedAction) &&
+-         string.IsNullOrWhiteSpace(detail.RecommendationStatus) &&
+-         string.IsNullOrWhiteSpace(detail.RiskLevel)
+-            ? null
+-            : new FinanceInvoiceRecommendationDetailsResponse
+-            {
+-                Risk = detail.RiskLevel,
+-                RationaleSummary = detail.RecommendationSummary,
+-                Confidence = detail.Confidence,
+-                RecommendedAction = detail.RecommendedAction,
+-                CurrentWorkflowStatus = detail.RecommendationStatus
+-            });
+-
+     private static string FormatDateTime(DateTime value) =>
+-        value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
++        value == default
++            ? "Unknown time"
++            : value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+ 
+     private static string FormatConfidence(decimal confidence)
+     {
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor.cs
+index 7998297..e92f8f7 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor.cs
+@@ -117,7 +117,13 @@ public partial class InvoiceReviewDetailPage : FinancePageBase
+             return null;
+         }
+ 
+-        detail.Actions = FinanceInvoiceReviewActionPolicy.ApplyUserPermission(detail.Actions, AccessState.MembershipRole);
++        detail.RecommendationDetails = InvoiceWorkflowPresentation.ResolveRecommendationDetails(detail);
++        detail.WorkflowHistory = InvoiceWorkflowPresentation
++            .NormalizeWorkflowHistory(detail.WorkflowHistory)
++            .ToList();
++        detail.Actions = FinanceInvoiceReviewActionPolicy.ApplyUserPermission(
++            detail.Actions ?? new FinanceInvoiceReviewActionAvailabilityResponse(),
++            AccessState.MembershipRole);
++
+         return detail;
+     }
+ 
+diff --git a/src/VirtualCompany.Web/Services/InvoiceWorkflowPresentation.cs b/src/VirtualCompany.Web/Services/InvoiceWorkflowPresentation.cs
+index 97a46d1..f95cdb8 100644
+--- a/src/VirtualCompany.Web/Services/InvoiceWorkflowPresentation.cs
++++ b/src/VirtualCompany.Web/Services/InvoiceWorkflowPresentation.cs
+@@ -40,11 +40,12 @@ public static class InvoiceWorkflowPresentation
+         var orderedItems = items
+             .Where(item => item is not null)
+-            .Select(CloneHistoryItem)
+-            .OrderBy(item => item.OccurredAtUtc == default ? 1 : 0)
+-            .ThenByDescending(item => item.OccurredAtUtc)
+-            .ThenBy(item => NormalizeText(item.EventType) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+-            .ThenBy(item => NormalizeText(item.ActorOrSourceDisplayName) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+-            .ThenBy(item => NormalizeEventId(item.EventId) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
++            .Select((item, index) => new { Item = CloneHistoryItem(item), Index = index })
++            .OrderBy(entry => entry.Item.OccurredAtUtc == default ? 1 : 0)
++            .ThenByDescending(entry => entry.Item.OccurredAtUtc)
++            .ThenByDescending(entry => GetHistoryItemCompleteness(entry.Item))
++            .ThenBy(entry => NormalizeText(entry.Item.EventType) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(entry => NormalizeText(entry.Item.ActorOrSourceDisplayName) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(entry => entry.Index)
++            .Select(entry => entry.Item)
+             .ToList();
+ 
+         var uniqueItems = new List<FinanceInvoiceWorkflowHistoryItemResponse>(orderedItems.Count);
+@@ -105,6 +106,15 @@ public static class InvoiceWorkflowPresentation
+             RelatedApprovalId = item.RelatedApprovalId
+         };
+ 
++    private static int GetHistoryItemCompleteness(FinanceInvoiceWorkflowHistoryItemResponse item) =>
++        (item.OccurredAtUtc == default ? 0 : 1) +
++        (NormalizeText(item.EventType) is null ? 0 : 1) +
++        (NormalizeText(item.ActorOrSourceDisplayName) is null ? 0 : 1) +
++        (item.RelatedAuditId.HasValue ? 1 : 0) +
++        (item.RelatedApprovalId.HasValue ? 1 : 0);
++
+     private static string? NormalizeEventId(string? value) =>
+         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs b/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs
+index d91b1de..b43f0aa 100644
+--- a/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs
++++ b/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs
+@@ -228,6 +228,55 @@ public sealed class InvoiceReviewComponentTests
+         Assert.Contains($"/approvals?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72&approvalId={approvalId:D}", cut.Markup);
+     }
+ 
++    [Fact]
++    public void Invoice_review_detail_component_normalizes_raw_workflow_history_before_rendering()
++    {
++        using var context = new TestContext();
++
++        var cut = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters
++            .Add(x => x.CompanyId, Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72"))
++            .Add(x => x.BackToListHref, "/finance/reviews?companyId=1")
++            .Add(x => x.Detail, new FinanceInvoiceReviewDetailResponse
++            {
++                Id = Guid.NewGuid(),
++                InvoiceNumber = "INV-7",
++                SupplierName = "Graphic Design Institute",
++                WorkflowHistory =
++                [
++                    new FinanceInvoiceWorkflowHistoryItemResponse
++                    {
++                        EventId = "approval-1",
++                        EventType = "Approval",
++                        ActorOrSourceDisplayName = "Finance Approver",
++                        OccurredAtUtc = new DateTime(2026, 4, 16, 8, 0, 0, DateTimeKind.Utc)
++                    },
++                    new FinanceInvoiceWorkflowHistoryItemResponse
++                    {
++                        EventId = "tool-1",
++                        EventType = "Tool event",
++                        ActorOrSourceDisplayName = "System",
++                        OccurredAtUtc = new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc)
++                    },
++                    new FinanceInvoiceWorkflowHistoryItemResponse
++                    {
++                        EventId = " approval-1 ",
++                        EventType = "Approval",
++                        ActorOrSourceDisplayName = "Finance Approver",
++                        OccurredAtUtc = new DateTime(2026, 4, 16, 7, 0, 0, DateTimeKind.Utc)
++                    },
++                    new FinanceInvoiceWorkflowHistoryItemResponse
++                    {
++                        EventId = string.Empty,
++                        EventType = "Task execution",
++                        ActorOrSourceDisplayName = "System",
++                        OccurredAtUtc = default
++                    }
++                ],
++                Actions = new FinanceInvoiceReviewActionAvailabilityResponse()
++            }));
++
++        var items = cut.FindAll(".list-group-item");
++        Assert.Equal(3, items.Count);
++        Assert.Contains("Tool event", items[0].TextContent);
++        Assert.Contains("Approval", items[1].TextContent);
++        Assert.Contains("Task execution", items[2].TextContent);
++        Assert.Contains("Unknown time", items[2].TextContent);
++    }
++
+     [Fact]
+     public void Invoice_workflow_presentation_sorts_descending_deduplicates_by_event_id_and_preserves_blank_ids()
+     {
+@@ -277,6 +326,37 @@ public sealed class InvoiceReviewComponentTests
+         Assert.Equal(approvalId, history[1].RelatedApprovalId);
+     }
+ 
++    [Fact]
++    public void Invoice_workflow_presentation_prefers_more_complete_duplicate_when_timestamps_match()
++    {
++        var auditId = Guid.Parse("db84057d-2d39-4322-8f57-bf0687cc748e");
++
++        var history = InvoiceWorkflowPresentation.NormalizeWorkflowHistory(
++        [
++            new FinanceInvoiceWorkflowHistoryItemResponse
++            {
++                EventId = "duplicate-event",
++                EventType = "Review",
++                OccurredAtUtc = new DateTime(2026, 4, 16, 8, 30, 0, DateTimeKind.Utc)
++            },
++            new FinanceInvoiceWorkflowHistoryItemResponse
++            {
++                EventId = "duplicate-event",
++                EventType = "Review",
++                ActorOrSourceDisplayName = "Finance analyst",
++                OccurredAtUtc = new DateTime(2026, 4, 16, 8, 30, 0, DateTimeKind.Utc),
++                RelatedAuditId = auditId
++            }
++        ]);
++
++        var item = Assert.Single(history);
++        Assert.Equal("duplicate-event", item.EventId);
++        Assert.Equal("Review", item.EventType);
++        Assert.Equal("Finance analyst", item.ActorOrSourceDisplayName);
++        Assert.Equal(auditId, item.RelatedAuditId);
++    }
++
+     [Fact]
+     public void Invoice_workflow_presentation_resolves_invoice_detail_recommendation_from_structured_fields_only()
+     {
+END_OF_PATCH

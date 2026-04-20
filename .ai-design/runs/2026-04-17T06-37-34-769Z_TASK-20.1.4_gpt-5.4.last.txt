@@ -1,0 +1,409 @@
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs b/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs
+index 0c4f17d..1f3df33 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs
+@@ -88,6 +88,28 @@ public sealed class FinanceApiClientTenantContextTests
+         Assert.Contains(handler.Requests, request => request.Path.EndsWith("/sandbox-admin/simulation-controls/advance", StringComparison.Ordinal));
+     }
+ 
++    [Fact]
++    public async Task GetSeedingStateAsync_uses_shared_company_scoped_endpoint_and_preserves_contract()
++    {
++        var companyId = Guid.NewGuid();
++        var referenceUtc = new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc);
++        var handler = new RecordingFinanceHttpMessageHandler(companyId, referenceUtc);
++        using var httpClient = new HttpClient(handler)
++        {
++            BaseAddress = new Uri("http://localhost/")
++        };
++
++        var financeClient = new FinanceApiClient(httpClient);
++
++        var response = await financeClient.GetSeedingStateAsync(companyId);
++
++        Assert.NotNull(response);
++        Assert.Equal(companyId, response!.CompanyId);
++        Assert.Equal(FinanceSeedingStateContractValues.PartiallySeeded, response.SeedingState);
++        Assert.Equal("record_checks", response.DerivedFrom);
++        Assert.Single(handler.Requests);
++        Assert.Equal($"/internal/companies/{companyId}/finance/seeding-state", handler.Requests[0].Path);
++        Assert.Equal(companyId.ToString(), handler.Requests[0].CompanyHeaderValue);
++    }
++
+     private sealed class RecordingFinanceHttpMessageHandler : HttpMessageHandler
+     {
+         private readonly Guid _companyId;
+@@ -127,6 +149,24 @@ public sealed class FinanceApiClientTenantContextTests
+                         }
+                     }
+                 }),
++                var value when value.EndsWith("/seeding-state", StringComparison.Ordinal) => Json(new
++                {
++                    companyId = _companyId,
++                    seedingState = FinanceSeedingStateContractValues.PartiallySeeded,
++                    derivedFrom = "record_checks",
++                    checkedAtUtc = _referenceUtc,
++                    diagnostics = new
++                    {
++                        persistedState = FinanceSeedingStateContractValues.NotSeeded,
++                        metadataState = (string?)null,
++                        metadataPresent = false,
++                        metadataIndicatesComplete = false,
++                        usedFastPath = false,
++                        reason = "Some finance indicators exist, but the foundational seeded dataset is incomplete.",
++                        hasAccounts = true,
++                        hasTransactions = false,
++                        hasBalances = false,
++                        hasPolicyConfiguration = false
++                    }
++                }),
+                 var value when value.EndsWith("/profit-and-loss/monthly", StringComparison.Ordinal) => Json(new
+                 {
+                     companyId = _companyId,
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+index 39b2552..f785908 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -1,5 +1,6 @@
+ using System.Net;
+ using System.Net.Http.Json;
++using System.Text.Json.Nodes;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+@@ -148,6 +149,50 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         });
+     }
+ 
++    [Fact]
++    public async Task Finance_seeding_state_endpoint_uses_metadata_fast_path_when_complete_metadata_is_self_consistent()
++    {
++        var seed = await SeedFinanceSeedingStateCompanyAsync((_, company, _) =>
++        {
++            ApplySeedingMetadata(company, FinanceSeedingState.FullySeeded);
++        });
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/seeding-state");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var seedingState = await response.Content.ReadFromJsonAsync<FinanceSeedingStateResponse>();
++
++        Assert.NotNull(seedingState);
++        Assert.Equal(seed.CompanyId, seedingState!.CompanyId);
++        Assert.Equal(FinanceSeedingStateContractValues.FullySeeded, seedingState.SeedingState);
++        Assert.Equal("metadata", seedingState.DerivedFrom);
++        Assert.True(seedingState.Diagnostics.MetadataPresent);
++        Assert.True(seedingState.Diagnostics.UsedFastPath);
++        Assert.False(seedingState.Diagnostics.HasAccounts);
++        Assert.False(seedingState.Diagnostics.HasTransactions);
++        Assert.False(seedingState.Diagnostics.HasPolicyConfiguration);
++    }
++
++    [Fact]
++    public async Task Finance_seeding_state_endpoint_falls_back_to_record_checks_when_not_seeded_metadata_conflicts_with_foundational_records()
++    {
++        var seed = await SeedFinanceSeedingStateCompanyAsync((dbContext, company, companyId) =>
++        {
++            ApplySeedingMetadata(company, FinanceSeedingState.NotSeeded);
++            FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        });
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/seeding-state");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var seedingState = await response.Content.ReadFromJsonAsync<FinanceSeedingStateResponse>();
++
++        Assert.NotNull(seedingState);
++        Assert.Equal(FinanceSeedingStateContractValues.FullySeeded, seedingState!.SeedingState);
++        Assert.Equal("record_checks", seedingState.DerivedFrom);
++        Assert.Equal(FinanceSeedingStateContractValues.NotSeeded, seedingState.Diagnostics.MetadataState);
++        Assert.False(seedingState.Diagnostics.UsedFastPath);
++        Assert.True(seedingState.Diagnostics.HasAccounts);
++        Assert.True(seedingState.Diagnostics.HasPolicyConfiguration);
++    }
++
+     [Fact]
+     public async Task Finance_detail_endpoints_surface_route_drilldown_data_and_guard_linked_documents()
+     {
+@@ -346,6 +391,46 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+             accessibleTransactionId, restrictedInvoiceId, reviewInvoiceId, missingTransactionId, missingInvoiceId);
+     }
+ 
++    private async Task<FinanceSeedingStateEndpointSeed> SeedFinanceSeedingStateCompanyAsync(
++        Action<VirtualCompanyDbContext, Company, Guid> configureCompany)
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var subject = $"finance-seeding-state-{Guid.NewGuid():N}";
++        var email = $"{subject}@example.com";
++        const string displayName = "Finance Seeding State Reader";
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++
++            var company = new Company(companyId, "Finance Seeding State Company");
++            configureCompany(dbContext, company, companyId);
++
++            dbContext.Companies.Add(company);
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++
++            return Task.CompletedTask;
++        });
++
++        return new FinanceSeedingStateEndpointSeed(companyId, subject, email, displayName);
++    }
++
++    private static void ApplySeedingMetadata(Company company, FinanceSeedingState state)
++    {
++        var seededAtUtc = new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc);
++        company.SetFinanceSeedStatus(state, seededAtUtc, state == FinanceSeedingState.NotSeeded ? null : seededAtUtc);
++        company.Settings.Extensions["financeSeeding"] = new JsonObject
++        {
++            ["state"] = JsonValue.Create(state.ToStorageValue()),
++            ["seededAtUtc"] = JsonValue.Create(seededAtUtc),
++            ["recordChecks"] = state == FinanceSeedingState.FullySeeded
++                ? new JsonObject { ["accounts"] = true, ["counterparties"] = true, ["transactions"] = true, ["balances"] = true, ["policyConfiguration"] = true, ["invoices"] = true, ["bills"] = true }
++                : new JsonObject { ["accounts"] = false, ["counterparties"] = false, ["transactions"] = false, ["balances"] = false, ["policyConfiguration"] = false, ["invoices"] = false, ["bills"] = false }
++        };
++    }
++
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+     {
+         var client = _factory.CreateClient();
+@@ -355,6 +440,12 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         return client;
+     }
+ 
++    private sealed record FinanceSeedingStateEndpointSeed(
++        Guid CompanyId,
++        string Subject,
++        string Email,
++        string DisplayName);
++
+     private sealed record FinanceEndpointSeed(
+         Guid CompanyId,
+         Guid OtherCompanyId,
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedingStateResolverTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedingStateResolverTests.cs
+index 2db434f..ac8f262 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedingStateResolverTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedingStateResolverTests.cs
+@@ -1,5 +1,7 @@
++using System.Data.Common;
+ using System.Text.Json.Nodes;
+ using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore.Diagnostics;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Domain.Entities;
+@@ -73,6 +75,30 @@ public sealed class FinanceSeedingStateResolverTests
+         Assert.True(result.Diagnostics.HasPolicyConfiguration);
+     }
+ 
++    [Fact]
++    public async Task ResolveAsync_returns_fully_seeded_from_metadata_fast_path_even_when_actual_finance_records_are_absent()
++    {
++        var companyId = Guid.NewGuid();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Metadata Fast Path Company");
++        ApplyMetadata(company, FinanceSeedingState.FullySeeded);
++        dbContext.Companies.Add(company);
++        await dbContext.SaveChangesAsync();
++
++        var resolver = CreateResolver(dbContext, companyId);
++
++        var result = await resolver.ResolveAsync(companyId, CancellationToken.None);
++
++        Assert.Equal(FinanceSeedingState.FullySeeded, result.State);
++        Assert.Equal(FinanceSeedingStateDerivedFromValues.Metadata, result.DerivedFrom);
++        Assert.True(result.Diagnostics.MetadataPresent);
++        Assert.True(result.Diagnostics.UsedFastPath);
++        Assert.False(result.Diagnostics.HasAccounts);
++        Assert.False(result.Diagnostics.HasTransactions);
++    }
++
+     [Fact]
+     public async Task ResolveAsync_returns_fully_seeded_when_metadata_and_records_both_indicate_complete_state()
+     {
+@@ -172,6 +198,54 @@ public sealed class FinanceSeedingStateResolverTests
+         Assert.True(result.Diagnostics.UsedFastPath);
+     }
+ 
++    [Fact]
++    public async Task ResolveAsync_promotes_not_seeded_metadata_to_fully_seeded_when_foundational_records_exist()
++    {
++        var companyId = Guid.NewGuid();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Metadata Conflict Company");
++        ApplyMetadata(company, FinanceSeedingState.NotSeeded);
++        dbContext.Companies.Add(company);
++        FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var result = await CreateResolver(dbContext, companyId).ResolveAsync(companyId, CancellationToken.None);
++
++        Assert.Equal(FinanceSeedingState.FullySeeded, result.State);
++        Assert.Equal(FinanceSeedingStateDerivedFromValues.RecordChecks, result.DerivedFrom);
++        Assert.True(result.Diagnostics.MetadataPresent);
++        Assert.Equal(FinanceSeedingState.NotSeeded, result.Diagnostics.MetadataState);
++        Assert.False(result.Diagnostics.UsedFastPath);
++        Assert.True(result.Diagnostics.HasAccounts);
++        Assert.True(result.Diagnostics.HasTransactions);
++        Assert.True(result.Diagnostics.HasBalances);
++        Assert.True(result.Diagnostics.HasPolicyConfiguration);
++    }
++
++    [Fact]
++    public async Task ResolveAsync_promotes_partial_metadata_to_fully_seeded_when_record_checks_confirm_complete_dataset()
++    {
++        var companyId = Guid.NewGuid();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Partial Metadata With Complete Records Company");
++        ApplyMetadata(company, FinanceSeedingState.PartiallySeeded);
++        dbContext.Companies.Add(company);
++        FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var result = await CreateResolver(dbContext, companyId).ResolveAsync(companyId, CancellationToken.None);
++
++        Assert.Equal(FinanceSeedingState.FullySeeded, result.State);
++        Assert.Equal(FinanceSeedingStateDerivedFromValues.RecordChecks, result.DerivedFrom);
++        Assert.Equal(FinanceSeedingState.PartiallySeeded, result.Diagnostics.MetadataState);
++        Assert.False(result.Diagnostics.UsedFastPath);
++    }
++
+     [Fact]
+     public async Task ResolveAsync_honors_active_company_context()
+     {
+@@ -193,6 +267,54 @@ public sealed class FinanceSeedingStateResolverTests
+         await Assert.ThrowsAsync<UnauthorizedAccessException>(() => resolver.ResolveAsync(otherCompanyId, CancellationToken.None));
+     }
+ 
++    [Fact]
++    public async Task ResolveAsync_uses_only_company_lookup_when_metadata_fast_path_applies()
++    {
++        var companyId = Guid.NewGuid();
++        var commandCapture = new CommandCaptureInterceptor();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection, commandCapture);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Fast Path Query Company");
++        ApplyMetadata(company, FinanceSeedingState.FullySeeded);
++        dbContext.Companies.Add(company);
++        await dbContext.SaveChangesAsync();
++
++        commandCapture.Clear();
++
++        var result = await CreateResolver(dbContext, companyId).ResolveAsync(companyId, CancellationToken.None);
++
++        Assert.Equal(FinanceSeedingState.FullySeeded, result.State);
++        Assert.True(result.Diagnostics.UsedFastPath);
++        Assert.Single(commandCapture.Commands);
++    }
++
++    [Fact]
++    public async Task ResolveAsync_uses_company_lookup_plus_existence_checks_when_metadata_fallback_is_required()
++    {
++        var companyId = Guid.NewGuid();
++        var commandCapture = new CommandCaptureInterceptor();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection, commandCapture);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Fallback Query Company");
++        ApplyMetadata(company, FinanceSeedingState.NotSeeded);
++        dbContext.Companies.Add(company);
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            Guid.NewGuid(),
++            companyId,
++            "1005",
++            "Fallback Cash",
++            "asset",
++            "USD",
++            120m,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        await dbContext.SaveChangesAsync();
++
++        commandCapture.Clear();
++
++        var result = await CreateResolver(dbContext, companyId).ResolveAsync(companyId, CancellationToken.None);
++
++        Assert.Equal(FinanceSeedingState.PartiallySeeded, result.State);
++        Assert.False(result.Diagnostics.UsedFastPath);
++        Assert.Equal(8, commandCapture.Commands.Count);
++    }
++
+     private static CompanyFinanceSeedingStateResolver CreateResolver(VirtualCompanyDbContext dbContext, Guid companyId)
+     {
+         ICompanyContextAccessor companyContextAccessor = new RequestCompanyContextAccessor();
+@@ -226,8 +348,40 @@ public sealed class FinanceSeedingStateResolverTests
+         return connection;
+     }
+ 
+-    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
+-        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
+-            .UseSqlite(connection)
+-            .Options);
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection, DbCommandInterceptor? interceptor = null)
++    {
++        var optionsBuilder = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection);
++
++        if (interceptor is not null)
++        {
++            optionsBuilder.AddInterceptors(interceptor);
++        }
++
++        return new VirtualCompanyDbContext(optionsBuilder.Options);
++    }
++
++    private sealed class CommandCaptureInterceptor : DbCommandInterceptor
++    {
++        private readonly List<string> _commands = [];
++
++        public IReadOnlyList<string> Commands => _commands;
++
++        public void Clear() => _commands.Clear();
++
++        public override InterceptionResult<DbDataReader> ReaderExecuting(
++            DbCommand command,
++            CommandEventData eventData,
++            InterceptionResult<DbDataReader> result)
++        {
++            _commands.Add(command.CommandText);
++            return base.ReaderExecuting(command, eventData, result);
++        }
++
++        public override InterceptionResult<object> ScalarExecuting(
++            DbCommand command,
++            CommandEventData eventData,
++            InterceptionResult<object> result)
++        {
++            _commands.Add(command.CommandText);
++            return base.ScalarExecuting(command, eventData, result);
++        }
++    }
+ }
+END_OF_PATCH

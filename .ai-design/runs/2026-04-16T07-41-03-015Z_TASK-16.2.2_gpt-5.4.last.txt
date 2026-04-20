@@ -1,0 +1,192 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -30,6 +30,10 @@ public sealed record GetFinanceInvoicesQuery(
+     DateTime? EndUtc = null,
+     int Limit = 100);
+ 
++public sealed record GetFinanceSeedAnomalyByIdQuery(
++    Guid CompanyId,
++    Guid AnomalyId);
++
+ public sealed record GetFinanceBillsQuery(
+     Guid CompanyId,
+     DateTime? StartUtc = null,
+@@ -474,6 +478,10 @@ public interface IFinanceReadService
+         GetFinanceInvoicesQuery query,
+         CancellationToken cancellationToken);
+ 
++    Task<FinanceSeedAnomalyDto?> GetSeedAnomalyByIdAsync(
++        GetFinanceSeedAnomalyByIdQuery query,
++        CancellationToken cancellationToken);
++
+     Task<IReadOnlyList<FinanceBillDto>> GetBillsAsync(
+         GetFinanceBillsQuery query,
+         CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -124,6 +124,18 @@ public sealed class InternalFinanceController : ControllerBase
+                 new GetFinanceInvoicesQuery(companyId, startUtc, endUtc, limit),
+                 cancellationToken));
+ 
++    [HttpGet("anomalies/{anomalyId:guid}")]
++    public async Task<ActionResult<FinanceSeedAnomalyDto>> GetSeedAnomalyAsync(
++        Guid companyId,
++        Guid anomalyId,
++        CancellationToken cancellationToken)
++    {
++        var anomaly = await _financeReadService.GetSeedAnomalyByIdAsync(new GetFinanceSeedAnomalyByIdQuery(companyId, anomalyId), cancellationToken);
++        return anomaly is null
++            ? NotFound(CreateProblemDetails("Finance seed anomaly was not found.", "Finance record was not found.", StatusCodes.Status404NotFound))
++            : Ok(anomaly);
++    }
++
+     [HttpGet("bills")]
+     public async Task<ActionResult<IReadOnlyList<FinanceBillDto>>> GetBillsAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -362,6 +362,28 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .ToList();
+     }
+ 
++    public async Task<FinanceSeedAnomalyDto?> GetSeedAnomalyByIdAsync(
++        GetFinanceSeedAnomalyByIdQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        if (query.AnomalyId == Guid.Empty)
++        {
++            throw new ArgumentException("Anomaly id is required.", nameof(query));
++        }
++
++        var anomaly = await _dbContext.FinanceSeedAnomalies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId && x.Id == query.AnomalyId, cancellationToken);
++
++        return anomaly is null
++            ? null
++            : new FinanceSeedAnomalyDto(
++                anomaly.Id,
++                anomaly.AnomalyType,
++                anomaly.ScenarioProfile,
++                anomaly.GetAffectedRecordIds(),
++                anomaly.ExpectedDetectionMetadataJson);
++    }
++
+     public async Task<IReadOnlyList<FinanceBillDto>> GetBillsAsync(
+         GetFinanceBillsQuery query,
+         CancellationToken cancellationToken)
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+@@ -119,6 +119,16 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+             .ToListAsync(cancellationToken);
++        var accounts = await _dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .ToListAsync(cancellationToken);
++        var seedDocuments = await _dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.StorageObjectName != null &&
++                x.StorageObjectName.StartsWith("seed-finance/"))
++            .ToListAsync(cancellationToken);
+ 
+         _dbContext.FinanceSeedAnomalies.RemoveRange(anomalies);
+         _dbContext.FinanceTransactions.RemoveRange(transactions);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416143000_AddFinanceSeedAnomalyRegistry.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416143000_AddFinanceSeedAnomalyRegistry.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416143000_AddFinanceSeedAnomalyRegistry.cs
+@@ -0,0 +1,51 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddFinanceSeedAnomalyRegistry : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "finance_seed_anomalies",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    anomaly_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    scenario_profile = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    affected_record_ids_json = table.Column<string>(type: "text", nullable: false),
++                    expected_detection_metadata_json = table.Column<string>(type: "text", nullable: false),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_seed_anomalies", x => x.id);
++                    table.ForeignKey(
++                        name: "FK_finance_seed_anomalies_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_seed_anomalies_company_id_anomaly_type",
++                table: "finance_seed_anomalies",
++                columns: new[] { "company_id", "anomaly_type" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "finance_seed_anomalies");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
+@@ -2,6 +2,8 @@ using Microsoft.Data.Sqlite;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure.Finance;
+ using Xunit;
+ 
+ namespace VirtualCompany.Api.Tests;
+@@ -234,6 +236,17 @@ public sealed class FinanceSeedDatasetGeneratorTests
+             Assert.Contains("expectedDetector", stored.ExpectedDetectionMetadataJson);
+         }
+ 
++        var readService = new CompanyFinanceReadService(dbContext);
++        foreach (var anomaly in dataset.Anomalies)
++        {
++            var queried = await readService.GetSeedAnomalyByIdAsync(
++                new GetFinanceSeedAnomalyByIdQuery(companyId, anomaly.Id),
++                CancellationToken.None);
++
++            Assert.NotNull(queried);
++            Assert.Equal(anomaly.Id, queried.Id);
++            Assert.Equal(anomaly.AnomalyType, queried.AnomalyType);
++        }
++
+         var transactions = await dbContext.FinanceTransactions
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+END_OF_PATCH

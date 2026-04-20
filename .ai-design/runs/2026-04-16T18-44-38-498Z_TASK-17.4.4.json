@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-17.4.4",
+  "promptPath": ".ai-design/prompts/TASK-17.4.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T18:44:38.498Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T18-44-38-498Z_TASK-17.4.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T18-44-38-498Z_TASK-17.4.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T18:49:58.756Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\nindex 8fd0e15..d4e7d7e 100644\n--- a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\n@@ -53,6 +53,31 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Tes\n             await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());\n     }\n \n+    [Fact]\n+    public async Task Internal_finance_invoice_pending_approval_update_runs_review_workflow_and_exposes_updated_detail_state()\n+    {\n+        var seed = await SeedFinanceWriteCompanyAsync();\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+\n+        var updateResponse = await client.PatchAsJsonAsync(\n+            $\"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.InvoiceId}/approval-status\",\n+            new { Status = \"pending_approval\" });\n+\n+        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);\n+\n+        var invoice = await updateResponse.Content.ReadFromJsonAsync<InvoiceResponse>();\n+        Assert.NotNull(invoice);\n+        Assert.Equal(\"pending_approval\", invoice!.Status);\n+\n+        var detailResponse = await client.GetAsync($\"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.InvoiceId}\");\n+        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);\n+\n+        var detail = await detailResponse.Content.ReadFromJsonAsync<FinanceInvoiceDetailResponse>();\n+        Assert.NotNull(detail);\n+        Assert.Equal(\"pending_approval\", detail!.Status);\n+        Assert.NotNull(detail.WorkflowContext);\n+        Assert.Equal(\"awaiting_approval\", detail.WorkflowContext!.ReviewTaskStatus);\n+    }\n+\n     [Fact]\n     public async Task Internal_finance_transaction_category_update_returns_validation_problem_for_invalid_category()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": ".Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\nindex 8fd0e15..d4e7d7e 100644\n--- a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\n@@ -53,6 +53,31 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Tes\n             await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());\n     }\n \n+    [Fact]\n+    public async Task Internal_finance_invoice_pending_approval_update_runs_review_workflow_and_exposes_updated_detail_state()\n+    {\n+        var seed = await SeedFinanceWriteCompanyAsync();\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+\n+        var updateResponse = await client.PatchAsJsonAsync(\n+            $\"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.InvoiceId}/approval-status\",\n+            new { Status = \"pending_approval\" });\n+\n+        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);\n+\n+        var invoice = await updateResponse.Content.ReadFromJsonAsync<InvoiceResponse>();\n+        Assert.NotNull(invoice);\n+        Assert.Equal(\"pending_approval\", invoice!.Status);\n+\n+        var detailResponse = await client.GetAsync($\"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.InvoiceId}\");\n+        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);\n+\n+        var detail = await detailResponse.Content.ReadFromJsonAsync<FinanceInvoiceDetailResponse>();\n+        Assert.NotNull(detail);\n+        Assert.Equal(\"pending_approval\", detail!.Status);\n+        Assert.NotNull(detail.WorkflowContext);\n+        Assert.Equal(\"awaiting_approval\", detail.WorkflowContext!.ReviewTaskStatus);\n+    }\n+\n     [Fact]\n     public async Task Internal_finance_transaction_category_update_returns_validation_problem_for_invalid_category()\n     {\nEND_OF_PATCH\ntokens used\n249,786\n",
+  "verbosityMode": "summary"
+}

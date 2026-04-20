@@ -100,6 +100,31 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
         UpdatedUtc = StartedUtc.Value;
     }
 
+    public void Queue(DateTime utcNow, string? correlationId = null, bool resetAttempts = false)
+    {
+        var normalizedUtcNow = utcNow.Kind == DateTimeKind.Utc ? utcNow : utcNow.ToUniversalTime();
+        if (!string.IsNullOrWhiteSpace(correlationId))
+        {
+            CorrelationId = NormalizeRequired(correlationId, nameof(correlationId), CorrelationIdMaxLength);
+        }
+
+        Status = BackgroundExecutionStatus.Pending;
+        if (resetAttempts)
+        {
+            AttemptCount = 0;
+        }
+
+        NextRetryUtc = null;
+        StartedUtc = null;
+        HeartbeatUtc = null;
+        CompletedUtc = null;
+        FailureCategory = null;
+        FailureCode = null;
+        FailureMessage = null;
+        EscalationId = null;
+        UpdatedUtc = normalizedUtcNow;
+    }
+
     public void RecordHeartbeat(DateTime utcNow)
     {
         HeartbeatUtc = utcNow.Kind == DateTimeKind.Utc ? utcNow : utcNow.ToUniversalTime();
@@ -215,4 +240,5 @@ public static class BackgroundExecutionRelatedEntityTypes
     public const string WorkTask = "task";
     public const string OutboxMessage = "outbox_message";
     public const string Schedule = "schedule";
+    public const string FinanceSeed = "finance_seed";
 }

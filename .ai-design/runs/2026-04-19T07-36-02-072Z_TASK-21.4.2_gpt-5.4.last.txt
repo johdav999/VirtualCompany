@@ -1,0 +1,708 @@
+diff --git a/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs b/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs
+--- a/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs
++++ b/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs
+@@ -160,11 +160,19 @@ public interface ISimulationFeatureGate
+     bool IsUiVisible();
+     bool IsBackendExecutionEnabled();
+     bool AreBackgroundJobsEnabled();
++    bool IsBackgroundExecutionAllowed();
+     bool IsFullyDisabled();
+     void EnsureBackendExecutionEnabled();
++    void EnsureBackgroundExecutionEnabled();
+ }
+ 
+ public sealed class SimulationBackendDisabledException : InvalidOperationException
+ {
+-    public SimulationBackendDisabledException(string message) : base(message) { }
++    public SimulationBackendDisabledException(string message, bool isBackgroundExecution = false)
++        : base(message)
++    {
++        IsBackgroundExecution = isBackgroundExecution;
++    }
++
++    public bool IsBackgroundExecution { get; }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/ConfigurationSimulationFeatureGate.cs b/src/VirtualCompany.Infrastructure/Finance/ConfigurationSimulationFeatureGate.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/ConfigurationSimulationFeatureGate.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/ConfigurationSimulationFeatureGate.cs
+@@ -34,18 +34,29 @@ public sealed class ConfigurationSimulationFeatureGate : ISimulationFeatureGate
+ 
+     public bool AreBackgroundJobsEnabled() => _options.Value.BackgroundJobsEnabled;
+ 
++    public bool IsBackgroundExecutionAllowed() =>
++        _options.Value.BackendExecutionEnabled &&
++        _options.Value.BackgroundJobsEnabled;
++
+     public bool IsFullyDisabled() =>
+         !_options.Value.UiVisible &&
+         !_options.Value.BackendExecutionEnabled &&
+         !_options.Value.BackgroundJobsEnabled;
+ 
+     public void EnsureBackendExecutionEnabled()
++    {
++        if (!_options.Value.BackendExecutionEnabled)
++        {
++            throw new SimulationBackendDisabledException(_options.Value.DisabledMessage);
++        }
++    }
++
++    public void EnsureBackgroundExecutionEnabled()
+     {
+-        if (!_options.Value.BackendExecutionEnabled)
++        if (!IsBackgroundExecutionAllowed())
+         {
+-            throw new SimulationBackendDisabledException(_options.Value.DisabledMessage);
++            throw new SimulationBackendDisabledException(_options.Value.DisabledMessage, isBackgroundExecution: true);
+         }
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs
+@@ -98,7 +98,7 @@ public sealed class CompanySimulationService : ICompanySimulationService
+     public async Task<AdvanceCompanySimulationTimeResultDto> AdvanceAsync(
+         AdvanceCompanySimulationTimeCommand command,
+         CancellationToken cancellationToken)
+     {
+-        _featureGate?.EnsureBackendExecutionEnabled();
++        EnsureBackendExecutionEnabled(command.CompanyId, "advance");
+         EnsureTenant(command.CompanyId);
+         ValidateAdvanceCommand(command);
+ 
+@@ -223,9 +223,20 @@ public sealed class CompanySimulationService : ICompanySimulationService
+     public async Task<AdvanceCompanySimulationTimeResultDto?> RunScheduledAdvanceAsync(
+         RunScheduledCompanySimulationCommand command,
+         DateTimeOffset utcNow,
+         CancellationToken cancellationToken)
+     {
+-        if (_featureGate?.AreBackgroundJobsEnabled() == false)
++        if (_featureGate?.IsBackgroundExecutionAllowed() == false)
+         {
++            var featureState = _featureGate.GetState();
++            _logger.LogInformation(
++                "Skipping scheduled simulation advance for company {CompanyId} because simulation execution is disabled. BackendExecutionEnabled={BackendExecutionEnabled}, BackgroundJobsEnabled={BackgroundJobsEnabled}.",
++                command.CompanyId,
++                featureState.BackendExecutionEnabled,
++                featureState.BackgroundJobsEnabled);
+             return null;
+         }
+@@ -687,6 +698,24 @@ public sealed class CompanySimulationService : ICompanySimulationService
+         if (command.Accelerated && !_options.AllowAcceleratedExecution && command.TotalHours > _options.MaxStepHours)
+         {
+             throw new InvalidOperationException("Accelerated simulation execution is disabled.");
+         }
+     }
++
++    private void EnsureBackendExecutionEnabled(Guid companyId, string operationName)
++    {
++        if (_featureGate?.IsBackendExecutionEnabled() == false)
++        {
++            var featureState = _featureGate.GetState();
++            _logger.LogInformation(
++                "Blocked simulation execution for company {CompanyId} on {OperationName} because simulation execution is disabled. BackendExecutionEnabled={BackendExecutionEnabled}, BackgroundJobsEnabled={BackgroundJobsEnabled}.",
++                companyId,
++                operationName,
++                featureState.BackendExecutionEnabled,
++                featureState.BackgroundJobsEnabled);
++
++            _featureGate.EnsureBackendExecutionEnabled();
++        }
++    }
+ 
+     private static DateTime EnsureUtc(DateTime value) =>
+         value.Kind switch
+         {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+@@ -52,6 +52,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerationPolicy
+     private readonly ILogger<CompanySimulationFinanceGenerationService> _logger;
+     private readonly IFinanceScenarioFactory _scenarioFactory;
+     private readonly IFinanceAnomalyScheduleFactory _anomalyScheduleFactory;
++    private readonly ISimulationFeatureGate? _featureGate;
+     private readonly ICompanyOutboxEnqueuer? _outboxEnqueuer;
+ 
+     public CompanySimulationFinanceGenerationService(
+@@ -63,6 +64,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerationPolicy
+             logger,
+             new DefaultFinanceScenarioFactory(new Sha256FinanceDeterministicValueSource()),
+             new PeriodicFinanceAnomalyScheduleFactory(new Sha256FinanceDeterministicValueSource()),
++            null,
+             null)
+     {
+     }
+@@ -79,6 +81,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerationPolicy
+             logger,
+             new DefaultFinanceScenarioFactory(new Sha256FinanceDeterministicValueSource()),
+             new PeriodicFinanceAnomalyScheduleFactory(new Sha256FinanceDeterministicValueSource()),
++            null,
+             outboxEnqueuer)
+     {
+     }
+@@ -89,6 +92,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerationPolicy
+         ILogger<CompanySimulationFinanceGenerationService> logger,
+         IFinanceScenarioFactory scenarioFactory,
+         IFinanceAnomalyScheduleFactory anomalyScheduleFactory,
++        ISimulationFeatureGate? featureGate,
+         ICompanyOutboxEnqueuer? outboxEnqueuer)
+     {
+         _dbContext = dbContext;
+@@ -96,12 +100,15 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerationPolicy
+         _logger = logger;
+         _scenarioFactory = scenarioFactory;
+         _anomalyScheduleFactory = anomalyScheduleFactory;
++        _featureGate = featureGate;
+         _outboxEnqueuer = outboxEnqueuer;
+     }
+ 
+     public async Task<CompanySimulationFinanceGenerationResultDto> GenerateAsync(
+         GenerateCompanySimulationFinanceCommand command,
+         CancellationToken cancellationToken)
+     {
++        EnsureBackendExecutionEnabled(command.CompanyId, command.ActiveSessionId);
++
+         Validate(command);
+ 
+         var company = await _dbContext.Companies
+@@ -1553,6 +1560,24 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerationPolicy
+             _ => "generic"
+         };
+ 
++    private void EnsureBackendExecutionEnabled(Guid companyId, Guid activeSessionId)
++    {
++        if (_featureGate?.IsBackendExecutionEnabled() == false)
++        {
++            var featureState = _featureGate.GetState();
++            _logger.LogInformation(
++                "Blocked simulation finance generation for company {CompanyId}, session {SessionId} because simulation execution is disabled. BackendExecutionEnabled={BackendExecutionEnabled}, BackgroundJobsEnabled={BackgroundJobsEnabled}.",
++                companyId,
++                activeSessionId,
++                featureState.BackendExecutionEnabled,
++                featureState.BackgroundJobsEnabled);
++
++            _featureGate.EnsureBackendExecutionEnabled();
++        }
++    }
++
+     private static DateTime NormalizeUtc(DateTime value) =>
+         value.Kind switch
+         {
+             DateTimeKind.Utc => value,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs
+@@ -106,7 +106,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateService
+         StartCompanySimulationCommand command,
+         CancellationToken cancellationToken)
+     {
+         EnsureTenant(command.CompanyId);
+-        _featureGate?.EnsureBackendExecutionEnabled();
++        EnsureSimulationExecutionEnabled(command.CompanyId, "start");
+         if (command.StartSimulatedDateTime == default)
+         {
+             throw new ArgumentException("Start simulated date/time is required.", nameof(command.StartSimulatedDateTime));
+@@ -136,7 +136,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateService
+     public async Task<CompanySimulationStateDto> UpdateSettingsAsync(
+         UpdateCompanySimulationSettingsCommand command,
+         CancellationToken cancellationToken)
+     {
+-        _featureGate?.EnsureBackendExecutionEnabled();
++        EnsureSimulationExecutionEnabled(command.CompanyId, "update_settings");
+         EnsureTenant(command.CompanyId);
+         if (!command.GenerationEnabled.HasValue && command.DeterministicConfigurationJson is null)
+         {
+@@ -188,7 +188,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateService
+     public async Task<CompanySimulationStateDto> PauseAsync(
+         PauseCompanySimulationCommand command,
+         CancellationToken cancellationToken)
+     {
+-        _featureGate?.EnsureBackendExecutionEnabled();
++        EnsureSimulationExecutionEnabled(command.CompanyId, "pause");
+         EnsureTenant(command.CompanyId);
+         var state = await RequireStateAsync(command.CompanyId, cancellationToken);
+         if (!state.IsRunning)
+@@ -206,7 +206,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateService
+     public async Task<CompanySimulationStateDto> ResumeAsync(
+         ResumeCompanySimulationCommand command,
+         CancellationToken cancellationToken)
+     {
+-        _featureGate?.EnsureBackendExecutionEnabled();
++        EnsureSimulationExecutionEnabled(command.CompanyId, "resume");
+         EnsureTenant(command.CompanyId);
+         var state = await RequireStateAsync(command.CompanyId, cancellationToken);
+         if (!state.IsPaused)
+@@ -224,7 +224,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateService
+     public async Task<CompanySimulationStateDto> StepForwardOneDayAsync(
+         StepForwardCompanySimulationOneDayCommand command,
+         CancellationToken cancellationToken)
+     {
+-        _featureGate?.EnsureBackendExecutionEnabled();
++        EnsureSimulationExecutionEnabled(command.CompanyId, "step_forward_one_day");
+         EnsureTenant(command.CompanyId);
+         var state = await RequireStateAsync(command.CompanyId, cancellationToken);
+         if (!state.IsPaused)
+@@ -246,7 +246,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateService
+         if (_financeGenerationPolicy is not null &&
+             state.GenerationEnabled &&
+             updated.ActiveSessionId.HasValue)
+         {
+-            await _financeGenerationPolicy.GenerateAsync(
++            var generationResult = await _financeGenerationPolicy.GenerateAsync(
+                 new GenerateCompanySimulationFinanceCommand(
+                     updated.CompanyId,
+                     updated.ActiveSessionId.Value,
+@@ -270,7 +270,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateService
+     public async Task<CompanySimulationStateDto> StopAsync(
+         StopCompanySimulationCommand command,
+         CancellationToken cancellationToken)
+     {
+-        _featureGate?.EnsureBackendExecutionEnabled();
++        EnsureSimulationExecutionEnabled(command.CompanyId, "stop");
+         EnsureTenant(command.CompanyId);
+         var state = await RequireStateAsync(command.CompanyId, cancellationToken);
+         if (!state.IsRunning && !state.IsPaused)
+@@ -303,10 +303,18 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateService
+ 
+     internal async Task<bool> ProgressIfDueAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+-        if (_featureGate?.AreBackgroundJobsEnabled() == false)
++        if (_featureGate?.IsBackgroundExecutionAllowed() == false)
+         {
+-            _logger.LogInformation("Skipping company simulation progression for company {CompanyId} because simulation background jobs are disabled.", companyId);
++            var featureState = _featureGate.GetState();
++            _logger.LogInformation(
++                "Skipping company simulation progression for company {CompanyId} because simulation execution is disabled. BackendExecutionEnabled={BackendExecutionEnabled}, BackgroundJobsEnabled={BackgroundJobsEnabled}.",
++                companyId,
++                featureState.BackendExecutionEnabled,
++                featureState.BackgroundJobsEnabled);
+             return false;
+         }
+ 
+@@ -356,6 +364,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateService
+         if (state is null || !state.IsRunning)
+         {
+             return new SimulationProgressionResult(state, false);
+         }
++
+         var computation = TryCalculateProgression(state, GetUtcNow());
+         if (computation is null)
+         {
+@@ -383,7 +392,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateService
+         if (_financeGenerationPolicy is not null &&
+             state.GenerationEnabled &&
+             updated.ActiveSessionId.HasValue)
+         {
+-            await _financeGenerationPolicy.GenerateAsync(
++            var generationResult = await _financeGenerationPolicy.GenerateAsync(
+                 new GenerateCompanySimulationFinanceCommand(
+                     updated.CompanyId,
+                     updated.ActiveSessionId.Value,
+@@ -406,6 +415,24 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateService
+         return new SimulationProgressionResult(updated, true);
+     }
+ 
++    private void EnsureSimulationExecutionEnabled(Guid companyId, string operationName)
++    {
++        if (_featureGate?.IsBackendExecutionEnabled() == false)
++        {
++            var featureState = _featureGate.GetState();
++            _logger.LogInformation(
++                "Blocked simulation execution for company {CompanyId} on {OperationName} because simulation execution is disabled. BackendExecutionEnabled={BackendExecutionEnabled}, BackgroundJobsEnabled={BackgroundJobsEnabled}.",
++                companyId,
++                operationName,
++                featureState.BackendExecutionEnabled,
++                featureState.BackgroundJobsEnabled);
++
++            _featureGate.EnsureBackendExecutionEnabled();
++        }
++    }
++
+     private static SimulationProgressionComputation? TryCalculateProgression(
+         CompanySimulationState state,
+         DateTime observedUtc)
+@@ -528,7 +555,8 @@ public sealed class CompanySimulationProgressionRunner : ICompanySimulationProgressionRunner
+         : this(
+             dbContext,
+             stateService,
+             companyExecutionScopeFactory,
+             Options.Create(new CompanySimulationProgressionWorkerOptions()),
+-            LoggerFactory.Create(builder => { }).CreateLogger<CompanySimulationProgressionRunner>())
++            LoggerFactory.Create(builder => { }).CreateLogger<CompanySimulationProgressionRunner>(),
++            AlwaysEnabledSimulationFeatureGate.Instance)
+     {
+     }
+@@ -551,9 +579,17 @@ public sealed class CompanySimulationProgressionRunner : ICompanySimulationProgressionRunner
+ 
+     public async Task<int> ProgressDueAsync(CancellationToken cancellationToken)
+     {
+-        if (!_featureGate.AreBackgroundJobsEnabled())
++        if (!_featureGate.IsBackgroundExecutionAllowed())
+         {
+-            _logger.LogInformation("Skipping company simulation progression because simulation background jobs are disabled.");
++            var featureState = _featureGate.GetState();
++            _logger.LogInformation(
++                "Skipping company simulation progression because simulation execution is disabled. BackendExecutionEnabled={BackendExecutionEnabled}, BackgroundJobsEnabled={BackgroundJobsEnabled}.",
++                featureState.BackendExecutionEnabled,
++                featureState.BackgroundJobsEnabled);
+             return 0;
+         }
+@@ -591,23 +627,24 @@ public sealed class CompanySimulationProgressionBackgroundService : BackgroundService
+ {
+     private readonly IServiceScopeFactory _scopeFactory;
+     private readonly IOptions<CompanySimulationProgressionWorkerOptions> _options;
+-    private readonly IOptions<SimulationFeatureOptions> _featureOptions;
++    private readonly ISimulationFeatureGate _featureGate;
+     private readonly ILogger<CompanySimulationProgressionBackgroundService> _logger;
+ 
+     public CompanySimulationProgressionBackgroundService(
+         IServiceScopeFactory scopeFactory,
+         IOptions<CompanySimulationProgressionWorkerOptions> options,
+-        IOptions<SimulationFeatureOptions> featureOptions,
++        ISimulationFeatureGate featureGate,
+         ILogger<CompanySimulationProgressionBackgroundService> logger)
+     {
+         _scopeFactory = scopeFactory;
+         _options = options;
+-        _featureOptions = featureOptions;
++        _featureGate = featureGate;
+         _logger = logger;
+     }
+@@ -620,9 +657,16 @@ public sealed class CompanySimulationProgressionBackgroundService : BackgroundService
+             return;
+         }
+ 
+-        if (!_featureOptions.Value.BackgroundJobsEnabled)
++        if (!_featureGate.IsBackgroundExecutionAllowed())
+         {
+-            _logger.LogInformation("Company simulation progression worker is disabled by simulation feature flags.");
++            var featureState = _featureGate.GetState();
++            _logger.LogInformation(
++                "Company simulation progression worker is disabled by simulation feature flags. BackendExecutionEnabled={BackendExecutionEnabled}, BackgroundJobsEnabled={BackgroundJobsEnabled}.",
++                featureState.BackendExecutionEnabled,
++                featureState.BackgroundJobsEnabled);
+             return;
+         }
+@@ -648,3 +692,33 @@ public sealed class CompanySimulationProgressionBackgroundService : BackgroundService
+         }
+     }
+ }
++
++internal sealed class AlwaysEnabledSimulationFeatureGate : ISimulationFeatureGate
++{
++    public static AlwaysEnabledSimulationFeatureGate Instance { get; } = new();
++
++    private static readonly SimulationFeatureStateDto State = new(
++        UiVisible: true,
++        BackendExecutionEnabled: true,
++        BackgroundJobsEnabled: true,
++        DisabledMessage: string.Empty);
++
++    private AlwaysEnabledSimulationFeatureGate()
++    {
++    }
++
++    public SimulationFeatureStateDto GetState() => State;
++
++    public bool IsUiVisible() => true;
++
++    public bool IsBackendExecutionEnabled() => true;
++
++    public bool AreBackgroundJobsEnabled() => true;
++
++    public bool IsBackgroundExecutionAllowed() => true;
++
++    public bool IsFullyDisabled() => false;
++
++    public void EnsureBackendExecutionEnabled() { }
++
++    public void EnsureBackgroundExecutionEnabled() { }
++}
+diff --git a/src/VirtualCompany.Api/Controllers/CompanySimulationController.cs b/src/VirtualCompany.Api/Controllers/CompanySimulationController.cs
+--- a/src/VirtualCompany.Api/Controllers/CompanySimulationController.cs
++++ b/src/VirtualCompany.Api/Controllers/CompanySimulationController.cs
+@@ -44,6 +44,10 @@ public sealed class CompanySimulationController : ControllerBase
+         }
+         catch (UnauthorizedAccessException)
+         {
+             return Forbid();
+         }
++        catch (SimulationBackendDisabledException ex)
++        {
++            return Conflict(CreateSimulationExecutionDisabledProblemDetails(ex.Message));
++        }
+         catch (InvalidOperationException ex)
+         {
+             return Conflict(CreateProblemDetails(ex.Message, StatusCodes.Status409Conflict));
+@@ -110,6 +114,10 @@ public sealed class CompanySimulationController : ControllerBase
+         {
+             return Forbid();
+         }
++        catch (SimulationBackendDisabledException ex)
++        {
++            return Conflict(CreateSimulationExecutionDisabledProblemDetails(ex.Message));
++        }
+         catch (KeyNotFoundException ex)
+         {
+             return NotFound(CreateProblemDetails(ex.Message, StatusCodes.Status404NotFound));
+@@ -145,6 +153,13 @@ public sealed class CompanySimulationController : ControllerBase
+         }
+ 
+ 
++    private ProblemDetails CreateSimulationExecutionDisabledProblemDetails(string detail) =>
++        new()
++        {
++            Title = "Simulation execution is disabled.",
++            Detail = detail,
++            Status = StatusCodes.Status409Conflict,
++            Instance = HttpContext.Request.Path
++        };
+     private ProblemDetails CreateProblemDetails(string detail, int status) =>
+         new()
+         {
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -704,15 +704,16 @@ public sealed class InternalFinanceController : ControllerBase
+                 cancellationToken));
+ 
+     [HttpPost("simulation/advance")]
+-    public async Task<ActionResult<AdvanceCompanySimulationTimeResultDto>> AdvanceSimulationAsync(
++    public Task<ActionResult<AdvanceCompanySimulationTimeResultDto>> AdvanceSimulationAsync(
+         Guid companyId,
+         [FromBody] AdvanceCompanySimulationTimeRequest request,
+         CancellationToken cancellationToken) =>
+-        await ExecuteWriteAsync(
+-            () => EnsureSimulationBackendExecutionEnabledAndRunAsync(
+-                companyId,
++        ExecuteWriteAsync(
+             () => _companySimulationService.AdvanceAsync(
+-                new AdvanceCompanySimulationTimeCommand(companyId, request.TotalHours, request.ExecutionStepHours, request.Accelerated),
+-                cancellationToken)));
++                new AdvanceCompanySimulationTimeCommand(
++                    companyId,
++                    request.TotalHours,
++                    request.ExecutionStepHours,
++                    request.Accelerated),
++                cancellationToken));
+@@ -808,14 +809,18 @@ public sealed class InternalFinanceController : ControllerBase
+                 Instance = HttpContext.Request.Path
+             });
+         }
+ 
+-        var result = await _companySimulationService.AdvanceAsync(
+-            await EnsureSimulationBackendExecutionEnabledAndRunAsync(
+-                companyId,
+-            new AdvanceCompanySimulationTimeCommand(companyId, request.IncrementHours, request.ExecutionStepHours, request.Accelerated),
+-            cancellationToken));
+-
+-        return Ok(BuildSandboxProgressionRunSummary("advance", result));
++        return await ExecuteWriteAsync(async () =>
++        {
++            var result = await _companySimulationService.AdvanceAsync(
++                new AdvanceCompanySimulationTimeCommand(
++                    companyId,
++                    request.IncrementHours,
++                    request.ExecutionStepHours,
++                    request.Accelerated),
++                cancellationToken);
++
++            return BuildSandboxProgressionRunSummary("advance", result);
++        });
+     }
+@@ -869,13 +874,17 @@ public sealed class InternalFinanceController : ControllerBase
+                 Instance = HttpContext.Request.Path
+             });
+         }
+ 
+-        var result = await EnsureSimulationBackendExecutionEnabledAndRunAsync(
+-            companyId,
+-            () => _companySimulationService.AdvanceAsync(
+-                new AdvanceCompanySimulationTimeCommand(companyId, request.IncrementHours, request.ExecutionStepHours, request.Accelerated),
+-            cancellationToken);
+-        return Ok(BuildSandboxProgressionRunSummary("progression_run", result));
++        return await ExecuteWriteAsync(async () =>
++        {
++            var result = await _companySimulationService.AdvanceAsync(
++                new AdvanceCompanySimulationTimeCommand(
++                    companyId,
++                    request.IncrementHours,
++                    request.ExecutionStepHours,
++                    request.Accelerated),
++                cancellationToken);
++            return BuildSandboxProgressionRunSummary("progression_run", result);
++        });
+     }
+@@ -2618,6 +2627,11 @@ public sealed class InternalFinanceController : ControllerBase
+         {
+             return await CreateFinanceNotInitializedResultAsync<T>(ex);
+         }
++        catch (SimulationBackendDisabledException ex)
++        {
++            LogHandledFinanceException("simulation_execution_disabled", ex);
++            return Conflict(CreateSimulationExecutionDisabledProblemDetails(ex.Message));
++        }
+         catch (FinanceValidationException ex)
+         {
+             LogHandledFinanceException("write_validation", ex);
+@@ -2761,6 +2775,9 @@ public sealed class InternalFinanceController : ControllerBase
+     private ProblemDetails CreateProblemDetails(string detail) =>
+         CreateProblemDetails(detail, "Invalid finance read request.", StatusCodes.Status400BadRequest);
+ 
++    private ProblemDetails CreateSimulationExecutionDisabledProblemDetails(string detail) =>
++        CreateProblemDetails(detail, "Simulation execution is disabled.", StatusCodes.Status409Conflict);
++
+     private async Task<ActionResult<T>> CreateFinanceNotInitializedResultAsync<T>(FinanceNotInitializedException exception)
+     {
+         var shouldTriggerFallback = exception.CanTriggerSeed && _financeInitializationOptions.Value.ShouldTriggerSeedFallback();
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationControllerIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationControllerIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanySimulationControllerIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationControllerIntegrationTests.cs
+@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Tenancy;
+ using Xunit;
+@@ -272,6 +273,41 @@ public sealed class CompanySimulationControllerIntegrationTests
+         Assert.Equal(HttpStatusCode.Conflict, startResponse.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Disabled_execution_blocks_finance_simulation_manual_trigger_but_standard_finance_reads_still_work()
++    {
++        using var factory = new TestWebApplicationFactory(
++            new Dictionary<string, string?>
++            {
++                ["SimulationFeatures:UiVisible"] = "true",
++                ["SimulationFeatures:BackendExecutionEnabled"] = "false",
++                ["SimulationFeatures:BackgroundJobsEnabled"] = "true",
++                ["SimulationFeatures:DisabledMessage"] = "Simulation is disabled by test configuration."
++            });
++        var seed = await SeedCompanyAsync(factory, "owner-disabled", "owner.disabled@example.com", "Owner Disabled", CompanyMembershipRole.Owner);
++        await factory.SeedAsync(dbContext =>
++        {
++            FinanceSeedData.AddMockFinanceData(dbContext, seed.CompanyId);
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(factory, seed, includeCompanyHeader: true);
++
++        var advanceResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/simulation/advance",
++            new AdvanceCompanySimulationTimeRequest(
++                TotalHours: 24,
++                ExecutionStepHours: 24,
++                Accelerated: true));
++
++        Assert.Equal(HttpStatusCode.Conflict, advanceResponse.StatusCode);
++
++        var cashBalanceResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/cash-balance");
++        Assert.Equal(HttpStatusCode.OK, cashBalanceResponse.StatusCode);
++
++        var cashBalance = await cashBalanceResponse.Content.ReadFromJsonAsync<FinanceCashBalanceDto>();
++        Assert.NotNull(cashBalance);
++        Assert.Equal(seed.CompanyId, cashBalance!.CompanyId);
++    }
++
+ 
+     private static HttpClient CreateAuthenticatedClient(TestWebApplicationFactory factory, SeededCompany seed, bool includeCompanyHeader)
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
+@@ -428,6 +428,43 @@ public sealed class CompanySimulationStateServiceTests
+         Assert.Equal(0, await runner.ProgressDueAsync(CancellationToken.None));
+     }
+ 
++    [Fact]
++    public async Task Progression_runner_skips_when_backend_execution_is_disabled_even_if_background_jobs_remain_enabled()
++    {
++        var companyId = Guid.NewGuid();
++        var timeProvider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero));
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(companyId, "Backend Disabled Runner Company"));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        var accessor = new RequestCompanyContextAccessor();
++        var gate = new TestSimulationFeatureGate(uiVisible: true, backendExecutionEnabled: true, backgroundJobsEnabled: true);
++        var service = new CompanySimulationStateService(
++            repository,
++            timeProvider,
++            companyContextAccessor: accessor,
++            distributedLockProvider: null,
++            financeGenerationPolicy: null,
++            featureGate: gate,
++            logger: NullLogger<CompanySimulationStateService>.Instance);
++        var runner = new CompanySimulationProgressionRunner(
++            dbContext,
++            service,
++            new CompanyExecutionScopeFactory(accessor),
++            Microsoft.Extensions.Options.Options.Create(new CompanySimulationProgressionWorkerOptions()),
++            NullLogger<CompanySimulationProgressionRunner>.Instance,
++            gate);
++
++        await service.StartAsync(
++            new StartCompanySimulationCommand(companyId, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), true, 21),
++            CancellationToken.None);
++
++        gate.SetExecution(backendExecutionEnabled: false, backgroundJobsEnabled: true);
++        timeProvider.Advance(TimeSpan.FromSeconds(30));
++
++        Assert.Equal(0, await runner.ProgressDueAsync(CancellationToken.None));
++        Assert.Equal(new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), (await repository.GetCurrentAsync(companyId, CancellationToken.None))!.CurrentSimulatedUtc);
++    }
++
+     private static async Task<SqliteConnection> OpenConnectionAsync()
+     {
+         var connection = new SqliteConnection("Data Source=:memory:");
+@@ -470,10 +507,11 @@ public sealed class CompanySimulationStateServiceTests
+ 
+     private sealed class TestSimulationFeatureGate : ISimulationFeatureGate
+     {
+-        private readonly SimulationFeatureStateDto _state;
++        private SimulationFeatureStateDto _state;
+ 
+         public TestSimulationFeatureGate(bool uiVisible, bool backendExecutionEnabled, bool backgroundJobsEnabled)
+         {
+             _state = new SimulationFeatureStateDto(uiVisible, backendExecutionEnabled, backgroundJobsEnabled, "Simulation is disabled by configuration.");
+         }
++
++        public void SetExecution(bool backendExecutionEnabled, bool backgroundJobsEnabled) => _state = _state with { BackendExecutionEnabled = backendExecutionEnabled, BackgroundJobsEnabled = backgroundJobsEnabled };
+ 
+         public SimulationFeatureStateDto GetState() => _state;
+ 
+@@ -482,10 +520,15 @@ public sealed class CompanySimulationStateServiceTests
+ 
+         public bool IsBackendExecutionEnabled() => _state.BackendExecutionEnabled;
+ 
+         public bool AreBackgroundJobsEnabled() => _state.BackgroundJobsEnabled;
+ 
++        public bool IsBackgroundExecutionAllowed() =>
++            _state.BackendExecutionEnabled &&
++            _state.BackgroundJobsEnabled;
++
+         public bool IsFullyDisabled() => !_state.UiVisible && !_state.BackendExecutionEnabled && !_state.BackgroundJobsEnabled;
+ 
+         public void EnsureBackendExecutionEnabled()
+         {
+             if (!_state.BackendExecutionEnabled)
+             {
+                 throw new SimulationBackendDisabledException(_state.DisabledMessage);
+             }
+         }
++
++        public void EnsureBackgroundExecutionEnabled()
++        {
++            if (!IsBackgroundExecutionAllowed())
++            {
++                throw new SimulationBackendDisabledException(_state.DisabledMessage, isBackgroundExecution: true);
++            }
++        }
+     }
+ }
+END_OF_PATCH

@@ -1,0 +1,171 @@
+@page "/finance/admin/transparency/events"
+@page "/finance/admin/transparency/events/{EventId:guid}"
+@inherits FinanceTransparencyPageBase
+
+<PageTitle>Finance Event Stream</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Finance event stream"
+    Description="Review tenant-scoped finance domain events, payload summaries, and trigger trace coverage."
+    LoadingMessage="Loading finance transparency event stream...">
+    @if (!HasTransparencyAccess)
+    {
+        <ForbiddenState
+            Title="Finance transparency access required"
+            Message="Finance transparency pages are limited to company admins and testers."
+            ReturnHref="@BuildFinanceHomeHref()"
+            ReturnText="Back to finance" />
+    }
+    else
+    {
+        <div class="row g-4 align-items-start">
+            <div class="col-xl-7">
+                <div class="wizard-card wizard-card--compact">
+                    <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
+                        <div>
+                            <h2 class="h5 mb-1">Finance domain event stream</h2>
+                            <p class="text-body-secondary mb-0">@(string.IsNullOrWhiteSpace(Summary) ? "Recent finance events are shown with correlation, affected entity references, and concise payload summaries." : Summary)</p>
+                        </div>
+                        <span class="badge text-bg-light">@Events.Count item@(Events.Count == 1 ? string.Empty : "s")</span>
+                    </div>
+
+                    <FinanceDataState
+                        IsLoading="@IsListLoading"
+                        IsEmpty="@IsListEmpty"
+                        ErrorMessage="@ListErrorMessage"
+                        LoadingTitle="Loading finance events"
+                        LoadingMessage="Reading tenant-scoped finance audit events."
+                        EmptyTitle="No finance events available"
+                        EmptyMessage="No finance domain events are recorded for the active company."
+                        ErrorTitle="Finance events are unavailable"
+                        OnRetry="@ReloadAsync">
+                        <div class="table-responsive">
+                            <table class="table finance-table mb-0">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Event type</th>
+                                        <th scope="col">Timestamp</th>
+                                        <th scope="col">Correlation</th>
+                                        <th scope="col">Affected entity</th>
+                                        <th scope="col">Payload summary</th>
+                                        <th scope="col">Trace</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var item in Events)
+                                    {
+                                        <tr class="@(EventId == item.Id ? "table-active" : null)">
+                                            <td class="text-nowrap">
+                                                <a id="@($"finance-event-{item.Id:D}")" class="btn btn-link p-0 text-start text-decoration-none fw-semibold" href="@BuildEventDetailHref(item.Id)">@item.EventType</a>
+                                            </td>
+                                            <td class="text-nowrap">@FormatTimestamp(item.OccurredAtUtc)</td>
+                                            <td>@FormatValue(item.CorrelationId)</td>
+                                            <td>@item.EntityReference</td>
+                                            <td>@item.PayloadSummary</td>
+                                            <td class="text-nowrap">
+                                                <span class="badge @(item.HasTriggerTrace ? "text-bg-info" : "text-bg-light")">@(item.HasTriggerTrace ? "Trace available" : "No trace")</span>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </FinanceDataState>
+                </div>
+            </div>
+
+            <div class="col-xl-5">
+                <div class="wizard-card wizard-card--compact">
+                    @if (IsDetailLoading)
+                    {
+                        <FinanceLoadingState Title="Loading event detail" Message="Resolving the selected finance event from the route." />
+                    }
+                    else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
+                    {
+                        <FinanceErrorState Title="Event detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                    }
+                    else if (SelectedEvent is null)
+                    {
+                        <FinanceEmptyState Title="No event selected" Message="Select an event to inspect payload summary and trigger consumption tracing." />
+                    }
+                    else
+                    {
+                        var entityHref = BuildFinanceEntityHref(SelectedEvent.EntityType, SelectedEvent.EntityId);
+
+                        <h2 class="h5">Event detail</h2>
+                        <dl class="mb-4">
+                            <dt>Event type</dt>
+                            <dd>@SelectedEvent.EventType</dd>
+                            <dt>Occurred</dt>
+                            <dd>@FormatTimestamp(SelectedEvent.OccurredAtUtc)</dd>
+                            <dt>Correlation</dt>
+                            <dd>@FormatValue(SelectedEvent.CorrelationId)</dd>
+                            <dt>Affected entity</dt>
+                            <dd>@SelectedEvent.EntityReference</dd>
+                        </dl>
+
+                        @if (!string.IsNullOrWhiteSpace(entityHref))
+                        {
+                            <div class="dashboard-actions mb-4">
+                                <a class="btn btn-outline-secondary" href="@entityHref">Open affected finance record</a>
+                            </div>
+                        }
+
+                        <h3 class="h6">Payload summary</h3>
+                        <p class="mb-4">@SelectedEvent.PayloadSummary</p>
+
+                        <h3 class="h6">Related records</h3>
+                        @if (SelectedEvent.RelatedRecords.Count == 0)
+                        {
+                            <p class="text-body-secondary mb-4">No related execution, approval, or finance action links are available for this event.</p>
+                        }
+                        else
+                        {
+                            <div class="mb-4">
+                                @foreach (var record in SelectedEvent.RelatedRecords)
+                                {
+                                    var href = BuildRelatedRecordHref(record);
+
+                                    <div class="border rounded p-3 mb-2">
+                                        <div class="d-flex justify-content-between gap-3 align-items-start">
+                                            <div>
+                                                <div class="fw-semibold">@BuildRelatedRecordTitle(record)</div>
+                                                @if (!string.IsNullOrWhiteSpace(record.Reference))
+                                                {
+                                                    <div class="small text-body-secondary">@record.Reference</div>
+                                                }
+                                                <div class="small text-body-secondary">Resolved via @FormatLabel(record.ResolutionSource)</div>
+                                            </div>
+                                            @if (!string.IsNullOrWhiteSpace(href))
+                                            {
+                                                <a class="btn btn-outline-secondary btn-sm" href="@href">Open</a>
+                                            }
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+
+                        <h3 class="h6">Trigger consumption trace</h3>
+                        @if (SelectedEvent.TriggerConsumptionTrace.Count == 0)
+                        {
+                            <p class="text-body-secondary mb-0">No trigger trace available for this event.</p>
+                        }
+                        else
+                        {
+                            <ul class="mb-0">
+                                @foreach (var item in SelectedEvent.TriggerConsumptionTrace)
+                                {
+                                    <li><strong>@item.DisplayName</strong>: @FormatValue(item.Reference)</li>
+                                }
+                            </ul>
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+    }
+</FinancePageLayout>

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-17.3.4",
+  "promptPath": ".ai-design/prompts/TASK-17.3.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T18:11:07.955Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T18-11-07-955Z_TASK-17.3.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T18-11-07-955Z_TASK-17.3.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T18:18:28.621Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "         seed.ApproverSubject,\n+            seed.ApproverEmail,\n+            seed.ApproverDisplayName);\n+\n+        var inaccessibleDetailResponse = await approverClient.GetAsync($\"/internal/companies/{seed.CompanyId}/finance/transactions/{seed.RestrictedTransactionId}\");\n+        Assert.Equal(HttpStatusCode.OK, inaccessibleDetailResponse.StatusCode);\n+\n+        var inaccessibleDetail = await inaccessibleDetailResponse.Content.ReadFromJsonAsync<FinanceTransactionDetailResponse>();\n+        Assert.NotNull(inaccessibleDetail);\n+        Assert.Equal(seed.RestrictedTransactionId, inaccessibleDetail!.Id);\n+        Assert.Equal(\"customer_payment\", inaccessibleDetail.Category);\n+        Assert.Equal(520m, inaccessibleDetail.Amount);\n+        Assert.Equal(\"USD\", inaccessibleDetail.Currency);\n+        Assert.Equal(\"Customer receipt\", inaccessibleDetail.Description);\n+        Assert.False(inaccessibleDetail.IsFlagged);\n+        Assert.Equal(\"clear\", inaccessibleDetail.AnomalyState);\n+        Assert.Empty(inaccessibleDetail.Flags);\n+        Assert.Equal(\"inaccessible\", inaccessibleDetail.LinkedDocument.Availability);\n+        Assert.Equal(\"Linked document unavailable or you do not have access.\", inaccessibleDetail.LinkedDocument.Message);\n+        Assert.False(inaccessibleDetail.LinkedDocument.CanNavigate);\n+        Assert.Null(inaccessibleDetail.LinkedDocument.Document);\n+    }\n+\n+    [Fact]\n+    public async Task Transaction_detail_is_tenant_scoped()\n+    {\n+        var seed = await FinanceDetailTestScenarioFactory.CreateAsync(_factory);\n+        using var client = FinanceDetailTestScenarioFactory.CreateAuthenticatedClient(\n+            _factory,\n+            seed.OwnerSubject,\n+            seed.OwnerEmail,\n+            seed.OwnerDisplayName);\n+\n+        var response = await client.GetAsync($\"/internal/companies/{seed.CompanyId}/finance/transactions/{seed.OtherCompanyTransactionId}\");\n+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "erSubject,\n+            seed.ApproverEmail,\n+            seed.ApproverDisplayName);\n+\n+        var inaccessibleDetailResponse = await approverClient.GetAsync($\"/internal/companies/{seed.CompanyId}/finance/transactions/{seed.RestrictedTransactionId}\");\n+        Assert.Equal(HttpStatusCode.OK, inaccessibleDetailResponse.StatusCode);\n+\n+        var inaccessibleDetail = await inaccessibleDetailResponse.Content.ReadFromJsonAsync<FinanceTransactionDetailResponse>();\n+        Assert.NotNull(inaccessibleDetail);\n+        Assert.Equal(seed.RestrictedTransactionId, inaccessibleDetail!.Id);\n+        Assert.Equal(\"customer_payment\", inaccessibleDetail.Category);\n+        Assert.Equal(520m, inaccessibleDetail.Amount);\n+        Assert.Equal(\"USD\", inaccessibleDetail.Currency);\n+        Assert.Equal(\"Customer receipt\", inaccessibleDetail.Description);\n+        Assert.False(inaccessibleDetail.IsFlagged);\n+        Assert.Equal(\"clear\", inaccessibleDetail.AnomalyState);\n+        Assert.Empty(inaccessibleDetail.Flags);\n+        Assert.Equal(\"inaccessible\", inaccessibleDetail.LinkedDocument.Availability);\n+        Assert.Equal(\"Linked document unavailable or you do not have access.\", inaccessibleDetail.LinkedDocument.Message);\n+        Assert.False(inaccessibleDetail.LinkedDocument.CanNavigate);\n+        Assert.Null(inaccessibleDetail.LinkedDocument.Document);\n+    }\n+\n+    [Fact]\n+    public async Task Transaction_detail_is_tenant_scoped()\n+    {\n+        var seed = await FinanceDetailTestScenarioFactory.CreateAsync(_factory);\n+        using var client = FinanceDetailTestScenarioFactory.CreateAuthenticatedClient(\n+            _factory,\n+            seed.OwnerSubject,\n+            seed.OwnerEmail,\n+            seed.OwnerDisplayName);\n+\n+        var response = await client.GetAsync($\"/internal/companies/{seed.CompanyId}/finance/transactions/{seed.OtherCompanyTransactionId}\");\n+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);\n+    }\n+}\nEND_OF_PATCH\ntokens used\n184,253\n",
+  "verbosityMode": "summary"
+}

@@ -1,0 +1,22 @@
+<section class="py-4">
+    <h1>@Title</h1>
+    <p class="text-body-secondary mb-3">@Message</p>
+
+    @if (!string.IsNullOrWhiteSpace(ReturnHref))
+    {
+        <a class="btn btn-outline-secondary" href="@ReturnHref">@ReturnText</a>
+    }
+</section>
+
+@code {
+    [Parameter]
+    public string Title { get; set; } = "Forbidden";
+
+    [Parameter]
+    public string Message { get; set; } = "You do not have access to this page.";
+
+    [Parameter] public string? ReturnHref { get; set; }
+
+    [Parameter]
+    public string ReturnText { get; set; } = "Back";
+}

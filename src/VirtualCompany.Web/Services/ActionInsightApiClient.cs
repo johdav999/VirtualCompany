@@ -7,6 +7,9 @@ public sealed class ActionInsightApiClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly HttpClient _httpClient;
+    private const int DefaultTopActionCount = 5;
+    private const int MaxTopActionCount = 5;
+    private const int MaxPageSize = 100;
     private readonly bool _useOfflineMode;
     private readonly List<ActionQueueItemViewModel> _offlineItems = [];
 
@@ -16,19 +19,60 @@ public sealed class ActionInsightApiClient
         _useOfflineMode = useOfflineMode;
     }
 
-    public Task<IReadOnlyList<ActionQueueItemViewModel>> GetQueueAsync(Guid companyId, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<ActionQueueItemViewModel>> GetQueueAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult<IReadOnlyList<ActionQueueItemViewModel>>(OrderQueue(EnsureOfflineQueue(companyId)))
+            : GetAsync<IReadOnlyList<ActionQueueItemViewModel>>($"api/companies/{companyId}/action-insights/queue", cancellationToken);
+
+    public Task<IReadOnlyList<ActionQueueItemViewModel>> GetTopActionsAsync(
+        Guid companyId,
+        int count = 5,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedCount = Math.Clamp(count <= 0 ? DefaultTopActionCount : count, 1, MaxTopActionCount);
+        if (_useOfflineMode)
+        {
+            return Task.FromResult<IReadOnlyList<ActionQueueItemViewModel>>(
+                OrderQueue(EnsureOfflineQueue(companyId))
+                    .Take(normalizedCount)
+                    .ToList());
+        }
+
+        return GetAsync<IReadOnlyList<ActionQueueItemViewModel>>(
+            $"api/companies/{companyId}/action-insights/top?count={normalizedCount}",
+            cancellationToken);
+    }
+
+    public Task<PagedActionQueueResultViewModel> GetAllActionsAsync(
+        Guid companyId,
+        int pageNumber = 1,
+        int pageSize = 25,
+        CancellationToken cancellationToken = default)
     {
         if (_useOfflineMode)
         {
-            if (_offlineItems.Count == 0)
-            {
-                _offlineItems.AddRange(OfflineQueue(companyId));
-            }
+            var normalizedPageNumber = pageNumber <= 0 ? 1 : pageNumber;
+            var normalizedPageSize = Math.Clamp(pageSize <= 0 ? 25 : pageSize, 1, MaxPageSize);
+            var ordered = OrderQueue(EnsureOfflineQueue(companyId));
+            var totalCount = ordered.Count;
+            var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)normalizedPageSize);
+            var items = ordered.Skip((normalizedPageNumber - 1) * normalizedPageSize).Take(normalizedPageSize).ToList();
 
-            return Task.FromResult<IReadOnlyList<ActionQueueItemViewModel>>(_offlineItems.ToList());
+            return Task.FromResult(new PagedActionQueueResultViewModel
+            {
+                Items = items,
+                PageNumber = normalizedPageNumber,
+                PageSize = normalizedPageSize,
+                TotalCount = totalCount,
+                TotalPages = totalPages,
+                HasPreviousPage = normalizedPageNumber > 1 && totalPages > 0,
+                HasNextPage = totalPages > 0 && normalizedPageNumber < totalPages
+            });
         }
 
-        return GetAsync<IReadOnlyList<ActionQueueItemViewModel>>($"api/companies/{companyId}/action-insights/queue", cancellationToken);
+        return GetAsync<PagedActionQueueResultViewModel>(
+            $"api/companies/{companyId}/action-insights?pageNumber={Math.Max(1, pageNumber)}&pageSize={Math.Clamp(pageSize <= 0 ? 25 : pageSize, 1, MaxPageSize)}",
+            cancellationToken);
     }
 
     public async Task<ActionQueueItemViewModel?> AcknowledgeAsync(Guid companyId, string insightKey, CancellationToken cancellationToken = default)
@@ -102,6 +146,36 @@ public sealed class ActionInsightApiClient
         return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
     }
 
+    private IReadOnlyList<ActionQueueItemViewModel> EnsureOfflineQueue(Guid companyId)
+    {
+        if (_offlineItems.Count == 0)
+        {
+            _offlineItems.AddRange(OfflineQueue(companyId));
+        }
+
+        return _offlineItems;
+    }
+
+    private static IReadOnlyList<ActionQueueItemViewModel> OrderQueue(IEnumerable<ActionQueueItemViewModel> items) =>
+        items
+            .OrderByDescending(item => PriorityRank(item.Priority))
+            .ThenBy(item => item.DueUtc.HasValue ? 0 : 1)
+            .ThenBy(item => item.DueUtc ?? DateTime.MaxValue)
+            .ThenByDescending(item => item.ImpactScore)
+            .ThenBy(item => item.SourceEntityId)
+            .ThenBy(item => item.StableSortKey, StringComparer.Ordinal)
+            .ToList();
+
+    private static int PriorityRank(string priority) =>
+        priority.Trim().ToLowerInvariant() switch
+        {
+            "critical" => 4,
+            "high" => 3,
+            "medium" => 2,
+            "low" => 1,
+            _ => 0
+        };
+
     private static IReadOnlyList<ActionQueueItemViewModel> OfflineQueue(Guid companyId) =>
     [
         new()
@@ -119,6 +193,7 @@ public sealed class ActionInsightApiClient
             DueUtc = DateTime.UtcNow.AddHours(2),
             SlaState = "due_soon",
             PriorityScore = 90,
+            ImpactScore = 90,
             Priority = "critical",
             DeepLink = $"/approvals?companyId={companyId}&approvalId=d0131d57-1895-4b75-9624-9b8b04d8a116",
             StableSortKey = $"{companyId:N}:approval:d0131d5718954b7596249b8b04d8a116:v0"
@@ -138,6 +213,7 @@ public sealed class ActionInsightApiClient
             DueUtc = DateTime.UtcNow.AddHours(4),
             SlaState = "due_soon",
             PriorityScore = 75,
+            ImpactScore = 75,
             Priority = "high",
             DeepLink = $"/tasks?companyId={companyId}&taskId=21fa1767-fd77-42d7-a4d5-c6d50ec8bf5b",
             StableSortKey = $"{companyId:N}:task:21fa1767fd7742d7a4d5c6d50ec8bf5b:v0"
@@ -157,6 +233,7 @@ public sealed class ActionInsightApiClient
             DueUtc = DateTime.UtcNow.AddHours(1),
             SlaState = "due_soon",
             PriorityScore = 85,
+            ImpactScore = 85,
             Priority = "high",
             DeepLink = $"/workflows?companyId={companyId}&workflowInstanceId=2cf1da39-93ad-4543-bdd2-3862eedec738",
             StableSortKey = $"{companyId:N}:blocked_workflow:2cf1da3993ad4543bdd23862eedec738:v0"
@@ -185,9 +262,21 @@ public sealed class ActionQueueItemViewModel
     public DateTime? DueUtc { get; set; }
     public string SlaState { get; set; } = string.Empty;
     public int PriorityScore { get; set; }
+    public int ImpactScore { get; set; }
     public string Priority { get; set; } = string.Empty;
     public string DeepLink { get; set; } = string.Empty;
     public bool IsAcknowledged { get; set; }
     public DateTime? AcknowledgedAt { get; set; }
     public string StableSortKey { get; set; } = string.Empty;
+}
+
+public sealed class PagedActionQueueResultViewModel
+{
+    public List<ActionQueueItemViewModel> Items { get; set; } = [];
+    public int PageNumber { get; set; }
+    public int PageSize { get; set; }
+    public int TotalCount { get; set; }
+    public int TotalPages { get; set; }
+    public bool HasPreviousPage { get; set; }
+    public bool HasNextPage { get; set; }
 }

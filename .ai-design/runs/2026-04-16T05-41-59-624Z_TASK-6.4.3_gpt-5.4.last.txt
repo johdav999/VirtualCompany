@@ -1,0 +1,341 @@
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+@@ -26,6 +26,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+     private readonly CompanyDocumentOptions _options;
+     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+     private readonly ILogger<CompanyDocumentService> _logger;
++    private readonly IKnowledgeAccessPolicyEvaluator _accessPolicyEvaluator;
+ 
+     public CompanyDocumentService(
+         VirtualCompanyDbContext dbContext,
+@@ -38,7 +39,8 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         IDocumentIngestionOrchestrator ingestionOrchestrator,
+         IOptions<CompanyDocumentOptions> options,
+         ICompanyOutboxEnqueuer outboxEnqueuer,
+-        ILogger<CompanyDocumentService> logger)
++        ILogger<CompanyDocumentService> logger,
++        IKnowledgeAccessPolicyEvaluator accessPolicyEvaluator)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+@@ -51,6 +53,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         _options = options.Value;
+         _outboxEnqueuer = outboxEnqueuer;
+         _logger = logger;
++        _accessPolicyEvaluator = accessPolicyEvaluator;
+     }
+ 
+     public async Task<CompanyKnowledgeDocumentDto> UploadAsync(Guid companyId, UploadCompanyDocumentCommand command, CancellationToken cancellationToken)
+@@ -152,7 +155,8 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+ 
+     public async Task<IReadOnlyList<CompanyKnowledgeDocumentDto>> ListAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+-        await EnsureReadAccessAsync(companyId, cancellationToken);
++        var membership = await EnsureReadAccessAsync(companyId, cancellationToken);
++        var accessContext = BuildAccessContext(companyId, membership);
+ 
+         var documents = await _dbContext.CompanyKnowledgeDocuments
+             .AsNoTracking()
+@@ -161,12 +165,15 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             .ThenByDescending(x => x.Id)
+             .ToListAsync(cancellationToken);
+ 
+-        return documents.Select(MapDto).ToArray();
++        return documents
++            .Where(document => _accessPolicyEvaluator.CanAccess(accessContext, document))
++            .Select(MapDto)
++            .ToArray();
+     }
+ 
+     public async Task<CompanyKnowledgeDocumentDto?> GetAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
+     {
+-        await EnsureReadAccessAsync(companyId, cancellationToken);
++        var membership = await EnsureReadAccessAsync(companyId, cancellationToken);
+ 
+         var document = await _dbContext.CompanyKnowledgeDocuments
+             .AsNoTracking()
+@@ -177,7 +184,14 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             return null;
+         }
+ 
++        if (!_accessPolicyEvaluator.CanAccess(BuildAccessContext(companyId, membership), document))
++        {
++            throw new UnauthorizedAccessException("The current user cannot access this document.");
++        }
++
+         return MapDto(document);
+     }
+ 
+@@ -216,14 +230,28 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             idempotencyKey: $"platform-event:{document.CompanyId:N}:{eventId}",
+             causationId: document.Id.ToString("N"));
+     }
+ 
+-    private async Task EnsureReadAccessAsync(Guid companyId, CancellationToken cancellationToken)
++    private async Task<ResolvedCompanyMembershipContext> EnsureReadAccessAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
+         if (membership is null)
+         {
+             throw new UnauthorizedAccessException("The current user cannot access documents for this company.");
+         }
++
++        return membership;
+     }
+ 
++    private static CompanyKnowledgeAccessContext BuildAccessContext(
++        Guid companyId,
++        ResolvedCompanyMembershipContext membership) =>
++        new(
++            companyId,
++            membership.MembershipId,
++            membership.UserId,
++            membership.MembershipRole.ToStorageValue(),
++            Array.Empty<string>());
++
+     private async Task EnsureManagementAccessAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
+         if (membership is null)
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -1,5 +1,6 @@
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Documents;
+ using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Finance;
+@@ -11,21 +12,24 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyContextAccessor? _companyContextAccessor;
+     private readonly ICompanyDocumentService? _documentService;
++    private readonly IKnowledgeAccessPolicyEvaluator? _accessPolicyEvaluator;
+ 
+     public CompanyFinanceReadService(VirtualCompanyDbContext dbContext)
+-        : this(dbContext, null, null)
++        : this(dbContext, null, null, null)
+     {
+     }
+ 
+     public CompanyFinanceReadService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyContextAccessor? companyContextAccessor)
+-        : this(dbContext, companyContextAccessor, null)
++        : this(dbContext, companyContextAccessor, null, null)
+     {
+     }
+ 
+     public CompanyFinanceReadService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyContextAccessor? companyContextAccessor,
+-        ICompanyDocumentService? documentService)
++        ICompanyDocumentService? documentService,
++        IKnowledgeAccessPolicyEvaluator? accessPolicyEvaluator)
+     {
+         _dbContext = dbContext;
+         _companyContextAccessor = companyContextAccessor;
+         _documentService = documentService;
++        _accessPolicyEvaluator = accessPolicyEvaluator;
+     }
+ 
+@@ -361,9 +365,17 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             return await LoadLinkedDocumentsThroughKnowledgeServiceAsync(companyId, ids, cancellationToken);
+         }
+ 
+-        return await _dbContext.CompanyKnowledgeDocuments
++        var documents = await _dbContext.CompanyKnowledgeDocuments
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && ids.Contains(x.Id))
++            .ToListAsync(cancellationToken);
++
++        var accessContext = BuildAccessContext(companyId);
++        return documents
++            .Where(document =>
++                _accessPolicyEvaluator is null ||
++                accessContext is null ||
++                _accessPolicyEvaluator.CanAccess(accessContext, document))
+             .Select(x => new FinanceLinkedDocumentRow(x.Id, x.Title, x.OriginalFileName, x.ContentType ?? string.Empty))
+-            .ToDictionaryAsync(x => x.Id, cancellationToken);
++            .ToDictionary(x => x.Id);
+     }
+ 
+     private async Task<Dictionary<Guid, FinanceLinkedDocumentRow>> LoadLinkedDocumentsThroughKnowledgeServiceAsync(
+@@ -402,6 +414,23 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             ? new FinanceLinkedDocumentDto(document.Id, document.Title, document.OriginalFileName, document.ContentType)
+             : null;
+ 
++    private CompanyKnowledgeAccessContext? BuildAccessContext(Guid companyId)
++    {
++        var membership = _companyContextAccessor?.Membership;
++        if (membership is null)
++        {
++            return null;
++        }
++
++        return new CompanyKnowledgeAccessContext(
++            companyId,
++            membership.MembershipId,
++            membership.UserId,
++            membership.MembershipRole.ToStorageValue(),
++            Array.Empty<string>());
++    }
++
+     private static void EnsureCompanyId(Guid companyId)
+     {
+         if (companyId == Guid.Empty)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+@@ -50,6 +50,7 @@ public static class FinanceSeedData
+                 1024 + index,
+                 new Dictionary<string, System.Text.Json.Nodes.JsonNode?>
+                 {
++                    ["category"] = System.Text.Json.Nodes.JsonValue.Create("finance"),
+                     ["department"] = System.Text.Json.Nodes.JsonValue.Create("finance"),
+                     ["seed"] = System.Text.Json.Nodes.JsonValue.Create(true)
+                 },
+-                new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility),
++                BuildDocumentAccessScope(companyId, index),
+                 $"finance-seed:{index:000}"))
+             .ToArray();
+ 
+@@ -68,7 +69,7 @@ public static class FinanceSeedData
+                 2400m + (index * 325m),
+                 "USD",
+                 index % 3 == 0 ? "paid" : "open",
+-                index <= 2 ? documents[index - 1].Id : null))
++                documents[index - 1].Id))
+             .ToArray();
+ 
+         var bills = Enumerable.Range(1, 5)
+@@ -84,7 +85,7 @@ public static class FinanceSeedData
+                 900m + (index * 210m),
+                 "USD",
+                 index % 2 == 0 ? "paid" : "open",
+-                index == 1 ? documents[2].Id : null))
++                documents[(index + 1) % documents.Length].Id))
+             .ToArray();
+ 
+         var transactions = new List<FinanceTransaction>(capacity: 50);
+@@ -115,7 +116,7 @@ public static class FinanceSeedData
+                 "USD",
+                 isRevenue ? "Customer receipt" : "Vendor disbursement",
+                 $"FIN-{companyId:N}-{index:0000}",
+-                index < documents.Length ? documents[index].Id : null));
++                index < documents.Length || index >= 45 ? documents[index % documents.Length].Id : null));
+         }
+ 
+         var balances = accounts
+@@ -150,6 +151,22 @@ public static class FinanceSeedData
+         return new Guid(hash);
+     }
++
++    private static CompanyKnowledgeDocumentAccessScope BuildDocumentAccessScope(Guid companyId, int index)
++    {
++        Dictionary<string, System.Text.Json.Nodes.JsonNode?>? additionalProperties = null;
++        if (index == 5)
++        {
++            additionalProperties = new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["restricted"] = System.Text.Json.Nodes.JsonValue.Create(true),
++                ["roles"] = new System.Text.Json.Nodes.JsonArray(System.Text.Json.Nodes.JsonValue.Create("owner"))
++            };
++        }
++
++        return new CompanyKnowledgeDocumentAccessScope(
++            companyId,
++            CompanyKnowledgeDocumentAccessScope.CompanyVisibility,
++            additionalProperties);
++    }
+ }
+ 
+ public sealed record FinanceSeedResult(
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -109,7 +109,7 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+     }
+ 
+     [Fact]
+-    public async Task Linked_finance_documents_are_omitted_when_document_is_not_visible_to_the_active_tenant()
++    public async Task Linked_finance_documents_are_filtered_by_knowledge_access_scope()
+     {
+         var seed = await SeedFinanceCompanyAsync();
+ 
+@@ -121,9 +121,19 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         Assert.NotNull(transactions);
+         Assert.Contains(transactions!, transaction => transaction.LinkedDocument is not null);
+ 
+-        var crossTenantResponse = await client.GetAsync($"/internal/companies/{seed.OtherCompanyId}/finance/transactions?limit=5");
++        var restrictedDocumentId = seed.DocumentIds[4];
++        Assert.Contains(
++            transactions!,
++            transaction => transaction.LinkedDocument is not null && transaction.LinkedDocument.Id == restrictedDocumentId);
+ 
+-        Assert.Equal(HttpStatusCode.Forbidden, crossTenantResponse.StatusCode);
++        using var employeeClient = CreateAuthenticatedClient(seed.EmployeeSubject, seed.EmployeeEmail, seed.EmployeeDisplayName);
++        var employeeResponse = await employeeClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions?limit=5");
++
++        Assert.Equal(HttpStatusCode.OK, employeeResponse.StatusCode);
++        var employeeTransactions = await employeeResponse.Content.ReadFromJsonAsync<List<TransactionResponse>>();
++        Assert.NotNull(employeeTransactions);
++        Assert.Contains(employeeTransactions!, transaction => transaction.LinkedDocument is not null);
++        Assert.DoesNotContain(
++            employeeTransactions!, transaction => transaction.LinkedDocument is not null && transaction.LinkedDocument.Id == restrictedDocumentId);
+     }
+ 
+     private async Task<FinanceEndpointSeed> SeedFinanceCompanyAsync()
+@@ -134,20 +144,29 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         var subject = $"finance-reader-{Guid.NewGuid():N}";
+         var email = $"{subject}@example.com";
+         const string displayName = "Finance Reader";
++        var employeeUserId = Guid.NewGuid();
++        var employeeSubject = $"finance-employee-{Guid.NewGuid():N}";
++        var employeeEmail = $"{employeeSubject}@example.com";
++        const string employeeDisplayName = "Finance Employee";
++        FinanceSeedResult? financeSeed = null;
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+             dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++            dbContext.Users.Add(new User(employeeUserId, employeeEmail, employeeDisplayName, "dev-header", employeeSubject));
+             dbContext.Companies.AddRange(
+                 new Company(companyId, "Finance Read Company"),
+                 new Company(otherCompanyId, "Other Finance Read Company"));
+             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
+ 
+-            FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++            financeSeed = FinanceSeedData.AddMockFinanceData(dbContext, companyId);
+             FinanceSeedData.AddMockFinanceData(dbContext, otherCompanyId);
+             return Task.CompletedTask;
+         });
+ 
+-        return new FinanceEndpointSeed(companyId, otherCompanyId, subject, email, displayName, FinanceSeedData.AddMockFinanceData(new VirtualCompanyDbContext(new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite("Data Source=:memory:").Options), companyId).DocumentIds);
++        return new FinanceEndpointSeed(
++            companyId, otherCompanyId, subject, email, displayName,
++            employeeSubject, employeeEmail, employeeDisplayName,
++            financeSeed!.DocumentIds);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+@@ -163,6 +182,9 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         string Subject,
+         string Email,
+         string DisplayName,
++        string EmployeeSubject,
++        string EmployeeEmail,
++        string EmployeeDisplayName,
+         IReadOnlyList<Guid> DocumentIds);
+ 
+     private sealed class CashBalanceResponse
+END_OF_PATCH

@@ -1,0 +1,762 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -50,6 +50,12 @@ public sealed record ReviewFinanceInvoiceWorkflowCommand(
+     Guid? AgentId,
+     Dictionary<string, JsonNode?>? Payload);
+ 
++public sealed record EvaluateFinanceTransactionAnomalyCommand(
++    Guid CompanyId,
++    Guid TransactionId,
++    Guid? WorkflowInstanceId = null,
++    Guid? AgentId = null);
++
+ public sealed record FinanceCashBalanceDto(
+     Guid CompanyId,
+     DateTime AsOfUtc,
+@@ -150,6 +156,31 @@ public sealed record FinanceInvoiceReviewWorkflowResultDto(
+     FinancePolicyConfigurationDto Policy,
+     Dictionary<string, JsonNode?> OutputPayload);
+ 
++public sealed record FinanceTransactionAnomalyEvaluationDto(
++    Guid CompanyId,
++    Guid TransactionId,
++    DateTime EvaluatedUtc,
++    bool IsAnomalous,
++    IReadOnlyList<FinanceTransactionAnomalyDto> Anomalies);
++
++public sealed record FinanceTransactionAnomalyDto(
++    string AnomalyType,
++    string Explanation,
++    decimal Confidence,
++    string RecommendedAction,
++    Guid AlertId,
++    Guid FollowUpTaskId,
++    bool AlertCreated,
++    bool AlertDeduplicated);
++
++public sealed record FinanceTransactionHistoricalBaselineDto(
++    int SampleSize,
++    decimal AverageAbsoluteAmount,
++    decimal MaximumAbsoluteAmount,
++    DateTime? EarliestTransactionUtc,
++    DateTime? LatestTransactionUtc);
++
++public interface IFinanceTransactionAnomalyDetectionService
++{
++    Task<FinanceTransactionAnomalyEvaluationDto> EvaluateAsync(EvaluateFinanceTransactionAnomalyCommand command, CancellationToken cancellationToken);
++}
++
+ public interface IInvoiceReviewWorkflowService
+ {
+     Task<FinanceInvoiceReviewWorkflowResultDto> ExecuteAsync(ReviewFinanceInvoiceWorkflowCommand command, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -15,13 +15,15 @@ public sealed class InternalFinanceController : ControllerBase
+     private readonly IFinanceCommandService _financeCommandService;
+     private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
+     private readonly IInvoiceReviewWorkflowService _invoiceReviewWorkflowService;
++    private readonly IFinanceTransactionAnomalyDetectionService _anomalyDetectionService;
+ 
+     public InternalFinanceController(
+         IFinanceReadService financeReadService,
+         IFinanceCommandService financeCommandService,
+         IFinancePolicyConfigurationService financePolicyConfigurationService,
+-        IInvoiceReviewWorkflowService invoiceReviewWorkflowService)
++        IInvoiceReviewWorkflowService invoiceReviewWorkflowService,
++        IFinanceTransactionAnomalyDetectionService anomalyDetectionService)
+     {
+         _financeReadService = financeReadService;
+         _financeCommandService = financeCommandService;
+         _financePolicyConfigurationService = financePolicyConfigurationService;
+         _invoiceReviewWorkflowService = invoiceReviewWorkflowService;
++        _anomalyDetectionService = anomalyDetectionService;
+     }
+@@ -150,6 +152,20 @@ public sealed class InternalFinanceController : ControllerBase
+                 new UpdateFinanceTransactionCategoryCommand(companyId, transactionId, request.Category),
+                 cancellationToken));
+ 
++    [HttpPost("transactions/{transactionId:guid}/anomaly-evaluation")]
++    public async Task<ActionResult<FinanceTransactionAnomalyEvaluationDto>> EvaluateTransactionAnomalyAsync(
++        Guid companyId,
++        Guid transactionId,
++        [FromBody] EvaluateFinanceTransactionAnomalyRequest? request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _anomalyDetectionService.EvaluateAsync(
++                new EvaluateFinanceTransactionAnomalyCommand(
++                    companyId,
++                    transactionId,
++                    request?.WorkflowInstanceId,
++                    request?.AgentId),
++                cancellationToken));
++
+     [HttpGet("policy-configuration")]
+     public async Task<ActionResult<FinancePolicyConfigurationDto>> GetPolicyConfigurationAsync(
+         Guid companyId,
+@@ -224,4 +240,8 @@ public sealed record ReviewFinanceInvoiceWorkflowRequest(
+     Guid? AgentId,
+     Dictionary<string, System.Text.Json.Nodes.JsonNode?>? Payload);
+ 
++public sealed record EvaluateFinanceTransactionAnomalyRequest(
++    Guid? WorkflowInstanceId,
++    Guid? AgentId);
++
+ public sealed record UpdateFinanceTransactionCategoryRequest(string Category);
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -58,6 +58,9 @@ public static class DependencyInjection
+                 options.Provider = string.IsNullOrWhiteSpace(options.Provider) ? FinanceToolProviderOptions.InternalProvider : options.Provider.Trim();
+             });
+ 
++        services.AddOptions<FinanceAnomalyDetectionOptions>()
++            .Bind(configuration.GetSection(FinanceAnomalyDetectionOptions.SectionName));
++
+         services.AddOptions<RedisExecutionCoordinationOptions>()
+             .Bind(configuration.GetSection(RedisExecutionCoordinationOptions.SectionName))
+             .Validate(
+@@ -277,6 +280,7 @@ public static class DependencyInjection
+         services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+         services.AddScoped<IInvoiceReviewWorkflowService, CompanyInvoiceReviewWorkflowService>();
++        services.AddScoped<IFinanceTransactionAnomalyDetectionService, CompanyFinanceTransactionAnomalyDetectionService>();
+         services.AddScoped<IFinanceToolProvider>(provider =>
+         {
+             var options = provider.GetRequiredService<IOptions<FinanceToolProviderOptions>>().Value;
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs
+@@ -0,0 +1,402 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class FinanceAnomalyDetectionOptions
++{
++    public const string SectionName = "FinanceAnomalyDetection";
++
++    public int HistoricalLookbackDays { get; set; } = 180;
++    public int MinimumHistoricalSampleSize { get; set; } = 3;
++    public decimal HistoricalAverageMultiplier { get; set; } = 3m;
++    public int DeduplicationWindowHours { get; set; } = 24;
++}
++
++public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceTransactionAnomalyDetectionService
++{
++    private const string FollowUpTaskType = "finance_transaction_anomaly_follow_up";
++    private const string CorrelationPrefix = "finance-transaction-anomaly";
++    private const string FinanceWorkflowQueue = "finance_workflow_queue";
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IFinancePolicyConfigurationService _policyConfigurationService;
++    private readonly FinanceAnomalyDetectionOptions _options;
++    private readonly TimeProvider _timeProvider;
++
++    public CompanyFinanceTransactionAnomalyDetectionService(
++        VirtualCompanyDbContext dbContext,
++        IFinancePolicyConfigurationService policyConfigurationService,
++        IOptions<FinanceAnomalyDetectionOptions> options,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _policyConfigurationService = policyConfigurationService;
++        _options = options.Value;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<FinanceTransactionAnomalyEvaluationDto> EvaluateAsync(
++        EvaluateFinanceTransactionAnomalyCommand command,
++        CancellationToken cancellationToken)
++    {
++        Validate(command);
++
++        var evaluatedUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var transaction = await LoadTransactionAsync(command.CompanyId, command.TransactionId, cancellationToken);
++        var policy = await _policyConfigurationService.GetPolicyConfigurationAsync(
++            new GetFinancePolicyConfigurationQuery(command.CompanyId),
++            cancellationToken);
++        var baseline = await LoadHistoricalBaselineAsync(command.CompanyId, transaction, cancellationToken);
++        var decisions = BuildDecisions(transaction, policy, baseline);
++        var sourceAgentId = command.AgentId ?? await ResolveLauraAgentIdAsync(command.CompanyId, cancellationToken);
++        var anomalies = new List<FinanceTransactionAnomalyDto>();
++
++        foreach (var decision in decisions)
++        {
++            var alert = await CreateOrRefreshAlertAsync(
++                command,
++                transaction,
++                policy,
++                baseline,
++                decision,
++                sourceAgentId,
++                evaluatedUtc,
++                cancellationToken);
++            var task = await CreateOrReuseFollowUpTaskAsync(
++                command,
++                transaction,
++                policy,
++                baseline,
++                decision,
++                alert.Alert.Id,
++                sourceAgentId,
++                cancellationToken);
++
++            anomalies.Add(new FinanceTransactionAnomalyDto(
++                decision.AnomalyType,
++                decision.Explanation,
++                decision.Confidence,
++                decision.RecommendedAction,
++                alert.Alert.Id,
++                task.Id,
++                alert.Created,
++                alert.Deduplicated));
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new FinanceTransactionAnomalyEvaluationDto(
++            command.CompanyId,
++            command.TransactionId,
++            evaluatedUtc,
++            anomalies.Count > 0,
++            anomalies);
++    }
++
++    private async Task<TransactionRow> LoadTransactionAsync(
++        Guid companyId,
++        Guid transactionId,
++        CancellationToken cancellationToken)
++    {
++        var row = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Id == transactionId)
++            .Select(x => new TransactionRow(
++                x.Id,
++                x.CompanyId,
++                x.AccountId,
++                x.Account.Name,
++                x.CounterpartyId,
++                x.Counterparty == null ? null : x.Counterparty.Name,
++                x.InvoiceId,
++                x.BillId,
++                x.TransactionUtc,
++                x.TransactionType,
++                x.Amount,
++                x.Currency,
++                x.Description,
++                x.ExternalReference))
++            .SingleOrDefaultAsync(cancellationToken);
++
++        return row ?? throw new KeyNotFoundException("Finance transaction was not found.");
++    }
++
++    private async Task<HistoricalBaseline> LoadHistoricalBaselineAsync(
++        Guid companyId,
++        TransactionRow transaction,
++        CancellationToken cancellationToken)
++    {
++        var lookbackDays = Math.Max(1, _options.HistoricalLookbackDays);
++        var startUtc = transaction.TransactionUtc.AddDays(-lookbackDays);
++        var sameDirectionIsDebit = transaction.Amount < 0;
++
++        var candidates = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.Id != transaction.Id &&
++                x.Currency == transaction.Currency &&
++                x.TransactionUtc >= startUtc &&
++                x.TransactionUtc < transaction.TransactionUtc &&
++                x.Amount < 0 == sameDirectionIsDebit)
++            .Where(x =>
++                x.AccountId == transaction.AccountId ||
++                x.CounterpartyId == transaction.CounterpartyId ||
++                x.TransactionType == transaction.TransactionType)
++            .Select(x => new HistoricalTransactionRow(x.TransactionUtc, Math.Abs(x.Amount)))
++            .ToListAsync(cancellationToken);
++
++        if (candidates.Count == 0)
++        {
++            return new HistoricalBaseline(0, 0m, 0m, null, null);
++        }
++
++        return new HistoricalBaseline(
++            candidates.Count,
++            candidates.Average(x => x.AbsoluteAmount),
++            candidates.Max(x => x.AbsoluteAmount),
++            candidates.Min(x => x.TransactionUtc),
++            candidates.Max(x => x.TransactionUtc));
++    }
++
++    private IReadOnlyList<AnomalyDecision> BuildDecisions(
++        TransactionRow transaction,
++        FinancePolicyConfigurationDto policy,
++        HistoricalBaseline baseline)
++    {
++        var decisions = new List<AnomalyDecision>();
++        var amount = transaction.Amount;
++        var absoluteAmount = Math.Abs(amount);
++
++        if (amount < policy.AnomalyDetectionLowerBound || amount > policy.AnomalyDetectionUpperBound)
++        {
++            var bound = amount < policy.AnomalyDetectionLowerBound
++                ? policy.AnomalyDetectionLowerBound
++                : policy.AnomalyDetectionUpperBound;
++            var direction = amount < policy.AnomalyDetectionLowerBound ? "below" : "above";
++            decisions.Add(new AnomalyDecision(
++                "threshold_breach",
++                $"Transaction {transaction.ExternalReference} is {amount:0.##} {transaction.Currency}, which is {direction} the configured anomaly threshold of {bound:0.##} {policy.ApprovalCurrency}.",
++                absoluteAmount >= Math.Abs(bound) * 2m ? 0.93m : 0.86m,
++                "Open a finance review, verify the supporting document and counterparty, and hold any related payment action until reviewed.",
++                amount < policy.AnomalyDetectionLowerBound || amount > policy.AnomalyDetectionUpperBound * 2m
++                    ? AlertSeverity.High
++                    : AlertSeverity.Medium));
++        }
++
++        var minimumSampleSize = Math.Max(1, _options.MinimumHistoricalSampleSize);
++        var multiplier = Math.Max(1m, _options.HistoricalAverageMultiplier);
++        if (baseline.SampleSize >= minimumSampleSize &&
++            baseline.AverageAbsoluteAmount > 0m &&
++            absoluteAmount >= baseline.AverageAbsoluteAmount * multiplier)
++        {
++            decisions.Add(new AnomalyDecision(
++                "historical_baseline_deviation",
++                $"Transaction {transaction.ExternalReference} is {absoluteAmount:0.##} {transaction.Currency}, compared with a historical average of {baseline.AverageAbsoluteAmount:0.##} {transaction.Currency} across {baseline.SampleSize} similar transaction(s).",
++                absoluteAmount >= baseline.AverageAbsoluteAmount * (multiplier + 1m) ? 0.9m : 0.82m,
++                "Compare against recent similar transactions, confirm the business reason with the owner, and attach evidence before closing the follow-up.",
++                absoluteAmount >= baseline.AverageAbsoluteAmount * (multiplier + 1m)
++                    ? AlertSeverity.High
++                    : AlertSeverity.Medium));
++        }
++
++        if (policy.RequireCounterpartyForTransactions && !transaction.CounterpartyId.HasValue)
++        {
++            decisions.Add(new AnomalyDecision(
++                "missing_counterparty",
++                $"Transaction {transaction.ExternalReference} has no counterparty, but the active finance policy requires counterparties for transactions.",
++                0.78m,
++                "Assign or verify the counterparty before the transaction is reconciled.",
++                AlertSeverity.Medium));
++        }
++
++        return decisions
++            .GroupBy(x => x.AnomalyType, StringComparer.OrdinalIgnoreCase)
++            .Select(x => x.First())
++            .ToList();
++    }
++
++    private async Task<AlertMutation> CreateOrRefreshAlertAsync(
++        EvaluateFinanceTransactionAnomalyCommand command,
++        TransactionRow transaction,
++        FinancePolicyConfigurationDto policy,
++        HistoricalBaseline baseline,
++        AnomalyDecision decision,
++        Guid? sourceAgentId,
++        DateTime evaluatedUtc,
++        CancellationToken cancellationToken)
++    {
++        var fingerprint = BuildFingerprint(command.CompanyId, command.TransactionId, decision.AnomalyType);
++        var correlationId = BuildCorrelationId(command.CompanyId, command.TransactionId, decision.AnomalyType);
++        var evidence = BuildEvidence(transaction, policy, baseline, decision, evaluatedUtc);
++        var metadata = BuildMetadata(command, transaction, baseline, decision);
++        var dedupeCutoffUtc = evaluatedUtc.AddHours(-Math.Max(1, _options.DeduplicationWindowHours));
++
++        var existing = await _dbContext.Alerts
++            .IgnoreQueryFilters()
++            .Where(x =>
++                x.CompanyId == command.CompanyId &&
++                x.Fingerprint == fingerprint &&
++                (x.Status == AlertStatus.Open || x.Status == AlertStatus.Acknowledged) &&
++                (x.LastDetectedUtc ?? x.CreatedUtc) >= dedupeCutoffUtc)
++            .OrderByDescending(x => x.LastDetectedUtc ?? x.CreatedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++
++        if (existing is not null)
++        {
++            existing.RefreshFromDuplicateDetection(
++                decision.Severity,
++                BuildAlertTitle(transaction, decision),
++                decision.Explanation,
++                evidence,
++                correlationId,
++                sourceAgentId,
++                metadata);
++            return new AlertMutation(existing, Created: false, Deduplicated: true);
++        }
++
++        var alert = new Alert(
++            Guid.NewGuid(),
++            command.CompanyId,
++            AlertType.Anomaly,
++            decision.Severity,
++            BuildAlertTitle(transaction, decision),
++            decision.Explanation,
++            evidence,
++            correlationId,
++            fingerprint,
++            AlertStatus.Open,
++            sourceAgentId,
++            metadata);
++        _dbContext.Alerts.Add(alert);
++        return new AlertMutation(alert, Created: true, Deduplicated: false);
++    }
++
++    private async Task<WorkTask> CreateOrReuseFollowUpTaskAsync(
++        EvaluateFinanceTransactionAnomalyCommand command,
++        TransactionRow transaction,
++        FinancePolicyConfigurationDto policy,
++        HistoricalBaseline baseline,
++        AnomalyDecision decision,
++        Guid alertId,
++        Guid? sourceAgentId,
++        CancellationToken cancellationToken)
++    {
++        var correlationId = BuildCorrelationId(command.CompanyId, command.TransactionId, decision.AnomalyType);
++        var existingTask = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .Where(x =>
++                x.CompanyId == command.CompanyId &&
++                x.Type == FollowUpTaskType &&
++                x.CorrelationId == correlationId &&
++                x.Status != WorkTaskStatus.Completed &&
++                x.Status != WorkTaskStatus.Failed)
++            .OrderByDescending(x => x.UpdatedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++
++        if (existingTask is not null)
++        {
++            return existingTask;
++        }
++
++        var payload = BuildTaskPayload(command, transaction, policy, baseline, decision, alertId);
++        var task = new WorkTask(
++            Guid.NewGuid(),
++            command.CompanyId,
++            FollowUpTaskType,
++            $"Review anomalous transaction {transaction.ExternalReference}",
++            decision.Explanation,
++            decision.Severity is AlertSeverity.Critical or AlertSeverity.High ? WorkTaskPriority.High : WorkTaskPriority.Normal,
++            sourceAgentId,
++            null,
++            "agent",
++            sourceAgentId,
++            payload,
++            command.WorkflowInstanceId,
++            null,
++            decision.RecommendedAction,
++            decision.Confidence,
++            correlationId,
++            WorkTaskSourceTypes.Agent,
++            sourceAgentId,
++            FinanceWorkflowQueue,
++            "Laura detected a finance transaction anomaly that requires queue follow-up.",
++            $"{command.TransactionId:N}:{decision.AnomalyType}",
++            WorkTaskStatus.New);
++
++        task.SetDueDate(DateTime.UtcNow.AddBusinessDays(2));
++        _dbContext.WorkTasks.Add(task);
++        return task;
++    }
++
++    private async Task<Guid?> ResolveLauraAgentIdAsync(Guid companyId, CancellationToken cancellationToken) =>
++        await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.CanReceiveAssignments &&
++                (x.TemplateId == "laura-finance" ||
++                 x.DisplayName.Contains("Laura") ||
++                 x.Department == "Finance"))
++            .OrderByDescending(x => x.TemplateId == "laura-finance")
++            .ThenByDescending(x => x.DisplayName.Contains("Laura"))
++            .Select(x => (Guid?)x.Id)
++            .FirstOrDefaultAsync(cancellationToken);
++
++    private static Dictionary<string, JsonNode?> BuildEvidence(
++        TransactionRow transaction,
++        FinancePolicyConfigurationDto policy,
++        HistoricalBaseline baseline,
++        AnomalyDecision decision,
++        DateTime evaluatedUtc) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["transactionId"] = JsonValue.Create(transaction.Id),
++            ["transactionExternalReference"] = JsonValue.Create(transaction.ExternalReference),
++            ["transactionAmount"] = JsonValue.Create(transaction.Amount),
++            ["transactionCurrency"] = JsonValue.Create(transaction.Currency),
++            ["transactionType"] = JsonValue.Create(transaction.TransactionType),
++            ["transactionUtc"] = JsonValue.Create(transaction.TransactionUtc),
++            ["accountId"] = JsonValue.Create(transaction.AccountId),
++            ["accountName"] = JsonValue.Create(transaction.AccountName),
++            ["counterpartyId"] = transaction.CounterpartyId.HasValue ? JsonValue.Create(transaction.CounterpartyId.Value) : null,
++            ["counterpartyName"] = string.IsNullOrWhiteSpace(transaction.CounterpartyName) ? null : JsonValue.Create(transaction.CounterpartyName),
++            ["policyLowerBound"] = JsonValue.Create(policy.AnomalyDetectionLowerBound),
++            ["policyUpperBound"] = JsonValue.Create(policy.AnomalyDetectionUpperBound),
++            ["policyCurrency"] = JsonValue.Create(policy.ApprovalCurrency),
++            ["historicalBaseline"] = BuildBaselineNode(baseline),
++            ["anomalyType"] = JsonValue.Create(decision.AnomalyType),
++            ["confidence"] = JsonValue.Create(decision.Confidence),
++            ["recommendedAction"] = JsonValue.Create(decision.RecommendedAction),
++            ["evaluatedUtc"] = JsonValue.Create(evaluatedUtc)
++        };
++
++    private static Dictionary<string, JsonNode?> BuildMetadata(
++        EvaluateFinanceTransactionAnomalyCommand command,
++        TransactionRow transaction,
++        HistoricalBaseline baseline,
++        AnomalyDecision decision) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["source"] = JsonValue.Create("finance_anomaly_detection"),
++            ["assignedQueue"] = JsonValue.Create(FinanceWorkflowQueue),
++            ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
++            ["transactionDescription"] = JsonValue.Create(transaction.Description),
++            ["baselineSampleSize"] = JsonValue.Create(baseline.SampleSize),
++            ["anomalyType"] = JsonValue.Create(decision.AnomalyType)
++        };
++
++    private static Dictionary<string, JsonNode?> BuildTaskPayload(
++        EvaluateFinanceTransactionAnomalyCommand command,
++        TransactionRow transaction,
++        FinancePolicyConfigurationDto policy,
++        HistoricalBaseline baseline,
++        AnomalyDecision decision,
++        Guid alertId) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["companyId"] = JsonValue.Create(command.CompanyId),
++            ["transactionId"] = JsonValue.Create(transaction.Id),
++            ["alertId"] = JsonValue.Create(alertId),
++            ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
++            ["anomalyType"] = JsonValue.Create(decision.AnomalyType),
++            ["explanation"] = JsonValue.Create(decision.Explanation),
++            ["confidence"] = JsonValue.Create(decision.Confidence),
++            ["recommendedAction"] = JsonValue.Create(decision.RecommendedAction),
++            ["transactionAmount"] = JsonValue.Create(transaction.Amount),
++            ["transactionCurrency"] = JsonValue.Create(transaction.Currency),
++            ["policyLowerBound"] = JsonValue.Create(policy.AnomalyDetectionLowerBound),
++            ["policyUpperBound"] = JsonValue.Create(policy.AnomalyDetectionUpperBound),
++            ["historicalBaseline"] = BuildBaselineNode(baseline),
++            ["assignedQueue"] = JsonValue.Create(FinanceWorkflowQueue)
++        };
++
++    private static JsonObject BuildBaselineNode(HistoricalBaseline baseline) =>
++        new()
++        {
++            ["sampleSize"] = JsonValue.Create(baseline.SampleSize),
++            ["averageAbsoluteAmount"] = JsonValue.Create(baseline.AverageAbsoluteAmount),
++            ["maximumAbsoluteAmount"] = JsonValue.Create(baseline.MaximumAbsoluteAmount),
++            ["earliestTransactionUtc"] = baseline.EarliestTransactionUtc.HasValue ? JsonValue.Create(baseline.EarliestTransactionUtc.Value) : null,
++            ["latestTransactionUtc"] = baseline.LatestTransactionUtc.HasValue ? JsonValue.Create(baseline.LatestTransactionUtc.Value) : null
++        };
++
++    private static string BuildAlertTitle(TransactionRow transaction, AnomalyDecision decision) =>
++        $"Finance anomaly: {decision.AnomalyType.Replace('_', ' ')} on {transaction.ExternalReference}";
++
++    private static string BuildFingerprint(Guid companyId, Guid transactionId, string anomalyType) =>
++        $"{CorrelationPrefix}:{companyId:N}:{transactionId:N}:{anomalyType}".ToLowerInvariant();
++
++    private static string BuildCorrelationId(Guid companyId, Guid transactionId, string anomalyType) =>
++        $"{CorrelationPrefix}:{companyId:N}:{transactionId:N}:{anomalyType}";
++
++    private static void Validate(EvaluateFinanceTransactionAnomalyCommand command)
++    {
++        if (command.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(command));
++        }
++
++        if (command.TransactionId == Guid.Empty)
++        {
++            throw new ArgumentException("Transaction id is required.", nameof(command));
++        }
++
++        if (command.AgentId == Guid.Empty)
++        {
++            throw new ArgumentException("Agent id cannot be empty.", nameof(command));
++        }
++
++        if (command.WorkflowInstanceId == Guid.Empty)
++        {
++            throw new ArgumentException("Workflow instance id cannot be empty.", nameof(command));
++        }
++    }
++
++    private sealed record TransactionRow(
++        Guid Id,
++        Guid CompanyId,
++        Guid AccountId,
++        string AccountName,
++        Guid? CounterpartyId,
++        string? CounterpartyName,
++        Guid? InvoiceId,
++        Guid? BillId,
++        DateTime TransactionUtc,
++        string TransactionType,
++        decimal Amount,
++        string Currency,
++        string Description,
++        string ExternalReference);
++
++    private sealed record HistoricalTransactionRow(DateTime TransactionUtc, decimal AbsoluteAmount);
++
++    private sealed record HistoricalBaseline(
++        int SampleSize,
++        decimal AverageAbsoluteAmount,
++        decimal MaximumAbsoluteAmount,
++        DateTime? EarliestTransactionUtc,
++        DateTime? LatestTransactionUtc);
++
++    private sealed record AnomalyDecision(
++        string AnomalyType,
++        string Explanation,
++        decimal Confidence,
++        string RecommendedAction,
++        AlertSeverity Severity);
++
++    private sealed record AlertMutation(Alert Alert, bool Created, bool Deduplicated);
++}
++
++internal static class FinanceAnomalyDateTimeExtensions
++{
++    public static DateTime AddBusinessDays(this DateTime value, int days)
++    {
++        var date = value;
++        var remaining = Math.Max(0, days);
++        while (remaining > 0)
++        {
++            date = date.AddDays(1);
++            if (date.DayOfWeek is not DayOfWeek.Saturday and not DayOfWeek.Sunday)
++            {
++                remaining--;
++            }
++        }
++
++        return date;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs b/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
+@@ -16,14 +16,17 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+     private readonly IApprovalRequestService _approvalRequestService;
+     private readonly ICompanyKnowledgeSearchService _knowledgeSearchService;
+     private readonly IFinanceToolProvider _financeToolProvider;
++    private readonly IFinanceTransactionAnomalyDetectionService _financeAnomalyDetectionService;
+ 
+     public InternalCompanyToolContract(
+         ICompanyTaskQueryService taskQueryService,
+         ICompanyTaskCommandService taskCommandService,
+         IApprovalRequestService approvalRequestService,
+         ICompanyKnowledgeSearchService knowledgeSearchService,
+-        IFinanceToolProvider financeToolProvider)
++        IFinanceToolProvider financeToolProvider,
++        IFinanceTransactionAnomalyDetectionService financeAnomalyDetectionService)
+     {
+         _taskQueryService = taskQueryService;
+         _taskCommandService = taskCommandService;
+         _approvalRequestService = approvalRequestService;
+         _knowledgeSearchService = knowledgeSearchService;
+         _financeToolProvider = financeToolProvider;
++        _financeAnomalyDetectionService = financeAnomalyDetectionService;
+     }
+@@ -58,6 +61,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+                 "get_profit_and_loss_summary" => await ExecuteGetProfitAndLossSummaryAsync(request, cancellationToken),
+                 "recommend_transaction_category" => await ExecuteRecommendTransactionCategoryAsync(request, cancellationToken),
+                 "recommend_invoice_approval_decision" => await ExecuteRecommendInvoiceApprovalDecisionAsync(request, cancellationToken),
++                "evaluate_transaction_anomaly" => await ExecuteEvaluateTransactionAnomalyAsync(request, cancellationToken),
+                 "categorize_transaction" => await ExecuteCategorizeTransactionAsync(request, cancellationToken),
+                 "approve_invoice" => await ExecuteApproveInvoiceAsync(request, cancellationToken),
+                 _ => Failed("unsupported_internal_tool", "The requested internal tool is not available.")
+@@ -425,6 +429,34 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             Metadata(request, "finance_tool_provider"));
+     }
+ 
++    private async Task<InternalToolExecutionResponse> ExecuteEvaluateTransactionAnomalyAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (!EnsureAction(request, ToolActionType.Recommend, out var actionFailure))
++        {
++            return actionFailure;
++        }
++
++        var transactionId = ReadGuid(request.Payload, "transactionId");
++        if (!transactionId.HasValue)
++        {
++            return Failed("transaction_id_required", "A transaction id is required to evaluate anomalies.");
++        }
++
++        var evaluation = await _financeAnomalyDetectionService.EvaluateAsync(
++            new EvaluateFinanceTransactionAnomalyCommand(
++                request.CompanyId,
++                transactionId.Value,
++                ReadGuid(request.Payload, "workflowInstanceId"),
++                request.AgentId),
++            cancellationToken);
++
++        return InternalToolExecutionResponse.Succeeded(
++            "Transaction anomaly evaluation was completed.",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["anomalyEvaluation"] = Serialize(evaluation),
++                ["isAnomalous"] = JsonValue.Create(evaluation.IsAnomalous),
++                ["anomalyCount"] = JsonValue.Create(evaluation.Anomalies.Count)
++            },
++            Metadata(request, "finance_anomaly_detection_service"));
++    }
++
+     private async Task<InternalToolExecutionResponse> ExecuteCategorizeTransactionAsync(
+         InternalToolExecutionRequest request,
+         CancellationToken cancellationToken)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
+@@ -58,6 +58,7 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+         FinanceDefinition("get_profit_and_loss_summary", ToolActionType.Read, FinanceInputSchemas.ProfitAndLoss(), FinanceOutputSchemas.WithDataProperty("profitAndLossSummary")),
+         FinanceDefinition("recommend_transaction_category", ToolActionType.Recommend, FinanceInputSchemas.TransactionRecommendation(), FinanceOutputSchemas.WithDataProperty("recommendation")),
+         FinanceDefinition("recommend_invoice_approval_decision", ToolActionType.Recommend, FinanceInputSchemas.InvoiceRecommendation(), FinanceOutputSchemas.WithDataProperty("recommendation")),
++        FinanceDefinition("evaluate_transaction_anomaly", ToolActionType.Recommend, FinanceInputSchemas.TransactionAnomalyEvaluation(), FinanceOutputSchemas.WithDataProperty("anomalyEvaluation")),
+         FinanceDefinition("categorize_transaction", ToolActionType.Execute, FinanceInputSchemas.CategorizeTransaction(), FinanceOutputSchemas.WithDataProperty("transaction")),
+         FinanceDefinition("approve_invoice", ToolActionType.Execute, FinanceInputSchemas.ApproveInvoice(), FinanceOutputSchemas.WithDataProperty("invoice"))
+     ];
+@@ -159,6 +160,21 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+                 }
+                 """);
+ 
++        public static JsonObject TransactionAnomalyEvaluation() =>
++            ParseSchema(
++                """
++                {
++                  "type": "object",
++                  "additionalProperties": false,
++                  "required": [ "transactionId" ],
++                  "properties": {
++                    "transactionId": { "type": "string", "format": "uuid" },
++                    "workflowInstanceId": { "type": "string", "format": "uuid" }
++                  }
++                }
++                """);
++
+         public static JsonObject CategorizeTransaction() =>
+             ParseSchema(
+                 """
+END_OF_PATCH

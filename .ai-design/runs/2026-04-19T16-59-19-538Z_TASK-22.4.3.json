@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-22.4.3",
+  "promptPath": ".ai-design/prompts/TASK-22.4.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-19T16:59:19.538Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-19T16-59-19-538Z_TASK-22.4.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-19T16-59-19-538Z_TASK-22.4.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-19T17:07:32.526Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": ";\n         Assert.True(session.TimeToFirstActionMilliseconds >= 0);\n     }\n@@ -35,12 +45,14 @@ public sealed class DashboardTelemetrySessionTests\n     public void Scroll_depth_only_moves_forward()\n     {\n         var session = new DashboardTelemetrySession(\"dashboard\", Guid.NewGuid());\n \n         session.RecordScrollDepth(12);\n-        session.RecordScrollDepth(8);\n-        session.RecordScrollDepth(57);\n+        session.RecordScrollDepth(30);\n+        session.RecordScrollDepth(80);\n+        session.RecordScrollDepth(80);\n+        session.RecordScrollDepth(100);\n \n-        Assert.Equal(57, session.MaxScrollDepthPercentage);\n+        Assert.Equal(100, session.MaxScrollDepthPercentage);\n+        Assert.Equal(100, session.HighestScrollDepthMilestone);\n+        Assert.Equal(new[] { 25, 50, 75, 100 }, session.ScrollDepthMilestonesReached.ToArray());\n     }\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs\nindex 89d3939..f44ebc3 100644\n--- a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs\n@@ -38,11 +38,12 @@ public sealed class TopActionsListTests\n             Assert.DoesNotContain(\"Deferred follow-up\", cut.Markup);\n         });\n \n-        Assert.Equal(QueueRoutes.BuildPath(companyId), cut.Find(\"[data-testid='view-full-queue-link']\").GetAttribute(\"href\"));\n+        var expectedQueuePath = DashboardRoutes.EnsureCompanyContext(QueueRoutes.BuildPath(companyId), companyId, QueueRoutes.Home);\n+        Assert.Equal(expectedQueuePath, cut.Find(\"[data-testid='view-full-queue-link']\").GetAttribute(\"href\"));\n         cut.Find(\"[data-testid='view-full-queue-link']\").Click();\n \n-        Assert.Equal($\"http://localhost{QueueRoutes.BuildPath(companyId)}\", navigation.Uri);\n+        Assert.Equal($\"http://localhost{expectedQueuePath}\", navigation.Uri);\n     }\n \n     [Fact]\n     public void Component_caps_requested_top_actions_at_five()\nEND_OF_PATCH\n",
+  "stderrTail": "ue(session.TimeToFirstActionMilliseconds >= 0);\n     }\n@@ -35,12 +45,14 @@ public sealed class DashboardTelemetrySessionTests\n     public void Scroll_depth_only_moves_forward()\n     {\n         var session = new DashboardTelemetrySession(\"dashboard\", Guid.NewGuid());\n \n         session.RecordScrollDepth(12);\n-        session.RecordScrollDepth(8);\n-        session.RecordScrollDepth(57);\n+        session.RecordScrollDepth(30);\n+        session.RecordScrollDepth(80);\n+        session.RecordScrollDepth(80);\n+        session.RecordScrollDepth(100);\n \n-        Assert.Equal(57, session.MaxScrollDepthPercentage);\n+        Assert.Equal(100, session.MaxScrollDepthPercentage);\n+        Assert.Equal(100, session.HighestScrollDepthMilestone);\n+        Assert.Equal(new[] { 25, 50, 75, 100 }, session.ScrollDepthMilestonesReached.ToArray());\n     }\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs\nindex 89d3939..f44ebc3 100644\n--- a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs\n@@ -38,11 +38,12 @@ public sealed class TopActionsListTests\n             Assert.DoesNotContain(\"Deferred follow-up\", cut.Markup);\n         });\n \n-        Assert.Equal(QueueRoutes.BuildPath(companyId), cut.Find(\"[data-testid='view-full-queue-link']\").GetAttribute(\"href\"));\n+        var expectedQueuePath = DashboardRoutes.EnsureCompanyContext(QueueRoutes.BuildPath(companyId), companyId, QueueRoutes.Home);\n+        Assert.Equal(expectedQueuePath, cut.Find(\"[data-testid='view-full-queue-link']\").GetAttribute(\"href\"));\n         cut.Find(\"[data-testid='view-full-queue-link']\").Click();\n \n-        Assert.Equal($\"http://localhost{QueueRoutes.BuildPath(companyId)}\", navigation.Uri);\n+        Assert.Equal($\"http://localhost{expectedQueuePath}\", navigation.Uri);\n     }\n \n     [Fact]\n     public void Component_caps_requested_top_actions_at_five()\nEND_OF_PATCH\ntokens used\n119,336\n",
+  "verbosityMode": "verbose"
+}

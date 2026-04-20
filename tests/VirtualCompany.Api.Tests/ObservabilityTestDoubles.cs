@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Security.Claims;
 using Microsoft.Extensions.Logging;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Auth;
 
 namespace VirtualCompany.Api.Tests;
@@ -29,10 +31,11 @@ internal sealed class ScopeCapturingLogger<T> : ILogger<T>
 
     public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
     {
-        Entries.Add(new CapturedLogEntry(logLevel, formatter(state, exception), FlattenScopes(), exception));
+        Entries.Add(new CapturedLogEntry(logLevel, formatter(state, exception), FlattenState(state), FlattenScopes(), exception));
     }
 
-    private IReadOnlyDictionary<string, object?> FlattenScopes()
+    private static IReadOnlyDictionary<string, object?> FlattenState<TState>(TState state)
+        where TState : notnull
     {
         var flattened = new Dictionary<string, object?>(StringComparer.Ordinal);
 
@@ -52,9 +55,25 @@ internal sealed class ScopeCapturingLogger<T> : ILogger<T>
         return flattened;
     }
 
+    private IReadOnlyDictionary<string, object?> FlattenScopes()
+    {
+        var flattened = new Dictionary<string, object?>(StringComparer.Ordinal);
+
+        foreach (var scope in _activeScopes)
+        {
+            foreach (var scopeValue in FlattenState(scope))
+            {
+                flattened[scopeValue.Key] = scopeValue.Value;
+            }
+        }
+
+        return flattened;
+    }
+
     internal sealed record CapturedLogEntry(
         LogLevel LogLevel,
         string Message,
+        IReadOnlyDictionary<string, object?> State,
         IReadOnlyDictionary<string, object?> Scope,
         Exception? Exception);
 
@@ -80,3 +99,27 @@ internal sealed class ScopeCapturingLogger<T> : ILogger<T>
         }
     }
 }
+
+internal sealed class TestFinanceSeedTelemetry : IFinanceSeedTelemetry
+{
+    private readonly ConcurrentQueue<CapturedFinanceSeedTelemetryEvent> _events = new();
+
+    public IReadOnlyList<CapturedFinanceSeedTelemetryEvent> Events => _events.ToArray();
+
+    public void Reset()
+    {
+        while (_events.TryDequeue(out _))
+        {
+        }
+    }
+
+    public Task TrackAsync(string eventName, FinanceSeedTelemetryContext context, CancellationToken cancellationToken = default)
+    {
+        _events.Enqueue(new CapturedFinanceSeedTelemetryEvent(eventName, context));
+        return Task.CompletedTask;
+    }
+}
+
+internal sealed record CapturedFinanceSeedTelemetryEvent(
+    string EventName,
+    FinanceSeedTelemetryContext Context);

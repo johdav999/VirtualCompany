@@ -1,0 +1,59 @@
+<div class="alert @ResolveAlertClass() mb-0" role="status">
+    @if (!string.IsNullOrWhiteSpace(ResourceTitle))
+    {
+        <div class="fw-semibold">@ResourceTitle</div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(SecondaryText))
+    {
+        <div class="small text-body-secondary mt-1">@SecondaryText</div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(TypeText))
+    {
+        <div class="small text-body-secondary mt-1">@TypeText</div>
+    }
+
+    <div class="mt-2">@Message</div>
+
+    @if (CanNavigate && !string.IsNullOrWhiteSpace(NavigateHref))
+    {
+        <a class="btn btn-outline-primary btn-sm mt-3" href="@NavigateHref" target="_blank" rel="noopener noreferrer">@ActionText</a>
+    }
+</div>
+
+@code {
+    [Parameter] public string Availability { get; set; } = "none";
+    [Parameter] public string Message { get; set; } = string.Empty;
+    [Parameter] public string? ResourceTitle { get; set; }
+    [Parameter] public string? SecondaryText { get; set; }
+    [Parameter] public string? TypeText { get; set; }
+    [Parameter] public bool CanNavigate { get; set; }
+    [Parameter] public string? NavigateHref { get; set; }
+    [Parameter] public string ActionText { get; set; } = "Open";
+
+    private string ResolveAlertClass() =>
+        NormalizeAvailability(Availability) switch
+        {
+            "available" => "alert-success",
+            "missing" => "alert-warning",
+            "inaccessible" => "alert-warning",
+            _ => "alert-light"
+        };
+
+    private static string NormalizeAvailability(string? availability)
+    {
+        if (string.IsNullOrWhiteSpace(availability))
+        {
+            return "none";
+        }
+
+        return availability.Trim().ToLowerInvariant() switch
+        {
+            "available" => "available",
+            "missing" => "missing",
+            "inaccessible" => "inaccessible",
+            _ => "none"
+        };
+    }
+}

@@ -1,0 +1,88 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -351,6 +351,16 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+ 
+         thresholdContext["toolName"] = JsonValue.Create(command.ToolName);
+         thresholdContext["actionType"] = JsonValue.Create(ToolActionTypeValues.Parse(command.ActionType).ToStorageValue());
++        thresholdContext["toolExecutionId"] = decision.Audit is null
++            ? null
++            : JsonValue.Create(decision.Audit.ExecutionId);
++
++        if (command.TaskId.HasValue)
++        {
++            thresholdContext["taskId"] = JsonValue.Create(command.TaskId.Value);
++        }
++
++        thresholdContext["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null;
+ 
+         if (!string.IsNullOrWhiteSpace(command.Scope))
+         {
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -769,29 +769,6 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                         TryReadString(action.PolicyDecision, "explanation", "summary", "message"),
+                         $"Action: {actionLabel}",
+                         [new ApprovalAffectedEntityDto(ApprovalTargetEntityType.Action.ToStorageValue(), action.Id, actionLabel)]);
+-                }
+-    private static Dictionary<string, JsonNode?> BuildBlockedApprovalResultPayload(ApprovalRequest approval, ToolExecutionAttempt attempt)
+-    {
+-        var reasonCode = approval.ExecutionBlockReasonCode ?? PolicyDecisionReasonCodes.ApprovalCancelled;
+-        var status = approval.Status == ApprovalRequestStatus.Rejected
+-            ? ToolExecutionStatus.Rejected.ToStorageValue()
+-            : ToolExecutionStatus.Denied.ToStorageValue();
+-
+-        return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-        {
+-            ["schemaVersion"] = JsonValue.Create(ToolExecutionResult.SchemaVersion),
+-            ["success"] = JsonValue.Create(false),
+-            ["status"] = JsonValue.Create(status),
+-            ["toolName"] = JsonValue.Create(attempt.ToolName),
+-            ["actionType"] = JsonValue.Create(attempt.ActionType.ToStorageValue()),
+-            ["errorCode"] = JsonValue.Create(reasonCode),
+-            ["errorMessage"] = JsonValue.Create(approval.DecisionSummary ?? "The approval request did not authorize execution."),
+-            ["approvalRequestId"] = JsonValue.Create(approval.Id),
+-            ["executionId"] = JsonValue.Create(attempt.Id),
+-            ["taskId"] = attempt.TaskId.HasValue ? JsonValue.Create(attempt.TaskId.Value) : null
+-        };
+-    }
+-
+-
++                }
+ 
+                 return new ApprovalSummaryContext(
+                     null,
+@@ -800,6 +777,29 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             });
+     }
+ 
++    private static Dictionary<string, JsonNode?> BuildBlockedApprovalResultPayload(ApprovalRequest approval, ToolExecutionAttempt attempt)
++    {
++        var reasonCode = approval.ExecutionBlockReasonCode ?? PolicyDecisionReasonCodes.ApprovalCancelled;
++        var status = approval.Status == ApprovalRequestStatus.Rejected
++            ? ToolExecutionStatus.Rejected.ToStorageValue()
++            : ToolExecutionStatus.Denied.ToStorageValue();
++
++        return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create(ToolExecutionResult.SchemaVersion),
++            ["success"] = JsonValue.Create(false),
++            ["status"] = JsonValue.Create(status),
++            ["toolName"] = JsonValue.Create(attempt.ToolName),
++            ["actionType"] = JsonValue.Create(attempt.ActionType.ToStorageValue()),
++            ["errorCode"] = JsonValue.Create(reasonCode),
++            ["errorMessage"] = JsonValue.Create(approval.DecisionSummary ?? "The approval request did not authorize execution."),
++            ["approvalRequestId"] = JsonValue.Create(approval.Id),
++            ["executionId"] = JsonValue.Create(attempt.Id),
++            ["taskId"] = attempt.TaskId.HasValue ? JsonValue.Create(attempt.TaskId.Value) : null,
++            ["workflowInstanceId"] = attempt.WorkflowInstanceId.HasValue ? JsonValue.Create(attempt.WorkflowInstanceId.Value) : null
++        };
++    }
++
+     private static ApprovalRequestDto ToDto(ApprovalRequest approval, ApprovalSummaryContext? summaryContext)
+     {
+         var thresholdSummary = BuildThresholdSummary(approval.ThresholdContext);
+END_OF_PATCH

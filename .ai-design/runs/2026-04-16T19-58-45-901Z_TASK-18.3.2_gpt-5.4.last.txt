@@ -1,0 +1,459 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 1d2a8c7..73f7049 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -413,6 +413,14 @@ public sealed record FinanceAnomalyRelatedRecordDto(
+     string Currency,
+     string? SupplierName);
+ 
++public sealed record FinanceAnomalyRecordLinkDto(
++    Guid? RecordId,
++    string RecordType,
++    string Reference,
++    DateTime? OccurredAtUtc,
++    decimal? Amount,
++    string? Currency);
++
+ public sealed record FinanceAnomalyWorkbenchItemDto(
+     Guid Id,
+     string AnomalyType,
+@@ -445,6 +453,7 @@ public sealed record FinanceAnomalyDetailDto(
+     string? RelatedInvoiceReference,
+     Guid? RelatedBillId,
+     string? RelatedBillReference,
++    IReadOnlyList<FinanceAnomalyRecordLinkDto> RelatedRecordLinks,
+     IReadOnlyList<FinanceAnomalyFollowUpTaskDto> FollowUpTasks);
+ 
+ public sealed record FinanceSeedRecurringExpenseDto(
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 31e35b0..63b02eb 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -707,6 +707,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+                 ?? ExtractString(alert.Evidence, "counterpartyName"));
+         var affectedRecord = transaction is null
+             ? null
++            // The detail card shows the primary transaction summary while related record links expose drill-down targets.
+             : new FinanceAnomalyRelatedRecordDto(
+                 transaction.Id,
+                 transaction.ExternalReference,
+@@ -726,6 +727,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             invoice?.InvoiceNumber,
+             bill?.Id,
+             bill?.BillNumber,
++            BuildFinanceAnomalyRecordLinks(transaction, invoice, bill),
+             tasks
+                 .OrderByDescending(x => x.UpdatedUtc)
+                 .ThenByDescending(x => x.CreatedUtc)
+@@ -1247,6 +1249,37 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             bill?.Id);
+     }
+ 
++    private static IReadOnlyList<FinanceAnomalyRecordLinkDto> BuildFinanceAnomalyRecordLinks(
++        FinanceAnomalyTransactionRow? transaction,
++        FinanceAnomalyInvoiceLinkRow? invoice,
++        FinanceAnomalyBillLinkRow? bill)
++    {
++        var links = new List<FinanceAnomalyRecordLinkDto>(3);
++
++        if (transaction is not null)
++        {
++            links.Add(new FinanceAnomalyRecordLinkDto(
++                transaction.Id,
++                "transaction",
++                transaction.ExternalReference,
++                transaction.TransactionUtc,
++                transaction.Amount,
++                transaction.Currency));
++        }
++
++        if (invoice is not null)
++        {
++            links.Add(new FinanceAnomalyRecordLinkDto(
++                invoice.Id,
++                "invoice",
++                invoice.InvoiceNumber,
++                invoice.IssuedUtc,
++                invoice.Amount,
++                invoice.Currency));
++        }
++
++        if (bill is not null)
++        {
++            links.Add(new FinanceAnomalyRecordLinkDto(bill.Id, "bill", bill.BillNumber, bill.ReceivedUtc, bill.Amount, bill.Currency));
++        }
++
++        return links;
++    }
++
+     private static FinanceAnomalyDeduplicationDto? BuildDeduplicationMetadata(Alert alert)
+     {
+         var key = NormalizeOptionalText(ExtractString(alert.Metadata, "dedupeKey"));
+diff --git a/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor b/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor
+index 4b531ca..c4b4c36 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor
+@@ -107,9 +107,15 @@
+                                     <td>@anomaly.ExplanationSummary</td>
+                                     <td class="text-nowrap">@FinanceAnomalyPresentation.FormatConfidence(anomaly.Confidence)</td>
+                                     <td>@anomaly.RecommendedAction</td>
+-                                    <td>
+-                                        <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(anomaly.Status)">
+-                                            @FinanceAnomalyPresentation.FormatLabel(anomaly.Status)
++                                    <td class="text-nowrap">
++                                        @{
++                                            var followUpStatus = string.IsNullOrWhiteSpace(anomaly.FollowUpTaskStatus)
++                                                ? "not_linked"
++                                                : anomaly.FollowUpTaskStatus;
++                                        }
++
++                                        <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(followUpStatus)">
++                                            @FinanceAnomalyPresentation.FormatLabel(followUpStatus)
+                                         </span>
+                                     </td>
+                                 </tr>
+@@ -127,16 +133,3 @@
+         }
+     </FinanceDataState>
+ </FinancePageLayout>
+-                    {
+-                        <article class="finance-anomaly-card">
+-                            <div class="finance-anomaly-card__meta">
+-                                <span class="finance-risk-pill finance-risk-pill--warning">@anomaly.Type</span>
+-                                <span>@anomaly.ScenarioProfile</span>
+-                                <span>@anomaly.AffectedRecords</span>
+-                            </div>
+-                            <h2 class="h5 mt-3">@anomaly.Id</h2>
+-                            <p class="mb-0 text-body-secondary">@anomaly.DetectorSummary</p>
+-                        </article>
+-                    }
+-                </div>
+-            </section>
+-        }
+-    </FinanceDataState>
+-</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/AnomalyDetailPage.razor b/src/VirtualCompany.Web/Pages/Finance/AnomalyDetailPage.razor
+index 17e27e5..4f8e19c 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/AnomalyDetailPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/AnomalyDetailPage.razor
+@@ -102,6 +102,43 @@
+             </section>
+         }
+ 
++        @if (Detail.RelatedRecordLinks.Count > 0)
++        {
++            <section class="wizard-card finance-anomaly-section mt-4">
++                <div class="finance-anomaly-section__header">
++                    <div>
++                        <h2 class="h5 mb-1">Underlying records</h2>
++                        <p class="text-body-secondary mb-0">Navigate to the related finance records without losing the current workbench filters.</p>
++                    </div>
++                </div>
++                <div class="finance-anomaly-task-list">
++                    @foreach (var record in Detail.RelatedRecordLinks)
++                    {
++                        var recordHref = BuildRecordHref(record);
++
++                        <article class="finance-anomaly-task">
++                            <div class="d-flex flex-wrap justify-content-between gap-2">
++                                <strong>@FinanceAnomalyPresentation.FormatLabel(record.RecordType)</strong>
++                                @if (recordHref is not null)
++                                {
++                                    <a class="btn btn-outline-secondary btn-sm" href="@recordHref">Open @FinanceAnomalyPresentation.FormatLabel(record.RecordType)</a>
++                                }
++                            </div>
++                            <div class="small text-body-secondary mt-2">@record.Reference</div>
++                            @if (record.OccurredAtUtc.HasValue || record.Amount.HasValue)
++                            {
++                                <div class="small text-body-secondary mt-1">
++                                    @if (record.OccurredAtUtc.HasValue)
++                                    {
++                                        <span>@FinanceAnomalyPresentation.FormatDateTime(record.OccurredAtUtc)</span>
++                                    }
++                                    @if (record.Amount.HasValue && !string.IsNullOrWhiteSpace(record.Currency))
++                                    {
++                                        <span class="ms-2">@FinanceAnomalyPresentation.FormatCurrency(record.Amount.Value, record.Currency!)</span>
++                                    }
++                                </div>
++                            }
++                        </article>
++                    }
++                </div>
++            </section>
++        }
++
+         <section class="wizard-card finance-anomaly-section mt-4">
+             <div class="finance-anomaly-section__header">
+                 <div>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/AnomalyDetailPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/AnomalyDetailPage.razor.cs
+index bfce80c..b6d5a72 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/AnomalyDetailPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/AnomalyDetailPage.razor.cs
+@@ -92,6 +92,23 @@ public partial class AnomalyDetailPage : FinancePageBase
+         }
+     }
+ 
+-    private string BuildTaskHref(Guid taskId) =>
+-        $"/tasks?companyId={AccessState.CompanyId:D}&taskId={taskId:D}";
++    private string BuildTaskHref(Guid taskId)
++    {
++        var path = $"/tasks?companyId={AccessState.CompanyId:D}&taskId={taskId:D}";
++        return ReturnUrlNavigation.AppendReturnUrl(path, BackToListHref);
++    }
++
++    private string? BuildRecordHref(FinanceAnomalyRecordLinkResponse record) =>
++        record.RecordId is not Guid recordId || recordId == Guid.Empty
++            ? null
++            : record.RecordType.Trim().ToLowerInvariant() switch
++            {
++                "transaction" => FinanceRoutes.BuildTransactionDetailPath(recordId, AccessState.CompanyId),
++                "invoice" => FinanceRoutes.BuildInvoiceDetailPath(recordId, AccessState.CompanyId),
++                "bill" => null,
++                _ => null
++            };
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Tasks.razor b/src/VirtualCompany.Web/Pages/Tasks.razor
+index ae877d0..2788800 100644
+--- a/src/VirtualCompany.Web/Pages/Tasks.razor
++++ b/src/VirtualCompany.Web/Pages/Tasks.razor
+@@ -23,7 +23,7 @@ else if (CompanyId is null)
+             else
+             {
+                 <div class="template-grid">
+-                    @foreach (var membership in activeMemberships)
++                    @foreach (var membership in activeMemberships)
+                     {
+-                        <a class="template-card text-decoration-none text-reset" href="@BuildTasksUri(membership.CompanyId, null, null, null)">
++                        <a class="template-card text-decoration-none text-reset" href="@BuildTasksUri(membership.CompanyId, null, null, null, ReturnUrl)">
+                             <strong>@membership.CompanyName</strong>
+                             <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
+                         </a>
+@@ -39,6 +39,13 @@ else
+                 <h1>@(companyAccess?.CompanyName ?? "Tasks")</h1>
+                 <p class="text-body-secondary mb-0">Open work, blocked execution, and dashboard-linked task details are scoped to this company.</p>
+ 
++                @if (NormalizedReturnUrl is not null)
++                {
++                    <div class="dashboard-actions mt-3">
++                        <a class="btn btn-outline-secondary" href="@NormalizedReturnUrl">Back to workbench</a>
++                    </div>
++                }
++
+                 <form class="agent-filter-bar mt-4" method="get">
+                     <input type="hidden" name="companyId" value="@CompanyId" />
+                     @if (TaskId is Guid taskId)
+@@ -46,6 +53,10 @@ else
+                         <input type="hidden" name="taskId" value="@taskId" />
+                     }
++                    @if (NormalizedReturnUrl is not null)
++                    {
++                        <input type="hidden" name="returnUrl" value="@NormalizedReturnUrl" />
++                    }
+                     <div>
+                         <label class="form-label" for="task-status-filter">Status</label>
+                         <select id="task-status-filter" class="form-select" name="status">
+@@ -64,7 +75,7 @@ else
+                     </div>
+                     <div class="dashboard-actions">
+                         <button class="btn btn-primary" type="submit">Apply filters</button>
+-                        <a class="btn btn-outline-secondary" href="@BuildTasksUri(CompanyId!.Value, null, null, null)">Clear</a>
++                        <a class="btn btn-outline-secondary" href="@BuildTasksUri(CompanyId!.Value, null, null, null, ReturnUrl)">Clear</a>
+                     </div>
+                 </form>
+ 
+@@ -78,7 +89,7 @@ else
+                 {
+                     <div class="list-group mt-4">
+                         @foreach (var task in tasks)
+-                        {
+-                            <a class="@GetTaskListItemClass(task)" href="@BuildTasksUri(task.CompanyId, Status, AssignedAgentId, task.Id)">
++                        {
++                            <a class="@GetTaskListItemClass(task)" href="@BuildTasksUri(task.CompanyId, Status, AssignedAgentId, task.Id, ReturnUrl)">
+                                 <div class="d-flex w-100 justify-content-between gap-3">
+                                     <div>
+                                         <strong>@task.Title</strong>
+@@ -129,7 +140,7 @@ else
+                         <ul class="list-unstyled mb-0">
+                             @foreach (var subtask in selectedTask.Subtasks)
+                             {
+                                 <li class="mb-2">
+-                                    <a href="@BuildTasksUri(subtask.CompanyId, null, null, subtask.Id)">@subtask.Title</a>
++                                    <a href="@BuildTasksUri(subtask.CompanyId, null, null, subtask.Id, ReturnUrl)">@subtask.Title</a>
+                                     <span class="text-body-secondary"> - @ToDisplayText(subtask.Status)</span>
+                                 </li>
+                             }
+@@ -156,6 +167,9 @@ else
+     [SupplyParameterFromQuery(Name = "assignedAgentId")]
+     public Guid? AssignedAgentId { get; set; }
+ 
++    [SupplyParameterFromQuery(Name = "returnUrl")]
++    public string? ReturnUrl { get; set; }
++
+     private bool isLoading = true;
+     private string? errorMessage;
+     private CurrentUserContextViewModel? currentUser;
+@@ -163,6 +177,8 @@ else
+     private List<TaskListItemViewModel> tasks = [];
+     private TaskDetailViewModel? selectedTask;
+ 
++    private string? NormalizedReturnUrl => ReturnUrlNavigation.NormalizeLocalReturnUrl(ReturnUrl);
++
+     private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
+         currentUser?.Memberships
+             .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+@@ -178,7 +194,7 @@ else
+         {
+             currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+             if (CompanyId is null && currentUser?.ActiveCompany is not null)
+             {
+-                Navigation.NavigateTo(BuildTasksUri(currentUser.ActiveCompany.CompanyId, Status, AssignedAgentId, TaskId), replace: true);
++                Navigation.NavigateTo(BuildTasksUri(currentUser.ActiveCompany.CompanyId, Status, AssignedAgentId, TaskId, ReturnUrl), replace: true);
+                 return;
+             }
+ 
+@@ -217,13 +233,17 @@ else
+         };
+ 
+-    private static string BuildTasksUri(Guid companyId, string? status, Guid? assignedAgentId, Guid? taskId)
++    private static string BuildTasksUri(Guid companyId, string? status, Guid? assignedAgentId, Guid? taskId, string? returnUrl)
+     {
+         var query = new List<string> { $"companyId={companyId}" };
+         if (!string.IsNullOrWhiteSpace(status)) query.Add($"status={Uri.EscapeDataString(status)}");
+         if (assignedAgentId is Guid agentId) query.Add($"assignedAgentId={agentId}");
+         if (taskId is Guid selectedTaskId) query.Add($"taskId={selectedTaskId}");
++        var normalizedReturnUrl = ReturnUrlNavigation.NormalizeLocalReturnUrl(returnUrl);
++        if (!string.IsNullOrWhiteSpace(normalizedReturnUrl))
++        {
++            query.Add($"returnUrl={Uri.EscapeDataString(normalizedReturnUrl)}");
++        }
+         return $"/tasks?{string.Join("&", query)}";
+     }
+ }
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 7670f17..64f5db4 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -475,6 +475,7 @@ public sealed class FinanceAnomalyDetailResponse
+     public string? RelatedInvoiceReference { get; set; }
+     public Guid? RelatedBillId { get; set; }
+     public string? RelatedBillReference { get; set; }
++    public List<FinanceAnomalyRecordLinkResponse> RelatedRecordLinks { get; set; } = [];
+     public List<FinanceAnomalyFollowUpTaskResponse> FollowUpTasks { get; set; } = [];
+ }
+ 
+@@ -485,6 +486,16 @@ public sealed class FinanceAnomalyDeduplicationResponse
+     public DateTime? WindowEndUtc { get; set; }
+ }
+ 
++public sealed class FinanceAnomalyRecordLinkResponse
++{
++    public Guid? RecordId { get; set; }
++    public string RecordType { get; set; } = string.Empty;
++    public string Reference { get; set; } = string.Empty;
++    public DateTime? OccurredAtUtc { get; set; }
++    public decimal? Amount { get; set; }
++    public string? Currency { get; set; }
++}
++
+ public sealed class FinanceAnomalyRelatedRecordResponse
+ {
+     public Guid Id { get; set; }
+diff --git a/src/VirtualCompany.Web/Services/ReturnUrlNavigation.cs b/src/VirtualCompany.Web/Services/ReturnUrlNavigation.cs
+new file mode 100644
+index 0000000..692124c
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/ReturnUrlNavigation.cs
+@@ -0,0 +1,27 @@
++namespace VirtualCompany.Web.Services;
++
++public static class ReturnUrlNavigation
++{
++    public static string? NormalizeLocalReturnUrl(string? returnUrl)
++    {
++        if (string.IsNullOrWhiteSpace(returnUrl))
++        {
++            return null;
++        }
++
++        var normalized = returnUrl.Trim();
++        if (!normalized.StartsWith('/', StringComparison.Ordinal) || normalized.StartsWith("//", StringComparison.Ordinal))
++        {
++            return null;
++        }
++
++        return normalized;
++    }
++
++    public static string AppendReturnUrl(string path, string? returnUrl)
++    {
++        var normalizedReturnUrl = NormalizeLocalReturnUrl(returnUrl);
++        if (normalizedReturnUrl is null)
++        {
++            return path;
++        }
++
++        var separator = path.Contains('?', StringComparison.Ordinal) ? "&" : "?";
++        return $"{path}{separator}returnUrl={Uri.EscapeDataString(normalizedReturnUrl)}";
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceAnomalyFilterStateTests.cs b/tests/VirtualCompany.Api.Tests/FinanceAnomalyFilterStateTests.cs
+index 31ed3db..591b18b 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceAnomalyFilterStateTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceAnomalyFilterStateTests.cs
+@@ -41,4 +41,20 @@ public sealed class FinanceAnomalyFilterStateTests
+             Key = "finance-transaction-anomaly:dedupe"
+         }));
+     }
++
++    [Fact]
++    public void Finance_workbench_return_url_only_preserves_local_navigation_targets()
++    {
++        var companyId = Guid.Parse("11111111-1111-1111-1111-111111111111");
++        var taskId = Guid.Parse("22222222-2222-2222-2222-222222222222");
++        var returnUrl = $"/finance/anomalies?companyId={companyId:D}&status=awaiting_approval&page=2";
++
++        Assert.Equal(returnUrl, ReturnUrlNavigation.NormalizeLocalReturnUrl(returnUrl));
++        Assert.Null(ReturnUrlNavigation.NormalizeLocalReturnUrl("https://example.com/finance/anomalies"));
++        Assert.Null(ReturnUrlNavigation.NormalizeLocalReturnUrl("//example.com/finance/anomalies"));
++
++        var href = ReturnUrlNavigation.AppendReturnUrl($"/tasks?companyId={companyId:D}&taskId={taskId:D}", returnUrl);
++        Assert.Contains($"returnUrl={Uri.EscapeDataString(returnUrl)}", href);
++
++        Assert.Equal($"/tasks?companyId={companyId:D}&taskId={taskId:D}", ReturnUrlNavigation.AppendReturnUrl($"/tasks?companyId={companyId:D}&taskId={taskId:D}", "https://example.com/finance/anomalies"));
++    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceAnomalyWorkbenchIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceAnomalyWorkbenchIntegrationTests.cs
+index 2bc61a3..40213d1 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceAnomalyWorkbenchIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceAnomalyWorkbenchIntegrationTests.cs
+@@ -50,6 +50,7 @@ public sealed class FinanceAnomalyWorkbenchIntegrationTests : IClassFixture<Test
+         Assert.Equal("awaiting_approval", detail.Status);
+         Assert.NotNull(detail.AffectedRecord);
+         Assert.Equal(seed.FirstTransactionId, detail.AffectedRecord!.Id);
++        Assert.Contains(detail.RelatedRecordLinks, link => link.RecordType == "transaction" && link.RecordId == seed.FirstTransactionId);
+         Assert.Equal(seed.FirstTaskId, Assert.Single(detail.FollowUpTasks).Id);
+         Assert.NotNull(detail.Deduplication);
+         Assert.Equal("finance-transaction-anomaly:dedupe", detail.Deduplication!.Key);
+@@ -247,6 +248,7 @@ public sealed class FinanceAnomalyWorkbenchIntegrationTests : IClassFixture<Test
+         public string AnomalyType { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
+         public FinanceAnomalyRelatedRecordResponse? AffectedRecord { get; set; }
++        public List<FinanceAnomalyRecordLinkResponse> RelatedRecordLinks { get; set; } = [];
+         public FinanceAnomalyDeduplicationResponse? Deduplication { get; set; }
+         public List<FinanceAnomalyFollowUpTaskResponse> FollowUpTasks { get; set; } = [];
+     }
+@@ -257,6 +259,13 @@ public sealed class FinanceAnomalyWorkbenchIntegrationTests : IClassFixture<Test
+         public Guid Id { get; set; }
+     }
+ 
++    private sealed class FinanceAnomalyRecordLinkResponse
++    {
++        public Guid? RecordId { get; set; }
++        public string RecordType { get; set; } = string.Empty;
++        public string Reference { get; set; } = string.Empty;
++    }
++
+     private sealed class FinanceAnomalyFollowUpTaskResponse
+     {
+         public Guid Id { get; set; }
+END_OF_PATCH

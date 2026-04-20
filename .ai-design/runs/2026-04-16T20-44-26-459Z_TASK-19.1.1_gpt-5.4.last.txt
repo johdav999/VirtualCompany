@@ -1,0 +1,966 @@
+diff --git a/src/VirtualCompany.Shared/FinanceAccess.cs b/src/VirtualCompany.Shared/FinanceAccess.cs
+--- a/src/VirtualCompany.Shared/FinanceAccess.cs
++++ b/src/VirtualCompany.Shared/FinanceAccess.cs
+@@ -10,11 +10,18 @@ public static class FinanceAccess
+     {
+         "owner",
+         "admin",
++        "tester",
+         "manager",
+         "finance_approver"
+     };
+ 
++    private static readonly HashSet<string> FinanceSandboxAdminRoleValues = new(StringComparer.OrdinalIgnoreCase)
++    {
++        "owner",
++        "admin",
++        "tester"
++    };
++
+     private static readonly HashSet<string> FinanceTransactionEditRoleValues = new(StringComparer.OrdinalIgnoreCase)
+     {
+         "owner",
+@@ -32,6 +39,7 @@ public static class FinanceAccess
+     };
+ 
+     public static IReadOnlyCollection<string> ViewRoles => FinanceViewRoleValues;
++    public static IReadOnlyCollection<string> SandboxAdminRoles => FinanceSandboxAdminRoleValues;
+     public static IReadOnlyCollection<string> EditRoles => FinanceTransactionEditRoleValues;
+     public static IReadOnlyCollection<string> InvoiceApprovalRoles => FinanceInvoiceApprovalRoleValues;
+ 
+@@ -41,6 +49,10 @@ public static class FinanceAccess
+     public static bool CanEdit(string? membershipRole) =>
+         CanEditTransactionCategory(membershipRole);
+ 
++    public static bool CanAccessSandboxAdmin(string? membershipRole) =>
++        !string.IsNullOrWhiteSpace(membershipRole) &&
++        FinanceSandboxAdminRoleValues.Contains(membershipRole.Trim());
++
+     public static bool CanEditTransactionCategory(string? membershipRole) =>
+         !string.IsNullOrWhiteSpace(membershipRole) &&
+         FinanceTransactionEditRoleValues.Contains(membershipRole.Trim());
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -10,6 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
+ builder.Services.AddRazorComponents()
+     .AddInteractiveServerComponents();
+ builder.Services.AddHttpContextAccessor();
++builder.Services.AddScoped<IFinanceSandboxAdminService, FinanceSandboxAdminService>();
+ builder.Services.AddScoped<FinanceAccessResolver>();
+ 
+ builder.Services.AddScoped(sp =>
+diff --git a/src/VirtualCompany.Web/Services/FinanceRoutes.cs b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+--- a/src/VirtualCompany.Web/Services/FinanceRoutes.cs
++++ b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+@@ -1,11 +1,15 @@
++using VirtualCompany.Shared;
++
+ namespace VirtualCompany.Web.Services;
+ 
+ public sealed record FinanceRouteDefinition(
+     string Title,
+     string Path,
+-    string Description)
++    string Description,
++    bool RequiresSandboxAdminAccess = false)
+ {
+     public string BuildPath(Guid? companyId) => FinanceRoutes.WithCompanyContext(Path, companyId);
++    public bool IsVisibleTo(string? membershipRole) => !RequiresSandboxAdminAccess || FinanceAccess.CanAccessSandboxAdmin(membershipRole);
+ }
+ 
+ public static class FinanceRoutes
+@@ -22,6 +26,7 @@ public static class FinanceRoutes
+     public const string MonthlySummary = "/finance/monthly-summary";
+     public const string Anomalies = "/finance/anomalies";
+     public const string AnomalyDetail = "/finance/anomalies/{anomalyId:guid}";
++    public const string SandboxAdmin = "/finance/sandbox-admin";
+     public const string AlertDetail = "/finance/alerts/{alertId:guid}";
+ 
+     public static FinanceRouteDefinition HomePage { get; } =
+@@ -43,7 +48,8 @@ public static class FinanceRoutes
+             new("Invoice reviews", Reviews, "Review finance workflow recommendations and actions for invoice workbench items."),
+             new("Invoices", Invoices, "Track invoice review and collection workflows inside the active company."),
+             new("Balances", Balances, "Browse account balances with explicit tenant-scoped routing."),
+-            new("Monthly summary", MonthlySummary, "Summarize the current month's finance posture for the active company."),
++            new("Sandbox admin", SandboxAdmin, "Inspect sandbox dataset generation, anomaly injection, simulation controls, tool execution visibility, and domain events.", true),
++            new("Monthly summary", MonthlySummary, "Summarize the current month's finance posture for the active company."),
+             new("Anomalies", Anomalies, "Review finance anomalies and follow-up work in the selected tenant.")
+         ];
+ 
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceSectionNav.razor b/src/VirtualCompany.Web/Components/Finance/FinanceSectionNav.razor
+--- a/src/VirtualCompany.Web/Components/Finance/FinanceSectionNav.razor
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceSectionNav.razor
+@@ -1,7 +1,7 @@
+ <nav class="finance-section-nav" aria-label="Finance pages">
+     @foreach (var route in FinanceRoutes.SectionPages)
+     {
+-        <NavLink class="finance-section-nav__link" ActiveClass="active" Match="NavLinkMatch.Prefix" href="@route.BuildPath(CompanyId)">
++        <NavLink class="finance-section-nav__link @(route.IsVisibleTo(MembershipRole) ? string.Empty : "d-none")" ActiveClass="active" Match="NavLinkMatch.Prefix" href="@route.BuildPath(CompanyId)">
+             @route.Title
+         </NavLink>
+     }
+@@ -11,4 +11,7 @@
+     [Parameter]
+     public Guid CompanyId { get; set; }
++
++    [Parameter]
++    public string? MembershipRole { get; set; }
+ }
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor b/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor
+--- a/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor
+@@ -14,7 +14,7 @@
+                 <NavLink class="btn btn-outline-primary" href="@FinanceHomeHref" Match="NavLinkMatch.Prefix">Finance home</NavLink>
+                 <NavLink class="btn btn-outline-secondary" href="@DashboardHref" Match="NavLinkMatch.All">Company dashboard</NavLink>
+             </div>
+ 
+-            <FinanceSectionNav CompanyId="@CompanyId" />
++            <FinanceSectionNav CompanyId="@CompanyId" MembershipRole="@MembershipRole" />
+ 
+             @if (ChildContent is not null)
+             {
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
+@@ -10,7 +10,7 @@
+     LoadingMessage="Loading finance workspace...">
+     <div class="template-grid">
+         @foreach (var route in FinanceRoutes.SectionPages)
+         {
+-            <NavLink class="template-card text-decoration-none text-reset" href="@route.BuildPath(AccessState.CompanyId)" Match="NavLinkMatch.All">
++            <NavLink class="template-card text-decoration-none text-reset @(route.IsVisibleTo(AccessState.MembershipRole) ? string.Empty : "d-none")" href="@route.BuildPath(AccessState.CompanyId)" Match="NavLinkMatch.All">
+                 <strong>@route.Title</strong>
+                 <div class="text-body-secondary mt-2">@route.Description</div>
+             </NavLink>
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceSandboxAdminSection.razor b/src/VirtualCompany.Web/Components/Finance/FinanceSandboxAdminSection.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceSandboxAdminSection.razor
+@@ -0,0 +1,105 @@
++@typeparam TSection where TSection : class
++@implements IDisposable
++
++<article class="wizard-card">
++    <div class="mb-3">
++        <span class="dashboard-kicker">@Kicker</span>
++        <h2 class="h5 mb-2">@Title</h2>
++        <p class="text-body-secondary mb-0">@Description</p>
++    </div>
++
++    <FinanceDataState
++        IsLoading="@_state.IsLoading"
++        IsEmpty="@_state.IsEmpty"
++        ErrorMessage="@_state.ErrorMessage"
++        LoadingTitle="@LoadingTitle"
++        LoadingMessage="@LoadingMessage"
++        EmptyTitle="@EmptyTitle"
++        EmptyMessage="@EmptyMessage"
++        ErrorTitle="@ErrorTitle"
++        RetryText="Retry section"
++        OnRetry="@ReloadAsync">
++        @if (_state.Value is not null && ChildContent is not null)
++        {
++            @ChildContent(_state.Value)
++        }
++    </FinanceDataState>
++</article>
++
++@code {
++    private CancellationTokenSource? _loadCts;
++    private FinanceSandboxSectionState<TSection> _state = FinanceSandboxSectionState<TSection>.Loading();
++
++    [Parameter, EditorRequired]
++    public Guid CompanyId { get; set; }
++
++    [Parameter, EditorRequired]
++    public string Kicker { get; set; } = string.Empty;
++
++    [Parameter, EditorRequired]
++    public string Title { get; set; } = string.Empty;
++
++    [Parameter, EditorRequired]
++    public string Description { get; set; } = string.Empty;
++
++    [Parameter, EditorRequired]
++    public string LoadingTitle { get; set; } = string.Empty;
++
++    [Parameter, EditorRequired]
++    public string LoadingMessage { get; set; } = string.Empty;
++
++    [Parameter, EditorRequired]
++    public string EmptyTitle { get; set; } = string.Empty;
++
++    [Parameter, EditorRequired]
++    public string EmptyMessage { get; set; } = string.Empty;
++
++    [Parameter, EditorRequired]
++    public string ErrorTitle { get; set; } = string.Empty;
++
++    [Parameter, EditorRequired]
++    public Func<Guid, CancellationToken, Task<TSection?>> Loader { get; set; } = default!;
++
++    [Parameter]
++    public RenderFragment<TSection>? ChildContent { get; set; }
++
++    protected override Task OnParametersSetAsync()
++    {
++        BeginLoad();
++        return Task.CompletedTask;
++    }
++
++    private Task ReloadAsync()
++    {
++        BeginLoad();
++        return Task.CompletedTask;
++    }
++
++    private void BeginLoad()
++    {
++        CancelLoad();
++        _state = FinanceSandboxSectionState<TSection>.Loading();
++        _loadCts = new CancellationTokenSource();
++        _ = LoadAsync(_loadCts.Token);
++    }
++
++    private async Task LoadAsync(CancellationToken cancellationToken)
++    {
++        try
++        {
++            var value = await Loader(CompanyId, cancellationToken);
++            if (!cancellationToken.IsCancellationRequested)
++            {
++                _state = FinanceSandboxSectionState<TSection>.Success(value);
++            }
++        }
++        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
++        {
++        }
++        catch (FinanceApiException ex)
++        {
++            _state = FinanceSandboxSectionState<TSection>.Failure(ex.Message);
++        }
++        finally
++        {
++            await InvokeAsync(StateHasChanged);
++        }
++    }
++
++    private void CancelLoad() => Interlocked.Exchange(ref _loadCts, null)?.Cancel();
++
++    public void Dispose() => CancelLoad();
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+@@ -0,0 +1,168 @@
++@page "/finance/sandbox-admin"
++
++<PageTitle>Finance sandbox admin</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Finance sandbox admin"
++    Description="Inspect the finance sandbox posture for dataset generation, anomaly injection, simulation controls, tool execution visibility, and domain events."
++    LoadingMessage="Loading finance sandbox administration shell...">
++    @if (!HasSandboxAdminAccess)
++    {
++        <ForbiddenState
++            Title="Finance sandbox admin access required"
++            Message="Finance sandbox administration is limited to company admins and testers."
++            ReturnHref="@BuildFinanceHomeHref()"
++            ReturnText="Back to finance" />
++    }
++    else
++    {
++        <section class="finance-summary-stack" aria-label="Finance sandbox administration sections">
++            <FinanceSandboxAdminSection TSection="FinanceSandboxDatasetGenerationViewModel"
++                                        CompanyId="@AccessState.CompanyId!.Value"
++                                        Kicker="Sandbox dataset"
++                                        Title="Dataset generation"
++                                        Description="Review the active seed profile, cadence, and data coverage used by the finance sandbox."
++                                        LoadingTitle="Loading dataset generation"
++                                        LoadingMessage="Resolving the current sandbox dataset generation profile."
++                                        EmptyTitle="Dataset generation is not configured"
++                                        EmptyMessage="No dataset generation profile is available for the active company."
++                                        ErrorTitle="Dataset generation is unavailable"
++                                        Loader="@LoadDatasetGenerationAsync">
++                <ChildContent Context="dataset">
++                    <dl class="row mb-0">
++                        <dt class="col-sm-4">Profile</dt>
++                        <dd class="col-sm-8">@dataset.ProfileName</dd>
++                        <dt class="col-sm-4">Last refresh</dt>
++                        <dd class="col-sm-8">@dataset.LastGeneratedUtc.ToString("u")</dd>
++                        <dt class="col-sm-4">Coverage</dt>
++                        <dd class="col-sm-8">@dataset.CoverageSummary</dd>
++                    </dl>
++                    <div class="mt-3">
++                        <strong class="d-block mb-2">Available dataset profiles</strong>
++                        <ul class="mb-0">
++                            @foreach (var profile in dataset.AvailableProfiles)
++                            {
++                                <li>@profile</li>
++                            }
++                        </ul>
++                    </div>
++                </ChildContent>
++            </FinanceSandboxAdminSection>
++
++            <FinanceSandboxAdminSection TSection="FinanceSandboxAnomalyInjectionViewModel"
++                                        CompanyId="@AccessState.CompanyId!.Value"
++                                        Kicker="Sandbox anomaly"
++                                        Title="Anomaly injection"
++                                        Description="Track the scenarios currently prepared for synthetic anomaly coverage."
++                                        LoadingTitle="Loading anomaly injection"
++                                        LoadingMessage="Fetching configured anomaly injection scenarios."
++                                        EmptyTitle="No anomaly injections configured"
++                                        EmptyMessage="No anomaly injection scenarios are configured."
++                                        ErrorTitle="Anomaly injection is unavailable"
++                                        Loader="@LoadAnomalyInjectionAsync">
++                <ChildContent Context="injection">
++                    <dl class="row mb-0">
++                        <dt class="col-sm-4">Mode</dt>
++                        <dd class="col-sm-8">@injection.Mode</dd>
++                        <dt class="col-sm-4">Last seeded</dt>
++                        <dd class="col-sm-8">@injection.LastInjectedUtc.ToString("u")</dd>
++                        <dt class="col-sm-4">Observation</dt>
++                        <dd class="col-sm-8">@injection.Observation</dd>
++                    </dl>
++                    <div class="mt-3">
++                        <strong class="d-block mb-2">Active scenarios</strong>
++                        <ul class="mb-0">
++                            @foreach (var scenario in injection.ActiveScenarios)
++                            {
++                                <li>@scenario</li>
++                            }
++                        </ul>
++                    </div>
++                </ChildContent>
++            </FinanceSandboxAdminSection>
++
++            <FinanceSandboxAdminSection TSection="FinanceSandboxSimulationControlsViewModel"
++                                        CompanyId="@AccessState.CompanyId!.Value"
++                                        Kicker="Simulation clock"
++                                        Title="Simulation controls"
++                                        Description="Expose the sandbox clock status and the current simulation checkpoint for the selected company."
++                                        LoadingTitle="Loading simulation controls"
++                                        LoadingMessage="Inspecting the sandbox simulation clock."
++                                        EmptyTitle="Simulation controls are not configured"
++                                        EmptyMessage="No simulation controls are configured for the active company."
++                                        ErrorTitle="Simulation controls are unavailable"
++                                        Loader="@LoadSimulationControlsAsync">
++                <ChildContent Context="simulation">
++                    <dl class="row mb-0">
++                        <dt class="col-sm-4">Clock mode</dt>
++                        <dd class="col-sm-8">@simulation.ClockMode</dd>
++                        <dt class="col-sm-4">Reference time</dt>
++                        <dd class="col-sm-8">@simulation.ReferenceUtc.ToString("u")</dd>
++                        <dt class="col-sm-4">Checkpoint</dt>
++                        <dd class="col-sm-8">@simulation.CheckpointLabel</dd>
++                        <dt class="col-sm-4">Observation</dt>
++                        <dd class="col-sm-8">@simulation.Observation</dd>
++                    </dl>
++                </ChildContent>
++            </FinanceSandboxAdminSection>
++
++            <FinanceSandboxAdminSection TSection="FinanceSandboxToolExecutionVisibilityViewModel"
++                                        CompanyId="@AccessState.CompanyId!.Value"
++                                        Kicker="Tool telemetry"
++                                        Title="Tool execution visibility"
++                                        Description="Summarize the finance sandbox tool surfaces that are currently observable in the admin workspace."
++                                        LoadingTitle="Loading tool execution visibility"
++                                        LoadingMessage="Collecting tool execution visibility signals."
++                                        EmptyTitle="Tool execution visibility is empty"
++                                        EmptyMessage="No tool execution telemetry is available for this sandbox."
++                                        ErrorTitle="Tool execution visibility is unavailable"
++                                        Loader="@LoadToolExecutionVisibilityAsync">
++                <ChildContent Context="visibility">
++                    <p class="mb-3">@visibility.Summary</p>
++                    <div class="table-responsive">
++                        <table class="table finance-table mb-0">
++                            <thead>
++                                <tr>
++                                    <th scope="col">Tool surface</th>
++                                    <th scope="col">Visibility</th>
++                                    <th scope="col">Last status</th>
++                                </tr>
++                            </thead>
++                            <tbody>
++                                @foreach (var item in visibility.Items)
++                                {
++                                    <tr>
++                                        <td>@item.Name</td>
++                                        <td>@item.Visibility</td>
++                                        <td>@item.LastStatus</td>
++                                    </tr>
++                                }
++                            </tbody>
++                        </table>
++                    </div>
++                </ChildContent>
++            </FinanceSandboxAdminSection>
++
++            <FinanceSandboxAdminSection TSection="FinanceSandboxDomainEventsViewModel"
++                                        CompanyId="@AccessState.CompanyId!.Value"
++                                        Kicker="Domain events"
++                                        Title="Domain events"
++                                        Description="Surface the domain events most relevant to sandbox validation and replay analysis."
++                                        LoadingTitle="Loading domain events"
++                                        LoadingMessage="Reading the latest finance sandbox domain events."
++                                        EmptyTitle="No domain events available"
++                                        EmptyMessage="No finance sandbox domain events are available for the active company."
++                                        ErrorTitle="Domain events are unavailable"
++                                        Loader="@LoadDomainEventsAsync">
++                <ChildContent Context="events">
++                    <p class="mb-3">@events.Summary</p>
++                    <ul class="mb-0">
++                        @foreach (var item in events.Items)
++                        {
++                            <li>@item.EventType | @item.Status | @item.OccurredAtUtc.ToString("u")</li>
++                        }
++                    </ul>
++                </ChildContent>
++            </FinanceSandboxAdminSection>
++        </section>
++    }
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+@@ -0,0 +1,29 @@
++using VirtualCompany.Shared;
++using VirtualCompany.Web.Services;
++
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class SandboxAdminPage : FinancePageBase
++{
++    [Inject] private IFinanceSandboxAdminService SandboxAdminService { get; set; } = default!;
++
++    private bool HasSandboxAdminAccess =>
++        AccessState.IsAllowed &&
++        FinanceAccess.CanAccessSandboxAdmin(AccessState.MembershipRole);
++
++    private string BuildFinanceHomeHref() =>
++        FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId);
++
++    private Task<FinanceSandboxDatasetGenerationViewModel?> LoadDatasetGenerationAsync(Guid companyId, CancellationToken cancellationToken) =>
++        SandboxAdminService.GetDatasetGenerationAsync(companyId, cancellationToken);
++
++    private Task<FinanceSandboxAnomalyInjectionViewModel?> LoadAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken) =>
++        SandboxAdminService.GetAnomalyInjectionAsync(companyId, cancellationToken);
++
++    private Task<FinanceSandboxSimulationControlsViewModel?> LoadSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken) =>
++        SandboxAdminService.GetSimulationControlsAsync(companyId, cancellationToken);
++
++    private Task<FinanceSandboxToolExecutionVisibilityViewModel?> LoadToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken) =>
++        SandboxAdminService.GetToolExecutionVisibilityAsync(companyId, cancellationToken);
++
++    private Task<FinanceSandboxDomainEventsViewModel?> LoadDomainEventsAsync(Guid companyId, CancellationToken cancellationToken) =>
++        SandboxAdminService.GetDomainEventsAsync(companyId, cancellationToken);
++}
+diff --git a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+@@ -0,0 +1,173 @@
++namespace VirtualCompany.Web.Services;
++
++public interface IFinanceSandboxAdminService
++{
++    Task<FinanceSandboxDatasetGenerationViewModel?> GetDatasetGenerationAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<FinanceSandboxAnomalyInjectionViewModel?> GetAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<FinanceSandboxSimulationControlsViewModel?> GetSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<FinanceSandboxToolExecutionVisibilityViewModel?> GetToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<FinanceSandboxDomainEventsViewModel?> GetDomainEventsAsync(Guid companyId, CancellationToken cancellationToken = default);
++}
++
++public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
++{
++    private readonly FinanceApiClient _financeApiClient;
++
++    public FinanceSandboxAdminService(FinanceApiClient financeApiClient)
++    {
++        _financeApiClient = financeApiClient;
++    }
++
++    public Task<FinanceSandboxDatasetGenerationViewModel?> GetDatasetGenerationAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        // Placeholder admin data keeps the page usable until dedicated sandbox admin endpoints are wired in.
++        return Task.FromResult<FinanceSandboxDatasetGenerationViewModel?>(new FinanceSandboxDatasetGenerationViewModel
++        {
++            ProfileName = "Seed dataset refresh",
++            LastGeneratedUtc = DateTime.UtcNow.AddMinutes(-25),
++            CoverageSummary = "90-day transaction, invoice, and balance coverage with deterministic replay inputs.",
++            AvailableProfiles =
++            [
++                "Baseline 90-day ledger",
++                "Quarter-close reconciliation pack",
++                "Stress cashflow replay"
++            ]
++        });
++    }
++
++    public Task<FinanceSandboxAnomalyInjectionViewModel?> GetAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        Task.FromResult<FinanceSandboxAnomalyInjectionViewModel?>(new FinanceSandboxAnomalyInjectionViewModel
++        {
++            Mode = "Scheduled injections",
++            LastInjectedUtc = DateTime.UtcNow.AddMinutes(-10),
++            Observation = "Synthetic anomalies are staged ahead of finance tool regression runs.",
++            ActiveScenarios =
++            [
++                "Duplicate vendor charge",
++                "Unusually high invoice",
++                "Missing receipt evidence"
++            ]
++        });
++
++    public async Task<FinanceSandboxSimulationControlsViewModel?> GetSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        var clock = await _financeApiClient.GetSimulationClockAsync(companyId, cancellationToken);
++        if (clock is null)
++        {
++            return null;
++        }
++
++        return new FinanceSandboxSimulationControlsViewModel
++        {
++            ClockMode = clock.Enabled ? "Simulated clock enabled" : "Live clock fallback",
++            ReferenceUtc = clock.SimulatedUtc,
++            CheckpointLabel = clock.Enabled ? "Sandbox replay window is pinned to the simulated reference time." : "Sandbox replay window follows the live reference clock.",
++            Observation = "Simulation controls are read-only until mutation workflows are introduced."
++        };
++    }
++
++    public Task<FinanceSandboxToolExecutionVisibilityViewModel?> GetToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        Task.FromResult<FinanceSandboxToolExecutionVisibilityViewModel?>(new FinanceSandboxToolExecutionVisibilityViewModel
++        {
++            Summary = "Current visibility reflects the tool surfaces expected during finance sandbox validation.",
++            Items =
++            [
++                new FinanceSandboxToolExecutionItemViewModel
++                {
++                    Name = "dataset.generate",
++                    Visibility = "Visible in admin timeline",
++                    LastStatus = "Completed"
++                },
++                new FinanceSandboxToolExecutionItemViewModel
++                {
++                    Name = "anomaly.inject",
++                    Visibility = "Visible in admin timeline",
++                    LastStatus = "Pending verification"
++                },
++                new FinanceSandboxToolExecutionItemViewModel
++                {
++                    Name = "simulation.clock.inspect",
++                    Visibility = "Visible in admin timeline",
++                    LastStatus = "Healthy"
++                }
++            ]
++        });
++
++    public Task<FinanceSandboxDomainEventsViewModel?> GetDomainEventsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        Task.FromResult<FinanceSandboxDomainEventsViewModel?>(new FinanceSandboxDomainEventsViewModel
++        {
++            Summary = "Recent sandbox events focus on seeded data refreshes and validation telemetry.",
++            Items =
++            [
++                new FinanceSandboxDomainEventItemViewModel
++                {
++                    EventType = "finance.seed.dataset.generated",
++                    Status = "Captured",
++                    OccurredAtUtc = DateTime.UtcNow.AddMinutes(-25)
++                },
++                new FinanceSandboxDomainEventItemViewModel
++                {
++                    EventType = "finance.anomaly.injected",
++                    Status = "Captured",
++                    OccurredAtUtc = DateTime.UtcNow.AddMinutes(-10)
++                },
++                new FinanceSandboxDomainEventItemViewModel
++                {
++                    EventType = "finance.simulation.clock.read",
++                    Status = "Observed",
++                    OccurredAtUtc = DateTime.UtcNow.AddMinutes(-2)
++                }
++            ]
++        });
++}
++
++public sealed record FinanceSandboxSectionState<TSection>(bool IsLoading, string? ErrorMessage, TSection? Value)
++    where TSection : class
++{
++    public bool IsEmpty => !IsLoading && string.IsNullOrWhiteSpace(ErrorMessage) && Value is null;
++
++    public static FinanceSandboxSectionState<TSection> Loading() => new(true, null, null);
++    public static FinanceSandboxSectionState<TSection> Success(TSection? value) => new(false, null, value);
++    public static FinanceSandboxSectionState<TSection> Failure(string errorMessage) => new(false, errorMessage, null);
++}
++
++public sealed class FinanceSandboxDatasetGenerationViewModel
++{
++    public string ProfileName { get; set; } = string.Empty;
++    public DateTime LastGeneratedUtc { get; set; }
++    public string CoverageSummary { get; set; } = string.Empty;
++    public IReadOnlyList<string> AvailableProfiles { get; set; } = [];
++}
++
++public sealed class FinanceSandboxAnomalyInjectionViewModel
++{
++    public string Mode { get; set; } = string.Empty;
++    public DateTime LastInjectedUtc { get; set; }
++    public string Observation { get; set; } = string.Empty;
++    public IReadOnlyList<string> ActiveScenarios { get; set; } = [];
++}
++
++public sealed class FinanceSandboxSimulationControlsViewModel
++{
++    public string ClockMode { get; set; } = string.Empty;
++    public DateTime ReferenceUtc { get; set; }
++    public string CheckpointLabel { get; set; } = string.Empty;
++    public string Observation { get; set; } = string.Empty;
++}
++
++public sealed class FinanceSandboxToolExecutionVisibilityViewModel
++{
++    public string Summary { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceSandboxToolExecutionItemViewModel> Items { get; set; } = [];
++}
++
++public sealed class FinanceSandboxToolExecutionItemViewModel
++{
++    public string Name { get; set; } = string.Empty;
++    public string Visibility { get; set; } = string.Empty;
++    public string LastStatus { get; set; } = string.Empty;
++}
++
++public sealed class FinanceSandboxDomainEventsViewModel
++{
++    public string Summary { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceSandboxDomainEventItemViewModel> Items { get; set; } = [];
++}
++
++public sealed class FinanceSandboxDomainEventItemViewModel
++{
++    public string EventType { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public DateTime OccurredAtUtc { get; set; }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs b/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs
+@@ -84,11 +84,23 @@ public sealed class FinanceAccessResolverTests
+     public void Finance_edit_permissions_distinguish_view_only_roles_from_edit_roles()
+     {
+         Assert.True(FinanceAccess.CanView("finance_approver"));
++        Assert.True(FinanceAccess.CanView("tester"));
+         Assert.False(FinanceAccess.CanEdit("finance_approver"));
++        Assert.False(FinanceAccess.CanEdit("tester"));
+         Assert.True(FinanceAccess.CanEdit("manager"));
+         Assert.True(FinanceAccess.CanEdit("owner"));
+         Assert.False(FinanceAccess.CanEdit("employee"));
+     }
++
++    [Fact]
++    public void Finance_sandbox_admin_permissions_only_allow_admin_owner_and_tester_roles()
++    {
++        Assert.True(FinanceAccess.CanAccessSandboxAdmin("admin"));
++        Assert.True(FinanceAccess.CanAccessSandboxAdmin("owner"));
++        Assert.True(FinanceAccess.CanAccessSandboxAdmin("tester"));
++        Assert.False(FinanceAccess.CanAccessSandboxAdmin("manager"));
++        Assert.False(FinanceAccess.CanAccessSandboxAdmin("finance_approver"));
++        Assert.False(FinanceAccess.CanAccessSandboxAdmin("employee"));
++    }
+ 
+     [Fact]
+     public void Finance_approval_permissions_distinguish_approvers_from_non_finance_roles()
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
+@@ -17,6 +17,7 @@ public sealed class FinanceRouteRegistrationTests
+     [InlineData(typeof(InvoicesPage), FinanceRoutes.Invoices)]
+     [InlineData(typeof(InvoicesPage), FinanceRoutes.InvoiceDetail)]
+     [InlineData(typeof(BalancesPage), FinanceRoutes.Balances)]
++    [InlineData(typeof(SandboxAdminPage), FinanceRoutes.SandboxAdmin)]
+     [InlineData(typeof(MonthlySummaryPage), FinanceRoutes.MonthlySummary)]
+     [InlineData(typeof(AnomaliesPage), FinanceRoutes.Anomalies)]
+     [InlineData(typeof(AnomalyDetailPage), FinanceRoutes.AnomalyDetail)]
+@@ -34,13 +35,24 @@ public sealed class FinanceRouteRegistrationTests
+     {
+         var routes = FinanceRoutes.SectionPages.Select(route => route.Path).ToArray();
+ 
+-        Assert.Equal(7, routes.Length);
++        Assert.Equal(8, routes.Length);
+         Assert.Contains(FinanceRoutes.CashPosition, routes);
+         Assert.Contains(FinanceRoutes.Transactions, routes);
+         Assert.Contains(FinanceRoutes.Reviews, routes);
+         Assert.Contains(FinanceRoutes.Invoices, routes);
+         Assert.Contains(FinanceRoutes.Balances, routes);
++        Assert.Contains(FinanceRoutes.SandboxAdmin, routes);
+         Assert.Contains(FinanceRoutes.MonthlySummary, routes);
+         Assert.Contains(FinanceRoutes.Anomalies, routes);
+     }
++
++    [Fact]
++    public void Finance_sandbox_admin_navigation_entry_is_role_aware()
++    {
++        var managerRoutes = FinanceRoutes.SectionPages.Where(route => route.IsVisibleTo("manager")).Select(route => route.Path).ToArray();
++        var adminRoutes = FinanceRoutes.SectionPages.Where(route => route.IsVisibleTo("admin")).Select(route => route.Path).ToArray();
++        var testerRoutes = FinanceRoutes.SectionPages.Where(route => route.IsVisibleTo("tester")).Select(route => route.Path).ToArray();
++
++        Assert.DoesNotContain(FinanceRoutes.SandboxAdmin, managerRoutes);
++        Assert.Contains(FinanceRoutes.SandboxAdmin, adminRoutes);
++        Assert.Contains(FinanceRoutes.SandboxAdmin, testerRoutes);
++    }
+ 
+     [Fact]
+     public void Finance_alert_detail_routes_preserve_company_context()
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+@@ -0,0 +1,255 @@
++using System.Net;
++using System.Net.Http.Json;
++using Bunit;
++using Bunit.TestDoubles;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Web.Pages.Finance;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceSandboxAdminPageTests
++{
++    [Fact]
++    public void Sandbox_admin_page_denies_non_admin_finance_users_without_loading_admin_sections()
++    {
++        var companyId = Guid.Parse("db404fe8-df37-4698-b36c-57db6ecb217a");
++        var sandboxService = new StubFinanceSandboxAdminService();
++
++        using var harness = CreateHarness(companyId, "manager", sandboxService);
++        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Finance sandbox admin access required", cut.Markup);
++            Assert.Contains("limited to company admins and testers", cut.Markup);
++        });
++
++        Assert.Equal(0, sandboxService.TotalCalls);
++    }
++
++    [Fact]
++    public void Sandbox_admin_page_sections_load_independently_and_support_loading_empty_error_and_content_states()
++    {
++        var companyId = Guid.Parse("711eefc3-ac7f-4a43-a713-36f7710d53b3");
++        var datasetSource = new TaskCompletionSource<FinanceSandboxDatasetGenerationViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
++        var anomalySource = new TaskCompletionSource<FinanceSandboxAnomalyInjectionViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
++        var simulationSource = new TaskCompletionSource<FinanceSandboxSimulationControlsViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
++        var toolSource = new TaskCompletionSource<FinanceSandboxToolExecutionVisibilityViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
++        var eventsSource = new TaskCompletionSource<FinanceSandboxDomainEventsViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
++        var sandboxService = new StubFinanceSandboxAdminService
++        {
++            OnGetDatasetGenerationAsync = (_, _) => datasetSource.Task,
++            OnGetAnomalyInjectionAsync = (_, _) => anomalySource.Task,
++            OnGetSimulationControlsAsync = (_, _) => simulationSource.Task,
++            OnGetToolExecutionVisibilityAsync = (_, _) => toolSource.Task,
++            OnGetDomainEventsAsync = (_, _) => eventsSource.Task
++        };
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Loading dataset generation", cut.Markup);
++            Assert.Contains("Loading anomaly injection", cut.Markup);
++            Assert.Contains("Loading simulation controls", cut.Markup);
++            Assert.Contains("Loading tool execution visibility", cut.Markup);
++            Assert.Contains("Loading domain events", cut.Markup);
++        });
++
++        datasetSource.SetResult(new FinanceSandboxDatasetGenerationViewModel
++        {
++            ProfileName = "Seed dataset refresh",
++            LastGeneratedUtc = new DateTime(2026, 4, 16, 10, 30, 0, DateTimeKind.Utc),
++            CoverageSummary = "90-day replay coverage",
++            AvailableProfiles = ["Baseline 90-day ledger"]
++        });
++        anomalySource.SetResult(null);
++        toolSource.SetException(new FinanceApiException("Tool execution telemetry is unavailable."));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Seed dataset refresh", cut.Markup);
++            Assert.Contains("No anomaly injection scenarios are configured.", cut.Markup);
++            Assert.Contains("Tool execution telemetry is unavailable.", cut.Markup);
++            Assert.Contains("Loading simulation controls", cut.Markup);
++            Assert.Contains("Loading domain events", cut.Markup);
++        });
++
++        Assert.Equal(1, sandboxService.DatasetGenerationCalls);
++        Assert.Equal(1, sandboxService.AnomalyInjectionCalls);
++        Assert.Equal(1, sandboxService.SimulationControlsCalls);
++        Assert.Equal(1, sandboxService.ToolExecutionVisibilityCalls);
++        Assert.Equal(1, sandboxService.DomainEventsCalls);
++    }
++
++    private static SandboxAdminHarness CreateHarness(Guid companyId, string membershipRole, StubFinanceSandboxAdminService sandboxService)
++    {
++        var context = new TestContext();
++
++        context.Services.AddSingleton(new FinanceAccessResolver());
++        context.Services.AddSingleton<IFinanceSandboxAdminService>(sandboxService);
++        context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            return Task.FromResult(request.RequestUri?.AbsolutePath switch
++            {
++                "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
++                _ => CreateNotFoundResponse()
++            });
++        }))
++        {
++            BaseAddress = new Uri("http://localhost/")
++        }));
++
++        return new SandboxAdminHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
++    }
++
++    private static CurrentUserContextViewModel CreateCurrentUserContext(Guid companyId, string membershipRole) =>
++        new()
++        {
++            Memberships =
++            [
++                new CompanyMembershipViewModel
++                {
++                    MembershipId = Guid.NewGuid(),
++                    CompanyId = companyId,
++                    CompanyName = "Contoso Finance",
++                    MembershipRole = membershipRole,
++                    Status = "active"
++                }
++            ],
++            ActiveCompany = new ResolvedCompanyContextViewModel
++            {
++                MembershipId = Guid.NewGuid(),
++                CompanyId = companyId,
++                CompanyName = "Contoso Finance",
++                MembershipRole = membershipRole,
++                Status = "active"
++            }
++        };
++
++    private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>
++        new(HttpStatusCode.OK)
++        {
++            Content = JsonContent.Create(payload)
++        };
++
++    private static HttpResponseMessage CreateNotFoundResponse() =>
++        new(HttpStatusCode.NotFound)
++        {
++            Content = JsonContent.Create(new { title = "Not found", detail = "Not found." })
++        };
++
++    private sealed class SandboxAdminHarness : IDisposable
++    {
++        public SandboxAdminHarness(TestContext context, FakeNavigationManager navigation)
++        {
++            Context = context;
++            Navigation = navigation;
++        }
++
++        public TestContext Context { get; }
++        public FakeNavigationManager Navigation { get; }
++
++        public void Dispose() => Context.Dispose();
++    }
++
++    private sealed class StubFinanceSandboxAdminService : IFinanceSandboxAdminService
++    {
++        public Func<Guid, CancellationToken, Task<FinanceSandboxDatasetGenerationViewModel?>>? OnGetDatasetGenerationAsync { get; init; }
++        public Func<Guid, CancellationToken, Task<FinanceSandboxAnomalyInjectionViewModel?>>? OnGetAnomalyInjectionAsync { get; init; }
++        public Func<Guid, CancellationToken, Task<FinanceSandboxSimulationControlsViewModel?>>? OnGetSimulationControlsAsync { get; init; }
++        public Func<Guid, CancellationToken, Task<FinanceSandboxToolExecutionVisibilityViewModel?>>? OnGetToolExecutionVisibilityAsync { get; init; }
++        public Func<Guid, CancellationToken, Task<FinanceSandboxDomainEventsViewModel?>>? OnGetDomainEventsAsync { get; init; }
++
++        public int DatasetGenerationCalls { get; private set; }
++        public int AnomalyInjectionCalls { get; private set; }
++        public int SimulationControlsCalls { get; private set; }
++        public int ToolExecutionVisibilityCalls { get; private set; }
++        public int DomainEventsCalls { get; private set; }
++
++        public int TotalCalls =>
++            DatasetGenerationCalls +
++            AnomalyInjectionCalls +
++            SimulationControlsCalls +
++            ToolExecutionVisibilityCalls +
++            DomainEventsCalls;
++
++        public Task<FinanceSandboxDatasetGenerationViewModel?> GetDatasetGenerationAsync(Guid companyId, CancellationToken cancellationToken = default)
++        {
++            DatasetGenerationCalls++;
++            return OnGetDatasetGenerationAsync is not null
++                ? OnGetDatasetGenerationAsync(companyId, cancellationToken)
++                : Task.FromResult<FinanceSandboxDatasetGenerationViewModel?>(null);
++        }
++
++        public Task<FinanceSandboxAnomalyInjectionViewModel?> GetAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken = default)
++        {
++            AnomalyInjectionCalls++;
++            return OnGetAnomalyInjectionAsync is not null
++                ? OnGetAnomalyInjectionAsync(companyId, cancellationToken)
++                : Task.FromResult<FinanceSandboxAnomalyInjectionViewModel?>(null);
++        }
++
++        public Task<FinanceSandboxSimulationControlsViewModel?> GetSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default)
++        {
++            SimulationControlsCalls++;
++            return OnGetSimulationControlsAsync is not null
++                ? OnGetSimulationControlsAsync(companyId, cancellationToken)
++                : Task.FromResult<FinanceSandboxSimulationControlsViewModel?>(null);
++        }
++
++        public Task<FinanceSandboxToolExecutionVisibilityViewModel?> GetToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default)
++        {
++            ToolExecutionVisibilityCalls++;
++            return OnGetToolExecutionVisibilityAsync is not null
++                ? OnGetToolExecutionVisibilityAsync(companyId, cancellationToken)
++                : Task.FromResult<FinanceSandboxToolExecutionVisibilityViewModel?>(null);
++        }
++
++        public Task<FinanceSandboxDomainEventsViewModel?> GetDomainEventsAsync(Guid companyId, CancellationToken cancellationToken = default)
++        {
++            DomainEventsCalls++;
++            return OnGetDomainEventsAsync is not null
++                ? OnGetDomainEventsAsync(companyId, cancellationToken)
++                : Task.FromResult<FinanceSandboxDomainEventsViewModel?>(null);
++        }
++    }
++
++    private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler
++    {
++        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
++
++        public AsyncStubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
++        {
++            _handler = handler;
++        }
++
++        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
++            _handler(request, cancellationToken);
++    }
++}
+END_OF_PATCH

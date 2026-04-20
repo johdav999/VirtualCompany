@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-14.1.2",
+  "promptPath": ".ai-design/prompts/TASK-14.1.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T05:52:00.818Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T05-52-00-818Z_TASK-14.1.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T05-52-00-818Z_TASK-14.1.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T05:53:37.941Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "  [\"currency\"] = JsonValue.Create(\"USD\"),\n+                    [\"accounts\"] = new JsonArray()\n+                }\n+            },\n+            \"list_transactions\" or \"list_uncategorized_transactions\" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+            {\n+                [\"transactions\"] = new JsonArray()\n+            },\n+            \"list_invoices_awaiting_approval\" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+            {\n+                [\"invoices\"] = new JsonArray()\n+            },\n+            \"get_profit_and_loss_summary\" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+            {\n+                [\"profitAndLossSummary\"] = new JsonObject\n+                {\n+                    [\"revenue\"] = JsonValue.Create(0m),\n+                    [\"expenses\"] = JsonValue.Create(0m),\n+                    [\"netResult\"] = JsonValue.Create(0m),\n+                    [\"currency\"] = JsonValue.Create(\"USD\")\n+                }\n+            },\n+            _ => []\n+        };\n+\n+        return data.Count > 0;\n+    }\n }\ndiff --git a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs\nindex 0000000..0000000 100644\n--- a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs\n+++ b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs\n@@ -79,7 +79,10 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry\n     private static TrustedToolRegistration Register(\n         string toolName,\n         IReadOnlySet<ToolActionType>? supportedActions = null,\n-        IReadOnlySet<string>? scopes = null) =>\n+        IReadOnlySet<string>? scopes = null,\n+        string version = \"1.0.0\",\n+        JsonObject? inputSchema = null,\n+        JsonObject? outputSchema = null) =>\n         new(\n             toolName,\n             supportedActions ?? StandardActions,\nEND_OF_PATCH\n",
+  "stderrTail": "onValue.Create(\"USD\"),\n+                    [\"accounts\"] = new JsonArray()\n+                }\n+            },\n+            \"list_transactions\" or \"list_uncategorized_transactions\" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+            {\n+                [\"transactions\"] = new JsonArray()\n+            },\n+            \"list_invoices_awaiting_approval\" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+            {\n+                [\"invoices\"] = new JsonArray()\n+            },\n+            \"get_profit_and_loss_summary\" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+            {\n+                [\"profitAndLossSummary\"] = new JsonObject\n+                {\n+                    [\"revenue\"] = JsonValue.Create(0m),\n+                    [\"expenses\"] = JsonValue.Create(0m),\n+                    [\"netResult\"] = JsonValue.Create(0m),\n+                    [\"currency\"] = JsonValue.Create(\"USD\")\n+                }\n+            },\n+            _ => []\n+        };\n+\n+        return data.Count > 0;\n+    }\n }\ndiff --git a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs\nindex 0000000..0000000 100644\n--- a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs\n+++ b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs\n@@ -79,7 +79,10 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry\n     private static TrustedToolRegistration Register(\n         string toolName,\n         IReadOnlySet<ToolActionType>? supportedActions = null,\n-        IReadOnlySet<string>? scopes = null) =>\n+        IReadOnlySet<string>? scopes = null,\n+        string version = \"1.0.0\",\n+        JsonObject? inputSchema = null,\n+        JsonObject? outputSchema = null) =>\n         new(\n             toolName,\n             supportedActions ?? StandardActions,\nEND_OF_PATCH\ntokens used\n35,608\n",
+  "verbosityMode": "summary"
+}

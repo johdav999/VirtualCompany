@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-21.1.4",
+  "promptPath": ".ai-design/prompts/TASK-21.1.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-19T06:21:53.304Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-19T06-21-53-304Z_TASK-21.1.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-19T06-21-53-304Z_TASK-21.1.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-19T06:26:28.953Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "    var beforeStop = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);\n+        var stopped = await service.StopAsync(new StopCompanySimulationCommand(companyId), CancellationToken.None);\n+\n+        timeProvider.Advance(TimeSpan.FromSeconds(70));\n+        var stillStopped = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);\n+        var restarted = await service.StartAsync(\n+            new StartCompanySimulationCommand(companyId, new DateTime(2026, 5, 10, 0, 0, 0, DateTimeKind.Utc), false, 18, \"\"\"{\"profile\":\"restart\"}\"\"\"),\n+            CancellationToken.None);\n+\n+        timeProvider.Advance(TimeSpan.FromSeconds(10));\n+        var afterRestart = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);\n+\n+        Assert.Equal(new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc), beforeStop.CurrentSimulatedDateTime);\n+        Assert.Equal(CompanySimulationLifecycleStatusValues.Stopped, stopped.Status);\n+        Assert.Null(stopped.ActiveSessionId);\n+        Assert.Equal(beforeStop.CurrentSimulatedDateTime, stillStopped.CurrentSimulatedDateTime);\n+        Assert.Equal(beforeStop.LastProgressionTimestamp, stillStopped.LastProgressionTimestamp);\n+        Assert.Equal(CompanySimulationLifecycleStatusValues.Running, restarted.Status);\n+        Assert.NotNull(restarted.ActiveSessionId);\n+        Assert.NotEqual(started.ActiveSessionId, restarted.ActiveSessionId);\n+        Assert.Equal(new DateTime(2026, 5, 10, 0, 0, 0, DateTimeKind.Utc), restarted.StartSimulatedDateTime);\n+        Assert.Equal(new DateTime(2026, 5, 11, 0, 0, 0, DateTimeKind.Utc), afterRestart.CurrentSimulatedDateTime);\n+        Assert.False(afterRestart.GenerationEnabled);\n+        Assert.Equal(18, afterRestart.Seed);\n+        Assert.Equal(new DateTime(2026, 4, 19, 12, 1, 40, DateTimeKind.Utc), afterRestart.LastProgressionTimestamp);\n     }\n \n     [Fact]\nEND_OF_PATCH\n",
+  "stderrTail": "= await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);\n+        var stopped = await service.StopAsync(new StopCompanySimulationCommand(companyId), CancellationToken.None);\n+\n+        timeProvider.Advance(TimeSpan.FromSeconds(70));\n+        var stillStopped = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);\n+        var restarted = await service.StartAsync(\n+            new StartCompanySimulationCommand(companyId, new DateTime(2026, 5, 10, 0, 0, 0, DateTimeKind.Utc), false, 18, \"\"\"{\"profile\":\"restart\"}\"\"\"),\n+            CancellationToken.None);\n+\n+        timeProvider.Advance(TimeSpan.FromSeconds(10));\n+        var afterRestart = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);\n+\n+        Assert.Equal(new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc), beforeStop.CurrentSimulatedDateTime);\n+        Assert.Equal(CompanySimulationLifecycleStatusValues.Stopped, stopped.Status);\n+        Assert.Null(stopped.ActiveSessionId);\n+        Assert.Equal(beforeStop.CurrentSimulatedDateTime, stillStopped.CurrentSimulatedDateTime);\n+        Assert.Equal(beforeStop.LastProgressionTimestamp, stillStopped.LastProgressionTimestamp);\n+        Assert.Equal(CompanySimulationLifecycleStatusValues.Running, restarted.Status);\n+        Assert.NotNull(restarted.ActiveSessionId);\n+        Assert.NotEqual(started.ActiveSessionId, restarted.ActiveSessionId);\n+        Assert.Equal(new DateTime(2026, 5, 10, 0, 0, 0, DateTimeKind.Utc), restarted.StartSimulatedDateTime);\n+        Assert.Equal(new DateTime(2026, 5, 11, 0, 0, 0, DateTimeKind.Utc), afterRestart.CurrentSimulatedDateTime);\n+        Assert.False(afterRestart.GenerationEnabled);\n+        Assert.Equal(18, afterRestart.Seed);\n+        Assert.Equal(new DateTime(2026, 4, 19, 12, 1, 40, DateTimeKind.Utc), afterRestart.LastProgressionTimestamp);\n     }\n \n     [Fact]\nEND_OF_PATCH\ntokens used\n87,582\n",
+  "verbosityMode": "verbose"
+}

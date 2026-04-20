@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-19.4.3",
+  "promptPath": ".ai-design/prompts/TASK-19.4.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T22:41:32.143Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T22-41-32-143Z_TASK-19.4.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T22-41-32-143Z_TASK-19.4.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T22:46:15.790Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "anceSandboxAdminPageTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs\n@@ -191,6 +191,7 @@ public sealed class FinanceSandboxAdminPageTests\n                 [\n                     new FinanceTransparencyToolManifestItemViewModel\n                     {\n+                        VersionMetadata = \"Manifest version 1.0.0 from the active runtime registry.\",\n                         ToolName = \"approve_invoice\",\n                         Version = \"1.0.0\",\n                         ContractSummary = \"Input requires invoiceId; output declares approval status.\",\n@@ -220,8 +221,10 @@ public sealed class FinanceSandboxAdminPageTests\n                 ResponseSummary = \"Awaiting approval.\",\n                 ExecutionTimestampUtc = new DateTime(2026, 4, 16, 11, 0, 0, DateTimeKind.Utc),\n                 CorrelationId = \"corr-exec-1\",\n+                ApprovalRequestDisplay = \"Approval request 0a3150a7-cbc1-44ba-90bd-ae98202d1f12\",\n                 ApprovalRequestId = Guid.Parse(\"0a3150a7-cbc1-44ba-90bd-ae98202d1f12\"),\n                 OriginatingEntityType = \"finance_invoice\",\n+                OriginatingFinanceActionDisplay = \"Finance invoice INV-1001\",\n                 OriginatingEntityId = Guid.Parse(\"6c436d88-e7b0-4147-91d0-d5871129c84a\"),\n                 OriginatingEntityReference = \"Finance invoice INV-1001\",\n                 TaskId = Guid.Parse(\"b56fdd08-f82d-4bca-bca7-b847f6285e5e\"),\n@@ -236,6 +239,8 @@ public sealed class FinanceSandboxAdminPageTests\n         cut.WaitForAssertion(() =>\n         {\n             Assert.Contains(\"Open approval request\", cut.Markup);\n+            Assert.Contains(\"Approval request 0a3150a7-cbc1-44ba-90bd-ae98202d1f12\", cut.Markup);\n+            Assert.Contains(\"Finance invoice INV-1001\", cut.Markup);\n             Assert.Contains(\"Open originating finance action\", cut.Markup);\n             Assert.Contains(\"Open workflow instance\", cut.Markup);\n             Assert.Contains(\"Open related task\", cut.Markup);\nEND_OF_PATCH\n",
+  "stderrTail": "Tests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs\n@@ -191,6 +191,7 @@ public sealed class FinanceSandboxAdminPageTests\n                 [\n                     new FinanceTransparencyToolManifestItemViewModel\n                     {\n+                        VersionMetadata = \"Manifest version 1.0.0 from the active runtime registry.\",\n                         ToolName = \"approve_invoice\",\n                         Version = \"1.0.0\",\n                         ContractSummary = \"Input requires invoiceId; output declares approval status.\",\n@@ -220,8 +221,10 @@ public sealed class FinanceSandboxAdminPageTests\n                 ResponseSummary = \"Awaiting approval.\",\n                 ExecutionTimestampUtc = new DateTime(2026, 4, 16, 11, 0, 0, DateTimeKind.Utc),\n                 CorrelationId = \"corr-exec-1\",\n+                ApprovalRequestDisplay = \"Approval request 0a3150a7-cbc1-44ba-90bd-ae98202d1f12\",\n                 ApprovalRequestId = Guid.Parse(\"0a3150a7-cbc1-44ba-90bd-ae98202d1f12\"),\n                 OriginatingEntityType = \"finance_invoice\",\n+                OriginatingFinanceActionDisplay = \"Finance invoice INV-1001\",\n                 OriginatingEntityId = Guid.Parse(\"6c436d88-e7b0-4147-91d0-d5871129c84a\"),\n                 OriginatingEntityReference = \"Finance invoice INV-1001\",\n                 TaskId = Guid.Parse(\"b56fdd08-f82d-4bca-bca7-b847f6285e5e\"),\n@@ -236,6 +239,8 @@ public sealed class FinanceSandboxAdminPageTests\n         cut.WaitForAssertion(() =>\n         {\n             Assert.Contains(\"Open approval request\", cut.Markup);\n+            Assert.Contains(\"Approval request 0a3150a7-cbc1-44ba-90bd-ae98202d1f12\", cut.Markup);\n+            Assert.Contains(\"Finance invoice INV-1001\", cut.Markup);\n             Assert.Contains(\"Open originating finance action\", cut.Markup);\n             Assert.Contains(\"Open workflow instance\", cut.Markup);\n             Assert.Contains(\"Open related task\", cut.Markup);\nEND_OF_PATCH\ntokens used\n116,588\n",
+  "verbosityMode": "summary"
+}

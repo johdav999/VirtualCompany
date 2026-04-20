@@ -1,4 +1,12 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
+@inject OnboardingApiClient ApiClient
+@inject FinanceAccessResolver FinanceAccessResolver
+@inject NavigationManager Navigation
+@implements IDisposable
+
+@using Microsoft.AspNetCore.Components.Routing
+@using Microsoft.AspNetCore.WebUtilities
+
+<div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
         <a class="navbar-brand" href="">Virtual Company</a>
         <button title="Navigation menu" class="navbar-toggler" @onclick="ToggleNavMenu">
@@ -24,6 +32,14 @@
                 <span class="bi bi-grid-1x2" aria-hidden="true"></span> Dashboard
             </NavLink>
         </div>
+        @if (!string.IsNullOrWhiteSpace(financeHref))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="@financeHref">
+                    <span class="bi bi-cash-stack" aria-hidden="true"></span> Finance
+                </NavLink>
+            </div>
+        }
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="agents">
                 <span class="bi bi-people" aria-hidden="true"></span> Agents
@@ -64,11 +80,56 @@
 
 @code {
     private bool collapseNavMenu = true;
+    private string? financeHref;
+    private CurrentUserContextViewModel? currentUser;
 
     private string? NavMenuCssClass => collapseNavMenu ? "collapse" : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Navigation.LocationChanged += HandleLocationChanged;
+
+        try
+        {
+            currentUser = await ApiClient.GetCurrentUserContextAsync();
+            RefreshFinanceHref();
+        }
+        catch (OnboardingApiException)
+        {
+            financeHref = null;
+        }
+    }
 
     private void ToggleNavMenu()
     {
         collapseNavMenu = !collapseNavMenu;
+    }
+
+    private void HandleLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        RefreshFinanceHref();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void RefreshFinanceHref()
+    {
+        var requestedCompanyId = TryGetCompanyIdFromUri(Navigation.Uri);
+        financeHref = FinanceAccessResolver.BuildNavigationHref(currentUser, requestedCompanyId);
+    }
+
+    private static Guid? TryGetCompanyIdFromUri(string uri)
+    {
+        var absoluteUri = new Uri(uri, UriKind.Absolute);
+        if (!QueryHelpers.ParseQuery(absoluteUri.Query).TryGetValue(FinanceRoutes.CompanyIdQueryKey, out var values))
+        {
+            return null;
+        }
+
+        return Guid.TryParse(values.FirstOrDefault(), out var companyId) ? companyId : null;
+    }
+
+    public void Dispose()
+    {
+        Navigation.LocationChanged -= HandleLocationChanged;
     }
 }

@@ -1,0 +1,1465 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 31e29cf..28f832d 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -328,6 +328,7 @@ public sealed record FinanceInvoiceReviewWorkflowResultDto(
+     Dictionary<string, JsonNode?> OutputPayload)
+ {
+     public string ReviewTaskStatus { get; init; } = "new";
++    public DateTime LastUpdatedUtc { get; init; } = DateTime.UtcNow;
+     public FinanceWorkflowOutputSchemaDto WorkflowOutput { get; init; } =
+         FinanceWorkflowOutputSchemas.Create("invoice_review", "low", "no_action", "No workflow output was recorded.", 0m, "invoice_review");
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index c59c4eb..7f04d42 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -1,8 +1,10 @@
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Application.Finance;
++using VirtualCompany.Shared;
+ using VirtualCompany.Infrastructure.Tenancy;
++using System.Text.Json.Nodes;
+ 
+ namespace VirtualCompany.Api.Controllers;
+ 
+@@ -118,6 +120,78 @@ public sealed class InternalFinanceController : ControllerBase
+             () => _financeReadService.GetInvoicesAsync(
+                 new GetFinanceInvoicesQuery(companyId, startUtc, endUtc, limit),
+                 cancellationToken));
++
++    [HttpGet("reviews")]
++    public async Task<ActionResult<IReadOnlyList<FinanceInvoiceReviewListItemResponse>>> GetInvoiceReviewsAsync(
++        Guid companyId,
++        [FromQuery] string? status,
++        [FromQuery] string? supplier,
++        [FromQuery] string? riskLevel,
++        [FromQuery(Name = "outcome")] string? recommendationOutcome,
++        [FromQuery] int limit,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var normalizedStatus = NormalizeReviewToken(status);
++            var normalizedSupplier = NormalizeReviewText(supplier);
++            var normalizedRiskLevel = NormalizeReviewToken(riskLevel);
++            var normalizedOutcome = NormalizeReviewToken(recommendationOutcome);
++            var normalizedLimit = NormalizeReviewLimit(limit);
++
++            var invoices = await _financeReadService.GetInvoicesAsync(
++                new GetFinanceInvoicesQuery(companyId, null, null, normalizedLimit),
++                cancellationToken);
++
++            var items = new List<FinanceInvoiceReviewListItemResponse>(invoices.Count);
++            foreach (var invoice in invoices)
++            {
++                var review = await _invoiceReviewWorkflowService.GetLatestByInvoiceAsync(companyId, invoice.Id, cancellationToken);
++                var item = MapInvoiceReviewListItem(invoice, review);
++                if (MatchesReviewFilters(item, normalizedStatus, normalizedSupplier, normalizedRiskLevel, normalizedOutcome))
++                {
++                    items.Add(item);
++                }
++            }
++
++            return Ok(items
++                .OrderByDescending(x => x.LastUpdatedUtc)
++                .ThenBy(x => x.InvoiceNumber, StringComparer.OrdinalIgnoreCase)
++                .ToList());
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (ArgumentOutOfRangeException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message));
++        }
++        catch (ArgumentException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message));
++        }
++    }
++
++    [HttpGet("reviews/{invoiceId:guid}")]
++    public async Task<ActionResult<FinanceInvoiceReviewDetailResponse>> GetInvoiceReviewDetailAsync(
++        Guid companyId,
++        Guid invoiceId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var detail = await BuildInvoiceReviewDetailResponseAsync(companyId, invoiceId, executeIfMissing: true, cancellationToken);
++            return detail is null
++                ? NotFound(CreateProblemDetails("Finance invoice review was not found.", "Finance record was not found.", StatusCodes.Status404NotFound))
++                : Ok(detail);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (ArgumentOutOfRangeException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message));
++        }
++        catch (ArgumentException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message));
++        }
++    }
+ 
+     [HttpGet("invoices/{invoiceId:guid}")]
+     public async Task<ActionResult<FinanceInvoiceDetailDto>> GetInvoiceDetailAsync(
+@@ -169,6 +243,20 @@ public sealed class InternalFinanceController : ControllerBase
+                 cancellationToken));
+     }
+ 
++    [HttpPost("invoices/{invoiceId:guid}/review-workflow")]
++    public async Task<ActionResult<FinanceInvoiceReviewWorkflowResultDto>> ReviewInvoiceWorkflowAsync(
++        Guid companyId,
++        Guid invoiceId,
++        [FromBody] ReviewFinanceInvoiceWorkflowRequest? request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _invoiceReviewWorkflowService.ExecuteAsync(
++                new ReviewFinanceInvoiceWorkflowCommand(
++                    companyId,
++                    invoiceId,
++                    request?.WorkflowInstanceId,
++                    request?.AgentId,
++                    request?.Payload),
++                cancellationToken));
++
+     [HttpGet("anomalies")]
+     public async Task<ActionResult<IReadOnlyList<FinanceSeedAnomalyDto>>> GetSeedAnomaliesAsync(
+         Guid companyId,
+@@ -220,6 +308,36 @@ public sealed class InternalFinanceController : ControllerBase
+             () => _financeCommandService.UpdateInvoiceApprovalStatusAsync(
+                 new UpdateFinanceInvoiceApprovalStatusCommand(companyId, invoiceId, request.Status),
+                 cancellationToken));
++
++    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
++    [HttpPost("reviews/{invoiceId:guid}/approve")]
++    public Task<ActionResult<FinanceInvoiceReviewDetailResponse>> ApproveInvoiceReviewAsync(
++        Guid companyId,
++        Guid invoiceId,
++        CancellationToken cancellationToken) =>
++        ExecuteInvoiceReviewActionAsync(companyId, invoiceId, "approved", "approve", cancellationToken);
++
++    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
++    [HttpPost("reviews/{invoiceId:guid}/reject")]
++    public Task<ActionResult<FinanceInvoiceReviewDetailResponse>> RejectInvoiceReviewAsync(
++        Guid companyId,
++        Guid invoiceId,
++        CancellationToken cancellationToken) =>
++        ExecuteInvoiceReviewActionAsync(companyId, invoiceId, "rejected", "reject", cancellationToken);
++
++    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
++    [HttpPost("reviews/{invoiceId:guid}/follow-up")]
++    public Task<ActionResult<FinanceInvoiceReviewDetailResponse>> SendInvoiceReviewForFollowUpAsync(
++        Guid companyId,
++        Guid invoiceId,
++        CancellationToken cancellationToken) =>
++        ExecuteInvoiceReviewActionAsync(companyId, invoiceId, "open", "send_for_follow_up", cancellationToken);
+ 
+     [Authorize(Policy = CompanyPolicies.FinanceEdit)]
+     [HttpPatch("transactions/{transactionId:guid}/category")]
+@@ -366,6 +484,193 @@ public sealed class InternalFinanceController : ControllerBase
+                 new AdvanceCompanySimulationTimeCommand(companyId, request.TotalHours, request.ExecutionStepHours, request.Accelerated),
+                 cancellationToken));
+ 
++    private async Task<ActionResult<FinanceInvoiceReviewDetailResponse>> ExecuteInvoiceReviewActionAsync(
++        Guid companyId,
++        Guid invoiceId,
++        string targetStatus,
++        string trigger,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            await _financeCommandService.UpdateInvoiceApprovalStatusAsync(
++                new UpdateFinanceInvoiceApprovalStatusCommand(companyId, invoiceId, targetStatus),
++                cancellationToken);
++
++            await _invoiceReviewWorkflowService.ExecuteAsync(
++                new ReviewFinanceInvoiceWorkflowCommand(
++                    companyId,
++                    invoiceId,
++                    null,
++                    null,
++                    new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["trigger"] = JsonValue.Create(trigger),
++                        ["requestedStatus"] = JsonValue.Create(targetStatus)
++                    }),
++                cancellationToken);
++
++            var detail = await BuildInvoiceReviewDetailResponseAsync(companyId, invoiceId, executeIfMissing: false, cancellationToken);
++            return detail is null
++                ? NotFound(CreateProblemDetails("Finance invoice review was not found.", "Finance record was not found.", StatusCodes.Status404NotFound))
++                : Ok(detail);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (FinanceValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
++            {
++                Title = "Finance validation failed",
++                Detail = ex.Message,
++                Status = StatusCodes.Status400BadRequest,
++                Instance = HttpContext.Request.Path
++            });
++        }
++        catch (KeyNotFoundException ex)
++        {
++            return NotFound(CreateProblemDetails(ex.Message, "Finance record was not found.", StatusCodes.Status404NotFound));
++        }
++        catch (ArgumentOutOfRangeException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message, "Invalid finance write request.", StatusCodes.Status400BadRequest));
++        }
++        catch (ArgumentException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message, "Invalid finance write request.", StatusCodes.Status400BadRequest));
++        }
++        catch (InvalidOperationException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message, "Invalid finance write request.", StatusCodes.Status400BadRequest));
++        }
++    }
++
++    private async Task<FinanceInvoiceReviewDetailResponse?> BuildInvoiceReviewDetailResponseAsync(
++        Guid companyId,
++        Guid invoiceId,
++        bool executeIfMissing,
++        CancellationToken cancellationToken)
++    {
++        var invoice = await _financeReadService.GetInvoiceDetailAsync(
++            new GetFinanceInvoiceDetailQuery(companyId, invoiceId),
++            cancellationToken);
++
++        if (invoice is null)
++        {
++            return null;
++        }
++
++        var review = await _invoiceReviewWorkflowService.GetLatestByInvoiceAsync(companyId, invoiceId, cancellationToken);
++        if (review is null && executeIfMissing)
++        {
++            review = await _invoiceReviewWorkflowService.ExecuteAsync(
++                new ReviewFinanceInvoiceWorkflowCommand(
++                    companyId,
++                    invoiceId,
++                    null,
++                    null,
++                    new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["trigger"] = JsonValue.Create("invoice_review_detail_requested")
++                    }),
++                cancellationToken);
++        }
++
++        var fallbackWorkflowContext = invoice.WorkflowContext;
++        return new FinanceInvoiceReviewDetailResponse(
++            invoice.Id,
++            invoice.InvoiceNumber,
++            invoice.CounterpartyName,
++            invoice.Amount,
++            invoice.Currency,
++            invoice.Status,
++            review?.RiskLevel ?? fallbackWorkflowContext?.RiskLevel ?? "unknown",
++            review?.ReviewTaskStatus ?? fallbackWorkflowContext?.ReviewTaskStatus ?? "not_started",
++            review?.Rationale ?? fallbackWorkflowContext?.Rationale ?? "No invoice review recommendation is available yet.",
++            review?.RecommendedAction ?? fallbackWorkflowContext?.RecommendedAction ?? "no_action",
++            review?.ConfidenceScore ?? fallbackWorkflowContext?.Confidence ?? 0m,
++            review?.LastUpdatedUtc ?? invoice.IssuedUtc,
++            invoice.Id,
++            review?.ApprovalRequestId ?? fallbackWorkflowContext?.ApprovalRequestId,
++            BuildReviewActionAvailability(invoice, review));
++    }
++
++    private static FinanceInvoiceReviewListItemResponse MapInvoiceReviewListItem(
++        FinanceInvoiceDto invoice,
++        FinanceInvoiceReviewWorkflowResultDto? review) =>
++        new(
++            invoice.Id,
++            invoice.InvoiceNumber,
++            invoice.CounterpartyName,
++            invoice.Amount,
++            invoice.Currency,
++            invoice.Status,
++            review?.RiskLevel ?? "unknown",
++            review?.ReviewTaskStatus ?? "not_started",
++            review?.RecommendedAction ?? "pending_review",
++            review?.ConfidenceScore ?? 0m,
++            review?.LastUpdatedUtc ?? invoice.IssuedUtc);
++
++    private static FinanceInvoiceReviewActionAvailabilityResponse BuildReviewActionAvailability(
++        FinanceInvoiceDetailDto invoice,
++        FinanceInvoiceReviewWorkflowResultDto? review)
++    {
++        var normalizedStatus = NormalizeReviewToken(invoice.Status);
++        var hasPermission = invoice.Permissions.CanChangeInvoiceApprovalStatus;
++        var isActionable = hasPermission && normalizedStatus is "open" or "pending" or "pending_approval";
++
++        return new FinanceInvoiceReviewActionAvailabilityResponse(
++            isActionable,
++            isActionable,
++            isActionable,
++            isActionable);
++    }
++
++    private static bool MatchesReviewFilters(
++        FinanceInvoiceReviewListItemResponse item,
++        string? status,
++        string? supplier,
++        string? riskLevel,
++        string? outcome)
++    {
++        if (!string.IsNullOrWhiteSpace(status) && !string.Equals(NormalizeReviewToken(item.Status), status, StringComparison.OrdinalIgnoreCase))
++        {
++            return false;
++        }
++
++        if (!string.IsNullOrWhiteSpace(supplier) &&
++            !item.SupplierName.Contains(supplier, StringComparison.OrdinalIgnoreCase))
++        {
++            return false;
++        }
++
++        if (!string.IsNullOrWhiteSpace(riskLevel) && !string.Equals(NormalizeReviewToken(item.RiskLevel), riskLevel, StringComparison.OrdinalIgnoreCase))
++        {
++            return false;
++        }
++
++        return string.IsNullOrWhiteSpace(outcome) ||
++               string.Equals(NormalizeReviewToken(item.RecommendationOutcome), outcome, StringComparison.OrdinalIgnoreCase);
++    }
++
++    private static int NormalizeReviewLimit(int limit) =>
++        limit <= 0 ? 200 : Math.Min(limit, 500);
++
++    private static string? NormalizeReviewText(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
++
++    private static string? NormalizeReviewToken(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? null
++            : value.Trim().Replace(" ", "_", StringComparison.Ordinal).Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
++
+     private async Task<ActionResult<T>> ExecuteReadAsync<T>(Func<Task<T>> read)
+     {
+         try
+@@ -485,6 +790,39 @@ public sealed class InternalFinanceController : ControllerBase
+         };
+ }
+ 
++public sealed record FinanceInvoiceReviewListItemResponse(
++    Guid Id,
++    string InvoiceNumber,
++    string SupplierName,
++    decimal Amount,
++    string Currency,
++    string Status,
++    string RiskLevel,
++    string RecommendationStatus,
++    string RecommendationOutcome,
++    decimal Confidence,
++    DateTime LastUpdatedUtc);
++
++public sealed record FinanceInvoiceReviewDetailResponse(
++    Guid Id,
++    string InvoiceNumber,
++    string SupplierName,
++    decimal Amount,
++    string Currency,
++    string Status,
++    string RiskLevel,
++    string RecommendationStatus,
++    string RecommendationSummary,
++    string RecommendedAction,
++    decimal Confidence,
++    DateTime LastUpdatedUtc,
++    Guid SourceInvoiceId,
++    Guid? RelatedApprovalId,
++    FinanceInvoiceReviewActionAvailabilityResponse Actions);
++
++public sealed record FinanceInvoiceReviewActionAvailabilityResponse(
++    bool IsActionable,
++    bool CanApprove,
++    bool CanReject,
++    bool CanSendForFollowUp);
++
+ public sealed record UpdateFinanceInvoiceApprovalStatusRequest(string Status);
+ 
+ public sealed record ReviewFinanceInvoiceWorkflowRequest(
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
+index cfd3cc0..35d05de 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
+@@ -109,6 +109,7 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             invoice,
+             policy,
+             CloneNodes(outputPayload))
++        { LastUpdatedUtc = task.UpdatedUtc }
+         {
+             ReviewTaskStatus = task.Status.ToStorageValue(),
+             WorkflowOutput = FinanceWorkflowOutputSchemas.Create(
+@@ -163,6 +164,7 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             invoice,
+             policy,
+             CloneNodes(task.OutputPayload))
++        { LastUpdatedUtc = task.UpdatedUtc }
+         {
+             ReviewTaskStatus = task.Status.ToStorageValue(),
+             WorkflowOutput = FinanceWorkflowOutputSchemas.Create(
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceSectionNav.razor b/src/VirtualCompany.Web/Components/Finance/FinanceSectionNav.razor
+index 83e2e80..16bb9bc 100644
+--- a/src/VirtualCompany.Web/Components/Finance/FinanceSectionNav.razor
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceSectionNav.razor
+@@ -1,7 +1,7 @@
+-<nav class="finance-section-nav" aria-label="Finance summary pages">
+-    @foreach (var route in FinanceRoutes.SummaryPages)
++<nav class="finance-section-nav" aria-label="Finance pages">
++    @foreach (var route in FinanceRoutes.SectionPages)
+     {
+-        <NavLink class="finance-section-nav__link" ActiveClass="active" Match="NavLinkMatch.All" href="@route.BuildPath(CompanyId)">
++        <NavLink class="finance-section-nav__link" ActiveClass="active" Match="NavLinkMatch.Prefix" href="@route.BuildPath(CompanyId)">
+             @route.Title
+         </NavLink>
+     }
+diff --git a/src/VirtualCompany.Web/Components/Finance/InvoiceReviewDetailContent.razor b/src/VirtualCompany.Web/Components/Finance/InvoiceReviewDetailContent.razor
+new file mode 100644
+index 0000000..c39329c
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/InvoiceReviewDetailContent.razor
+@@ -0,0 +1,122 @@
++@using System.Globalization
++
++@if (IsLoading)
++{
++    <FinanceLoadingState Title="Loading invoice review" Message="Fetching the latest finance review result for the selected invoice." />
++}
++else if (!string.IsNullOrWhiteSpace(ErrorMessage))
++{
++    <FinanceErrorState Title="Invoice review unavailable" Message="@ErrorMessage!" RetryText="Retry" OnRetry="@OnRetry" />
++}
++else if (Detail is null)
++{
++    <FinanceEmptyState Title="No review result available" Message="The selected invoice does not currently have a finance review result to display." />
++}
++else
++{
++    <div class="invoice-review-detail">
++        <div class="invoice-review-detail__header">
++            <div>
++                <h2 class="h4 mb-1">@Detail.InvoiceNumber</h2>
++                <p class="text-body-secondary mb-0">@Detail.SupplierName</p>
++            </div>
++            <div class="text-end">
++                <div class="fw-semibold">@FormatCurrency(Detail.Amount, Detail.Currency)</div>
++                <div class="small text-body-secondary">Updated @FormatDateTime(Detail.LastUpdatedUtc)</div>
++            </div>
++        </div>
++
++        <div class="dashboard-actions">
++            <a class="btn btn-outline-secondary" href="@BackToListHref">Back to review list</a>
++            <a class="btn btn-outline-primary" href="@SourceInvoiceHref">Open source invoice</a>
++            @if (!string.IsNullOrWhiteSpace(RelatedApprovalHref) && Detail.RelatedApprovalId.HasValue)
++            {
++                <a class="btn btn-outline-primary" href="@RelatedApprovalHref">Open related approval</a>
++            }
++        </div>
++
++        @if (!string.IsNullOrWhiteSpace(StatusMessage))
++        {
++            <div class="alert alert-success mb-0" role="status">@StatusMessage</div>
++        }
++
++        <dl class="kv-list mb-0">
++            <dt>Status</dt>
++            <dd>@FormatLabel(Detail.Status)</dd>
++            <dt>Risk level</dt>
++            <dd>@FormatLabel(Detail.RiskLevel)</dd>
++            <dt>Recommendation status</dt>
++            <dd>@FormatLabel(Detail.RecommendationStatus)</dd>
++            <dt>Recommended action</dt>
++            <dd>@FormatLabel(Detail.RecommendedAction)</dd>
++            <dt>Confidence</dt>
++            <dd>@FormatConfidence(Detail.Confidence)</dd>
++            <dt>Recommendation summary</dt>
++            <dd>@Detail.RecommendationSummary</dd>
++        </dl>
++
++        @if (Detail.Actions.IsActionable)
++        {
++            <div class="dashboard-actions">
++                @if (Detail.Actions.CanApprove)
++                {
++                    <button class="btn btn-primary" type="button" disabled="@IsSubmitting" @onclick="OnApprove">Approve</button>
++                }
++                @if (Detail.Actions.CanReject)
++                {
++                    <button class="btn btn-outline-secondary" type="button" disabled="@IsSubmitting" @onclick="OnReject">Reject</button>
++                }
++                @if (Detail.Actions.CanSendForFollowUp)
++                {
++                    <button class="btn btn-outline-secondary" type="button" disabled="@IsSubmitting" @onclick="OnSendForFollowUp">Send for follow-up</button>
++                }
++            </div>
++        }
++    </div>
++}
++
++@code {
++    [Parameter] public bool IsLoading { get; set; }
++    [Parameter] public bool IsSubmitting { get; set; }
++    [Parameter] public string? ErrorMessage { get; set; }
++    [Parameter] public string? StatusMessage { get; set; }
++    [Parameter] public FinanceInvoiceReviewDetailResponse? Detail { get; set; }
++    [Parameter] public string BackToListHref { get; set; } = string.Empty;
++    [Parameter] public string SourceInvoiceHref { get; set; } = string.Empty;
++    [Parameter] public string? RelatedApprovalHref { get; set; }
++    [Parameter] public EventCallback OnRetry { get; set; }
++    [Parameter] public EventCallback OnApprove { get; set; }
++    [Parameter] public EventCallback OnReject { get; set; }
++    [Parameter] public EventCallback OnSendForFollowUp { get; set; }
++
++    private static string FormatCurrency(decimal amount, string currency) =>
++        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
++
++    private static string FormatDateTime(DateTime value) =>
++        value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
++
++    private static string FormatConfidence(decimal confidence)
++    {
++        var clamped = Math.Clamp(confidence, 0m, 1m);
++        return $"{clamped:P0}";
++    }
++
++    private static string FormatLabel(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "n/a"
++            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
++}
+diff --git a/src/VirtualCompany.Web/Components/Finance/InvoiceReviewListContent.razor b/src/VirtualCompany.Web/Components/Finance/InvoiceReviewListContent.razor
+new file mode 100644
+index 0000000..afad111
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/InvoiceReviewListContent.razor
+@@ -0,0 +1,95 @@
++@using System.Globalization
++
++<FinanceDataState
++    IsLoading="@IsLoading"
++    IsEmpty="@(!IsLoading && string.IsNullOrWhiteSpace(ErrorMessage) && Items.Count == 0)"
++    ErrorMessage="@ErrorMessage"
++    LoadingTitle="Loading invoice reviews"
++    LoadingMessage="Fetching finance workflow review recommendations for the active company."
++    EmptyTitle="No invoice reviews matched the active filters"
++    EmptyMessage="Adjust the review filters and try again."
++    ErrorTitle="Invoice reviews are unavailable"
++    OnRetry="@OnRetry">
++    <div class="table-responsive">
++        <table class="table align-middle invoice-review-table">
++            <thead>
++                <tr>
++                    <th scope="col">Invoice number</th>
++                    <th scope="col">Supplier name</th>
++                    <th scope="col" class="finance-table__number">Amount</th>
++                    <th scope="col">Currency</th>
++                    <th scope="col">Risk level</th>
++                    <th scope="col">Recommendation status</th>
++                    <th scope="col" class="finance-table__number">Confidence</th>
++                    <th scope="col">Last updated</th>
++                </tr>
++            </thead>
++            <tbody>
++                @foreach (var item in Items)
++                {
++                    <tr>
++                        <td>
++                            <a href="@BuildDetailHref(item)">@item.InvoiceNumber</a>
++                        </td>
++                        <td>@item.SupplierName</td>
++                        <td class="finance-table__number">@item.Amount.ToString("N2", CultureInfo.InvariantCulture)</td>
++                        <td>@item.Currency</td>
++                        <td>@FormatLabel(item.RiskLevel)</td>
++                        <td>@FormatLabel(item.RecommendationStatus)</td>
++                        <td class="finance-table__number">@FormatConfidence(item.Confidence)</td>
++                        <td>@FormatDateTime(item.LastUpdatedUtc)</td>
++                    </tr>
++                }
++            </tbody>
++        </table>
++    </div>
++</FinanceDataState>
++
++@code {
++    [Parameter] public bool IsLoading { get; set; }
++    [Parameter] public string? ErrorMessage { get; set; }
++    [Parameter] public IReadOnlyList<FinanceInvoiceReviewListItemResponse> Items { get; set; } = [];
++    [Parameter] public EventCallback OnRetry { get; set; }
++    [Parameter] public Func<FinanceInvoiceReviewListItemResponse, string>? BuildDetailLink { get; set; }
++
++    private string BuildDetailHref(FinanceInvoiceReviewListItemResponse item) =>
++        BuildDetailLink?.Invoke(item) ?? "#";
++
++    private static string FormatDateTime(DateTime value) =>
++        value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
++
++    private static string FormatConfidence(decimal confidence)
++    {
++        var clamped = Math.Clamp(confidence, 0m, 1m);
++        return $"{clamped:P0}";
++    }
++
++    private static string FormatLabel(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "n/a"
++            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor
+new file mode 100644
+index 0000000..0aa5744
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor
+@@ -0,0 +1,22 @@
++@page "/finance/reviews/{InvoiceId:guid}"
++
++<PageTitle>Invoice Review Detail</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Invoice review detail"
++    Description="Review the recommendation result and available finance actions for a single invoice."
++    LoadingMessage="Loading invoice review detail...">
++    <InvoiceReviewDetailContent
++        IsLoading="@IsDetailLoading"
++        IsSubmitting="@IsSubmittingAction"
++        ErrorMessage="@DetailErrorMessage"
++        StatusMessage="@ActionStatusMessage"
++        Detail="@ReviewDetail"
++        BackToListHref="@BackToListHref"
++        SourceInvoiceHref="@SourceInvoiceHref"
++        RelatedApprovalHref="@RelatedApprovalHref"
++        OnRetry="@ReloadAsync"
++        OnApprove="@ApproveAsync"
++        OnReject="@RejectAsync"
++        OnSendForFollowUp="@SendForFollowUpAsync" />
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor.cs
+new file mode 100644
+index 0000000..6ed9a4c
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor.cs
+@@ -0,0 +1,123 @@
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class InvoiceReviewDetailPage : FinancePageBase
++{
++    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
++
++    [Parameter] public Guid InvoiceId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "status")]
++    public string? Status { get; set; }
++
++    [SupplyParameterFromQuery(Name = "supplier")]
++    public string? Supplier { get; set; }
++
++    [SupplyParameterFromQuery(Name = "riskLevel")]
++    public string? RiskLevel { get; set; }
++
++    [SupplyParameterFromQuery(Name = "outcome")]
++    public string? Outcome { get; set; }
++
++    private FinanceInvoiceReviewDetailResponse? ReviewDetail { get; set; }
++    private bool IsDetailLoading { get; set; }
++    private bool IsSubmittingAction { get; set; }
++    private string? DetailErrorMessage { get; set; }
++    private string? ActionStatusMessage { get; set; }
++    private string BackToListHref => BuildBackToListHref();
++    private string SourceInvoiceHref =>
++        FinanceRoutes.BuildInvoiceDetailPath(InvoiceId, AccessState.CompanyId);
++    private string? RelatedApprovalHref =>
++        ReviewDetail?.RelatedApprovalId is Guid approvalId && AccessState.CompanyId is Guid companyId
++            ? $"/approvals?companyId={companyId:D}&approvalId={approvalId:D}"
++            : null;
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        ReviewDetail = null;
++        DetailErrorMessage = null;
++        ActionStatusMessage = null;
++
++        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadDetailAsync(companyId);
++    }
++
++    private async Task ReloadAsync()
++    {
++        if (AccessState.CompanyId is Guid companyId)
++        {
++            await LoadDetailAsync(companyId);
++        }
++    }
++
++    private async Task LoadDetailAsync(Guid companyId)
++    {
++        IsDetailLoading = true;
++        DetailErrorMessage = null;
++
++        try
++        {
++            ReviewDetail = await FinanceApiClient.GetInvoiceReviewDetailAsync(companyId, InvoiceId);
++        }
++        catch (FinanceApiException ex)
++        {
++            ReviewDetail = null;
++            DetailErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsDetailLoading = false;
++        }
++    }
++
++    private Task ApproveAsync() =>
++        ExecuteActionAsync("approve", "Invoice approved.");
++
++    private Task RejectAsync() =>
++        ExecuteActionAsync("reject", "Invoice rejected.");
++
++    private Task SendForFollowUpAsync() =>
++        ExecuteActionAsync("follow-up", "Invoice sent for follow-up.");
++
++    private async Task ExecuteActionAsync(string action, string successMessage)
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        IsSubmittingAction = true;
++        DetailErrorMessage = null;
++        ActionStatusMessage = null;
++
++        try
++        {
++            ReviewDetail = await FinanceApiClient.SubmitInvoiceReviewActionAsync(companyId, InvoiceId, action);
++            ActionStatusMessage = successMessage;
++        }
++        catch (FinanceApiValidationException ex)
++        {
++            DetailErrorMessage = ResolveValidationMessage(ex, "Status");
++        }
++        catch (FinanceApiException ex)
++        {
++            DetailErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsSubmittingAction = false;
++        }
++    }
++
++    private string BuildBackToListHref()
++    {
++        var query = new InvoiceReviewFilterState
++        {
++            Status = Status,
++            Supplier = Supplier,
++            RiskLevel = RiskLevel,
++            RecommendationOutcome = Outcome
++        }.Normalize().ToQueryString(AccessState.CompanyId);
++
++        return string.IsNullOrWhiteSpace(query)
++            ? FinanceRoutes.WithCompanyContext(FinanceRoutes.Reviews, AccessState.CompanyId)
++            : $"{FinanceRoutes.Reviews}?{query}";
++    }
++
++    private static string ResolveValidationMessage(FinanceApiValidationException exception, string key) =>
++        exception.Errors.TryGetValue(key, out var directErrors) && directErrors.Length > 0 ? directErrors[0] : exception.Message;
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewsPage.razor b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewsPage.razor
+new file mode 100644
+index 0000000..75f31ca
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewsPage.razor
+@@ -0,0 +1,56 @@
++@page "/finance/reviews"
++
++<PageTitle>Invoice Reviews</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Invoice reviews"
++    Description="Review workflow recommendations, risk signals, and approval actions for invoice workbench items."
++    LoadingMessage="Loading invoice reviews workspace...">
++    <form method="get" class="agent-filter-bar mb-4">
++        <input type="hidden" name="@FinanceRoutes.CompanyIdQueryKey" value="@AccessState.CompanyId" />
++        <div>
++            <label class="form-label" for="invoice-review-status">Status</label>
++            <select id="invoice-review-status" class="form-select" name="status">
++                <option value="" selected="@string.IsNullOrWhiteSpace(Status)">All statuses</option>
++                @foreach (var option in StatusOptions)
++                {
++                    <option value="@option" selected="@IsSelected(Status, option)">@FormatLabel(option)</option>
++                }
++            </select>
++        </div>
++        <div>
++            <label class="form-label" for="invoice-review-supplier">Supplier</label>
++            <input id="invoice-review-supplier" class="form-control" type="text" name="supplier" value="@Supplier" />
++        </div>
++        <div>
++            <label class="form-label" for="invoice-review-risk">Risk level</label>
++            <select id="invoice-review-risk" class="form-select" name="riskLevel">
++                <option value="" selected="@string.IsNullOrWhiteSpace(RiskLevel)">All risk levels</option>
++                @foreach (var option in RiskLevelOptions)
++                {
++                    <option value="@option" selected="@IsSelected(RiskLevel, option)">@FormatLabel(option)</option>
++                }
++            </select>
++        </div>
++        <div>
++            <label class="form-label" for="invoice-review-outcome">Recommendation outcome</label>
++            <select id="invoice-review-outcome" class="form-select" name="outcome">
++                <option value="" selected="@string.IsNullOrWhiteSpace(Outcome)">All outcomes</option>
++                @foreach (var option in OutcomeOptions)
++                {
++                    <option value="@option" selected="@IsSelected(Outcome, option)">@FormatLabel(option)</option>
++                }
++            </select>
++        </div>
++        <div class="dashboard-actions">
++            <button class="btn btn-primary" type="submit">Apply filters</button>
++            <a class="btn btn-outline-secondary" href="@ClearFiltersHref">Clear</a>
++        </div>
++    </form>
++
++    <InvoiceReviewListContent
++        IsLoading="@IsListLoading"
++        ErrorMessage="@ListErrorMessage"
++        Items="@Reviews"
++        BuildDetailLink="@BuildDetailHref"
++        OnRetry="@ReloadAsync" />
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewsPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewsPage.razor.cs
+new file mode 100644
+index 0000000..f92e586
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewsPage.razor.cs
+@@ -0,0 +1,79 @@
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class InvoiceReviewsPage : FinancePageBase
++{
++    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
++
++    [SupplyParameterFromQuery(Name = "status")]
++    public string? Status { get; set; }
++
++    [SupplyParameterFromQuery(Name = "supplier")]
++    public string? Supplier { get; set; }
++
++    [SupplyParameterFromQuery(Name = "riskLevel")]
++    public string? RiskLevel { get; set; }
++
++    [SupplyParameterFromQuery(Name = "outcome")]
++    public string? Outcome { get; set; }
++
++    private IReadOnlyList<FinanceInvoiceReviewListItemResponse> Reviews { get; set; } = [];
++    private bool IsListLoading { get; set; }
++    private string? ListErrorMessage { get; set; }
++    private string ClearFiltersHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Reviews, AccessState.CompanyId);
++
++    private static IReadOnlyList<string> StatusOptions => ["open", "pending_approval", "approved", "rejected", "paid", "void"];
++    private static IReadOnlyList<string> RiskLevelOptions => ["low", "medium", "high", "critical"];
++    private static IReadOnlyList<string> OutcomeOptions => ["approve", "reject", "request_human_approval", "no_action", "pending_review"];
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        Reviews = [];
++        ListErrorMessage = null;
++
++        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadReviewsAsync(companyId);
++    }
++
++    private async Task ReloadAsync()
++    {
++        if (AccessState.CompanyId is Guid companyId)
++        {
++            await LoadReviewsAsync(companyId);
++        }
++    }
++
++    private async Task LoadReviewsAsync(Guid companyId)
++    {
++        IsListLoading = true;
++        ListErrorMessage = null;
++
++        var filter = new InvoiceReviewFilterState
++        {
++            Status = Status,
++            Supplier = Supplier,
++            RiskLevel = RiskLevel,
++            RecommendationOutcome = Outcome
++        }.Normalize();
++
++        try
++        {
++            Reviews = await FinanceApiClient.GetInvoiceReviewsAsync(companyId, filter.Status, filter.Supplier, filter.RiskLevel, filter.RecommendationOutcome, 200);
++        }
++        catch (FinanceApiException ex)
++        {
++            Reviews = [];
++            ListErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsListLoading = false;
++        }
++    }
++
++    private string BuildDetailHref(FinanceInvoiceReviewListItemResponse item)
++    {
++        var query = new InvoiceReviewFilterState { Status = Status, Supplier = Supplier, RiskLevel = RiskLevel, RecommendationOutcome = Outcome }
++            .Normalize()
++            .ToQueryString(AccessState.CompanyId);
++        var path = FinanceRoutes.BuildInvoiceReviewDetailPath(item.Id, null);
++        return string.IsNullOrWhiteSpace(query) ? path : $"{path}?{query}";
++    }
++
++    private static bool IsSelected(string? currentValue, string expectedValue) =>
++        string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);
++
++    private static string FormatLabel(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "n/a"
++            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
++}
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 1a72b7b..eeb86a0 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -114,6 +114,28 @@ public sealed class FinanceApiClient
+             ? Task.FromResult<FinanceInvoiceDetailResponse?>(null)
+             : GetAsync<FinanceInvoiceDetailResponse>(companyId, $"internal/companies/{companyId}/finance/invoices/{invoiceId}", allowNotFound: true, cancellationToken);
+ 
++    public Task<IReadOnlyList<FinanceInvoiceReviewListItemResponse>> GetInvoiceReviewsAsync(
++        Guid companyId,
++        string? status = null,
++        string? supplier = null,
++        string? riskLevel = null,
++        string? recommendationOutcome = null,
++        int limit = 200,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<IReadOnlyList<FinanceInvoiceReviewListItemResponse>>([]);
++        }
++
++        var uri = $"internal/companies/{companyId}/finance/reviews{BuildQuery(("status", status), ("supplier", supplier), ("riskLevel", riskLevel), ("outcome", recommendationOutcome), ("limit", limit.ToString()))}";
++        return GetListAsync<FinanceInvoiceReviewListItemResponse>(companyId, uri, cancellationToken);
++    }
++
++    public Task<FinanceInvoiceReviewDetailResponse?> GetInvoiceReviewDetailAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinanceInvoiceReviewDetailResponse?>(null)
++            : GetAsync<FinanceInvoiceReviewDetailResponse>(companyId, $"internal/companies/{companyId}/finance/reviews/{invoiceId}", allowNotFound: true, cancellationToken);
++
+     public async Task<FinanceMonthlySummaryResponse?> GetMonthlySummaryAsync(Guid companyId, DateTime? referenceUtc = null, CancellationToken cancellationToken = default)
+     {
+         FinanceSimulationClockResponse? clock = null;
+@@ -171,6 +193,15 @@ public sealed class FinanceApiClient
+             ExpenseBreakdown = expenseBreakdown
+         };
+     }
++
++    public Task<FinanceInvoiceReviewDetailResponse> SubmitInvoiceReviewActionAsync(
++        Guid companyId,
++        Guid invoiceId,
++        string action,
++        CancellationToken cancellationToken = default) =>
++        SendCompanyScopedAsync<object, FinanceInvoiceReviewDetailResponse>(
++            companyId,
++            HttpMethod.Post,
++            $"internal/companies/{companyId}/finance/reviews/{invoiceId}/{action}",
++            new { },
++            cancellationToken);
+ 
+     private async Task<IReadOnlyList<T>> GetListAsync<T>(Guid companyId, string uri, CancellationToken cancellationToken)
+     {
+@@ -398,6 +429,31 @@ public sealed class FinanceInvoiceDetailResponse
+     public FinanceLinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
+ }
+ 
++public sealed class FinanceInvoiceReviewListItemResponse
++{
++    public Guid Id { get; set; }
++    public string InvoiceNumber { get; set; } = string.Empty;
++    public string SupplierName { get; set; } = string.Empty;
++    public decimal Amount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string RiskLevel { get; set; } = string.Empty;
++    public string RecommendationStatus { get; set; } = string.Empty;
++    public string RecommendationOutcome { get; set; } = string.Empty;
++    public decimal Confidence { get; set; }
++    public DateTime LastUpdatedUtc { get; set; }
++}
++
++public sealed class FinanceInvoiceReviewDetailResponse
++{
++    public Guid Id { get; set; }
++    public string InvoiceNumber { get; set; } = string.Empty;
++    public string SupplierName { get; set; } = string.Empty;
++    public decimal Amount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string RiskLevel { get; set; } = string.Empty;
++    public string RecommendationStatus { get; set; } = string.Empty;
++    public string RecommendationSummary { get; set; } = string.Empty;
++    public string RecommendedAction { get; set; } = string.Empty;
++    public decimal Confidence { get; set; }
++    public DateTime LastUpdatedUtc { get; set; }
++    public Guid SourceInvoiceId { get; set; }
++    public Guid? RelatedApprovalId { get; set; }
++    public FinanceInvoiceReviewActionAvailabilityResponse Actions { get; set; } = new();
++}
++
++public sealed class FinanceInvoiceReviewActionAvailabilityResponse
++{
++    public bool IsActionable { get; set; }
++    public bool CanApprove { get; set; }
++    public bool CanReject { get; set; }
++    public bool CanSendForFollowUp { get; set; }
++}
++
+ public sealed class FinanceSeedAnomalyResponse
+ {
+     public Guid Id { get; set; }
+diff --git a/src/VirtualCompany.Web/Services/FinanceRoutes.cs b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+index ef6fc29..f1be3ad 100644
+--- a/src/VirtualCompany.Web/Services/FinanceRoutes.cs
++++ b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+@@ -11,6 +11,8 @@ public static class FinanceRoutes
+     public const string Transactions = "/finance/transactions";
+     public const string TransactionDetail = "/finance/transactions/{transactionId:guid}";
+     public const string Invoices = "/finance/invoices";
++    public const string Reviews = "/finance/reviews";
++    public const string ReviewDetail = "/finance/reviews/{invoiceId:guid}";
+     public const string InvoiceDetail = "/finance/invoices/{invoiceId:guid}";
+     public const string Balances = "/finance/balances";
+     public const string MonthlySummary = "/finance/monthly-summary";
+@@ -31,6 +33,7 @@ public static class FinanceRoutes
+         [
+             new("Cash position", CashPosition, "Review cash coverage and company liquidity in the active tenant context."),
+             new("Transactions", Transactions, "Inspect transaction activity and categorization work for the selected company."),
++            new("Invoice reviews", Reviews, "Review finance workflow recommendations and actions for invoice workbench items."),
+             new("Invoices", Invoices, "Track invoice review and collection workflows inside the active company."),
+             new("Balances", Balances, "Browse account balances with explicit tenant-scoped routing."),
+             new("Monthly summary", MonthlySummary, "Summarize the current month's finance posture for the active company."),
+@@ -42,6 +45,9 @@ public static class FinanceRoutes
+ 
+     public static string BuildInvoiceDetailPath(Guid invoiceId, Guid? companyId) =>
+         WithCompanyContext($"/finance/invoices/{invoiceId:D}", companyId);
++
++    public static string BuildInvoiceReviewDetailPath(Guid invoiceId, Guid? companyId) =>
++        WithCompanyContext($"/finance/reviews/{invoiceId:D}", companyId);
+ 
+     public static string WithCompanyContext(string path, Guid? companyId)
+     {
+diff --git a/src/VirtualCompany.Web/Services/InvoiceReviewFilterState.cs b/src/VirtualCompany.Web/Services/InvoiceReviewFilterState.cs
+new file mode 100644
+index 0000000..e74e3da
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/InvoiceReviewFilterState.cs
+@@ -0,0 +1,76 @@
++using System.Collections.Specialized;
++using System.Globalization;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class InvoiceReviewFilterState
++{
++    public string? Status { get; set; }
++    public string? Supplier { get; set; }
++    public string? RiskLevel { get; set; }
++    public string? RecommendationOutcome { get; set; }
++
++    public static InvoiceReviewFilterState FromQuery(NameValueCollection query) =>
++        new()
++        {
++            Status = query["status"],
++            Supplier = query["supplier"],
++            RiskLevel = query["riskLevel"],
++            RecommendationOutcome = query["outcome"]
++        }.Normalize();
++
++    public InvoiceReviewFilterState Normalize()
++    {
++        Status = NormalizeToken(Status);
++        Supplier = NormalizeText(Supplier);
++        RiskLevel = NormalizeToken(RiskLevel);
++        RecommendationOutcome = NormalizeToken(RecommendationOutcome);
++        return this;
++    }
++
++    public IReadOnlyDictionary<string, object?> ToQueryParameters(Guid? companyId)
++    {
++        var normalized = Normalize();
++        return new Dictionary<string, object?>
++        {
++            [FinanceRoutes.CompanyIdQueryKey] = companyId,
++            ["status"] = normalized.Status,
++            ["supplier"] = normalized.Supplier,
++            ["riskLevel"] = normalized.RiskLevel,
++            ["outcome"] = normalized.RecommendationOutcome
++        };
++    }
++
++    public string ToQueryString(Guid? companyId)
++    {
++        var values = ToQueryParameters(companyId);
++        return string.Join("&", values
++            .Where(x => x.Value is not null)
++            .Select(x => $"{Uri.EscapeDataString(x.Key)}={Uri.EscapeDataString(FormatQueryValue(x.Value!))}"));
++    }
++
++    private static string FormatQueryValue(object value) =>
++        value switch
++        {
++            Guid guid => guid.ToString("D"),
++            DateTime dateTime => dateTime.ToString("O", CultureInfo.InvariantCulture),
++            _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty
++        };
++
++    private static string? NormalizeText(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
++
++    private static string? NormalizeToken(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? null
++            : value.Trim().Replace(" ", "_", StringComparison.Ordinal).Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
++}
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 11e0d59..419d8b8 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -778,6 +778,33 @@ code {
+     text-align: right;
+     white-space: nowrap;
+ }
++
++.invoice-review-table th,
++.invoice-review-table td {
++    vertical-align: middle;
++}
++
++.invoice-review-detail {
++    display: grid;
++    gap: 1rem;
++}
++
++.invoice-review-detail__header {
++    align-items: flex-start;
++    display: flex;
++    gap: 1rem;
++    justify-content: space-between;
++}
++
++@media (max-width: 575.98px) {
++    .invoice-review-detail__header {
++        flex-direction: column;
++    }
++
++    .invoice-review-table {
++        min-width: 880px;
++    }
++}
++
+ .finance-anomaly-list {
+     display: grid;
+     gap: 0.75rem;
+diff --git a/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs b/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs
+new file mode 100644
+index 0000000..14ce130
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs
+@@ -0,0 +1,143 @@
++using Bunit;
++using VirtualCompany.Web.Components.Finance;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class InvoiceReviewComponentTests
++{
++    [Fact]
++    public void Invoice_review_list_component_renders_loading_state()
++    {
++        using var context = new TestContext();
++
++        var cut = context.RenderComponent<InvoiceReviewListContent>(parameters => parameters
++            .Add(x => x.IsLoading, true));
++
++        Assert.Contains("Loading invoice reviews", cut.Markup);
++    }
++
++    [Fact]
++    public void Invoice_review_list_component_renders_empty_state()
++    {
++        using var context = new TestContext();
++
++        var cut = context.RenderComponent<InvoiceReviewListContent>();
++
++        Assert.Contains("No invoice reviews matched the active filters", cut.Markup);
++    }
++
++    [Fact]
++    public void Invoice_review_list_component_renders_error_state()
++    {
++        using var context = new TestContext();
++
++        var cut = context.RenderComponent<InvoiceReviewListContent>(parameters => parameters
++            .Add(x => x.ErrorMessage, "Finance API failed."));
++
++        Assert.Contains("Finance API failed.", cut.Markup);
++    }
++
++    [Fact]
++    public void Invoice_review_list_component_renders_required_columns_and_navigation()
++    {
++        using var context = new TestContext();
++        var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
++
++        var cut = context.RenderComponent<InvoiceReviewListContent>(parameters => parameters
++            .Add(x => x.Items, new[]
++            {
++                new FinanceInvoiceReviewListItemResponse
++                {
++                    Id = invoiceId,
++                    InvoiceNumber = "INV-24051",
++                    SupplierName = "Contoso Supplies",
++                    Amount = 15420.50m,
++                    Currency = "USD",
++                    RiskLevel = "high",
++                    RecommendationStatus = "awaiting_approval",
++                    RecommendationOutcome = "request_human_approval",
++                    Confidence = 0.91m,
++                    LastUpdatedUtc = new DateTime(2026, 4, 16, 8, 30, 0, DateTimeKind.Utc)
++                }
++            })
++            .Add(x => x.BuildDetailLink, item => $"/finance/reviews/{item.Id:D}?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72"));
++
++        Assert.Contains("Invoice number", cut.Markup);
++        Assert.Contains("Supplier name", cut.Markup);
++        Assert.Contains("Amount", cut.Markup);
++        Assert.Contains("Currency", cut.Markup);
++        Assert.Contains("Risk level", cut.Markup);
++        Assert.Contains("Recommendation status", cut.Markup);
++        Assert.Contains("Confidence", cut.Markup);
++        Assert.Contains("Last updated", cut.Markup);
++        Assert.Contains("INV-24051", cut.Markup);
++        Assert.Contains("Contoso Supplies", cut.Markup);
++        Assert.Contains("15420.50", cut.Markup);
++        Assert.Contains("USD", cut.Markup);
++        Assert.Contains("High", cut.Markup);
++        Assert.Contains("Awaiting approval", cut.Markup);
++        Assert.Contains("91 %".Replace(" ", string.Empty), cut.Markup.Replace(" ", string.Empty));
++        Assert.Equal($"/finance/reviews/{invoiceId:D}?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72", cut.Find("tbody a").GetAttribute("href"));
++    }
++
++    [Fact]
++    public void Invoice_review_detail_component_renders_loading_empty_and_error_states()
++    {
++        using var context = new TestContext();
++
++        var loading = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters
++            .Add(x => x.IsLoading, true));
++        Assert.Contains("Loading invoice review", loading.Markup);
++
++        var empty = context.RenderComponent<InvoiceReviewDetailContent>();
++        Assert.Contains("No review result available", empty.Markup);
++
++        var error = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters
++            .Add(x => x.ErrorMessage, "Review lookup failed."));
++        Assert.Contains("Review lookup failed.", error.Markup);
++    }
++
++    [Fact]
++    public void Invoice_review_detail_component_only_shows_actions_when_permitted_and_actionable()
++    {
++        using var context = new TestContext();
++
++        var hidden = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters
++            .Add(x => x.Detail, new FinanceInvoiceReviewDetailResponse
++            {
++                Id = Guid.NewGuid(),
++                InvoiceNumber = "INV-1",
++                SupplierName = "Fabrikam",
++                RecommendationSummary = "No action.",
++                RecommendedAction = "no_action",
++                Actions = new FinanceInvoiceReviewActionAvailabilityResponse
++                {
++                    IsActionable = false
++                }
++            })
++            .Add(x => x.BackToListHref, "/finance/reviews?companyId=1")
++            .Add(x => x.SourceInvoiceHref, "/finance/invoices/1?companyId=1"));
++
++        Assert.DoesNotContain("Approve", hidden.Markup);
++        Assert.DoesNotContain("Reject", hidden.Markup);
++        Assert.DoesNotContain("Send for follow-up", hidden.Markup);
++
++        var approved = false;
++        var visible = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters
++            .Add(x => x.Detail, new FinanceInvoiceReviewDetailResponse
++            {
++                Id = Guid.NewGuid(),
++                InvoiceNumber = "INV-2",
++                SupplierName = "Northwind",
++                RecommendationSummary = "Escalate for finance approval.",
++                RecommendedAction = "request_human_approval",
++                Actions = new FinanceInvoiceReviewActionAvailabilityResponse
++                {
++                    IsActionable = true,
++                    CanApprove = true,
++                    CanReject = true,
++                    CanSendForFollowUp = true
++                }
++            })
++            .Add(x => x.BackToListHref, "/finance/reviews?companyId=1")
++            .Add(x => x.SourceInvoiceHref, "/finance/invoices/2?companyId=1")
++            .Add(x => x.OnApprove, EventCallback.Factory.Create(this, () => approved = true)));
++
++        Assert.Contains("Approve", visible.Markup);
++        Assert.Contains("Reject", visible.Markup);
++        Assert.Contains("Send for follow-up", visible.Markup);
++
++        visible.Find("button.btn.btn-primary").Click();
++        Assert.True(approved);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/InvoiceReviewFilterStateTests.cs b/tests/VirtualCompany.Api.Tests/InvoiceReviewFilterStateTests.cs
+new file mode 100644
+index 0000000..b97715d
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/InvoiceReviewFilterStateTests.cs
+@@ -0,0 +1,58 @@
++using System.Web;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class InvoiceReviewFilterStateTests
++{
++    [Fact]
++    public void Query_string_round_trip_preserves_invoice_review_filters()
++    {
++        var query = HttpUtility.ParseQueryString(string.Empty);
++        query["status"] = " pending_approval ";
++        query["supplier"] = " Contoso Supplies ";
++        query["riskLevel"] = " high ";
++        query["outcome"] = " request_human_approval ";
++
++        var state = InvoiceReviewFilterState.FromQuery(query);
++        var parameters = state.ToQueryParameters(Guid.Parse("df0ff3c3-1f38-40cf-a56e-557379b2b298"));
++
++        Assert.Equal("pending_approval", state.Status);
++        Assert.Equal("Contoso Supplies", state.Supplier);
++        Assert.Equal("high", state.RiskLevel);
++        Assert.Equal("request_human_approval", state.RecommendationOutcome);
++        Assert.Equal("pending_approval", parameters["status"]);
++        Assert.Equal("Contoso Supplies", parameters["supplier"]);
++        Assert.Equal("high", parameters["riskLevel"]);
++        Assert.Equal("request_human_approval", parameters["outcome"]);
++    }
++
++    [Fact]
++    public void Clearing_filters_omits_empty_query_values()
++    {
++        var state = new InvoiceReviewFilterState
++        {
++            Status = " ",
++            Supplier = "",
++            RiskLevel = null,
++            RecommendationOutcome = " "
++        };
++
++        var parameters = state.ToQueryParameters(Guid.Parse("df0ff3c3-1f38-40cf-a56e-557379b2b298"));
++
++        Assert.Null(parameters["status"]);
++        Assert.Null(parameters["supplier"]);
++        Assert.Null(parameters["riskLevel"]);
++        Assert.Null(parameters["outcome"]);
++    }
++
++    [Fact]
++    public void Query_string_serialization_is_shareable_and_company_scoped()
++    {
++        var companyId = Guid.Parse("df0ff3c3-1f38-40cf-a56e-557379b2b298");
++        var state = new InvoiceReviewFilterState
++        {
++            Status = "pending_approval",
++            Supplier = "Northwind",
++            RiskLevel = "high",
++            RecommendationOutcome = "request_human_approval"
++        };
++
++        var query = state.ToQueryString(companyId);
++
++        Assert.Contains($"companyId={companyId:D}", query);
++        Assert.Contains("status=pending_approval", query);
++        Assert.Contains("supplier=Northwind", query);
++        Assert.Contains("riskLevel=high", query);
++        Assert.Contains("outcome=request_human_approval", query);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
+index 085d2b0..1ecb8d5 100644
+--- a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
++++ b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
+@@ -8,6 +8,7 @@
+ 
+   <ItemGroup>
+     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.1" />
++    <PackageReference Include="bunit" Version="1.29.61" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.14" />
+     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="9.0.1" />
+     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+END_OF_PATCH

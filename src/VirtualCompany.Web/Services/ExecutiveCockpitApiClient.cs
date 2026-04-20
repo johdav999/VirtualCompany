@@ -41,6 +41,44 @@ public sealed class ExecutiveCockpitApiClient
         return GetKpisCoreAsync(companyId, department, startUtc, endUtc, cancellationToken);
     }
 
+    public async Task<DashboardFinanceSnapshotViewModel?> GetFinanceSnapshotAsync(
+        Guid companyId,
+        CancellationToken cancellationToken = default)
+    {
+        if (_useOfflineMode)
+        {
+            return OfflineFinanceSnapshot(companyId);
+        }
+
+        using var response = await _httpClient.GetAsync($"api/dashboard/finance-snapshot?companyId={companyId:D}", cancellationToken);
+        return response.IsSuccessStatusCode
+            ? await response.Content.ReadFromJsonAsync<DashboardFinanceSnapshotViewModel>(SerializerOptions, cancellationToken)
+            : throw await CreateExceptionAsync(response, cancellationToken);
+    }
+
+    public async Task<ExecutiveCockpitFinanceAlertDetailViewModel?> GetFinanceAlertDetailAsync(
+        Guid companyId,
+        Guid alertId,
+        CancellationToken cancellationToken = default)
+    {
+        if (_useOfflineMode)
+        {
+            return OfflineDashboard(companyId).Finance?.LowCashAlert;
+        }
+
+        using var response = await _httpClient.GetAsync(
+            $"api/companies/{companyId:D}/executive-cockpit/finance-alerts/{alertId:D}",
+            cancellationToken);
+        if (response.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized)
+        {
+            return null;
+        }
+
+        return response.IsSuccessStatusCode
+            ? await response.Content.ReadFromJsonAsync<ExecutiveCockpitFinanceAlertDetailViewModel>(SerializerOptions, cancellationToken)
+            : throw await CreateExceptionAsync(response, cancellationToken);
+    }
+
     public async Task<ExecutiveCockpitWidgetPayloadViewModel<TPayload>?> GetWidgetAsync<TPayload>(
         Guid companyId,
         string widgetKey,
@@ -90,29 +128,6 @@ public sealed class ExecutiveCockpitApiClient
             if (response.IsSuccessStatusCode)
             {
                 return await response.Content.ReadFromJsonAsync<ExecutiveCockpitDashboardViewModel>(SerializerOptions, cancellationToken);
-            }
-
-            throw await CreateExceptionAsync(response, cancellationToken);
-        }
-        catch (HttpRequestException ex)
-        {
-            throw CreateNetworkException(ex);
-        }
-    }
-
-    private async Task<DepartmentDashboardCompositionViewModel?> GetDepartmentCompositionCoreAsync(Guid companyId, CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var response = await _httpClient.GetAsync($"api/companies/{companyId}/executive-cockpit/composition", cancellationToken);
-            if (response.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized)
-            {
-                return null;
-            }
-
-            if (response.IsSuccessStatusCode)
-            {
-                return await response.Content.ReadFromJsonAsync<DepartmentDashboardCompositionViewModel>(SerializerOptions, cancellationToken);
             }
 
             throw await CreateExceptionAsync(response, cancellationToken);
@@ -188,45 +203,60 @@ public sealed class ExecutiveCockpitApiClient
             CompanyId = companyId,
             CompanyName = "Offline workspace",
             GeneratedAtUtc = DateTime.UtcNow,
-            SummaryKpis =
+            BusinessSignals =
             [
-                new ExecutiveCockpitSummaryKpiViewModel
+                new BusinessSignalViewModel
                 {
-                    Key = "pending_approvals",
-                    Label = "Pending approvals",
-                    CurrentValue = 0,
-                    TrendDirection = "unknown",
-                    DeltaText = "Trend unavailable",
-                    ComparisonLabel = "No prior period data",
-                    StatusHint = "neutral",
-                    IsEmpty = true
-                },
-                new ExecutiveCockpitSummaryKpiViewModel
-                {
-                    Key = "open_tasks",
-                    Label = "Open tasks",
-                    CurrentValue = 0,
-                    TrendDirection = "unknown",
-                    DeltaText = "Trend unavailable",
-                    ComparisonLabel = "No prior period data",
-                    StatusHint = "neutral",
-                    IsEmpty = true
-                },
-                new ExecutiveCockpitSummaryKpiViewModel
-                {
-                    Key = "completed_tasks_7d",
-                    Label = "Completed tasks",
-                    CurrentValue = 0,
-                    PreviousValue = 0,
-                    TrendDirection = "flat",
-                    DeltaValue = 0,
-                    DeltaText = "No change vs previous 7 days",
-                    ComparisonLabel = "vs previous 7 days",
-                    StatusHint = "neutral",
-                    IsEmpty = true
+                    Type = "operationalLoad",
+                    Severity = "info",
+                    Title = "Workspace activity is still bootstrapping",
+                    Summary = "Signals appear here as tasks and approvals accumulate.",
+                    ActionLabel = "Open tasks",
+                    ActionUrl = $"/tasks?companyId={companyId:D}",
+                    DetectedAtUtc = DateTime.UtcNow
                 }
             ],
+            SummaryKpis = [],
             DepartmentSections = OfflineDepartmentComposition(companyId).Sections,
+            Finance = new ExecutiveCockpitFinanceViewModel
+            {
+                CashPosition = new ExecutiveCockpitFinanceCashWidgetViewModel
+                {
+                    Amount = 0m,
+                    Currency = "USD",
+                    DisplayValue = "USD 0.00",
+                    TrendDirection = "flat",
+                    TrendAmount = 0m,
+                    TrendDisplay = "No cash movement vs previous 7 days",
+                    LastRefreshedUtc = DateTime.UtcNow,
+                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)
+                },
+                Runway = new ExecutiveCockpitFinanceRunwayWidgetViewModel
+                {
+                    EstimatedRunwayDays = null,
+                    EstimatedRunwayMonths = null,
+                    DisplayValue = "Runway unavailable",
+                    Status = "missing",
+                    StatusLabel = "Healthy",
+                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)
+                },
+                AvailableActions =
+                [
+                    new ExecutiveCockpitFinanceActionViewModel
+                    {
+                        Key = "open_finance_summary",
+                        Label = "Open finance summary",
+                        IsEnabled = true,
+                        Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId),
+                        OrchestrationEndpoint = null,
+                        HttpMethod = "GET"
+                    }
+                ],
+                DeepLinks =
+                [
+                    new ExecutiveCockpitDeepLinkViewModel { Key = "finance_workspace", Label = "Finance workspace", Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId) }
+                ]
+            },
             PendingApprovals = new ExecutiveCockpitPendingApprovalsViewModel
             {
                 TotalCount = 0,
@@ -349,6 +379,19 @@ public sealed class ExecutiveCockpitApiClient
             ]
         };
 
+    private static DashboardFinanceSnapshotViewModel OfflineFinanceSnapshot(Guid companyId) =>
+        new()
+        {
+            CompanyId = companyId,
+            Cash = 0m,
+            BurnRate = 0m,
+            RunwayDays = null,
+            RiskLevel = "missing",
+            HasFinanceData = false,
+            Currency = "USD",
+            AsOfUtc = DateTime.UtcNow
+        };
+
     private sealed class ApiProblemResponse
     {
         public string? Title { get; set; }
@@ -415,9 +458,12 @@ public sealed class ExecutiveCockpitDashboardViewModel
     public Guid CompanyId { get; set; }
     public string CompanyName { get; set; } = string.Empty;
     public DateTime GeneratedAtUtc { get; set; }
+    public List<BusinessSignalViewModel> BusinessSignals { get; set; } = [];
     public DateTime? CacheTimestampUtc { get; set; }
     public ExecutiveCockpitDailyBriefingViewModel? DailyBriefing { get; set; }
     public List<ExecutiveCockpitSummaryKpiViewModel> SummaryKpis { get; set; } = [];
+    public DashboardFinanceSnapshotViewModel? FinanceSnapshot { get; set; }
+    public ExecutiveCockpitFinanceViewModel? Finance { get; set; }
     public ExecutiveCockpitPendingApprovalsViewModel PendingApprovals { get; set; } = new();
     public List<ExecutiveCockpitAlertViewModel> Alerts { get; set; } = [];
     public List<ExecutiveCockpitDepartmentKpiViewModel> DepartmentKpis { get; set; } = [];
@@ -425,6 +471,19 @@ public sealed class ExecutiveCockpitDashboardViewModel
     public List<ExecutiveCockpitActivityItemViewModel> RecentActivity { get; set; } = [];
     public ExecutiveCockpitSetupStateViewModel SetupState { get; set; } = new();
     public ExecutiveCockpitEmptyStateFlagsViewModel EmptyStateFlags { get; set; } = new();
+}
+
+public sealed class BusinessSignalViewModel
+{
+    public string Type { get; set; } = string.Empty;
+    public string Severity { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public decimal? MetricValue { get; set; }
+    public string? MetricLabel { get; set; }
+    public string? ActionLabel { get; set; }
+    public string? ActionUrl { get; set; }
+    public DateTime DetectedAtUtc { get; set; }
 }
 
 public sealed class ExecutiveCockpitSummaryKpiViewModel
@@ -436,10 +495,83 @@ public sealed class ExecutiveCockpitSummaryKpiViewModel
     public string TrendDirection { get; set; } = "unknown";
     public int? DeltaValue { get; set; }
     public decimal? DeltaPercentage { get; set; }
-    public string DeltaText { get; set; } = "Trend unavailable";
-    public string ComparisonLabel { get; set; } = "No prior period data";
+    public string DeltaText { get; set; } = string.Empty;
+    public string ComparisonLabel { get; set; } = string.Empty;
     public string? StatusHint { get; set; }
     public bool IsEmpty { get; set; }
+}
+
+public sealed class DashboardFinanceSnapshotViewModel
+{
+    public Guid CompanyId { get; set; }
+    public decimal Cash { get; set; }
+    public decimal BurnRate { get; set; }
+    public int? RunwayDays { get; set; }
+    public string RiskLevel { get; set; } = string.Empty;
+    public bool HasFinanceData { get; set; }
+    public string Currency { get; set; } = "USD";
+    public DateTime AsOfUtc { get; set; }
+}
+
+public sealed class ExecutiveCockpitFinanceViewModel
+{
+    public ExecutiveCockpitFinanceCashWidgetViewModel CashPosition { get; set; } = new();
+    public ExecutiveCockpitFinanceRunwayWidgetViewModel Runway { get; set; } = new();
+    public ExecutiveCockpitFinanceAlertDetailViewModel? LowCashAlert { get; set; }
+    public List<ExecutiveCockpitFinanceActionViewModel> AvailableActions { get; set; } = [];
+    public List<ExecutiveCockpitDeepLinkViewModel> DeepLinks { get; set; } = [];
+}
+
+public sealed class ExecutiveCockpitFinanceCashWidgetViewModel
+{
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = "USD";
+    public string DisplayValue { get; set; } = string.Empty;
+    public string TrendDirection { get; set; } = "flat";
+    public decimal? TrendAmount { get; set; }
+    public string TrendDisplay { get; set; } = string.Empty;
+    public DateTime LastRefreshedUtc { get; set; }
+    public string Route { get; set; } = string.Empty;
+}
+
+public sealed class ExecutiveCockpitFinanceRunwayWidgetViewModel
+{
+    public int? EstimatedRunwayDays { get; set; }
+    public decimal? EstimatedRunwayMonths { get; set; }
+    public string DisplayValue { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string StatusLabel { get; set; } = string.Empty;
+    public string Route { get; set; } = string.Empty;
+}
+
+public sealed class ExecutiveCockpitFinanceAlertDetailViewModel
+{
+    public Guid AlertId { get; set; }
+    public string Summary { get; set; } = string.Empty;
+    public string Severity { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public List<string> ContributingFactors { get; set; } = [];
+    public List<ExecutiveCockpitFinanceActionViewModel> AvailableActions { get; set; } = [];
+    public List<ExecutiveCockpitDeepLinkViewModel> Links { get; set; } = [];
+    public string Route { get; set; } = string.Empty;
+}
+
+public sealed class ExecutiveCockpitFinanceActionViewModel
+{
+    public string Key { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public bool IsEnabled { get; set; }
+    public string? Route { get; set; }
+    public string? OrchestrationEndpoint { get; set; }
+    public string HttpMethod { get; set; } = "GET";
+    public Guid? TargetId { get; set; }
+}
+
+public sealed class ExecutiveCockpitDeepLinkViewModel
+{
+    public string Key { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public string Route { get; set; } = string.Empty;
 }
 
 public sealed class ExecutiveCockpitDailyBriefingViewModel
@@ -542,9 +674,21 @@ public sealed class DepartmentDashboardSectionViewModel
     public bool HasData { get; set; }
     public Dictionary<string, int> SummaryCounts { get; set; } = [];
     public bool IsEmpty { get; set; }
+    public IReadOnlyList<DepartmentSignalSummaryViewModel> VisibleSignals =>
+        DepartmentSignalSummaryViewModel.SelectTopSignals(DepartmentKey, SummaryCounts);
+
+    public DepartmentDashboardRepresentativeViewModel? Representative { get; set; }
     public DepartmentDashboardNavigationViewModel Navigation { get; set; } = new();
     public DepartmentDashboardEmptyStateViewModel EmptyState { get; set; } = new();
     public List<DepartmentDashboardWidgetViewModel> Widgets { get; set; } = [];
+}
+
+public sealed class DepartmentDashboardRepresentativeViewModel
+{
+    public Guid AgentId { get; set; }
+    public string DisplayName { get; set; } = string.Empty;
+    public string RoleName { get; set; } = string.Empty;
+    public string? AvatarUrl { get; set; }
 }
 
 public sealed class DepartmentDashboardWidgetViewModel
@@ -575,4 +719,58 @@ public sealed class DepartmentDashboardEmptyStateViewModel
     public string Message { get; set; } = string.Empty;
     public string? ActionLabel { get; set; }
     public string? ActionRoute { get; set; }
+}
+
+public sealed class DepartmentSignalSummaryViewModel
+{
+    private static readonly IReadOnlyDictionary<string, int> SignalPriority = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["blocked_workflows"] = 0,
+        ["pending_approvals"] = 1,
+        ["blocked_tasks"] = 2,
+        ["overdue_tasks"] = 3,
+        ["open_tasks"] = 4,
+        ["workflow_exceptions"] = 5,
+        ["active_incidents"] = 6,
+        ["unresolved_alerts"] = 7,
+        ["recent_alerts"] = 8,
+        ["active_agents"] = 9,
+        ["backlog_items"] = 10
+    };
+
+    public string Key { get; init; } = string.Empty;
+    public string Label { get; init; } = string.Empty;
+    public int Value { get; init; }
+    public int Priority { get; init; }
+
+    public static IReadOnlyList<DepartmentSignalSummaryViewModel> SelectTopSignals(
+        string? departmentKey,
+        IReadOnlyDictionary<string, int>? summaryCounts)
+    {
+        if (summaryCounts is null || summaryCounts.Count == 0)
+        {
+            return [];
+        }
+
+        // Keep department cards scannable by suppressing zero-value rollups and surfacing the three most actionable signals first.
+        return summaryCounts
+            .Where(item => item.Value > 0)
+            .Select(item => new DepartmentSignalSummaryViewModel
+            {
+                Key = item.Key,
+                Label = ToLabel(item.Key),
+                Value = item.Value,
+                Priority = SignalPriority.TryGetValue(item.Key, out var priority) ? priority : int.MaxValue
+            })
+            .OrderBy(item => item.Priority)
+            .ThenByDescending(item => item.Value)
+            .ThenBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .ToArray();
+    }
+
+    private static string ToLabel(string key) =>
+        string.Join(" ",
+            key.Split('_', StringSplitOptions.RemoveEmptyEntries)
+                .Select(word => word.Length == 0 ? word : char.ToUpperInvariant(word[0]) + word[1..]));
 }

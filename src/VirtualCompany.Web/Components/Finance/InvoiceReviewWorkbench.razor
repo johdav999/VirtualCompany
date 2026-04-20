@@ -1,0 +1,85 @@
+<section class="invoice-review-workbench">
+    <header class="invoice-review-workbench__header">
+        <div>
+            <span class="dashboard-kicker">Invoice workbench</span>
+            <h2 class="h4 mb-1">Review queue</h2>
+            <p class="text-body-secondary mb-0">Work through invoice recommendations, inspect risk, and keep approvals moving.</p>
+        </div>
+        <div class="invoice-review-workbench__selection-hint">
+            @if (VisibleCount > 0)
+            {
+                <span>@VisibleCount invoice@(VisibleCount == 1 ? string.Empty : "s") visible</span>
+            }
+        </div>
+    </header>
+
+    <InvoiceReviewFilters
+        Filters="@Filters"
+        StatusOptions="@StatusOptions"
+        RiskLevelOptions="@RiskLevelOptions"
+        OutcomeOptions="@OutcomeOptions"
+        HighRiskOnly="@HighRiskOnly"
+        NeedsApprovalOnly="@NeedsApprovalOnly"
+        LowConfidenceOnly="@LowConfidenceOnly"
+        OnApply="@OnApply"
+        OnClear="@OnClear"
+        OnToggleHighRisk="@OnToggleHighRisk"
+        OnToggleNeedsApproval="@OnToggleNeedsApproval"
+        OnToggleLowConfidence="@OnToggleLowConfidence" />
+
+    @if (IsLoading)
+    {
+        <FinanceLoadingState Title="Loading invoice reviews" Message="Fetching finance workflow review recommendations for the active company." />
+    }
+    else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <FinanceErrorState Title="Invoice reviews are unavailable" Message="@(ErrorMessage!)" RetryText="Retry" OnRetry="@OnRetry" />
+    }
+    else if (Items.Count == 0)
+    {
+        <section class="wizard-card finance-state-card invoice-review-empty-state">
+            <h3 class="h5 mb-2">No invoice reviews matched the active filters</h3>
+            <p class="text-body-secondary mb-3">Try clearing the filters or generate sample finance data to populate the review queue.</p>
+            @if (!string.IsNullOrWhiteSpace(EmptyStateActionHref))
+            {
+                <a class="btn btn-outline-primary" href="@EmptyStateActionHref">Open sandbox admin</a>
+            }
+        </section>
+    }
+    else
+    {
+        <InvoiceReviewTable
+            Items="@Items"
+            SelectedInvoiceId="@SelectedInvoiceId"
+            SortColumn="@SortColumn"
+            SortDescending="@SortDescending"
+            OnSelect="@OnSelect"
+            OnSort="@OnSort" />
+    }
+</section>
+
+@code {
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public InvoiceReviewFilterState Filters { get; set; } = new();
+    [Parameter] public IReadOnlyList<FinanceInvoiceReviewListItemResponse> Items { get; set; } = [];
+    [Parameter] public int VisibleCount { get; set; }
+    [Parameter] public Guid? SelectedInvoiceId { get; set; }
+    [Parameter] public string SortColumn { get; set; } = string.Empty;
+    [Parameter] public bool SortDescending { get; set; }
+    [Parameter] public bool HighRiskOnly { get; set; }
+    [Parameter] public bool NeedsApprovalOnly { get; set; }
+    [Parameter] public bool LowConfidenceOnly { get; set; }
+    [Parameter] public IReadOnlyList<string> StatusOptions { get; set; } = [];
+    [Parameter] public IReadOnlyList<string> RiskLevelOptions { get; set; } = [];
+    [Parameter] public IReadOnlyList<string> OutcomeOptions { get; set; } = [];
+    [Parameter] public string? EmptyStateActionHref { get; set; }
+    [Parameter] public EventCallback OnApply { get; set; }
+    [Parameter] public EventCallback OnClear { get; set; }
+    [Parameter] public EventCallback OnRetry { get; set; }
+    [Parameter] public EventCallback OnToggleHighRisk { get; set; }
+    [Parameter] public EventCallback OnToggleNeedsApproval { get; set; }
+    [Parameter] public EventCallback OnToggleLowConfidence { get; set; }
+    [Parameter] public EventCallback<FinanceInvoiceReviewListItemResponse> OnSelect { get; set; }
+    [Parameter] public EventCallback<string> OnSort { get; set; }
+}

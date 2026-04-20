@@ -1,0 +1,341 @@
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 7c0b70d..e9bbf61 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -13,11 +13,18 @@ namespace VirtualCompany.Api.Controllers;
+ public sealed class InternalFinanceController : ControllerBase
+ {
+     private readonly IFinanceReadService _financeReadService;
++    private readonly IFinanceCommandService _financeCommandService;
++    private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
+ 
+-    public InternalFinanceController(IFinanceReadService financeReadService)
++    public InternalFinanceController(
++        IFinanceReadService financeReadService,
++        IFinanceCommandService financeCommandService,
++        IFinancePolicyConfigurationService financePolicyConfigurationService)
+     {
+         _financeReadService = financeReadService;
++        _financeCommandService = financeCommandService;
++        _financePolicyConfigurationService = financePolicyConfigurationService;
+     }
+ 
+     [HttpGet("cash-balance")]
+@@ -75,6 +82,47 @@ public sealed class InternalFinanceController : ControllerBase
+             () => _financeReadService.GetBalancesAsync(
+                 new GetFinanceBalancesQuery(companyId, asOfUtc),
+                 cancellationToken));
++
++    [HttpPatch("invoices/{invoiceId:guid}/approval-status")]
++    public async Task<ActionResult<FinanceInvoiceDto>> UpdateInvoiceApprovalStatusAsync(
++        Guid companyId,
++        Guid invoiceId,
++        [FromBody] UpdateFinanceInvoiceApprovalStatusRequest request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _financeCommandService.UpdateInvoiceApprovalStatusAsync(
++                new UpdateFinanceInvoiceApprovalStatusCommand(companyId, invoiceId, request.Status),
++                cancellationToken));
++
++    [HttpPatch("transactions/{transactionId:guid}/category")]
++    public async Task<ActionResult<FinanceTransactionDto>> UpdateTransactionCategoryAsync(
++        Guid companyId,
++        Guid transactionId,
++        [FromBody] UpdateFinanceTransactionCategoryRequest request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _financeCommandService.UpdateTransactionCategoryAsync(
++                new UpdateFinanceTransactionCategoryCommand(companyId, transactionId, request.Category),
++                cancellationToken));
++
++    [HttpGet("policy-configuration")]
++    public async Task<ActionResult<FinancePolicyConfigurationDto>> GetPolicyConfigurationAsync(
++        Guid companyId,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financePolicyConfigurationService.GetPolicyConfigurationAsync(
++                new GetFinancePolicyConfigurationQuery(companyId),
++                cancellationToken));
++
++    [HttpPut("policy-configuration")]
++    public async Task<ActionResult<FinancePolicyConfigurationDto>> UpsertPolicyConfigurationAsync(
++        Guid companyId,
++        [FromBody] FinancePolicyConfigurationDto configuration,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _financePolicyConfigurationService.UpsertPolicyConfigurationAsync(
++                new UpsertFinancePolicyConfigurationCommand(companyId, configuration),
++                cancellationToken));
+ 
+     private async Task<ActionResult<T>> ExecuteReadAsync<T>(Func<Task<T>> read)
+     {
+@@ -83,19 +131,45 @@ public sealed class InternalFinanceController : ControllerBase
+             return Ok(await read());
+         }
+         catch (UnauthorizedAccessException)
+         {
+             return Forbid();
+         }
+-        catch (ArgumentException ex)
++        catch (ArgumentOutOfRangeException ex)
+         {
+             return BadRequest(CreateProblemDetails(ex.Message));
+         }
+-        catch (ArgumentOutOfRangeException ex)
++        catch (ArgumentException ex)
+         {
+             return BadRequest(CreateProblemDetails(ex.Message));
+         }
+     }
+ 
++    private async Task<ActionResult<T>> ExecuteWriteAsync<T>(Func<Task<T>> write)
++    {
++        try
++        {
++            return Ok(await write());
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (KeyNotFoundException ex)
++        {
++            return NotFound(CreateProblemDetails(ex.Message, "Finance record was not found.", StatusCodes.Status404NotFound));
++        }
++        catch (ArgumentOutOfRangeException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message, "Invalid finance write request.", StatusCodes.Status400BadRequest));
++        }
++        catch (ArgumentException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message, "Invalid finance write request.", StatusCodes.Status400BadRequest));
++        }
++        catch (InvalidOperationException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message, "Invalid finance write request.", StatusCodes.Status400BadRequest));
++        }
++    }
++
+     private ProblemDetails CreateProblemDetails(string detail) =>
++        CreateProblemDetails(detail, "Invalid finance read request.", StatusCodes.Status400BadRequest);
++
++    private ProblemDetails CreateProblemDetails(string detail, string title, int status) =>
+         new()
+         {
+-            Title = "Invalid finance read request.",
++            Title = title,
+             Detail = detail,
+-            Status = StatusCodes.Status400BadRequest,
++            Status = status,
+             Instance = HttpContext.Request.Path
+         };
+ }
++
++public sealed record UpdateFinanceInvoiceApprovalStatusRequest(string Status);
++
++public sealed record UpdateFinanceTransactionCategoryRequest(string Category);
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+index 2bdf1d8..9bcfd36 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+@@ -433,6 +433,15 @@ public sealed class FinancePolicyConfiguration : ICompanyOwnedEntity
+             throw new ArgumentException("CompanyId is required.", nameof(companyId));
+         }
+ 
++        ValidateControls(
++            invoiceApprovalThreshold,
++            billApprovalThreshold,
++            anomalyDetectionLowerBound,
++            anomalyDetectionUpperBound,
++            cashRunwayWarningThresholdDays,
++            cashRunwayCriticalThresholdDays);
++
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+         ApprovalCurrency = NormalizeRequired(approvalCurrency, nameof(approvalCurrency), 3).ToUpperInvariant();
+@@ -479,10 +488,13 @@ public sealed class FinancePolicyConfiguration : ICompanyOwnedEntity
+         int cashRunwayWarningThresholdDays,
+         int cashRunwayCriticalThresholdDays)
+     {
+-        if (anomalyDetectionLowerBound >= anomalyDetectionUpperBound)
+-        {
+-            throw new ArgumentException("Anomaly detection lower bound must be less than upper bound.", nameof(anomalyDetectionLowerBound));
+-        }
++        ValidateControls(
++            invoiceApprovalThreshold,
++            billApprovalThreshold,
++            anomalyDetectionLowerBound,
++            anomalyDetectionUpperBound,
++            cashRunwayWarningThresholdDays,
++            cashRunwayCriticalThresholdDays);
+ 
+         ApprovalCurrency = NormalizeRequired(approvalCurrency, nameof(approvalCurrency), 3).ToUpperInvariant();
+         InvoiceApprovalThreshold = invoiceApprovalThreshold;
+@@ -496,6 +508,39 @@ public sealed class FinancePolicyConfiguration : ICompanyOwnedEntity
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
++    private static void ValidateControls(
++        decimal invoiceApprovalThreshold,
++        decimal billApprovalThreshold,
++        decimal anomalyDetectionLowerBound,
++        decimal anomalyDetectionUpperBound,
++        int cashRunwayWarningThresholdDays,
++        int cashRunwayCriticalThresholdDays)
++    {
++        if (invoiceApprovalThreshold < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(invoiceApprovalThreshold), "Invoice approval threshold cannot be negative.");
++        }
++
++        if (billApprovalThreshold < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(billApprovalThreshold), "Bill approval threshold cannot be negative.");
++        }
++
++        if (anomalyDetectionLowerBound >= anomalyDetectionUpperBound)
++        {
++            throw new ArgumentException("Anomaly detection lower bound must be less than upper bound.", nameof(anomalyDetectionLowerBound));
++        }
++
++        if (cashRunwayCriticalThresholdDays <= 0 || cashRunwayWarningThresholdDays <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(cashRunwayWarningThresholdDays), "Cash runway thresholds must be positive.");
++        }
++
++        if (cashRunwayCriticalThresholdDays > cashRunwayWarningThresholdDays)
++        {
++            throw new ArgumentException("Cash runway critical threshold cannot exceed warning threshold.", nameof(cashRunwayCriticalThresholdDays));
++        }
++    }
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+index 77f4dd4..e50e54d 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -43,6 +43,7 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFina
+             .SingleOrDefaultAsync(x => x.Id == command.InvoiceId, cancellationToken);
+ 
+         EnsureRecordTenant(invoice, command.CompanyId, "invoice");
++        await EnsureInvoiceApprovalLimitAsync(invoice!, command.Status, cancellationToken);
+         invoice!.ChangeApprovalStatus(command.Status);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+@@ -132,6 +133,33 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFina
+         }
+     }
+ 
++    private async Task EnsureInvoiceApprovalLimitAsync(
++        FinanceInvoice invoice,
++        string status,
++        CancellationToken cancellationToken)
++    {
++        if (!string.Equals(status?.Trim(), "approved", StringComparison.OrdinalIgnoreCase))
++        {
++            return;
++        }
++
++        var policy = await _dbContext.FinancePolicyConfigurations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == invoice.CompanyId, cancellationToken);
++
++        var approvalCurrency = policy?.ApprovalCurrency ?? "USD";
++        if (!string.Equals(invoice.Currency, approvalCurrency, StringComparison.OrdinalIgnoreCase))
++        {
++            throw new InvalidOperationException($"Invoice currency '{invoice.Currency}' does not match approval policy currency '{approvalCurrency}'.");
++        }
++
++        var approvalThreshold = policy?.InvoiceApprovalThreshold ?? 10000m;
++        if (invoice.Amount > approvalThreshold)
++        {
++            throw new InvalidOperationException($"Invoice amount {invoice.Amount} exceeds the approval threshold {approvalThreshold}.");
++        }
++    }
++
+     private static void EnsureRecordTenant(ICompanyOwnedEntity? entity, Guid companyId, string recordName)
+     {
+         if (entity is null)
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
+index 36d4027..ee53718 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
+@@ -101,6 +101,37 @@ public sealed class FinanceCommandServiceTests
+                 CancellationToken.None));
+     }
+ 
++    [Fact]
++    public async Task Finance_writes_reject_invoice_approval_above_policy_limit()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedFinanceWriteScenario(dbContext, companyId);
++        dbContext.FinancePolicyConfigurations.Add(new FinancePolicyConfiguration(
++            Guid.NewGuid(),
++            companyId,
++            "USD",
++            100m,
++            7500m,
++            true,
++            -2500m,
++            15000m,
++            120,
++            45));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() =>
++            service.UpdateInvoiceApprovalStatusAsync(
++                new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, "approved"),
++                CancellationToken.None));
++        Assert.Equal("open", await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceId).Select(x => x.Status).SingleAsync());
++    }
++
+     [Fact]
+     public async Task Policy_configuration_is_persisted_and_retrieved_as_typed_configuration()
+     {
+@@ -139,6 +170,35 @@ public sealed class FinanceCommandServiceTests
+         Assert.Equal(1, await dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
+     }
+ 
++    [Fact]
++    public async Task Policy_configuration_rejects_invalid_control_bounds()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        dbContext.Companies.Add(new Company(companyId, "Invalid Policy Company"));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++
++        await Assert.ThrowsAsync<ArgumentException>(() =>
++            service.UpsertPolicyConfigurationAsync(
++                new UpsertFinancePolicyConfigurationCommand(
++                    companyId,
++                    new FinancePolicyConfigurationDto(
++                        companyId,
++                        "USD",
++                        12500m,
++                        7500m,
++                        true,
++                        15000m,
++                        -2500m,
++                        120,
++                        45)),
++                CancellationToken.None));
++    }
++
+     private static async Task<SqliteConnection> OpenConnectionAsync()
+     {
+         var connection = new SqliteConnection("Data Source=:memory:");
+END_OF_PATCH

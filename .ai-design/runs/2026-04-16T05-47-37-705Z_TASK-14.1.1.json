@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-14.1.1",
+  "promptPath": ".ai-design/prompts/TASK-14.1.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T05:47:37.705Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T05-47-37-705Z_TASK-14.1.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T05-47-37-705Z_TASK-14.1.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T05:51:59.182Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "es\"] = new JsonArray()\n+                },\n+                \"get_profit_and_loss_summary\" => new(StringComparer.OrdinalIgnoreCase)\n+                {\n+                    [\"profitAndLossSummary\"] = new JsonObject { [\"netResult\"] = JsonValue.Create(42m) }\n+                },\n+                _ => []\n+            };\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs b/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs\nindex 1f2b016..bbebd57 100644\n--- a/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs\n@@ -27,6 +27,11 @@ public sealed class InternalCompanyToolRegistryTests : IClassFixture<TestWebAppl\n         Assert.Contains(tools, tool => tool.ToolName == \"approvals.create_request\" && tool.Supports(ToolActionType.Execute, \"approvals\"));\n         Assert.Contains(tools, tool => tool.ToolName == \"knowledge.search\" && tool.Supports(ToolActionType.Read, \"knowledge\"));\n         Assert.Contains(tools, tool => tool.ToolName == \"knowledge.search\" && tool.Supports(ToolActionType.Recommend, \"knowledge\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"get_cash_balance\" && tool.Version == \"1.0.0\" && tool.Supports(ToolActionType.Read, \"finance\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"list_transactions\" && tool.Version == \"1.0.0\" && tool.Supports(ToolActionType.Read, \"finance\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"list_uncategorized_transactions\" && tool.Version == \"1.0.0\" && tool.Supports(ToolActionType.Read, \"finance\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"list_invoices_awaiting_approval\" && tool.Version == \"1.0.0\" && tool.Supports(ToolActionType.Read, \"finance\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"get_profit_and_loss_summary\" && tool.Version == \"1.0.0\" && tool.Supports(ToolActionType.Read, \"finance\"));\n     }\n \n     [Fact]\nEND_OF_PATCH\n",
+  "stderrTail": "y()\n+                },\n+                \"get_profit_and_loss_summary\" => new(StringComparer.OrdinalIgnoreCase)\n+                {\n+                    [\"profitAndLossSummary\"] = new JsonObject { [\"netResult\"] = JsonValue.Create(42m) }\n+                },\n+                _ => []\n+            };\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs b/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs\nindex 1f2b016..bbebd57 100644\n--- a/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs\n@@ -27,6 +27,11 @@ public sealed class InternalCompanyToolRegistryTests : IClassFixture<TestWebAppl\n         Assert.Contains(tools, tool => tool.ToolName == \"approvals.create_request\" && tool.Supports(ToolActionType.Execute, \"approvals\"));\n         Assert.Contains(tools, tool => tool.ToolName == \"knowledge.search\" && tool.Supports(ToolActionType.Read, \"knowledge\"));\n         Assert.Contains(tools, tool => tool.ToolName == \"knowledge.search\" && tool.Supports(ToolActionType.Recommend, \"knowledge\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"get_cash_balance\" && tool.Version == \"1.0.0\" && tool.Supports(ToolActionType.Read, \"finance\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"list_transactions\" && tool.Version == \"1.0.0\" && tool.Supports(ToolActionType.Read, \"finance\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"list_uncategorized_transactions\" && tool.Version == \"1.0.0\" && tool.Supports(ToolActionType.Read, \"finance\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"list_invoices_awaiting_approval\" && tool.Version == \"1.0.0\" && tool.Supports(ToolActionType.Read, \"finance\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"get_profit_and_loss_summary\" && tool.Version == \"1.0.0\" && tool.Supports(ToolActionType.Read, \"finance\"));\n     }\n \n     [Fact]\nEND_OF_PATCH\ntokens used\n66,766\n",
+  "verbosityMode": "summary"
+}

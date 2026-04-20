@@ -1,0 +1,87 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+@@ -193,6 +193,8 @@ public sealed class NoOpInternalCompanyToolContract : IInternalCompanyToolContra
+             return Task.FromResult(InternalToolExecutionResponse.Failed(
+                 "failed",
+                 "execution_context_required",
+                 "Tool execution requires an execution context."));
+         }
+ 
++        if (TryCreateFinanceToolData(request.ToolName, out var financeData))
++        {
++            return Task.FromResult(InternalToolExecutionResponse.Succeeded(
++                "Finance tool execution completed through the internal contract boundary.",
++                financeData,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["contractName"] = JsonValue.Create(nameof(NoOpInternalCompanyToolContract))
++                }));
++        }
++
+         var data = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+         {
+             ["mode"] = JsonValue.Create("contract_stub"),
+             ["toolName"] = JsonValue.Create(request.ToolName),
+             ["actionType"] = JsonValue.Create(request.ActionType),
+@@ -211,5 +213,40 @@ public sealed class NoOpInternalCompanyToolContract : IInternalCompanyToolContra
+             {
+                 ["contractName"] = JsonValue.Create(nameof(NoOpInternalCompanyToolContract))
+             }));
+     }
++
++    private static bool TryCreateFinanceToolData(string toolName, out Dictionary<string, JsonNode?> data)
++    {
++        data = toolName switch
++        {
++            "get_cash_balance" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["cashBalance"] = new JsonObject
++                {
++                    ["amount"] = JsonValue.Create(0m),
++                    ["currency"] = JsonValue.Create("USD"),
++                    ["accounts"] = new JsonArray()
++                }
++            },
++            "list_transactions" or "list_uncategorized_transactions" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["transactions"] = new JsonArray()
++            },
++            "list_invoices_awaiting_approval" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["invoices"] = new JsonArray()
++            },
++            "get_profit_and_loss_summary" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["profitAndLossSummary"] = new JsonObject
++                {
++                    ["revenue"] = JsonValue.Create(0m),
++                    ["expenses"] = JsonValue.Create(0m),
++                    ["netResult"] = JsonValue.Create(0m),
++                    ["currency"] = JsonValue.Create("USD")
++                }
++            },
++            _ => []
++        };
++
++        return data.Count > 0;
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
+@@ -79,7 +79,10 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+     private static TrustedToolRegistration Register(
+         string toolName,
+         IReadOnlySet<ToolActionType>? supportedActions = null,
+-        IReadOnlySet<string>? scopes = null) =>
++        IReadOnlySet<string>? scopes = null,
++        string version = "1.0.0",
++        JsonObject? inputSchema = null,
++        JsonObject? outputSchema = null) =>
+         new(
+             toolName,
+             supportedActions ?? StandardActions,
+END_OF_PATCH

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-20.4.4",
+  "promptPath": ".ai-design/prompts/TASK-20.4.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-17T08:31:06.540Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-17T08-31-06-540Z_TASK-20.4.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-17T08-31-06-540Z_TASK-20.4.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-17T08:37:19.395Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "mpt\"]));\n \n-        var completedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains(\"Finance auto-seed job completed\", StringComparison.Ordinal)));\n+        var completedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains(\"Finance seed orchestration completed\", StringComparison.Ordinal)));\n         Assert.Equal(companyId, Assert.IsType<Guid>(completedLog.State[\"CompanyId\"]));\n         Assert.Equal(1, Assert.IsType<int>(completedLog.State[\"Attempt\"]));\n+        Assert.Equal(FinanceSeedRequestModes.Replace, Assert.IsType<string>(completedLog.State[\"SeedMode\"]));\n         Assert.NotNull(completedLog.State[\"DurationMs\"]);\n     }\n@@ -146,11 +151,15 @@ public sealed class FinanceSeedJobRunnerTests\n         Assert.Equal(nameof(InvalidOperationException), failedEvent.Context.ErrorType);\n         Assert.Contains(\"Configured finance seed failure.\", failedEvent.Context.ErrorMessageSafe ?? string.Empty, StringComparison.OrdinalIgnoreCase);\n         Assert.NotNull(failedEvent.Context.DurationMs);\n         Assert.True(failedEvent.Context.DurationMs >= 0);\n+        Assert.Equal(FinanceSeedRequestModes.Replace, failedEvent.Context.SeedMode);\n+        Assert.Equal(AuditActorTypes.System, failedEvent.Context.ActorType);\n \n-        var failedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains(\"Finance auto-seed job failed\", StringComparison.Ordinal)));\n+        var failedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains(\"Finance seed orchestration failed\", StringComparison.Ordinal)));\n         Assert.Equal(companyId, Assert.IsType<Guid>(failedLog.State[\"CompanyId\"]));\n         Assert.Equal(1, Assert.IsType<int>(failedLog.State[\"Attempt\"]));\n         Assert.Equal(nameof(InvalidOperationException), Assert.IsType<string>(failedLog.State[\"ErrorType\"]));\n+        Assert.Equal(FinanceSeedRequestModes.Replace, Assert.IsType<string>(failedLog.State[\"SeedMode\"]));\n         Assert.NotNull(failedLog.State[\"DurationMs\"]);\n     }\nEND_OF_PATCH\n",
+  "stderrTail": "var completedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains(\"Finance auto-seed job completed\", StringComparison.Ordinal)));\n+        var completedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains(\"Finance seed orchestration completed\", StringComparison.Ordinal)));\n         Assert.Equal(companyId, Assert.IsType<Guid>(completedLog.State[\"CompanyId\"]));\n         Assert.Equal(1, Assert.IsType<int>(completedLog.State[\"Attempt\"]));\n+        Assert.Equal(FinanceSeedRequestModes.Replace, Assert.IsType<string>(completedLog.State[\"SeedMode\"]));\n         Assert.NotNull(completedLog.State[\"DurationMs\"]);\n     }\n@@ -146,11 +151,15 @@ public sealed class FinanceSeedJobRunnerTests\n         Assert.Equal(nameof(InvalidOperationException), failedEvent.Context.ErrorType);\n         Assert.Contains(\"Configured finance seed failure.\", failedEvent.Context.ErrorMessageSafe ?? string.Empty, StringComparison.OrdinalIgnoreCase);\n         Assert.NotNull(failedEvent.Context.DurationMs);\n         Assert.True(failedEvent.Context.DurationMs >= 0);\n+        Assert.Equal(FinanceSeedRequestModes.Replace, failedEvent.Context.SeedMode);\n+        Assert.Equal(AuditActorTypes.System, failedEvent.Context.ActorType);\n \n-        var failedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains(\"Finance auto-seed job failed\", StringComparison.Ordinal)));\n+        var failedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains(\"Finance seed orchestration failed\", StringComparison.Ordinal)));\n         Assert.Equal(companyId, Assert.IsType<Guid>(failedLog.State[\"CompanyId\"]));\n         Assert.Equal(1, Assert.IsType<int>(failedLog.State[\"Attempt\"]));\n         Assert.Equal(nameof(InvalidOperationException), Assert.IsType<string>(failedLog.State[\"ErrorType\"]));\n+        Assert.Equal(FinanceSeedRequestModes.Replace, Assert.IsType<string>(failedLog.State[\"SeedMode\"]));\n         Assert.NotNull(failedLog.State[\"DurationMs\"]);\n     }\nEND_OF_PATCH\ntokens used\n123,843\n",
+  "verbosityMode": "summary"
+}

@@ -1,0 +1,836 @@
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 732c430..dcb1953 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -17,6 +17,7 @@ public sealed class InternalFinanceController : ControllerBase
+     private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
+     private readonly IFinanceSeedBootstrapService _financeSeedBootstrapService;
+     private readonly IInvoiceReviewWorkflowService _invoiceReviewWorkflowService;
++    private readonly IApprovalRequestService _approvalRequestService;
+     private readonly IFinanceTransactionAnomalyDetectionService _anomalyDetectionService;
+     private readonly IFinanceCashPositionWorkflowService _cashPositionWorkflowService;
+     private readonly ICompanySimulationService _companySimulationService;
+@@ -27,6 +28,7 @@ public sealed class InternalFinanceController : ControllerBase
+         IFinancePolicyConfigurationService financePolicyConfigurationService,
+         IFinanceSeedBootstrapService financeSeedBootstrapService,
+         IInvoiceReviewWorkflowService invoiceReviewWorkflowService,
++        IApprovalRequestService approvalRequestService,
+         IFinanceTransactionAnomalyDetectionService anomalyDetectionService,
+         IFinanceCashPositionWorkflowService cashPositionWorkflowService,
+         ICompanySimulationService companySimulationService)
+@@ -36,6 +38,7 @@ public sealed class InternalFinanceController : ControllerBase
+         _financePolicyConfigurationService = financePolicyConfigurationService;
+         _financeSeedBootstrapService = financeSeedBootstrapService;
+         _invoiceReviewWorkflowService = invoiceReviewWorkflowService;
++        _approvalRequestService = approvalRequestService;
+         _anomalyDetectionService = anomalyDetectionService;
+         _cashPositionWorkflowService = cashPositionWorkflowService;
+         _companySimulationService = companySimulationService;
+@@ -140,6 +143,7 @@ public sealed class InternalFinanceController : ControllerBase
+             }
+ 
+             var workflow = await _invoiceReviewWorkflowService.GetLatestByInvoiceAsync(companyId, invoiceId, cancellationToken);
++            var approval = await TryGetApprovalAsync(companyId, workflow?.ApprovalRequestId, cancellationToken);
+             return Ok(detail with
+             {
+                 WorkflowContext = workflow is null
+@@ -147,14 +151,46 @@ public sealed class InternalFinanceController : ControllerBase
+                     : new FinanceInvoiceWorkflowContextDto(
+                         workflow.WorkflowInstanceId,
+                         workflow.TaskId,
++                        "Invoice review workflow",
++                        workflow.ReviewTaskStatus,
+                         workflow.ApprovalRequestId,
+                         workflow.InvoiceClassification,
+                         workflow.RiskLevel,
+                         workflow.RecommendedAction,
+                         workflow.Rationale,
+                         workflow.ConfidenceScore,
+-                        workflow.RequiresHumanApproval)
++                        workflow.RequiresHumanApproval,
++                        approval?.Status,
++                        BuildApprovalAssigneeSummary(approval),
++                        workflow.WorkflowInstanceId.HasValue,
++                        approval is not null)
+             });
+         }
+         catch (UnauthorizedAccessException)
+@@ -314,6 +350,39 @@ public sealed class InternalFinanceController : ControllerBase
+             return Ok(await write());
+         }
+         catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (KeyNotFoundException ex)
++        {
++            return NotFound(CreateProblemDetails(ex.Message, "Finance record was not found.", StatusCodes.Status404NotFound));
++        }
++        catch (ArgumentOutOfRangeException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message, "Invalid finance write request.", StatusCodes.Status400BadRequest));
++        }
++        catch (ArgumentException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message, "Invalid finance write request.", StatusCodes.Status400BadRequest));
++        }
++        catch (InvalidOperationException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message, "Invalid finance write request.", StatusCodes.Status400BadRequest));
++        }
++    }
++
++    private async Task<ApprovalRequestDto?> TryGetApprovalAsync(
++        Guid companyId,
++        Guid? approvalRequestId,
++        CancellationToken cancellationToken)
++    {
++        if (approvalRequestId is not Guid resolvedApprovalRequestId)
++        {
++            return null;
++        }
++
++        try
++        {
++            return await _approvalRequestService.GetAsync(companyId, resolvedApprovalRequestId, cancellationToken);
++        }
++        catch (UnauthorizedAccessException)
+         {
+             return Forbid();
+         }
+@@ -329,6 +398,16 @@ public sealed class InternalFinanceController : ControllerBase
+         {
+             return BadRequest(CreateProblemDetails(ex.Message, "Invalid finance write request.", StatusCodes.Status400BadRequest));
+         }
++        catch (KeyNotFoundException)
++        {
++            return null;
++        }
++    }
++
++    private static string? BuildApprovalAssigneeSummary(ApprovalRequestDto? approval)
++    {
++        if (approval is null)
++        {
++            return null;
++        }
+ 
+-    private ProblemDetails CreateProblemDetails(string detail) =>
++        if (approval.CurrentStep is not null)
++        {
++            return approval.CurrentStep.ApproverType.Equals("user", StringComparison.OrdinalIgnoreCase)
++                ? $"Assigned to user {approval.CurrentStep.ApproverRef}."
++                : $"Awaiting {approval.CurrentStep.ApproverRef} approval.";
++        }
++
++        if (approval.RequiredUserId is Guid requiredUserId)
++        {
++            return $"Assigned to user {requiredUserId:D}.";
++        }
++
++        return string.IsNullOrWhiteSpace(approval.RequiredRole)
++            ? null
++            : $"Awaiting {approval.RequiredRole} approval.";
++    }
++
++    private ProblemDetails CreateProblemDetails(string detail) =>
+         CreateProblemDetails(detail, "Invalid finance read request.", StatusCodes.Status400BadRequest);
+ 
+     private ProblemDetails CreateProblemDetails(string detail, string title, int status) =>
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index d72db42..3fc7ecf 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -231,6 +231,8 @@ public sealed record FinanceTransactionDetailDto(
+ public sealed record FinanceInvoiceWorkflowContextDto(
+     Guid? WorkflowInstanceId,
+     Guid TaskId,
++    string WorkflowName,
++    string ReviewTaskStatus,
+     Guid? ApprovalRequestId,
+     string Classification,
+     string RiskLevel,
+@@ -238,7 +240,11 @@ public sealed record FinanceInvoiceWorkflowContextDto(
+     string Rationale,
+     decimal Confidence,
+     bool RequiresHumanApproval);
+-
++    string? ApprovalStatus = null,
++    string? ApprovalAssigneeSummary = null,
++    bool CanNavigateToWorkflow = false,
++    bool CanNavigateToApproval = false);
++
+ public sealed record FinanceInvoiceDetailDto(
+     Guid Id,
+     Guid CounterpartyId,
+@@ -290,6 +296,7 @@ public sealed record FinanceInvoiceReviewWorkflowResultDto(
+     FinancePolicyConfigurationDto Policy,
+     Dictionary<string, JsonNode?> OutputPayload)
+ {
++    public string ReviewTaskStatus { get; init; } = "new";
+     public FinanceWorkflowOutputSchemaDto WorkflowOutput { get; init; } =
+         FinanceWorkflowOutputSchemas.Create("invoice_review", "low", "no_action", "No workflow output was recorded.", 0m, "invoice_review");
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
+index 81d0d7a..3ba8ed8 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
+@@ -101,6 +101,7 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflowR
+             CloneNodes(outputPayload))
+         {
+             WorkflowOutput = FinanceWorkflowOutputSchemas.Create(
++            ReviewTaskStatus = task.Status.ToStorageValue(),
+                 review.InvoiceClassification,
+                 review.RiskLevel,
+                 review.RecommendedAction,
+@@ -167,6 +168,7 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflowR
+             CloneNodes(task.OutputPayload))
+         {
+             WorkflowOutput = FinanceWorkflowOutputSchemas.Create(
++            ReviewTaskStatus = task.Status.ToStorageValue(),
+                 review.InvoiceClassification,
+                 review.RiskLevel,
+                 review.RecommendedAction,
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceLinkedResourceState.razor b/src/VirtualCompany.Web/Components/Finance/FinanceLinkedResourceState.razor
+new file mode 100644
+index 0000000..64003b8
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceLinkedResourceState.razor
+@@ -0,0 +1,62 @@
++<div class="alert @ResolveAlertClass() mb-0" role="status">
++    @if (!string.IsNullOrWhiteSpace(ResourceTitle))
++    {
++        <div class="fw-semibold">@ResourceTitle</div>
++    }
++
++    @if (!string.IsNullOrWhiteSpace(SecondaryText))
++    {
++        <div class="small text-body-secondary mt-1">@SecondaryText</div>
++    }
++
++    @if (!string.IsNullOrWhiteSpace(TypeText))
++    {
++        <div class="small text-body-secondary mt-1">@TypeText</div>
++    }
++
++    <div class="mt-2">@Message</div>
++
++    @if (CanNavigate && !string.IsNullOrWhiteSpace(NavigateHref))
++    {
++        <a class="btn btn-outline-primary btn-sm mt-3" href="@NavigateHref" target="_blank" rel="noopener noreferrer">@ActionText</a>
++    }
++}
++
++@code {
++    [Parameter] public string Availability { get; set; } = "none";
++    [Parameter] public string Message { get; set; } = string.Empty;
++    [Parameter] public string? ResourceTitle { get; set; }
++    [Parameter] public string? SecondaryText { get; set; }
++    [Parameter] public string? TypeText { get; set; }
++    [Parameter] public bool CanNavigate { get; set; }
++    [Parameter] public string? NavigateHref { get; set; }
++    [Parameter] public string ActionText { get; set; } = "Open";
++
++    private string ResolveAlertClass() =>
++        NormalizeAvailability(Availability) switch
++        {
++            "available" => "alert-success",
++            "missing" => "alert-warning",
++            "inaccessible" => "alert-warning",
++            _ => "alert-light"
++        };
++
++    private static string NormalizeAvailability(string? availability)
++    {
++        if (string.IsNullOrWhiteSpace(availability))
++        {
++            return "none";
++        }
++
++        return availability.Trim().ToLowerInvariant() switch
++        {
++            "available" => "available",
++            "missing" => "missing",
++            "inaccessible" => "inaccessible",
++            _ => "none"
++        };
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
+index 5781e4c..adf7163 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
+@@ -30,8 +30,8 @@
+                                 <div class="d-flex w-100 justify-content-between gap-3">
+                                     <div>
+                                         <strong>@invoice.InvoiceNumber</strong>
+-                                        <div class="text-body-secondary small mt-1">@invoice.CounterpartyName</div>
+-                                        <div class="small mt-2">Due @FormatDate(invoice.DueUtc)</div>
++                                        <div class="text-body-secondary small mt-1">Supplier: @invoice.CounterpartyName</div>
++                                        <div class="small mt-2">Issued @FormatDate(invoice.IssuedUtc) | Due @FormatDate(invoice.DueUtc)</div>
+                                     </div>
+                                     <div class="text-end">
+                                         <div class="fw-semibold">@FormatCurrency(invoice.Amount, invoice.Currency)</div>
+@@ -62,6 +62,8 @@
+                 {
+                     <h2 class="h5">Invoice detail</h2>
+                     <dl class="mb-4">
++                        <dt>Invoice</dt>
++                        <dd>@SelectedInvoice.InvoiceNumber</dd>
+                         <dt>Supplier</dt>
+                         <dd>@SelectedInvoice.CounterpartyName</dd>
+                         <dt>Status</dt>
+@@ -79,22 +81,44 @@
+                     }
+                     else
+                     {
+-                        <dl class="mb-4">
+-                            <dt>Classification</dt>
+-                            <dd>@FormatLabel(SelectedInvoice.WorkflowContext.Classification)</dd>
+-                            <dt>Risk level</dt>
+-                            <dd>@FormatLabel(SelectedInvoice.WorkflowContext.RiskLevel)</dd>
+-                            <dt>Recommended action</dt>
+-                            <dd>@FormatLabel(SelectedInvoice.WorkflowContext.RecommendedAction)</dd>
+-                            <dt>Approval request</dt>
+-                            <dd>@(SelectedInvoice.WorkflowContext.ApprovalRequestId?.ToString("D") ?? "n/a")</dd>
+-                            <dt>Workflow task</dt>
+-                            <dd>@SelectedInvoice.WorkflowContext.TaskId.ToString("D")</dd>
+-                        </dl>
++                        <div class="alert alert-light mb-4" role="status">
++                            <dl class="mb-0">
++                                <dt>Review workflow</dt>
++                                <dd>
++                                    @if (SelectedInvoice.WorkflowContext.CanNavigateToWorkflow && SelectedInvoice.WorkflowContext.WorkflowInstanceId is Guid workflowInstanceId)
++                                    {
++                                        <a href="@BuildWorkflowHref(workflowInstanceId)">@SelectedInvoice.WorkflowContext.WorkflowName</a>
++                                    }
++                                    else
++                                    {
++                                        @SelectedInvoice.WorkflowContext.WorkflowName
++                                    }
++                                </dd>
++                                <dt>Review status</dt>
++                                <dd>@FormatLabel(SelectedInvoice.WorkflowContext.ReviewTaskStatus)</dd>
++                                <dt>Classification</dt>
++                                <dd>@FormatLabel(SelectedInvoice.WorkflowContext.Classification)</dd>
++                                <dt>Risk level</dt>
++                                <dd>@FormatLabel(SelectedInvoice.WorkflowContext.RiskLevel)</dd>
++                                <dt>Recommended action</dt>
++                                <dd>@FormatLabel(SelectedInvoice.WorkflowContext.RecommendedAction)</dd>
++                                <dt>Approval status</dt>
++                                <dd>@(string.IsNullOrWhiteSpace(SelectedInvoice.WorkflowContext.ApprovalStatus) ? "Not required" : FormatLabel(SelectedInvoice.WorkflowContext.ApprovalStatus))</dd>
++                                <dt>Approver</dt>
++                                <dd>@(string.IsNullOrWhiteSpace(SelectedInvoice.WorkflowContext.ApprovalAssigneeSummary) ? "n/a" : SelectedInvoice.WorkflowContext.ApprovalAssigneeSummary)</dd>
++                                <dt>Approval request</dt>
++                                <dd>
++                                    @if (SelectedInvoice.WorkflowContext.CanNavigateToApproval && SelectedInvoice.WorkflowContext.ApprovalRequestId is Guid approvalRequestId)
++                                    {
++                                        <a href="@BuildApprovalHref(approvalRequestId)">Open approval request</a>
++                                    }
++                                    else
++                                    {
++                                        @("n/a")
++                                    }
++                                </dd>
++                            </dl>
++                        </div>
+                         <p class="text-body-secondary mb-4">@SelectedInvoice.WorkflowContext.Rationale</p>
+                     }
+ 
+                     <h3 class="h6">Linked document</h3>
+-                    @if (SelectedInvoice.LinkedDocument.Document is not null)
+-                    {
+-                        <div class="text-body-secondary">@SelectedInvoice.LinkedDocument.Document.Title</div>
+-                        <div class="small text-body-secondary">@SelectedInvoice.LinkedDocument.Document.OriginalFileName</div>
+-                    }
+-                    <p class="text-body-secondary mt-2">@SelectedInvoice.LinkedDocument.Message</p>
+-                    @if (SelectedInvoice.LinkedDocument.CanNavigate && SelectedInvoice.LinkedDocument.Document is not null)
+-                    {
+-                        <a class="btn btn-outline-primary btn-sm" href="@BuildDocumentHref(SelectedInvoice.LinkedDocument.Document.Id)" target="_blank" rel="noopener noreferrer">Open linked document</a>
+-                    }
++                    <FinanceLinkedResourceState
++                        Availability="@SelectedInvoice.LinkedDocument.Availability"
++                        Message="@SelectedInvoice.LinkedDocument.Message"
++                        ResourceTitle="@SelectedInvoice.LinkedDocument.Document?.Title"
++                        SecondaryText="@SelectedInvoice.LinkedDocument.Document?.OriginalFileName"
++                        TypeText="@SelectedInvoice.LinkedDocument.Document?.ContentType"
++                        CanNavigate="@SelectedInvoice.LinkedDocument.CanNavigate"
++                        NavigateHref="@(SelectedInvoice.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedInvoice.LinkedDocument.Document.Id))"
++                        ActionText="Open linked document" />
+                 }
+             </div>
+         </div>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
+index 8d03753..f382c26 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
+@@ -1,103 +1,109 @@
+-using System.Globalization;
+-using Microsoft.AspNetCore.Components;
+-using VirtualCompany.Web.Services;
+-
+-namespace VirtualCompany.Web.Pages.Finance;
+-
+-public partial class InvoicesPage : FinancePageBase
+-{
+-    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
+-
+-    [Parameter]
+-    public Guid? InvoiceId { get; set; }
+-
+-    private IReadOnlyList<FinanceInvoiceResponse> Invoices { get; set; } = [];
+-    private FinanceInvoiceDetailResponse? SelectedInvoice { get; set; }
+-    private bool IsListLoading { get; set; }
+-    private bool IsDetailLoading { get; set; }
+-    private string? ListErrorMessage { get; set; }
+-    private string? DetailErrorMessage { get; set; }
+-
+-    private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Invoices.Count == 0;
+-
+-    protected override async Task OnParametersSetAsync()
+-    {
+-        await base.OnParametersSetAsync();
+-
+-        Invoices = [];
+-        SelectedInvoice = null;
+-        ListErrorMessage = null;
+-        DetailErrorMessage = null;
+-
+-        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
+-        {
+-            return;
+-        }
+-
+-        await LoadInvoicesAsync(companyId);
+-        if (InvoiceId is Guid invoiceId)
+-        {
+-            await LoadDetailAsync(companyId, invoiceId);
+-        }
+-    }
+-
+-    private async Task ReloadAsync()
+-    {
+-        if (AccessState.CompanyId is not Guid companyId)
+-        {
+-            return;
+-        }
+-
+-        await LoadInvoicesAsync(companyId);
+-        if (InvoiceId is Guid invoiceId)
+-        {
+-            await LoadDetailAsync(companyId, invoiceId);
+-        }
+-    }
+-
+-    private async Task LoadInvoicesAsync(Guid companyId)
+-    {
+-        IsListLoading = true;
+-        ListErrorMessage = null;
+-
+-        try
+-        {
+-            Invoices = await FinanceApiClient.GetInvoicesAsync(companyId, limit: 200);
+-        }
+-        catch (FinanceApiException ex)
+-        {
+-            Invoices = [];
+-            ListErrorMessage = ex.Message;
+-        }
+-        finally
+-        {
+-            IsListLoading = false;
+-        }
+-    }
+-
+-    private async Task LoadDetailAsync(Guid companyId, Guid invoiceId)
+-    {
+-        IsDetailLoading = true;
+-        DetailErrorMessage = null;
+-
+-        try
+-        {
+-            SelectedInvoice = await FinanceApiClient.GetInvoiceDetailAsync(companyId, invoiceId);
+-            if (SelectedInvoice is null)
+-            {
+-                DetailErrorMessage = "The selected invoice could not be found in the active company context.";
+-            }
+-        }
+-        catch (FinanceApiException ex)
+-        {
+-            SelectedInvoice = null;
+-            DetailErrorMessage = ex.Message;
+-        }
+-        finally
+-        {
+-            IsDetailLoading = false;
+-        }
+-    }
+-
+-    private string BuildInvoiceHref(Guid invoiceId) =>
+-        FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId);
+-
+-    private string BuildDocumentHref(Guid documentId) =>
+-        $"/api/companies/{AccessState.CompanyId}/documents/{documentId}";
+-
+-    private string GetInvoiceListItemClass(Guid invoiceId) =>
+-        InvoiceId == invoiceId
+-            ? "list-group-item list-group-item-action active"
+-            : "list-group-item list-group-item-action";
+-
+-    private static string FormatCurrency(decimal amount, string currency) =>
+-        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+-
+-    private static string FormatDate(DateTime value) =>
+-        value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+-
+-    private static string FormatLabel(string? value) =>
+-        string.IsNullOrWhiteSpace(value)
+-            ? "n/a"
+-            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+-}
++using System.Globalization;
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class InvoicesPage : FinancePageBase
++{
++    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
++
++    [Parameter]
++    public Guid? InvoiceId { get; set; }
++
++    private IReadOnlyList<FinanceInvoiceResponse> Invoices { get; set; } = [];
++    private FinanceInvoiceDetailResponse? SelectedInvoice { get; set; }
++    private bool IsListLoading { get; set; }
++    private bool IsDetailLoading { get; set; }
++    private string? ListErrorMessage { get; set; }
++    private string? DetailErrorMessage { get; set; }
++
++    private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Invoices.Count == 0;
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        Invoices = [];
++        SelectedInvoice = null;
++        ListErrorMessage = null;
++        DetailErrorMessage = null;
++
++        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadInvoicesAsync(companyId);
++        if (InvoiceId is Guid invoiceId)
++        {
++            await LoadDetailAsync(companyId, invoiceId);
++        }
++    }
++
++    private async Task ReloadAsync()
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadInvoicesAsync(companyId);
++        if (InvoiceId is Guid invoiceId)
++        {
++            await LoadDetailAsync(companyId, invoiceId);
++        }
++    }
++
++    private async Task LoadInvoicesAsync(Guid companyId)
++    {
++        IsListLoading = true;
++        ListErrorMessage = null;
++
++        try
++        {
++            Invoices = await FinanceApiClient.GetInvoicesAsync(companyId, limit: 200);
++        }
++        catch (FinanceApiException ex)
++        {
++            Invoices = [];
++            ListErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsListLoading = false;
++        }
++    }
++
++    private async Task LoadDetailAsync(Guid companyId, Guid invoiceId)
++    {
++        IsDetailLoading = true;
++        DetailErrorMessage = null;
++
++        try
++        {
++            SelectedInvoice = await FinanceApiClient.GetInvoiceDetailAsync(companyId, invoiceId);
++            if (SelectedInvoice is null)
++            {
++                DetailErrorMessage = "The selected invoice could not be found in the active company context.";
++            }
++        }
++        catch (FinanceApiException ex)
++        {
++            SelectedInvoice = null;
++            DetailErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsDetailLoading = false;
++        }
++    }
++
++    private string BuildInvoiceHref(Guid invoiceId) =>
++        FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId);
++
++    private string BuildDocumentHref(Guid documentId) =>
++        $"/api/companies/{AccessState.CompanyId}/documents/{documentId}";
++
++    private string BuildWorkflowHref(Guid workflowInstanceId) =>
++        $"/workflows?companyId={AccessState.CompanyId}&workflowInstanceId={workflowInstanceId:D}";
++
++    private string BuildApprovalHref(Guid approvalRequestId) =>
++        $"/approvals?companyId={AccessState.CompanyId}&approvalId={approvalRequestId:D}";
++
++    private string GetInvoiceListItemClass(Guid invoiceId) =>
++        InvoiceId == invoiceId
++            ? "list-group-item list-group-item-action active"
++            : "list-group-item list-group-item-action";
++
++    private static string FormatCurrency(decimal amount, string currency) =>
++        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
++
++    private static string FormatDate(DateTime value) =>
++        value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
++
++    private static string FormatLabel(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "n/a"
++            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor b/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor
+index da35695..28d6b77 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/TransactionsPage.razor
+@@ -62,13 +62,16 @@
+                                 <div class="d-flex w-100 justify-content-between gap-3">
+                                     <div>
+                                         <strong>@transaction.Description</strong>
+-                                        <div class="text-body-secondary small mt-1">@FormatDate(transaction.TransactionUtc) | @FormatLabel(transaction.TransactionType)</div>
++                                        <div class="text-body-secondary small mt-1">@FormatDate(transaction.TransactionUtc) | Category: @FormatLabel(transaction.TransactionType)</div>
+                                         <div class="small mt-2">@transaction.ExternalReference</div>
+                                     </div>
+                                     <div class="text-end">
+                                         <div class="fw-semibold">@FormatCurrency(transaction.Amount, transaction.Currency)</div>
+                                         <div class="small text-body-secondary mt-1">@transaction.AccountName</div>
+-                                        <div class="mt-2">
++                                        <div class="mt-2 d-flex gap-2 justify-content-end">
++                                            <span class="badge @(transaction.IsFlagged ? "text-bg-warning" : "text-bg-light")">
++                                                @(transaction.IsFlagged ? "Flagged" : "Clear")
++                                            </span>
+                                             <span class="badge @(transaction.IsFlagged ? "text-bg-warning" : "text-bg-light")">@FormatLabel(transaction.AnomalyState)</span>
+                                         </div>
+                                     </div>
+@@ -104,8 +107,10 @@
+                         <dt>Reference</dt>
+                         <dd>@SelectedTransaction.ExternalReference</dd>
+-                        <dt>Flag state</dt>
+-                        <dd><span class="badge @(SelectedTransaction.IsFlagged ? "text-bg-warning" : "text-bg-light")">@FormatLabel(SelectedTransaction.AnomalyState)</span></dd>
++                        <dt>Flagged</dt>
++                        <dd>@(SelectedTransaction.IsFlagged ? "Yes" : "No")</dd>
++                        <dt>Anomaly state</dt>
++                        <dd><span class="badge @(SelectedTransaction.IsFlagged ? "text-bg-warning" : "text-bg-light")">@FormatLabel(SelectedTransaction.AnomalyState)</span></dd>
+                     </dl>
+ 
+                     <h3 class="h6">Flags</h3>
+@@ -125,16 +130,14 @@
+                     }
+ 
+                     <h3 class="h6">Linked document</h3>
+-                    @if (SelectedTransaction.LinkedDocument.Document is not null)
+-                    {
+-                        <div class="text-body-secondary">@SelectedTransaction.LinkedDocument.Document.Title</div>
+-                        <div class="small text-body-secondary">@SelectedTransaction.LinkedDocument.Document.OriginalFileName</div>
+-                    }
+-                    <p class="text-body-secondary mt-2">@SelectedTransaction.LinkedDocument.Message</p>
+-                    @if (SelectedTransaction.LinkedDocument.CanNavigate && SelectedTransaction.LinkedDocument.Document is not null)
+-                    {
+-                        <a class="btn btn-outline-primary btn-sm" href="@BuildDocumentHref(SelectedTransaction.LinkedDocument.Document.Id)" target="_blank" rel="noopener noreferrer">Open linked document</a>
+-                    }
++                    <FinanceLinkedResourceState
++                        Availability="@SelectedTransaction.LinkedDocument.Availability"
++                        Message="@SelectedTransaction.LinkedDocument.Message"
++                        ResourceTitle="@SelectedTransaction.LinkedDocument.Document?.Title"
++                        SecondaryText="@SelectedTransaction.LinkedDocument.Document?.OriginalFileName"
++                        TypeText="@SelectedTransaction.LinkedDocument.Document?.ContentType"
++                        CanNavigate="@SelectedTransaction.LinkedDocument.CanNavigate"
++                        NavigateHref="@(SelectedTransaction.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedTransaction.LinkedDocument.Document.Id))"
++                        ActionText="Open linked document" />
+                 }
+             </div>
+         </div>
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 855c791..fdc0ab0 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -445,13 +445,19 @@ public sealed class FinanceLinkedDocumentAccessResponse
+ public sealed class FinanceInvoiceWorkflowContextResponse
+ {
+     public Guid? WorkflowInstanceId { get; set; }
+     public Guid TaskId { get; set; }
++    public string WorkflowName { get; set; } = string.Empty;
++    public string ReviewTaskStatus { get; set; } = string.Empty;
+     public Guid? ApprovalRequestId { get; set; }
+     public string Classification { get; set; } = string.Empty;
+     public string RiskLevel { get; set; } = string.Empty;
+     public string RecommendedAction { get; set; } = string.Empty;
+     public string Rationale { get; set; } = string.Empty;
+     public decimal Confidence { get; set; }
+     public bool RequiresHumanApproval { get; set; }
++    public string? ApprovalStatus { get; set; }
++    public string? ApprovalAssigneeSummary { get; set; }
++    public bool CanNavigateToWorkflow { get; set; }
++    public bool CanNavigateToApproval { get; set; }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+index ce6fb64..e052b1c 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -143,6 +143,14 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+         Assert.Equal(seed.AccessibleTransactionId, transactionDetail!.Id);
+         Assert.True(transactionDetail.IsFlagged);
+         Assert.NotEmpty(transactionDetail.Flags);
++        Assert.Equal("needs_review", transactionDetail.AnomalyState);
+         Assert.NotNull(transactionDetail.LinkedDocument);
+         Assert.Equal("available", transactionDetail.LinkedDocument.Availability);
+         Assert.True(transactionDetail.LinkedDocument.CanNavigate);
+@@ -150,12 +158,31 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+ 
++        var missingTransactionDetailResponse = await ownerClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions/{seed.MissingTransactionId}");
++        Assert.Equal(HttpStatusCode.OK, missingTransactionDetailResponse.StatusCode);
++        var missingTransactionDetail = await missingTransactionDetailResponse.Content.ReadFromJsonAsync<TransactionDetailResponse>();
++        Assert.NotNull(missingTransactionDetail);
++        Assert.Equal("missing", missingTransactionDetail!.LinkedDocument.Availability);
++        Assert.False(missingTransactionDetail.LinkedDocument.CanNavigate);
++        Assert.Null(missingTransactionDetail.LinkedDocument.Document);
++
+         var invoiceDetailResponse = await ownerClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.ReviewInvoiceId}");
+         Assert.Equal(HttpStatusCode.OK, invoiceDetailResponse.StatusCode);
+         var invoiceDetail = await invoiceDetailResponse.Content.ReadFromJsonAsync<InvoiceDetailResponse>();
+         Assert.NotNull(invoiceDetail);
+         Assert.Equal(seed.ReviewInvoiceId, invoiceDetail!.Id);
+         Assert.NotNull(invoiceDetail.WorkflowContext);
++        Assert.Equal("Invoice review workflow", invoiceDetail.WorkflowContext!.WorkflowName);
+         Assert.NotEqual(Guid.Empty, invoiceDetail.WorkflowContext!.TaskId);
++        Assert.False(string.IsNullOrWhiteSpace(invoiceDetail.WorkflowContext.ReviewTaskStatus));
++        if (invoiceDetail.WorkflowContext.ApprovalRequestId.HasValue)
++        {
++            Assert.False(string.IsNullOrWhiteSpace(invoiceDetail.WorkflowContext.ApprovalStatus));
++            Assert.True(invoiceDetail.WorkflowContext.CanNavigateToApproval);
++        }
++
++        var missingInvoiceDetailResponse = await ownerClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.MissingInvoiceId}");
++        Assert.Equal(HttpStatusCode.OK, missingInvoiceDetailResponse.StatusCode);
++        var missingInvoiceDetail = await missingInvoiceDetailResponse.Content.ReadFromJsonAsync<InvoiceDetailResponse>();
++        Assert.NotNull(missingInvoiceDetail);
++        Assert.Equal("missing", missingInvoiceDetail!.LinkedDocument.Availability);
++        Assert.False(missingInvoiceDetail.LinkedDocument.CanNavigate);
+ 
+         using var approverClient = CreateAuthenticatedClient(seed.ApproverSubject, seed.ApproverEmail, seed.ApproverDisplayName);
+         var restrictedInvoiceDetailResponse = await approverClient.GetAsync($"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.RestrictedInvoiceId}");
+@@ -184,6 +211,8 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+         var affectedRecordId = Guid.Empty;
+         var accessibleTransactionId = Guid.Empty;
+         var restrictedInvoiceId = Guid.Empty;
++        var missingTransactionId = Guid.Empty;
++        var missingInvoiceId = Guid.Empty;
+         var reviewInvoiceId = Guid.Empty;
+         const string employeeDisplayName = "Finance Employee";
+         FinanceSeedResult? financeSeed = null;
+@@ -212,6 +241,29 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+             restrictedInvoiceId = financeSeed.InvoiceIds[4];
+             reviewInvoiceId = financeSeed.InvoiceIds[0];
+ 
++            var templateTransaction = dbContext.FinanceTransactions.Local.First(x => x.CompanyId == companyId);
++            var missingTransaction = new FinanceTransaction(
++                Guid.NewGuid(),
++                companyId,
++                templateTransaction.AccountId,
++                templateTransaction.CounterpartyId,
++                null,
++                null,
++                templateTransaction.TransactionUtc.AddMinutes(15),
++                "software",
++                -89.42m,
++                templateTransaction.Currency,
++                "Missing linked document transaction",
++                $"missing-tx-{Guid.NewGuid():N}".Substring(0, 22),
++                Guid.NewGuid());
++            dbContext.FinanceTransactions.Add(missingTransaction);
++            missingTransactionId = missingTransaction.Id;
++
++            var templateInvoice = dbContext.FinanceInvoices.Local.First(x => x.CompanyId == companyId);
++            var missingInvoice = new FinanceInvoice(
++                Guid.NewGuid(),
++                companyId,
++                templateInvoice.CounterpartyId,
++                $"{templateInvoice.InvoiceNumber}-MISSING",
++                templateInvoice.IssuedUtc.AddDays(3),
++                templateInvoice.DueUtc.AddDays(3),
++                templateInvoice.Amount + 42m,
++                templateInvoice.Currency,
++                "pending_approval",
++                Guid.NewGuid());
++            dbContext.FinanceInvoices.Add(missingInvoice);
++            missingInvoiceId = missingInvoice.Id;
++
+             var seedAnomaly = new FinanceSeedAnomaly(
+                 Guid.NewGuid(),
+                 companyId,
+@@ -229,7 +281,7 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+             financeSeed!.DocumentIds, anomalyId, affectedRecordId,
+-            accessibleTransactionId, restrictedInvoiceId, reviewInvoiceId);
++            accessibleTransactionId, restrictedInvoiceId, reviewInvoiceId, missingTransactionId, missingInvoiceId);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+@@ -254,7 +306,9 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+         Guid AffectedRecordId,
+         Guid AccessibleTransactionId,
+         Guid RestrictedInvoiceId,
+-        Guid ReviewInvoiceId);
++        Guid ReviewInvoiceId,
++        Guid MissingTransactionId,
++        Guid MissingInvoiceId);
+ 
+     private sealed class CashBalanceResponse
+     {
+@@ -390,12 +444,18 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+     {
+         public Guid? WorkflowInstanceId { get; set; }
+         public Guid TaskId { get; set; }
++        public string WorkflowName { get; set; } = string.Empty;
++        public string ReviewTaskStatus { get; set; } = string.Empty;
+         public Guid? ApprovalRequestId { get; set; }
+         public string Classification { get; set; } = string.Empty;
+         public string RiskLevel { get; set; } = string.Empty;
+         public string RecommendedAction { get; set; } = string.Empty;
+         public string Rationale { get; set; } = string.Empty;
++        public string? ApprovalStatus { get; set; }
++        public string? ApprovalAssigneeSummary { get; set; }
+         public decimal Confidence { get; set; }
++        public bool CanNavigateToWorkflow { get; set; }
++        public bool CanNavigateToApproval { get; set; }
+     }
+ 
+     private sealed class SeedAnomalyResponse
+END_OF_PATCH

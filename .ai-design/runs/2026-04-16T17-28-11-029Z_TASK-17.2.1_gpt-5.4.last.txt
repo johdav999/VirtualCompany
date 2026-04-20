@@ -1,0 +1,1409 @@
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -70,6 +70,11 @@ builder.Services.AddScoped(sp => new ActivityFeedApiClient(
+     ShouldUseOfflineMode(
+         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
++builder.Services.AddScoped(sp => new FinanceApiClient(
++    sp.GetRequiredService<HttpClient>(),
++    ShouldUseOfflineMode(
++        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
++        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+ 
+ var app = builder.Build();
+ 
+diff --git a/src/VirtualCompany.Web/Services/FinanceRoutes.cs b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+--- a/src/VirtualCompany.Web/Services/FinanceRoutes.cs
++++ b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+@@ -18,6 +18,15 @@ public static class FinanceRoutes
+     public static FinanceRouteDefinition HomePage { get; } =
+         new("Finance", Home, "Open the tenant-scoped finance workspace.");
+ 
++    public static IReadOnlyList<FinanceRouteDefinition> SummaryPages { get; } =
++        [
++            new("Cash position", CashPosition, "Track company cash coverage and liquidity in the active tenant context."),
++            new("Balances", Balances, "Browse account balances with explicit tenant-scoped routing."),
++            new("Monthly summary", MonthlySummary, "Summarize the current month's finance posture for the active company."),
++            new("Anomalies", Anomalies, "Review finance anomalies and follow-up work in the selected tenant.")
++        ];
++
+     public static IReadOnlyList<FinanceRouteDefinition> SectionPages { get; } =
+         [
+             new("Cash position", CashPosition, "Review cash coverage and company liquidity in the active tenant context."),
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor b/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor
+--- a/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor
+@@ -17,6 +17,8 @@
+                 <a class="btn btn-outline-secondary" href="@DashboardHref">Company dashboard</a>
+             </div>
+ 
++            <FinanceSectionNav CompanyId="@CompanyId" />
++
+             @if (ChildContent is not null)
+             {
+                 <div class="mt-4">
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceSectionNav.razor b/src/VirtualCompany.Web/Components/Finance/FinanceSectionNav.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceSectionNav.razor
+@@ -0,0 +1,15 @@
++<nav class="finance-section-nav" aria-label="Finance summary pages">
++    @foreach (var route in FinanceRoutes.SummaryPages)
++    {
++        <NavLink class="finance-section-nav__link" ActiveClass="active" Match="NavLinkMatch.All" href="@route.BuildPath(CompanyId)">
++            @route.Title
++        </NavLink>
++    }
++</nav>
++
++@code {
++    [Parameter]
++    public Guid CompanyId { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceDataState.razor b/src/VirtualCompany.Web/Components/Finance/FinanceDataState.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceDataState.razor
+@@ -0,0 +1,57 @@
++@if (IsLoading)
++{
++    <section class="wizard-card finance-state-card" aria-live="polite">
++        <h2 class="h5 mb-2">@LoadingTitle</h2>
++        <p class="text-body-secondary mb-0">@LoadingMessage</p>
++    </section>
++}
++else if (!string.IsNullOrWhiteSpace(ErrorMessage))
++{
++    <section class="wizard-card finance-state-card" role="alert">
++        <h2 class="h5 mb-2">@ErrorTitle</h2>
++        <p class="mb-3">@ErrorMessage</p>
++        @if (OnRetry.HasDelegate)
++        {
++            <button class="btn btn-outline-danger" type="button" @onclick="(() => OnRetry.InvokeAsync())">@RetryText</button>
++        }
++    </section>
++}
++else if (IsEmpty)
++{
++    <section class="wizard-card finance-state-card">
++        <h2 class="h5 mb-2">@EmptyTitle</h2>
++        <p class="text-body-secondary mb-0">@EmptyMessage</p>
++    </section>
++}
++else if (ChildContent is not null)
++{
++    @ChildContent
++}
++
++@code {
++    [Parameter] public bool IsLoading { get; set; }
++    [Parameter] public bool IsEmpty { get; set; }
++    [Parameter] public string? ErrorMessage { get; set; }
++    [Parameter] public string LoadingTitle { get; set; } = "Loading finance summary";
++    [Parameter] public string LoadingMessage { get; set; } = "Fetching the latest tenant-scoped finance data.";
++    [Parameter] public string EmptyTitle { get; set; } = "Nothing to show";
++    [Parameter] public string EmptyMessage { get; set; } = "No finance data is available for the active tenant.";
++    [Parameter] public string ErrorTitle { get; set; } = "Finance data is unavailable";
++    [Parameter] public string RetryText { get; set; } = "Retry";
++    [Parameter] public EventCallback OnRetry { get; set; }
++    [Parameter] public RenderFragment? ChildContent { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinanceSummaryPageBase.cs b/src/VirtualCompany.Web/Pages/Finance/FinanceSummaryPageBase.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/FinanceSummaryPageBase.cs
+@@ -0,0 +1,59 @@
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++
++namespace VirtualCompany.Web.Pages.Finance;
++
++public abstract class FinanceSummaryPageBase<TViewModel> : FinancePageBase
++    where TViewModel : class
++{
++    [Inject] protected FinanceApiClient FinanceApiClient { get; set; } = default!;
++
++    protected TViewModel? ViewModel { get; private set; }
++    protected bool IsSummaryLoading { get; private set; }
++    protected bool IsSummaryEmpty { get; private set; }
++    protected string? SummaryErrorMessage { get; private set; }
++
++    protected abstract Task<TViewModel?> LoadSummaryViewModelAsync(Guid companyId, CancellationToken cancellationToken);
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        if (IsLoading || !AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
++            ResetSummary();
++            return;
++        }
++
++        await LoadSummaryAsync(companyId);
++    }
++
++    protected Task RetryAsync() =>
++        AccessState.CompanyId is Guid companyId
++            ? LoadSummaryAsync(companyId)
++            : Task.CompletedTask;
++
++    private async Task LoadSummaryAsync(Guid companyId)
++    {
++        IsSummaryLoading = true;
++        IsSummaryEmpty = false;
++        SummaryErrorMessage = null;
++        ViewModel = null;
++
++        try
++        {
++            var viewModel = await LoadSummaryViewModelAsync(companyId, CancellationToken.None);
++            IsSummaryEmpty = viewModel is null;
++            ViewModel = viewModel;
++        }
++        catch (FinanceApiException ex)
++        {
++            SummaryErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsSummaryLoading = false;
++        }
++    }
++
++    private void ResetSummary() =>
++        (ViewModel, IsSummaryLoading, IsSummaryEmpty, SummaryErrorMessage) = (null, false, false, null);
++}
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -0,0 +1,259 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class FinanceApiClient
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly HttpClient _httpClient;
++    private readonly bool _useOfflineMode;
++
++    public FinanceApiClient(HttpClient httpClient, bool useOfflineMode = false)
++    {
++        _httpClient = httpClient;
++        _useOfflineMode = useOfflineMode;
++    }
++
++    public async Task<DateTime> GetFinanceReferenceUtcAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        var clock = await GetSimulationClockAsync(companyId, cancellationToken);
++        return clock?.SimulatedUtc ?? DateTime.UtcNow;
++    }
++
++    public Task<FinanceSimulationClockResponse?> GetSimulationClockAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinanceSimulationClockResponse?>(new FinanceSimulationClockResponse
++            {
++                CompanyId = companyId,
++                SimulatedUtc = DateTime.UtcNow,
++                Enabled = false
++            })
++            : GetAsync<FinanceSimulationClockResponse>($"internal/companies/{companyId}/finance/simulation/clock", allowNotFound: true, cancellationToken);
++
++    public Task<FinanceCashPositionResponse?> GetCashPositionAsync(Guid companyId, DateTime? asOfUtc = null, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<FinanceCashPositionResponse?>(null);
++        }
++
++        var uri = $"internal/companies/{companyId}/finance/cash-position{BuildQuery(("asOfUtc", asOfUtc?.ToString("O")))}";
++        return GetAsync<FinanceCashPositionResponse>(uri, allowNotFound: true, cancellationToken);
++    }
++
++    public Task<IReadOnlyList<FinanceAccountBalanceResponse>> GetBalancesAsync(Guid companyId, DateTime? asOfUtc = null, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<IReadOnlyList<FinanceAccountBalanceResponse>>([]);
++        }
++
++        var uri = $"internal/companies/{companyId}/finance/balances{BuildQuery(("asOfUtc", asOfUtc?.ToString("O")))}";
++        return GetListAsync<FinanceAccountBalanceResponse>(uri, cancellationToken);
++    }
++
++    public Task<IReadOnlyList<FinanceSeedAnomalyResponse>> GetAnomaliesAsync(Guid companyId, int limit = 25, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<IReadOnlyList<FinanceSeedAnomalyResponse>>([]);
++        }
++
++        return GetListAsync<FinanceSeedAnomalyResponse>($"internal/companies/{companyId}/finance/anomalies?limit={limit}", cancellationToken);
++    }
++
++    public async Task<FinanceMonthlySummaryResponse?> GetMonthlySummaryAsync(Guid companyId, DateTime? referenceUtc = null, CancellationToken cancellationToken = default)
++    {
++        FinanceSimulationClockResponse? clock = null;
++        var resolvedReferenceUtc = referenceUtc;
++        if (!resolvedReferenceUtc.HasValue)
++        {
++            clock = await GetSimulationClockAsync(companyId, cancellationToken);
++            resolvedReferenceUtc = clock?.SimulatedUtc ?? DateTime.UtcNow;
++        }
++
++        var monthStartUtc = new DateTime(resolvedReferenceUtc.Value.Year, resolvedReferenceUtc.Value.Month, 1, 0, 0, 0, DateTimeKind.Utc);
++        var monthEndUtc = monthStartUtc.AddMonths(1);
++
++        if (_useOfflineMode)
++        {
++            return new FinanceMonthlySummaryResponse
++            {
++                CompanyId = companyId,
++                ReferenceUtc = resolvedReferenceUtc.Value,
++                StartUtc = monthStartUtc,
++                EndUtc = monthEndUtc,
++                Clock = clock,
++                ProfitAndLoss = new FinanceMonthlyProfitAndLossResponse
++                {
++                    CompanyId = companyId,
++                    Year = monthStartUtc.Year,
++                    Month = monthStartUtc.Month,
++                    StartUtc = monthStartUtc,
++                    EndUtc = monthEndUtc,
++                    Currency = "USD"
++                },
++                ExpenseBreakdown = new FinanceExpenseBreakdownResponse
++                {
++                    CompanyId = companyId,
++                    StartUtc = monthStartUtc,
++                    EndUtc = monthEndUtc,
++                    Currency = "USD"
++                }
++            };
++        }
++
++        var profitAndLoss = await GetAsync<FinanceMonthlyProfitAndLossResponse>(
++            $"internal/companies/{companyId}/finance/profit-and-loss/monthly?year={monthStartUtc.Year}&month={monthStartUtc.Month}",
++            allowNotFound: true,
++            cancellationToken);
++
++        if (profitAndLoss is null)
++        {
++            return null;
++        }
++
++        var expenseBreakdown = await GetAsync<FinanceExpenseBreakdownResponse>(
++            $"internal/companies/{companyId}/finance/expense-breakdown?startUtc={Uri.EscapeDataString(monthStartUtc.ToString("O"))}&endUtc={Uri.EscapeDataString(monthEndUtc.ToString("O"))}",
++            allowNotFound: true,
++            cancellationToken);
++
++        return new FinanceMonthlySummaryResponse
++        {
++            CompanyId = companyId,
++            ReferenceUtc = resolvedReferenceUtc.Value,
++            StartUtc = monthStartUtc,
++            EndUtc = monthEndUtc,
++            Clock = clock,
++            ProfitAndLoss = profitAndLoss,
++            ExpenseBreakdown = expenseBreakdown
++        };
++    }
++
++    private async Task<IReadOnlyList<T>> GetListAsync<T>(string uri, CancellationToken cancellationToken)
++    {
++        var items = await GetAsync<List<T>>(uri, allowNotFound: false, cancellationToken);
++        return items ?? [];
++    }
++
++    private async Task<T?> GetAsync<T>(string uri, bool allowNotFound, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var response = await _httpClient.GetAsync(uri, cancellationToken);
++
++            if (allowNotFound && response.StatusCode == HttpStatusCode.NotFound)
++            {
++                return default;
++            }
++
++            if (response.IsSuccessStatusCode)
++            {
++                if (response.Content.Headers.ContentLength is 0)
++                {
++                    return default;
++                }
++
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<FinanceApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
++        var contentType = response.Content.Headers.ContentType?.MediaType;
++        if (!string.Equals(contentType, "application/json", StringComparison.OrdinalIgnoreCase) &&
++            !string.Equals(contentType, "application/problem+json", StringComparison.OrdinalIgnoreCase))
++        {
++            await response.Content.ReadAsStringAsync(cancellationToken);
++            return new FinanceApiException($"The finance request failed with status code {(int)response.StatusCode}.");
++        }
++
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        return new FinanceApiException(problem?.Detail ?? problem?.Title ?? "The finance request failed.");
++    }
++
++    private FinanceApiException CreateNetworkException(HttpRequestException ex)
++    {
++        var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
++        return new FinanceApiException($"The web app could not reach the finance backend at {baseAddress}. Start the API project or update the web app API base URL.");
++    }
++
++    private static string BuildQuery(params (string Key, string? Value)[] pairs)
++    {
++        var segments = pairs
++            .Where(pair => !string.IsNullOrWhiteSpace(pair.Value))
++            .Select(pair => $"{pair.Key}={Uri.EscapeDataString(pair.Value!)}")
++            .ToArray();
++
++        return segments.Length == 0 ? string.Empty : $"?{string.Join("&", segments)}";
++    }
++
++    private sealed class ApiProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++    }
++}
++
++public sealed class FinanceApiException : Exception
++{
++    public FinanceApiException(string message) : base(message)
++    {
++    }
++}
++
++public sealed class FinanceSimulationClockResponse
++{
++    public Guid CompanyId { get; set; }
++    public DateTime SimulatedUtc { get; set; }
++    public bool Enabled { get; set; }
++}
++
++public sealed class FinanceCashPositionResponse
++{
++    public Guid CompanyId { get; set; }
++    public DateTime AsOfUtc { get; set; }
++    public decimal AvailableBalance { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public decimal AverageMonthlyBurn { get; set; }
++    public int? EstimatedRunwayDays { get; set; }
++    public FinanceCashPositionThresholdsResponse Thresholds { get; set; } = new();
++    public FinanceCashPositionAlertStateResponse AlertState { get; set; } = new();
++    public string Classification { get; set; } = string.Empty;
++    public string RiskLevel { get; set; } = string.Empty;
++    public string RecommendedAction { get; set; } = string.Empty;
++    public string Rationale { get; set; } = string.Empty;
++    public decimal Confidence { get; set; }
++    public string SourceWorkflow { get; set; } = string.Empty;
++}
++
++public sealed class FinanceCashPositionThresholdsResponse
++{
++    public int WarningRunwayDays { get; set; }
++    public int CriticalRunwayDays { get; set; }
++    public decimal? WarningCashAmount { get; set; }
++    public decimal? CriticalCashAmount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++}
++
++public sealed class FinanceCashPositionAlertStateResponse
++{
++    public bool IsLowCash { get; set; }
++    public string RiskLevel { get; set; } = string.Empty;
++    public bool AlertCreated { get; set; }
++    public bool AlertDeduplicated { get; set; }
++    public Guid? AlertId { get; set; }
++    public string? AlertStatus { get; set; }
++    public string Rationale { get; set; } = string.Empty;
++}
++
++public sealed class FinanceAccountBalanceResponse
++{
++    public Guid AccountId { get; set; }
++    public string AccountCode { get; set; } = string.Empty;
++    public string AccountName { get; set; } = string.Empty;
++    public string AccountType { get; set; } = string.Empty;
++    public decimal Amount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public DateTime AsOfUtc { get; set; }
++}
++
++public sealed class FinanceMonthlySummaryResponse
++{
++    public Guid CompanyId { get; set; }
++    public DateTime ReferenceUtc { get; set; }
++    public DateTime StartUtc { get; set; }
++    public DateTime EndUtc { get; set; }
++    public FinanceSimulationClockResponse? Clock { get; set; }
++    public FinanceMonthlyProfitAndLossResponse ProfitAndLoss { get; set; } = new();
++    public FinanceExpenseBreakdownResponse? ExpenseBreakdown { get; set; }
++}
++
++public sealed class FinanceMonthlyProfitAndLossResponse
++{
++    public Guid CompanyId { get; set; }
++    public int Year { get; set; }
++    public int Month { get; set; }
++    public DateTime StartUtc { get; set; }
++    public DateTime EndUtc { get; set; }
++    public decimal Revenue { get; set; }
++    public decimal Expenses { get; set; }
++    public decimal NetResult { get; set; }
++    public string Currency { get; set; } = string.Empty;
++}
++
++public sealed class FinanceExpenseBreakdownResponse
++{
++    public Guid CompanyId { get; set; }
++    public DateTime StartUtc { get; set; }
++    public DateTime EndUtc { get; set; }
++    public decimal TotalExpenses { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public List<FinanceExpenseCategoryResponse> Categories { get; set; } = [];
++}
++
++public sealed class FinanceExpenseCategoryResponse
++{
++    public string Category { get; set; } = string.Empty;
++    public decimal Amount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++}
++
++public sealed class FinanceSeedAnomalyResponse
++{
++    public Guid Id { get; set; }
++    public string AnomalyType { get; set; } = string.Empty;
++    public string ScenarioProfile { get; set; } = string.Empty;
++    public List<Guid> AffectedRecordIds { get; set; } = [];
++    public string ExpectedDetectionMetadataJson { get; set; } = string.Empty;
++}
+diff --git a/src/VirtualCompany.Web/Services/FinanceSummaryPresenter.cs b/src/VirtualCompany.Web/Services/FinanceSummaryPresenter.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/FinanceSummaryPresenter.cs
+@@ -0,0 +1,194 @@
++using System.Globalization;
++using System.Text.Json;
++
++namespace VirtualCompany.Web.Services;
++
++public static class FinanceSummaryPresenter
++{
++    private static readonly CultureInfo DisplayCulture = CultureInfo.InvariantCulture;
++
++    public static CashPositionSummaryViewModel? ToCashPositionViewModel(FinanceCashPositionResponse? response)
++    {
++        if (response is null || response.CompanyId == Guid.Empty || string.IsNullOrWhiteSpace(response.Currency))
++        {
++            return null;
++        }
++
++        return new CashPositionSummaryViewModel(
++            response.CompanyId,
++            FormatDate(response.AsOfUtc),
++            FormatCurrency(response.AvailableBalance, response.Currency),
++            FormatCurrency(response.AverageMonthlyBurn, response.Currency),
++            response.EstimatedRunwayDays is int runwayDays ? $"{runwayDays} days" : "n/a",
++            NormalizeLabel(response.RiskLevel),
++            NormalizeCssToken(response.RiskLevel),
++            response.RecommendedAction,
++            response.Rationale,
++            response.Classification,
++            $"{response.Confidence:P0}",
++            response.Thresholds.WarningCashAmount is decimal warningCash ? FormatCurrency(warningCash, response.Thresholds.Currency) : "n/a",
++            response.Thresholds.CriticalCashAmount is decimal criticalCash ? FormatCurrency(criticalCash, response.Thresholds.Currency) : "n/a",
++            $"{response.Thresholds.WarningRunwayDays} days",
++            $"{response.Thresholds.CriticalRunwayDays} days",
++            BuildAlertStatus(response.AlertState));
++    }
++
++    public static BalancesSummaryViewModel? ToBalancesViewModel(Guid companyId, DateTime referenceUtc, IReadOnlyList<FinanceAccountBalanceResponse>? accounts)
++    {
++        if (accounts is not { Count: > 0 })
++        {
++            return null;
++        }
++
++        var orderedAccounts = accounts
++            .OrderBy(account => account.AccountCode, StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++        var currency = orderedAccounts[0].Currency;
++
++        return new BalancesSummaryViewModel(
++            companyId,
++            FormatDate(referenceUtc),
++            FormatCurrency(orderedAccounts.Sum(account => account.Amount), currency),
++            orderedAccounts.Select(account => new BalanceAccountViewModel(
++                account.AccountId,
++                account.AccountCode,
++                account.AccountName,
++                NormalizeLabel(account.AccountType),
++                FormatCurrency(account.Amount, account.Currency),
++                FormatDate(account.AsOfUtc)))
++            .ToArray());
++    }
++
++    public static MonthlySummaryViewModel? ToMonthlySummaryViewModel(FinanceMonthlySummaryResponse? response)
++    {
++        if (response is null || response.ProfitAndLoss is null)
++        {
++            return null;
++        }
++
++        var hasCategoryBreakdown = response.ExpenseBreakdown?.Categories is { Count: > 0 };
++        var hasMeaningfulTotals =
++            response.ProfitAndLoss.Revenue != 0m ||
++            response.ProfitAndLoss.Expenses != 0m ||
++            response.ProfitAndLoss.NetResult != 0m ||
++            hasCategoryBreakdown;
++
++        if (!hasMeaningfulTotals)
++        {
++            return null;
++        }
++
++        var categoryItems = (response.ExpenseBreakdown?.Categories ?? [])
++            .OrderByDescending(category => category.Amount)
++            .Select(category => new MonthlyExpenseCategoryViewModel(
++                NormalizeLabel(category.Category),
++                FormatCurrency(category.Amount, category.Currency),
++                FormatPercentage(response.ExpenseBreakdown!.TotalExpenses == 0m ? 0m : category.Amount / response.ExpenseBreakdown.TotalExpenses)))
++            .ToArray();
++
++        return new MonthlySummaryViewModel(
++            response.CompanyId,
++            $"{response.StartUtc:yyyy-MM-dd} to {response.EndUtc.AddDays(-1):yyyy-MM-dd}",
++            FormatCurrency(response.ProfitAndLoss.Revenue, response.ProfitAndLoss.Currency),
++            FormatCurrency(response.ProfitAndLoss.Expenses, response.ProfitAndLoss.Currency),
++            FormatCurrency(response.ProfitAndLoss.NetResult, response.ProfitAndLoss.Currency),
++            categoryItems);
++    }
++
++    public static AnomaliesSummaryViewModel? ToAnomaliesViewModel(Guid companyId, IReadOnlyList<FinanceSeedAnomalyResponse>? anomalies)
++    {
++        if (anomalies is not { Count: > 0 })
++        {
++            return null;
++        }
++
++        return new AnomaliesSummaryViewModel(
++            companyId,
++            anomalies.Count,
++            anomalies.Select(anomaly => new FinanceAnomalyItemViewModel(
++                anomaly.Id,
++                NormalizeLabel(anomaly.AnomalyType),
++                NormalizeLabel(anomaly.ScenarioProfile),
++                anomaly.AffectedRecordIds.Count == 1 ? "1 record" : $"{anomaly.AffectedRecordIds.Count} records",
++                SummarizeMetadata(anomaly.ExpectedDetectionMetadataJson)))
++            .ToArray());
++    }
++
++    private static string BuildAlertStatus(FinanceCashPositionAlertStateResponse alertState)
++    {
++        if (alertState.AlertCreated)
++        {
++            return "New alert created";
++        }
++
++        if (alertState.AlertDeduplicated)
++        {
++            return "Existing alert reused";
++        }
++
++        if (!string.IsNullOrWhiteSpace(alertState.AlertStatus))
++        {
++            return NormalizeLabel(alertState.AlertStatus);
++        }
++
++        return alertState.IsLowCash ? "Low cash detected" : "No active alert";
++    }
++
++    private static string SummarizeMetadata(string metadataJson)
++    {
++        if (string.IsNullOrWhiteSpace(metadataJson))
++        {
++            return "No detector metadata";
++        }
++
++        try
++        {
++            using var document = JsonDocument.Parse(metadataJson);
++            return string.Join(
++                " | ",
++                document.RootElement.EnumerateObject()
++                    .Select(property => $"{NormalizeLabel(property.Name)}: {property.Value.ToString()}"));
++        }
++        catch (JsonException)
++        {
++            return metadataJson;
++        }
++    }
++
++    private static string FormatCurrency(decimal amount, string currency) =>
++        $"{currency} {amount.ToString("N2", DisplayCulture)}";
++
++    private static string FormatPercentage(decimal percentage) =>
++        percentage.ToString("P0", DisplayCulture);
++
++    private static string FormatDate(DateTime utcDateTime) =>
++        utcDateTime.ToString("yyyy-MM-dd HH:mm 'UTC'", DisplayCulture);
++
++    private static string NormalizeLabel(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "n/a"
++            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
++
++    private static string NormalizeCssToken(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? "neutral" : value.Trim().ToLowerInvariant().Replace("_", "-", StringComparison.Ordinal);
++}
++
++public sealed record CashPositionSummaryViewModel(
++    Guid CompanyId,
++    string AsOf,
++    string AvailableBalance,
++    string AverageMonthlyBurn,
++    string EstimatedRunway,
++    string RiskLevel,
++    string RiskLevelCssClass,
++    string RecommendedAction,
++    string Rationale,
++    string Classification,
++    string Confidence,
++    string WarningThreshold,
++    string CriticalThreshold,
++    string WarningRunway,
++    string CriticalRunway,
++    string AlertStatus);
++
++public sealed record BalancesSummaryViewModel(Guid CompanyId, string AsOf, string TotalBalance, IReadOnlyList<BalanceAccountViewModel> Accounts);
++public sealed record BalanceAccountViewModel(Guid AccountId, string AccountCode, string AccountName, string AccountType, string Amount, string AsOf);
++public sealed record MonthlySummaryViewModel(Guid CompanyId, string Period, string Revenue, string Expenses, string NetResult, IReadOnlyList<MonthlyExpenseCategoryViewModel> ExpenseCategories);
++public sealed record MonthlyExpenseCategoryViewModel(string Category, string Amount, string Share);
++public sealed record AnomaliesSummaryViewModel(Guid CompanyId, int TotalAnomalies, IReadOnlyList<FinanceAnomalyItemViewModel> Items);
++public sealed record FinanceAnomalyItemViewModel(Guid Id, string Type, string ScenarioProfile, string AffectedRecords, string DetectorSummary);
+diff --git a/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor.cs
+@@ -1,4 +1,12 @@
++using VirtualCompany.Web.Services;
++
+ namespace VirtualCompany.Web.Pages.Finance;
+ 
+-public partial class CashPositionPage : FinancePageBase
++public partial class CashPositionPage : FinanceSummaryPageBase<CashPositionSummaryViewModel>
+ {
++    protected override async Task<CashPositionSummaryViewModel?> LoadSummaryViewModelAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var referenceUtc = await FinanceApiClient.GetFinanceReferenceUtcAsync(companyId, cancellationToken);
++        var response = await FinanceApiClient.GetCashPositionAsync(companyId, referenceUtc, cancellationToken);
++        return FinanceSummaryPresenter.ToCashPositionViewModel(response);
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor b/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/CashPositionPage.razor
+@@ -8,8 +8,45 @@
+     ErrorMessage="@ErrorMessage"
+     Title="Cash position"
+     Description="Track company cash coverage and liquidity without leaving the active tenant context."
+-    LoadingMessage="Loading cash position shell...">
+-    <p class="text-body-secondary mb-0">
+-        This shell is ready for tenant-scoped cash position data, direct URL navigation, and refresh-safe routing.
+-    </p>
++    LoadingMessage="Loading cash position shell...">
++    <FinanceDataState
++        IsLoading="@IsSummaryLoading"
++        IsEmpty="@IsSummaryEmpty"
++        ErrorMessage="@SummaryErrorMessage"
++        LoadingTitle="Loading cash position"
++        LoadingMessage="Fetching the active tenant cash position from finance services."
++        EmptyTitle="No cash position yet"
++        EmptyMessage="No cash position summary is available for the active tenant."
++        RetryText="Reload cash position"
++        OnRetry="@RetryAsync">
++        @if (ViewModel is not null)
++        {
++            <section class="finance-summary-stack" aria-labelledby="cash-position-heading">
++                <div class="finance-summary-grid">
++                    <article class="wizard-card finance-metric-card finance-metric-card--hero">
++                        <span class="dashboard-kicker">Available cash</span>
++                        <h2 id="cash-position-heading" class="finance-metric-card__value">@ViewModel.AvailableBalance</h2>
++                        <p class="text-body-secondary mb-0">As of @ViewModel.AsOf</p>
++                    </article>
++                    <article class="wizard-card finance-metric-card">
++                        <span class="dashboard-kicker">Average monthly burn</span>
++                        <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.AverageMonthlyBurn</div>
++                        <p class="text-body-secondary mb-0">Estimated runway: @ViewModel.EstimatedRunway</p>
++                    </article>
++                    <article class="wizard-card finance-metric-card">
++                        <span class="dashboard-kicker">Workflow assessment</span>
++                        <div class="finance-risk-pill finance-risk-pill--@ViewModel.RiskLevelCssClass">@ViewModel.RiskLevel</div>
++                        <p class="mb-1 mt-3">@ViewModel.RecommendedAction</p>
++                        <small class="text-body-secondary">Confidence @ViewModel.Confidence</small>
++                    </article>
++                </div>
++                <div class="finance-detail-grid">
++                    <article class="wizard-card">
++                        <h2 class="h5">Thresholds</h2>
++                        <dl class="cockpit-kpi-list mb-0">
++                            <div><dt>Warning cash</dt><dd>@ViewModel.WarningThreshold</dd></div>
++                            <div><dt>Critical cash</dt><dd>@ViewModel.CriticalThreshold</dd></div>
++                            <div><dt>Warning runway</dt><dd>@ViewModel.WarningRunway</dd></div>
++                            <div><dt>Critical runway</dt><dd>@ViewModel.CriticalRunway</dd></div>
++                        </dl>
++                    </article>
++                    <article class="wizard-card">
++                        <h2 class="h5">Alert state</h2>
++                        <p class="mb-2"><strong>@ViewModel.AlertStatus</strong></p>
++                        <p class="mb-2">@ViewModel.Rationale</p>
++                        <small class="text-body-secondary">Classification: @ViewModel.Classification</small>
++                    </article>
++                </div>
++            </section>
++        }
++    </FinanceDataState>
+ </FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor.cs
+@@ -1,4 +1,12 @@
++using VirtualCompany.Web.Services;
++
+ namespace VirtualCompany.Web.Pages.Finance;
+ 
+-public partial class BalancesPage : FinancePageBase
++public partial class BalancesPage : FinanceSummaryPageBase<BalancesSummaryViewModel>
+ {
++    protected override async Task<BalancesSummaryViewModel?> LoadSummaryViewModelAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var referenceUtc = await FinanceApiClient.GetFinanceReferenceUtcAsync(companyId, cancellationToken);
++        var balances = await FinanceApiClient.GetBalancesAsync(companyId, referenceUtc, cancellationToken);
++        return FinanceSummaryPresenter.ToBalancesViewModel(companyId, referenceUtc, balances);
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor b/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/BalancesPage.razor
+@@ -8,8 +8,39 @@
+     ErrorMessage="@ErrorMessage"
+     Title="Balances"
+     Description="Browse account balances with explicit tenant-scoped routing and module-level navigation."
+-    LoadingMessage="Loading balances shell...">
+-    <p class="text-body-secondary mb-0">
+-        This shell keeps future balance views anchored to the current company context and finance landing page.
+-    </p>
++    LoadingMessage="Loading balances shell...">
++    <FinanceDataState
++        IsLoading="@IsSummaryLoading"
++        IsEmpty="@IsSummaryEmpty"
++        ErrorMessage="@SummaryErrorMessage"
++        LoadingTitle="Loading balances"
++        LoadingMessage="Fetching tenant-scoped balances from finance services."
++        EmptyTitle="No balances yet"
++        EmptyMessage="No account balances are available for the active tenant."
++        RetryText="Reload balances"
++        OnRetry="@RetryAsync">
++        @if (ViewModel is not null)
++        {
++            <section class="finance-summary-stack" aria-labelledby="balances-heading">
++                <div class="finance-summary-grid">
++                    <article class="wizard-card finance-metric-card finance-metric-card--hero">
++                        <span class="dashboard-kicker">Total balance</span>
++                        <h2 id="balances-heading" class="finance-metric-card__value">@ViewModel.TotalBalance</h2>
++                        <p class="text-body-secondary mb-0">As of @ViewModel.AsOf</p>
++                    </article>
++                    <article class="wizard-card finance-metric-card">
++                        <span class="dashboard-kicker">Tracked accounts</span>
++                        <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.Accounts.Count</div>
++                        <p class="text-body-secondary mb-0">All values are scoped to the active tenant.</p>
++                    </article>
++                </div>
++                <article class="wizard-card">
++                    <h2 class="h5">Account balances</h2>
++                    <div class="table-responsive">
++                        <table class="table finance-table mb-0">
++                            <thead>
++                                <tr>
++                                    <th scope="col">Code</th>
++                                    <th scope="col">Account</th>
++                                    <th scope="col">Type</th>
++                                    <th scope="col">As of</th>
++                                    <th scope="col" class="finance-table__number">Amount</th>
++                                </tr>
++                            </thead>
++                            <tbody>
++                                @foreach (var account in ViewModel.Accounts)
++                                {
++                                    <tr>
++                                        <td>@account.AccountCode</td>
++                                        <td>@account.AccountName</td>
++                                        <td>@account.AccountType</td>
++                                        <td>@account.AsOf</td>
++                                        <td class="finance-table__number">@account.Amount</td>
++                                    </tr>
++                                }
++                            </tbody>
++                        </table>
++                    </div>
++                </article>
++            </section>
++        }
++    </FinanceDataState>
+ </FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor.cs
+@@ -1,4 +1,11 @@
++using VirtualCompany.Web.Services;
++
+ namespace VirtualCompany.Web.Pages.Finance;
+ 
+-public partial class MonthlySummaryPage : FinancePageBase
++public partial class MonthlySummaryPage : FinanceSummaryPageBase<MonthlySummaryViewModel>
+ {
++    protected override async Task<MonthlySummaryViewModel?> LoadSummaryViewModelAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var monthlySummary = await FinanceApiClient.GetMonthlySummaryAsync(companyId, cancellationToken: cancellationToken);
++        return FinanceSummaryPresenter.ToMonthlySummaryViewModel(monthlySummary);
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor b/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor
+@@ -8,8 +8,43 @@
+     ErrorMessage="@ErrorMessage"
+     Title="Monthly summary"
+     Description="Summarize the current month's finance posture inside the active tenant workspace."
+-    LoadingMessage="Loading monthly summary shell...">
+-    <p class="text-body-secondary mb-0">
+-        This shell is ready for tenant-scoped monthly summary composition while keeping finance routing stable.
+-    </p>
++    LoadingMessage="Loading monthly summary shell...">
++    <FinanceDataState
++        IsLoading="@IsSummaryLoading"
++        IsEmpty="@IsSummaryEmpty"
++        ErrorMessage="@SummaryErrorMessage"
++        LoadingTitle="Loading monthly summary"
++        LoadingMessage="Building the monthly finance summary for the active tenant."
++        EmptyTitle="No monthly summary yet"
++        EmptyMessage="No monthly finance summary is available for the active tenant."
++        RetryText="Reload monthly summary"
++        OnRetry="@RetryAsync">
++        @if (ViewModel is not null)
++        {
++            <section class="finance-summary-stack" aria-labelledby="monthly-summary-heading">
++                <div class="finance-summary-grid">
++                    <article class="wizard-card finance-metric-card finance-metric-card--hero">
++                        <span class="dashboard-kicker">Reporting period</span>
++                        <h2 id="monthly-summary-heading" class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.Period</h2>
++                        <p class="text-body-secondary mb-0">Tenant-scoped monthly performance snapshot.</p>
++                    </article>
++                    <article class="wizard-card finance-metric-card">
++                        <span class="dashboard-kicker">Revenue</span>
++                        <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.Revenue</div>
++                    </article>
++                    <article class="wizard-card finance-metric-card">
++                        <span class="dashboard-kicker">Expenses</span>
++                        <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.Expenses</div>
++                    </article>
++                    <article class="wizard-card finance-metric-card">
++                        <span class="dashboard-kicker">Net result</span>
++                        <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.NetResult</div>
++                    </article>
++                </div>
++                @if (ViewModel.ExpenseCategories.Count > 0)
++                {
++                    <article class="wizard-card">
++                        <h2 class="h5">Expense breakdown by category</h2>
++                        <div class="table-responsive">
++                            <table class="table finance-table mb-0">
++                                <thead>
++                                    <tr>
++                                        <th scope="col">Category</th>
++                                        <th scope="col" class="finance-table__number">Amount</th>
++                                        <th scope="col" class="finance-table__number">Share</th>
++                                    </tr>
++                                </thead>
++                                <tbody>
++                                    @foreach (var category in ViewModel.ExpenseCategories)
++                                    {
++                                        <tr>
++                                            <td>@category.Category</td>
++                                            <td class="finance-table__number">@category.Amount</td>
++                                            <td class="finance-table__number">@category.Share</td>
++                                        </tr>
++                                    }
++                                </tbody>
++                            </table>
++                        </div>
++                    </article>
++                }
++            </section>
++        }
++    </FinanceDataState>
+ </FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor.cs
+@@ -1,4 +1,11 @@
++using VirtualCompany.Web.Services;
++
+ namespace VirtualCompany.Web.Pages.Finance;
+ 
+-public partial class AnomaliesPage : FinancePageBase
++public partial class AnomaliesPage : FinanceSummaryPageBase<AnomaliesSummaryViewModel>
+ {
++    protected override async Task<AnomaliesSummaryViewModel?> LoadSummaryViewModelAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var anomalies = await FinanceApiClient.GetAnomaliesAsync(companyId, cancellationToken: cancellationToken);
++        return FinanceSummaryPresenter.ToAnomaliesViewModel(companyId, anomalies);
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor b/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/AnomaliesPage.razor
+@@ -8,8 +8,36 @@
+     ErrorMessage="@ErrorMessage"
+     Title="Anomalies"
+     Description="Review finance anomalies and follow-up work without leaving the selected company context."
+-    LoadingMessage="Loading anomalies shell...">
+-    <p class="text-body-secondary mb-0">
+-        This shell keeps anomaly review tenant-scoped and ready for direct navigation or browser refresh.
+-    </p>
++    LoadingMessage="Loading anomalies shell...">
++    <FinanceDataState
++        IsLoading="@IsSummaryLoading"
++        IsEmpty="@IsSummaryEmpty"
++        ErrorMessage="@SummaryErrorMessage"
++        LoadingTitle="Loading anomalies"
++        LoadingMessage="Fetching tenant-scoped finance anomalies."
++        EmptyTitle="No anomalies"
++        EmptyMessage="No finance anomalies are currently returned for the active tenant."
++        RetryText="Reload anomalies"
++        OnRetry="@RetryAsync">
++        @if (ViewModel is not null)
++        {
++            <section class="finance-summary-stack" aria-labelledby="anomalies-heading">
++                <div class="finance-summary-grid">
++                    <article class="wizard-card finance-metric-card finance-metric-card--hero">
++                        <span class="dashboard-kicker">Open anomalies</span>
++                        <h2 id="anomalies-heading" class="finance-metric-card__value">@ViewModel.TotalAnomalies</h2>
++                        <p class="text-body-secondary mb-0">All anomaly records are scoped to the active tenant.</p>
++                    </article>
++                </div>
++                <div class="finance-anomaly-list">
++                    @foreach (var anomaly in ViewModel.Items)
++                    {
++                        <article class="finance-anomaly-card">
++                            <div class="finance-anomaly-card__meta">
++                                <span class="finance-risk-pill finance-risk-pill--warning">@anomaly.Type</span>
++                                <span>@anomaly.ScenarioProfile</span>
++                                <span>@anomaly.AffectedRecords</span>
++                            </div>
++                            <h2 class="h5 mt-3">@anomaly.Id</h2>
++                            <p class="mb-0 text-body-secondary">@anomaly.DetectorSummary</p>
++                        </article>
++                    }
++                </div>
++            </section>
++        }
++    </FinanceDataState>
+ </FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -784,6 +784,102 @@ code {
+         justify-content: flex-start;
+     }
+ }
++
++.finance-section-nav {
++    display: flex;
++    flex-wrap: wrap;
++    gap: 0.75rem;
++    margin-top: 1rem;
++}
++
++.finance-section-nav__link {
++    background: #f8fafc;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 999px;
++    color: #0f172a;
++    padding: 0.6rem 0.95rem;
++    text-decoration: none;
++}
++
++.finance-section-nav__link.active {
++    background: #eff6ff;
++    border-color: #1b6ec2;
++    color: #1d4ed8;
++}
++
++.finance-summary-stack {
++    display: grid;
++    gap: 1rem;
++}
++
++.finance-summary-grid,
++.finance-detail-grid {
++    display: grid;
++    gap: 1rem;
++    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
++}
++
++.finance-metric-card {
++    min-width: 0;
++}
++
++.finance-metric-card--hero {
++    grid-column: span 2;
++}
++
++.finance-metric-card__value {
++    color: #0f172a;
++    font-size: 2.25rem;
++    font-weight: 700;
++    line-height: 1.1;
++}
++
++.finance-metric-card__value--compact {
++    font-size: 1.45rem;
++}
++
++.finance-risk-pill {
++    align-items: center;
++    border-radius: 999px;
++    display: inline-flex;
++    font-size: 0.85rem;
++    font-weight: 700;
++    padding: 0.35rem 0.7rem;
++}
++
++.finance-risk-pill--critical {
++    background: #fff1f2;
++    color: #9f1239;
++}
++
++.finance-risk-pill--high,
++.finance-risk-pill--warning {
++    background: #fef3c7;
++    color: #92400e;
++}
++
++.finance-risk-pill--medium {
++    background: #eff6ff;
++    color: #1d4ed8;
++}
++
++.finance-risk-pill--low,
++.finance-risk-pill--positive {
++    background: #ecfdf3;
++    color: #166534;
++}
++
++.finance-risk-pill--neutral {
++    background: #f8fafc;
++    color: #475569;
++}
++
++.finance-state-card {
++    min-width: 0;
++}
++
++.finance-table__number {
++    text-align: right;
++    white-space: nowrap;
++}
++
++.finance-anomaly-list {
++    display: grid;
++    gap: 0.75rem;
++}
++
++.finance-anomaly-card {
++    background: #f8fafc;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 1rem;
++    padding: 1rem;
++}
++
++.finance-anomaly-card__meta {
++    align-items: center;
++    color: #475569;
++    display: flex;
++    flex-wrap: wrap;
++    gap: 0.75rem;
++}
+ 
+ .cockpit-panel {
+     display: grid;
+@@ -872,6 +968,10 @@ code {
+     .activity-detail-drawer {
+         max-width: 100vw;
+         width: 100vw;
++    }
++
++    .finance-metric-card--hero {
++        grid-column: auto;
+     }
+ 
+     .activity-correlation-panel {
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -174,6 +174,8 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         const string displayName = "Finance Reader";
+         var employeeUserId = Guid.NewGuid();
+         var employeeSubject = $"finance-employee-{Guid.NewGuid():N}";
++        var anomalyId = Guid.Empty;
++        var affectedRecordId = Guid.Empty;
+         var employeeEmail = $"{employeeSubject}@example.com";
+         const string employeeDisplayName = "Finance Employee";
+         FinanceSeedResult? financeSeed = null;
+@@ -192,6 +194,8 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+                 "missing_receipt",
+                 "integration",
+                 [financeSeed.TransactionIds[0]],
++                """{"expectedDetector":"receipt_completeness","expectedSignal":"missing_supporting_document"}""");
++            anomalyId = seedAnomaly.Id;
++            affectedRecordId = financeSeed.TransactionIds[0];
+-                """{"expectedDetector":"receipt_completeness","expectedSignal":"missing_supporting_document"}""");
+             dbContext.FinanceSeedAnomalies.Add(seedAnomaly);
+             FinanceSeedData.AddMockFinanceData(dbContext, otherCompanyId);
+             return Task.CompletedTask;
+@@ -201,8 +205,7 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         return new FinanceEndpointSeed(
+             companyId, otherCompanyId, subject, email, displayName,
+             employeeSubject, employeeEmail, employeeDisplayName,
+-            financeSeed!.DocumentIds,
+-            dbContextFinanceSeedAnomalyId: default,
+-            dbContextAffectedRecordId: default);
++            financeSeed!.DocumentIds, anomalyId, affectedRecordId);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSummaryUiContractIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSummaryUiContractIntegrationTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceSummaryUiContractIntegrationTests.cs
+@@ -0,0 +1,196 @@
++using System.Globalization;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceSummaryUiContractIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinanceSummaryUiContractIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Finance_summary_service_and_presenter_match_backend_values_for_the_active_tenant()
++    {
++        var seed = await SeedFinanceSummaryCompaniesAsync();
++        using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, seed.OwnerDisplayName);
++        var financeClient = new FinanceApiClient(client);
++
++        var cashPosition = await financeClient.GetCashPositionAsync(seed.CompanyAId, seed.CompanyAReferenceUtc);
++        var cashViewModel = FinanceSummaryPresenter.ToCashPositionViewModel(cashPosition);
++        Assert.NotNull(cashPosition);
++        Assert.NotNull(cashViewModel);
++        Assert.Equal(seed.CompanyAId, cashPosition!.CompanyId);
++        Assert.Equal(seed.CompanyAId, cashViewModel!.CompanyId);
++        Assert.Equal($"USD {cashPosition.AvailableBalance.ToString("N2", CultureInfo.InvariantCulture)}", cashViewModel.AvailableBalance);
++        Assert.Equal(cashPosition.EstimatedRunwayDays is int runwayDays ? $"{runwayDays} days" : "n/a", cashViewModel.EstimatedRunway);
++
++        var balances = await financeClient.GetBalancesAsync(seed.CompanyAId, seed.CompanyAReferenceUtc);
++        var balancesViewModel = FinanceSummaryPresenter.ToBalancesViewModel(seed.CompanyAId, seed.CompanyAReferenceUtc, balances);
++        Assert.NotNull(balancesViewModel);
++        Assert.Equal($"USD {balances.Sum(balance => balance.Amount).ToString("N2", CultureInfo.InvariantCulture)}", balancesViewModel!.TotalBalance);
++        Assert.All(balancesViewModel.Accounts, account => Assert.Contains(account.AccountId, seed.CompanyAAccountIds));
++
++        var monthlySummary = await financeClient.GetMonthlySummaryAsync(seed.CompanyAId, seed.CompanyAMonthReferenceUtc);
++        var monthlyViewModel = FinanceSummaryPresenter.ToMonthlySummaryViewModel(monthlySummary);
++        Assert.NotNull(monthlySummary);
++        Assert.NotNull(monthlyViewModel);
++        Assert.Equal(seed.CompanyAId, monthlyViewModel!.CompanyId);
++        Assert.Equal($"USD {monthlySummary!.ProfitAndLoss.Revenue.ToString("N2", CultureInfo.InvariantCulture)}", monthlyViewModel.Revenue);
++        Assert.NotEmpty(monthlyViewModel.ExpenseCategories);
++        Assert.Equal(monthlySummary.ExpenseBreakdown!.Categories.Count, monthlyViewModel.ExpenseCategories.Count);
++        Assert.Equal(monthlySummary.ExpenseBreakdown.Categories[0].Category, monthlyViewModel.ExpenseCategories[0].Category);
++
++        var anomalies = await financeClient.GetAnomaliesAsync(seed.CompanyAId);
++        var anomaliesViewModel = FinanceSummaryPresenter.ToAnomaliesViewModel(seed.CompanyAId, anomalies);
++        Assert.NotNull(anomaliesViewModel);
++        Assert.Equal(seed.CompanyAId, anomaliesViewModel!.CompanyId);
++        Assert.Contains(anomaliesViewModel.Items, item => item.Id == seed.CompanyAAnomalyId);
++        Assert.DoesNotContain(anomaliesViewModel.Items, item => item.Id == seed.CompanyBAnomalyId);
++
++        var companyBCashPosition = await financeClient.GetCashPositionAsync(seed.CompanyBId, seed.CompanyBReferenceUtc);
++        var companyBCashViewModel = FinanceSummaryPresenter.ToCashPositionViewModel(companyBCashPosition);
++        Assert.NotNull(companyBCashViewModel);
++        Assert.Equal(seed.CompanyBId, companyBCashViewModel!.CompanyId);
++        Assert.NotEqual(cashViewModel.AvailableBalance, companyBCashViewModel.AvailableBalance);
++    }
++
++    [Fact]
++    public async Task Finance_summary_presenters_surface_empty_states_when_the_backend_returns_no_tenant_data()
++    {
++        var seed = await SeedFinanceSummaryCompaniesAsync();
++        using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, seed.OwnerDisplayName);
++        var financeClient = new FinanceApiClient(client);
++
++        var balances = await financeClient.GetBalancesAsync(seed.EmptyCompanyId, seed.EmptyCompanyReferenceUtc);
++        var anomalies = await financeClient.GetAnomaliesAsync(seed.EmptyCompanyId);
++
++        Assert.Empty(balances);
++        Assert.Empty(anomalies);
++        Assert.Null(FinanceSummaryPresenter.ToBalancesViewModel(seed.EmptyCompanyId, seed.EmptyCompanyReferenceUtc, balances));
++        Assert.Null(FinanceSummaryPresenter.ToAnomaliesViewModel(seed.EmptyCompanyId, anomalies));
++    }
++
++    [Fact]
++    public async Task Finance_summary_service_produces_error_state_inputs_when_finance_access_is_forbidden()
++    {
++        var seed = await SeedFinanceSummaryCompaniesAsync();
++        using var client = CreateAuthenticatedClient(seed.EmployeeSubject, seed.EmployeeEmail, seed.EmployeeDisplayName);
++        var financeClient = new FinanceApiClient(client);
++
++        await Assert.ThrowsAsync<FinanceApiException>(() => financeClient.GetBalancesAsync(seed.CompanyAId, seed.CompanyAReferenceUtc));
++    }
++
++    private async Task<FinanceSummarySeed> SeedFinanceSummaryCompaniesAsync()
++    {
++        var ownerUserId = Guid.NewGuid();
++        var employeeUserId = Guid.NewGuid();
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var emptyCompanyId = Guid.NewGuid();
++        var ownerSubject = $"finance-ui-owner-{Guid.NewGuid():N}";
++        var ownerEmail = $"{ownerSubject}@example.com";
++        const string ownerDisplayName = "Finance UI Owner";
++        var employeeSubject = $"finance-ui-employee-{Guid.NewGuid():N}";
++        var employeeEmail = $"{employeeSubject}@example.com";
++        const string employeeDisplayName = "Finance UI Employee";
++        var companyAReferenceUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
++        var companyBReferenceUtc = new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc);
++        var emptyCompanyReferenceUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
++        var companyAMonthReferenceUtc = new DateTime(2025, 12, 15, 0, 0, 0, DateTimeKind.Utc);
++        FinanceSeedResult? companyASeed = null;
++        FinanceSeedResult? companyBSeed = null;
++        var companyAAnomalyId = Guid.Empty;
++        var companyBAnomalyId = Guid.Empty;
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(ownerUserId, ownerEmail, ownerDisplayName, "dev-header", ownerSubject));
++            dbContext.Users.Add(new User(employeeUserId, employeeEmail, employeeDisplayName, "dev-header", employeeSubject));
++
++            dbContext.Companies.AddRange(
++                new Company(companyAId, "Finance UI Company A"),
++                new Company(companyBId, "Finance UI Company B"),
++                new Company(emptyCompanyId, "Finance UI Empty Company"));
++
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyAId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyBId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), emptyCompanyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyAId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
++
++            companyASeed = FinanceSeedData.AddMockFinanceData(dbContext, companyAId, companyAReferenceUtc);
++            companyBSeed = FinanceSeedData.AddMockFinanceData(dbContext, companyBId, companyBReferenceUtc);
++
++            companyAAnomalyId = Guid.NewGuid();
++            dbContext.FinanceSeedAnomalies.Add(new FinanceSeedAnomaly(
++                companyAAnomalyId,
++                companyAId,
++                "missing_receipt",
++                "ui_contract",
++                [companyASeed.TransactionIds[0]],
++                """{"expectedDetector":"receipt_completeness","expectedSignal":"missing_supporting_document"}"""));
++
++            companyBAnomalyId = Guid.NewGuid();
++            dbContext.FinanceSeedAnomalies.Add(new FinanceSeedAnomaly(
++                companyBAnomalyId,
++                companyBId,
++                "duplicate_transaction",
++                "ui_contract",
++                [companyBSeed.TransactionIds[0]],
++                """{"expectedDetector":"duplicate_payment","expectedSignal":"repeated_external_reference"}"""));
++
++            return Task.CompletedTask;
++        });
++
++        return new FinanceSummarySeed(
++            companyAId,
++            companyBId,
++            emptyCompanyId,
++            ownerSubject,
++            ownerEmail,
++            ownerDisplayName,
++            employeeSubject,
++            employeeEmail,
++            employeeDisplayName,
++            companyAReferenceUtc,
++            companyBReferenceUtc,
++            emptyCompanyReferenceUtc,
++            companyAMonthReferenceUtc,
++            companyASeed!.AccountIds,
++            companyAAnomalyId,
++            companyBAnomalyId);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private sealed record FinanceSummarySeed(
++        Guid CompanyAId,
++        Guid CompanyBId,
++        Guid EmptyCompanyId,
++        string OwnerSubject,
++        string OwnerEmail,
++        string OwnerDisplayName,
++        string EmployeeSubject,
++        string EmployeeEmail,
++        string EmployeeDisplayName,
++        DateTime CompanyAReferenceUtc,
++        DateTime CompanyBReferenceUtc,
++        DateTime EmptyCompanyReferenceUtc,
++        DateTime CompanyAMonthReferenceUtc,
++        IReadOnlyList<Guid> CompanyAAccountIds,
++        Guid CompanyAAnomalyId,
++        Guid CompanyBAnomalyId);
++}
+END_OF_PATCH

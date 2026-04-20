@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-17.4.2",
+  "promptPath": ".ai-design/prompts/TASK-17.4.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T18:28:18.117Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T18-28-18-117Z_TASK-17.4.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T18-28-18-117Z_TASK-17.4.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T18:37:26.622Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ex d8d56f1..bc94790 100644\n--- a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\n@@ -109,7 +109,7 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Tes\n     }\n \n     [Fact]\n-    public async Task Internal_finance_write_endpoints_forbid_finance_view_only_roles_from_editing()\n+    public async Task Internal_finance_write_endpoints_allow_finance_approver_to_change_invoice_status_but_not_transaction_category()\n     {\n         var seed = await SeedFinanceWriteCompanyAsync();\n         using var client = CreateAuthenticatedClient(seed.ApproverSubject, seed.ApproverEmail, seed.ApproverDisplayName);\n@@ -121,8 +121,22 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Tes\n             $\"/internal/companies/{seed.CompanyId}/finance/transactions/{seed.TransactionId}/category\",\n             new { Category = \"software_subscriptions\" });\n \n-        Assert.Equal(HttpStatusCode.Forbidden, invoiceResponse.StatusCode);\n+        Assert.Equal(HttpStatusCode.OK, invoiceResponse.StatusCode);\n         Assert.Equal(HttpStatusCode.Forbidden, transactionResponse.StatusCode);\n+\n+        var invoice = await invoiceResponse.Content.ReadFromJsonAsync<InvoiceResponse>();\n+        Assert.NotNull(invoice);\n+        Assert.Equal(\"approved\", invoice!.Status);\n+\n+        using var scope = _factory.Services.CreateScope();\n+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();\n+        Assert.Equal(\n+            \"approved\",\n+            await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceId).Select(x => x.Status).SingleAsync());\n+        Assert.Equal(\n+            \"customer_payment\",\n+            await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());\n     }\n \n     [Fact]\nEND_OF_PATCH\n",
+  "stderrTail": "100644\n--- a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\n@@ -109,7 +109,7 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Tes\n     }\n \n     [Fact]\n-    public async Task Internal_finance_write_endpoints_forbid_finance_view_only_roles_from_editing()\n+    public async Task Internal_finance_write_endpoints_allow_finance_approver_to_change_invoice_status_but_not_transaction_category()\n     {\n         var seed = await SeedFinanceWriteCompanyAsync();\n         using var client = CreateAuthenticatedClient(seed.ApproverSubject, seed.ApproverEmail, seed.ApproverDisplayName);\n@@ -121,8 +121,22 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Tes\n             $\"/internal/companies/{seed.CompanyId}/finance/transactions/{seed.TransactionId}/category\",\n             new { Category = \"software_subscriptions\" });\n \n-        Assert.Equal(HttpStatusCode.Forbidden, invoiceResponse.StatusCode);\n+        Assert.Equal(HttpStatusCode.OK, invoiceResponse.StatusCode);\n         Assert.Equal(HttpStatusCode.Forbidden, transactionResponse.StatusCode);\n+\n+        var invoice = await invoiceResponse.Content.ReadFromJsonAsync<InvoiceResponse>();\n+        Assert.NotNull(invoice);\n+        Assert.Equal(\"approved\", invoice!.Status);\n+\n+        using var scope = _factory.Services.CreateScope();\n+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();\n+        Assert.Equal(\n+            \"approved\",\n+            await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceId).Select(x => x.Status).SingleAsync());\n+        Assert.Equal(\n+            \"customer_payment\",\n+            await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());\n     }\n \n     [Fact]\nEND_OF_PATCH\ntokens used\n309,011\n",
+  "verbosityMode": "summary"
+}

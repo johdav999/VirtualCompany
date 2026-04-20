@@ -1,0 +1,255 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -30,6 +30,12 @@ public sealed record GetFinanceInvoicesQuery(
+     DateTime? EndUtc = null,
+     int Limit = 100);
+ 
++public sealed record GetFinanceSeedAnomaliesQuery(
++    Guid CompanyId,
++    string? AnomalyType = null,
++    Guid? AffectedRecordId = null,
++    int Limit = 100);
++
+ public sealed record GetFinanceSeedAnomalyByIdQuery(
+     Guid CompanyId,
+     Guid AnomalyId);
+@@ -346,6 +352,10 @@ public interface IFinanceReadService
+     Task<IReadOnlyList<FinanceInvoiceDto>> GetInvoicesAsync(
+         GetFinanceInvoicesQuery query,
+         CancellationToken cancellationToken);
+ 
++    Task<IReadOnlyList<FinanceSeedAnomalyDto>> GetSeedAnomaliesAsync(
++        GetFinanceSeedAnomaliesQuery query,
++        CancellationToken cancellationToken);
++
+     Task<FinanceSeedAnomalyDto?> GetSeedAnomalyByIdAsync(
+         GetFinanceSeedAnomalyByIdQuery query,
+         CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -125,6 +125,19 @@ public sealed class InternalFinanceController : ControllerBase
+                 new GetFinanceInvoicesQuery(companyId, startUtc, endUtc, limit),
+                 cancellationToken));
+ 
++    [HttpGet("anomalies")]
++    public async Task<ActionResult<IReadOnlyList<FinanceSeedAnomalyDto>>> GetSeedAnomaliesAsync(
++        Guid companyId,
++        [FromQuery(Name = "type")] string? anomalyType,
++        [FromQuery] Guid? affectedRecordId,
++        [FromQuery] int limit,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetSeedAnomaliesAsync(
++                new GetFinanceSeedAnomaliesQuery(
++                    companyId, anomalyType, affectedRecordId, limit),
++                cancellationToken));
++
+     [HttpGet("anomalies/{anomalyId:guid}")]
+     public async Task<ActionResult<FinanceSeedAnomalyDto>> GetSeedAnomalyAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -365,6 +365,43 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .ToList();
+     }
+ 
++    public async Task<IReadOnlyList<FinanceSeedAnomalyDto>> GetSeedAnomaliesAsync(
++        GetFinanceSeedAnomaliesQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        var limit = NormalizeLimit(query.Limit);
++        var anomalyType = string.IsNullOrWhiteSpace(query.AnomalyType)
++            ? null
++            : query.AnomalyType.Trim();
++
++        if (query.AffectedRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("Affected record id cannot be empty.", nameof(query));
++        }
++
++        var anomalies = await _dbContext.FinanceSeedAnomalies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .OrderBy(x => x.CreatedUtc)
++            .ThenBy(x => x.Id)
++            .ToListAsync(cancellationToken);
++
++        var filtered = anomalies
++            .Select(MapSeedAnomaly)
++            .Where(x =>
++                anomalyType is null ||
++                string.Equals(x.AnomalyType, anomalyType, StringComparison.OrdinalIgnoreCase));
++
++        if (query.AffectedRecordId is Guid affectedRecordId)
++        {
++            filtered = filtered.Where(x => x.AffectedRecordIds.Contains(affectedRecordId));
++        }
++
++        return filtered
++            .Take(limit)
++            .ToList();
++    }
++
+     public async Task<FinanceSeedAnomalyDto?> GetSeedAnomalyByIdAsync(
+         GetFinanceSeedAnomalyByIdQuery query,
+         CancellationToken cancellationToken)
+@@ -383,13 +420,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId && x.Id == query.AnomalyId, cancellationToken);
+ 
+         return anomaly is null
+             ? null
+-            : new FinanceSeedAnomalyDto(
+-                anomaly.Id,
+-                anomaly.AnomalyType,
+-                anomaly.ScenarioProfile,
+-                anomaly.GetAffectedRecordIds(),
+-                anomaly.ExpectedDetectionMetadataJson);
++            : MapSeedAnomaly(anomaly);
+     }
+ 
+     public async Task<IReadOnlyList<FinanceBillDto>> GetBillsAsync(
+@@ -552,6 +583,13 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             : new FinanceLinkedDocumentDto(document.Id, document.Title, document.OriginalFileName, document.ContentType)
+             : null;
+ 
++    private static FinanceSeedAnomalyDto MapSeedAnomaly(Domain.Entities.FinanceSeedAnomaly anomaly) =>
++        new(
++            anomaly.Id,
++            anomaly.AnomalyType,
++            anomaly.ScenarioProfile,
++            anomaly.GetAffectedRecordIds(),
++            anomaly.ExpectedDetectionMetadataJson);
++
+     private CompanyKnowledgeAccessContext? BuildAccessContext(Guid companyId)
+     {
+         var membership = _companyContextAccessor?.Membership;
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -96,6 +96,27 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         Assert.NotNull(balances);
+         Assert.Equal(3, balances!.Count);
+         Assert.All(balances, balance => Assert.Equal("USD", balance.Currency));
++
++        var anomaliesResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/anomalies");
++        Assert.Equal(HttpStatusCode.OK, anomaliesResponse.StatusCode);
++        var anomalies = await anomaliesResponse.Content.ReadFromJsonAsync<List<SeedAnomalyResponse>>();
++        Assert.NotNull(anomalies);
++        Assert.Single(anomalies!);
++        Assert.Equal(seed.AnomalyId, anomalies[0].Id);
++
++        var anomalyByTypeResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/anomalies?type=missing_receipt");
++        Assert.Equal(HttpStatusCode.OK, anomalyByTypeResponse.StatusCode);
++        var anomaliesByType = await anomalyByTypeResponse.Content.ReadFromJsonAsync<List<SeedAnomalyResponse>>();
++        Assert.NotNull(anomaliesByType);
++        Assert.Single(anomaliesByType!);
++        Assert.Equal(seed.AnomalyId, anomaliesByType[0].Id);
++
++        var anomalyByAffectedRecordResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/anomalies?affectedRecordId={seed.AffectedRecordId}");
++        Assert.Equal(HttpStatusCode.OK, anomalyByAffectedRecordResponse.StatusCode);
++        var anomaliesByAffectedRecord = await anomalyByAffectedRecordResponse.Content.ReadFromJsonAsync<List<SeedAnomalyResponse>>();
++        Assert.NotNull(anomaliesByAffectedRecord);
++        Assert.Single(anomaliesByAffectedRecord!);
++        Assert.Equal(seed.AnomalyId, anomaliesByAffectedRecord[0].Id);
+     }
+ 
+     [Fact]
+@@ -183,10 +204,20 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
+ 
+             financeSeed = FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++            var seedAnomaly = new FinanceSeedAnomaly(
++                Guid.NewGuid(),
++                companyId,
++                "missing_receipt",
++                "integration",
++                [financeSeed.TransactionIds[0]],
++                """{"expectedDetector":"receipt_completeness","expectedSignal":"missing_supporting_document"}""");
++            dbContext.FinanceSeedAnomalies.Add(seedAnomaly);
+             FinanceSeedData.AddMockFinanceData(dbContext, otherCompanyId);
+             return Task.CompletedTask;
+         });
+ 
+         return new FinanceEndpointSeed(
+             companyId, otherCompanyId, subject, email, displayName,
+             employeeSubject, employeeEmail, employeeDisplayName,
+-            financeSeed!.DocumentIds);
++            financeSeed!.DocumentIds,
++            dbContextFinanceSeedAnomalyId: default,
++            dbContextAffectedRecordId: default);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+@@ -205,7 +236,9 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         string EmployeeSubject,
+         string EmployeeEmail,
+         string EmployeeDisplayName,
+-        IReadOnlyList<Guid> DocumentIds);
++        IReadOnlyList<Guid> DocumentIds,
++        Guid AnomalyId,
++        Guid AffectedRecordId);
+ 
+     private sealed class CashBalanceResponse
+     {
+@@ -303,6 +336,15 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         public string ContentType { get; set; } = string.Empty;
+     }
+ 
++    private sealed class SeedAnomalyResponse
++    {
++        public Guid Id { get; set; }
++        public string AnomalyType { get; set; } = string.Empty;
++        public string ScenarioProfile { get; set; } = string.Empty;
++        public List<Guid> AffectedRecordIds { get; set; } = [];
++        public string ExpectedDetectionMetadataJson { get; set; } = string.Empty;
++    }
++
+     private sealed class CompanyDocumentResponse
+     {
+         public Guid Id { get; set; }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
+@@ -238,6 +238,28 @@ public sealed class FinanceSeedDatasetGeneratorTests
+             Assert.Equal(anomaly.Id, queried.Id);
+             Assert.Equal(anomaly.AnomalyType, queried.AnomalyType);
+         }
+ 
++        var queriedByCompany = await readService.GetSeedAnomaliesAsync(
++            new GetFinanceSeedAnomaliesQuery(companyId),
++            CancellationToken.None);
++
++        Assert.Equal(dataset.Anomalies.Count, queriedByCompany.Count);
++        Assert.Equal(
++            dataset.Anomalies.Select(x => x.Id).Order().ToArray(),
++            queriedByCompany.Select(x => x.Id).Order().ToArray());
++
++        var queriedByType = await readService.GetSeedAnomaliesAsync(
++            new GetFinanceSeedAnomaliesQuery(companyId, AnomalyType: "duplicate_vendor_charge"),
++            CancellationToken.None);
++
++        Assert.Single(queriedByType);
++        Assert.Equal("duplicate_vendor_charge", queriedByType[0].AnomalyType);
++
++        var affectedRecordId = queriedByType[0].AffectedRecordIds[0];
++        var queriedByAffectedRecord = await readService.GetSeedAnomaliesAsync(
++            new GetFinanceSeedAnomaliesQuery(companyId, AffectedRecordId: affectedRecordId),
++            CancellationToken.None);
++
++        Assert.Contains(queriedByAffectedRecord, x => x.Id == queriedByType[0].Id);
++
+         var transactions = await dbContext.FinanceTransactions
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+END_OF_PATCH

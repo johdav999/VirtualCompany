@@ -1,0 +1,352 @@
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+@@ -1,6 +1,7 @@
+ using System.Collections.ObjectModel;
+ using System.Text.Json.Nodes;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Application.Finance;
+ 
+ namespace VirtualCompany.Application.Briefings;
+ 
+@@ -64,6 +65,7 @@ public sealed record BriefingAggregateResultDto(
+     public string NarrativeText { get; init; } = string.Empty;
+     public IReadOnlyList<AggregatedBriefingSectionDto> StructuredSections { get; init; } = [];
+     public BriefingSummaryCountsDto SummaryCounts { get; init; } = new(0, 0, 0, 0);
++    public FinanceCashPositionDto? CashPosition { get; init; }
+ 
+     public bool HasItems =>
+         Alerts.Count > 0 ||
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -52,10 +52,11 @@ public static class ExecutiveCockpitWidgetKeys
+     public const string Alerts = "alerts";
+     public const string DepartmentKpis = "department-kpis";
+     public const string DepartmentSections = "department-sections";
++    public const string CashPosition = "cash-position";
+     public const string RecentActivity = "recent-activity";
+     public const string Kpis = "kpis";
+ 
+     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+     {
+-        SummaryKpis, DailyBriefing, PendingApprovals, Alerts, DepartmentKpis, DepartmentSections, RecentActivity, Kpis
++        SummaryKpis, DailyBriefing, PendingApprovals, Alerts, DepartmentKpis, DepartmentSections, CashPosition, RecentActivity, Kpis
+     };
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -25,7 +25,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
+     private readonly IBriefingInsightAggregationService _insightAggregationService;
+-    private readonly IFinanceReadService _financeReadService;
++    private readonly IFinanceCashPositionWorkflowService _financeCashPositionWorkflowService;
+ 
+     public CompanyBriefingService(
+         VirtualCompanyDbContext dbContext,
+@@ -35,7 +35,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         ICompanyOutboxEnqueuer outboxEnqueuer,
+         IBriefingUpdateJobProducer briefingUpdateJobProducer,
+         IBriefingInsightAggregationService insightAggregationService,
+-        IFinanceReadService financeReadService,
++        IFinanceCashPositionWorkflowService financeCashPositionWorkflowService,
+         ILogger<CompanyBriefingService> logger)
+     {
+         _dbContext = dbContext;
+@@ -46,7 +46,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         _logger = logger;
+         _insightAggregationService = insightAggregationService;
+         _briefingUpdateJobProducer = briefingUpdateJobProducer;
+-        _financeReadService = financeReadService;
++        _financeCashPositionWorkflowService = financeCashPositionWorkflowService;
+     }
+@@ -585,6 +585,9 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         var blockedWorkflowCount = await _dbContext.WorkflowInstances
+             .IgnoreQueryFilters()
+             .CountAsync(x => x.CompanyId == companyId && x.State == WorkflowInstanceStatus.Blocked, cancellationToken);
++        var cashPosition = await _financeCashPositionWorkflowService.EvaluateAsync(
++            new EvaluateFinanceCashPositionWorkflowCommand(companyId),
++            cancellationToken);
+         var criticalAlertsCount = await _dbContext.Alerts
+             .IgnoreQueryFilters()
+             .CountAsync(x => x.CompanyId == companyId &&
+@@ -619,6 +622,31 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             })
+             .ToList();
+ 
++        var alertRows = await _dbContext.Alerts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId &&
++                        x.Status != AlertStatus.Resolved &&
++                        x.Status != AlertStatus.Closed)
++            .OrderByDescending(x => x.LastDetectedUtc ?? x.UpdatedUtc)
++            .Take(10)
++            .Select(x => new { x.Id, x.SourceAgentId, x.Severity, x.Status, x.Title, x.Summary, x.LastDetectedUtc, x.UpdatedUtc, x.Metadata })
++            .ToListAsync(cancellationToken);
++        var alerts = alertRows
++            .Select(x => ApplyPriority(new BriefingAggregateItemDto(
++                "alerts",
++                x.Title,
++                x.Summary,
++                x.Severity.ToStorageValue(),
++                x.Status.ToStorageValue(),
++                "alert",
++                x.Id,
++                x.LastDetectedUtc ?? x.UpdatedUtc,
++                x.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
++                [new BriefingSourceReferenceDto("alert", x.Id, x.Title, x.Status.ToStorageValue(), $"/dashboard?companyId={companyId}")]),
++                ResolvePriority(severityRules, "alerts", "alert", "severity", x.Severity.ToStorageValue())) with
++            {
++                AgentId = x.SourceAgentId,
++                CompanyEntityId = x.Id,
++                Assessment = x.Severity.ToStorageValue()
++            })
++            .ToList();
++
+         var overdueTaskRows = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+@@ -696,10 +724,22 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             })
+             .ToList();
+ 
+-        var cashPosition = await _financeReadService.GetCashPositionAsync(
+-            new GetFinanceCashPositionQuery(companyId, window.EndUtc),
+-            cancellationToken);
+-        kpiHighlights.Add(ApplyPriority(new BriefingAggregateItemDto(
++        var notableAgentUpdates = await _dbContext.AuditEvents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.OccurredUtc >= window.StartUtc && x.OccurredUtc < window.EndUtc)
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(10)
++            .Select(x => new { x.Id, x.Action, x.TargetType, x.TargetId, x.Outcome, x.RationaleSummary, x.OccurredUtc })
++            .ToListAsync(cancellationToken);
++        var notableAgentUpdates = notableAgentUpdates
++            .Select(x => ApplyPriority(new BriefingAggregateItemDto(
++                "agent_updates",
++                x.Action,
++                string.IsNullOrWhiteSpace(x.RationaleSummary) ? $"{x.TargetType} {x.Outcome}." : x.RationaleSummary!,
++                null,
++                x.Outcome,
++                "audit_event",
++                x.Id,
++                x.OccurredUtc,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["targetType"] = JsonValue.Create(x.TargetType),
++                    ["targetId"] = JsonValue.Create(x.TargetId)
++                },
++                [new BriefingSourceReferenceDto("audit_event", x.Id, x.Action, x.Outcome, null)]),
++                new BriefingPriorityResolution(BriefingSectionPriorityCategory.Informational, 15, "informational_agent_update")))
++            .ToList();
++
++        kpiHighlights.Add(ApplyPriority(new BriefingAggregateItemDto(
+             "kpi_highlights",
+             "Cash runway",
+             $"Available cash is {cashPosition.AvailableBalance:0.##} {cashPosition.Currency}; estimated runway is {(cashPosition.EstimatedRunwayDays.HasValue ? $"{cashPosition.EstimatedRunwayDays.Value} days" : "unavailable")}. {cashPosition.Rationale}",
+@@ -710,7 +750,17 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             cashPosition.AsOfUtc,
+             BuildCashPositionMetadata(cashPosition),
+             []), ResolvePriority(severityRules, "kpi_highlights", "task", "status", "completed")));
++        if (cashPosition.AlertState.IsLowCash)
++        {
++            alerts.Add(ApplyPriority(new BriefingAggregateItemDto(
++                "alerts",
++                "Low cash alert",
++                cashPosition.Rationale,
++                cashPosition.RiskLevel,
++                cashPosition.AlertState.AlertStatus,
++                "finance_cash_position",
++                cashPosition.AlertState.AlertId ?? companyId,
++                cashPosition.AsOfUtc,
++                BuildCashPositionMetadata(cashPosition),
++                [new BriefingSourceReferenceDto("finance_cash_position", cashPosition.AlertState.AlertId ?? companyId, "Cash position", cashPosition.AlertState.AlertStatus, $"/dashboard?companyId={companyId}")]),
++                ResolvePriority(severityRules, "alerts", "alert", "severity", cashPosition.RiskLevel)));
++        }
+ 
+         alerts = OrderAggregateItems(alerts);
+         pendingApprovals = OrderAggregateItems(pendingApprovals);
+@@ -726,7 +776,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 criticalAlertsCount,
+                 openApprovalsCount,
+                 blockedWorkflowCount,
+-                overdueTaskRows.Count)
++                overdueTaskRows.Count),
++            CashPosition = cashPosition
+         };
+         var insightPayload = _insightAggregationService.Aggregate(new BriefingInsightAggregationRequest(companyId, null, BuildInsightContributions(companyId, result)));
+         var structuredSections = await EnrichStructuredSectionsAsync(companyId, OrderStructuredSections(insightPayload.Sections, result), result, cancellationToken);
+@@ -819,7 +870,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+ 
+         return new BriefingAggregate(
+             approvals, kpiHighlights, alerts, anomalies, agentHighlights, sourceReferences,
+-            aggregate.NarrativeText, aggregate.StructuredSections, aggregate.SummaryCounts);
++            aggregate.NarrativeText, aggregate.StructuredSections, aggregate.CashPosition, aggregate.SummaryCounts);
+     }
+@@ -947,6 +999,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             ["structuredSections"] = JsonSerializer.SerializeToNode(aggregate.StructuredSections, SerializerOptions),
+             ["summaryCounts"] = JsonSerializer.SerializeToNode(aggregate.SummaryCounts, SerializerOptions),
++            ["cashPosition"] = JsonSerializer.SerializeToNode(aggregate.CashPosition, SerializerOptions),
+             ["financeWorkflowOutputs"] = JsonSerializer.SerializeToNode(aggregate.KpiHighlights.Concat(aggregate.Alerts).Concat(aggregate.Anomalies).Select(x => x.Metadata.TryGetValue("workflowOutput", out var output) ? output : null).Where(x => x is not null), SerializerOptions),
+             ["appliedFocusAreas"] = JsonSerializer.SerializeToNode(preferences.IncludedFocusAreas, SerializerOptions),
+             ["minimumPriorityThresholdApplied"] = JsonValue.Create(preferences.PriorityThreshold.ToStorageValue()),
+@@ -1029,7 +1082,13 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             ["isLowCash"] = JsonValue.Create(cashPosition.AlertState.IsLowCash),
+             ["alertId"] = cashPosition.AlertState.AlertId.HasValue ? JsonValue.Create(cashPosition.AlertState.AlertId.Value) : null,
+             ["alertStatus"] = JsonValue.Create(cashPosition.AlertState.AlertStatus),
+-            ["workflowOutput"] = JsonSerializer.SerializeToNode(cashPosition.WorkflowOutput, SerializerOptions)
++            ["classification"] = JsonValue.Create(cashPosition.Classification),
++            ["riskLevel"] = JsonValue.Create(cashPosition.RiskLevel),
++            ["recommendedAction"] = JsonValue.Create(cashPosition.RecommendedAction),
++            ["rationale"] = JsonValue.Create(cashPosition.Rationale),
++            ["confidence"] = JsonValue.Create(cashPosition.Confidence),
++            ["sourceWorkflow"] = JsonValue.Create(cashPosition.SourceWorkflow),
++            ["workflowOutput"] = JsonSerializer.SerializeToNode(cashPosition.WorkflowOutput, SerializerOptions)
+         };
+@@ -1695,6 +1754,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         IReadOnlyList<BriefingSourceReferenceDto> SourceReferences,
+         string NarrativeText,
+         IReadOnlyList<AggregatedBriefingSectionDto> StructuredSections,
++        FinanceCashPositionDto? CashPosition,
+         BriefingSummaryCountsDto SummaryCounts = null!)
+     {
+         public BriefingSummaryCountsDto SummaryCounts { get; init; } = SummaryCounts ?? new BriefingSummaryCountsDto(0, 0, 0, 0);
+@@ -1721,6 +1781,9 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         new("medium_task_awaiting_approval", "anomalies", "task", "status", "awaiting_approval", BriefingSectionPriorityCategory.Medium, 55),
+         new("informational_task_completed", "kpi_highlights", "task", "status", "completed", BriefingSectionPriorityCategory.Informational, 20),
+         new("critical_alert", "alerts", "alert", "severity", "critical", BriefingSectionPriorityCategory.Critical, 100),
++        new("critical_finance_cash_position", "alerts", "alert", "severity", "critical", BriefingSectionPriorityCategory.Critical, 100),
++        new("high_finance_cash_position", "alerts", "alert", "severity", "high", BriefingSectionPriorityCategory.High, 90),
++        new("medium_finance_cash_position", "alerts", "alert", "severity", "medium", BriefingSectionPriorityCategory.Medium, 50),
+         new("high_alert", "alerts", "alert", "severity", "high", BriefingSectionPriorityCategory.High, 90),
+         new("medium_alert", "alerts", "alert", "severity", "medium", BriefingSectionPriorityCategory.Medium, 50),
+     ];
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -17,7 +17,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+     private readonly IDepartmentDashboardConfigurationService _departmentDashboardConfigurationService;
+     private readonly IExecutiveCockpitDashboardCache _cache;
+-    private readonly IFinanceReadService _financeReadService;
++    private readonly IFinanceCashPositionWorkflowService _financeCashPositionWorkflowService;
+     private readonly TimeProvider _timeProvider;
+     private readonly ILogger<CompanyExecutiveCockpitDashboardService> _logger;
+ 
+@@ -27,7 +27,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+         ICompanyMembershipContextResolver membershipContextResolver,
+         IDepartmentDashboardConfigurationService departmentDashboardConfigurationService,
+         IExecutiveCockpitDashboardCache cache,
+-        IFinanceReadService financeReadService,
++        IFinanceCashPositionWorkflowService financeCashPositionWorkflowService,
+         TimeProvider timeProvider,
+         ILogger<CompanyExecutiveCockpitDashboardService> logger)
+     {
+@@ -35,7 +35,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+         _membershipContextResolver = membershipContextResolver;
+         _departmentDashboardConfigurationService = departmentDashboardConfigurationService;
+         _cache = cache;
+-        _financeReadService = financeReadService;
++        _financeCashPositionWorkflowService = financeCashPositionWorkflowService;
+         _timeProvider = timeProvider;
+         _logger = logger;
+     }
+@@ -61,11 +61,15 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             _logger.LogDebug("Executive cockpit dashboard cache hit for company {CompanyId}.", query.CompanyId);
+             var cachedVisibleSections = await GetVisibleDepartmentSectionsAsync(query.CompanyId, cancellationToken);
++            var currentCashPosition = await _financeCashPositionWorkflowService.EvaluateAsync(
++                new EvaluateFinanceCashPositionWorkflowCommand(query.CompanyId),
++                cancellationToken);
+             return cached.Dashboard with
+             {
+                 CacheTimestampUtc = cached.CachedAtUtc,
++                CashPosition = currentCashPosition,
+                 DepartmentSections = cachedVisibleSections
+             };
+         }
+@@ -126,6 +130,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             ExecutiveCockpitWidgetKeys.Alerts => dashboard.Alerts,
+             ExecutiveCockpitWidgetKeys.DepartmentKpis => dashboard.DepartmentKpis,
+             ExecutiveCockpitWidgetKeys.DepartmentSections => dashboard.DepartmentSections,
++            ExecutiveCockpitWidgetKeys.CashPosition => dashboard.CashPosition,
+             ExecutiveCockpitWidgetKeys.RecentActivity => dashboard.RecentActivity,
+             ExecutiveCockpitWidgetKeys.Kpis => dashboard.DepartmentKpis,
+             _ => throw new KeyNotFoundException("Dashboard widget not found.")
+@@ -190,8 +195,8 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+ 
+         var summaryKpis = await BuildSummaryKpisAsync(companyId, nowUtc, pendingApprovalCount, cancellationToken);
+-        var cashPosition = await _financeReadService.GetCashPositionAsync(
+-            new GetFinanceCashPositionQuery(companyId, nowUtc),
++        var cashPosition = await _financeCashPositionWorkflowService.EvaluateAsync(
++            new EvaluateFinanceCashPositionWorkflowCommand(companyId),
+             cancellationToken);
+ 
+         var pendingApprovals = new ExecutiveCockpitPendingApprovalsDto(
+@@ -209,6 +214,23 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+                 .ToList(),
+             $"/approvals?companyId={companyId}&status=pending");
+ 
++        var domainAlerts = await _dbContext.Alerts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId &&
++                        x.Status != AlertStatus.Resolved &&
++                        x.Status != AlertStatus.Closed)
++            .OrderByDescending(x => x.LastDetectedUtc ?? x.UpdatedUtc)
++            .Take(AlertLimit)
++            .Select(x => new ExecutiveCockpitAlertDto(
++                x.Id,
++                x.Severity.ToStorageValue(),
++                x.Title,
++                x.Summary,
++                "alert",
++                x.Id,
++                x.LastDetectedUtc ?? x.UpdatedUtc,
++                $"/dashboard?companyId={companyId}"))
++            .ToListAsync(cancellationToken);
++
+         var workflowAlerts = await _dbContext.WorkflowExceptions
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+@@ -217,7 +239,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             .OrderByDescending(x => x.OccurredUtc)
+-            .Take(5)
++            .Take(Math.Max(0, AlertLimit - domainAlerts.Count))
+             .Select(x => new ExecutiveCockpitAlertDto(
+                 x.Id,
+                 "high",
+@@ -227,13 +249,13 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+                 x.Id,
+                 x.OccurredUtc,
+                 $"/workflows?companyId={companyId}&workflowInstanceId={x.WorkflowInstanceId}&exceptionId={x.Id}"))
+-            .Take(AlertLimit)
+             .ToListAsync(cancellationToken);
+ 
+         var taskAlerts = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x =>
+                 x.CompanyId == companyId &&
+                 (x.Status == WorkTaskStatus.Blocked || x.Status == WorkTaskStatus.Failed))
+             .OrderByDescending(x => x.UpdatedUtc)
+-            .Take(Math.Max(0, AlertLimit - workflowAlerts.Count))
++            .Take(Math.Max(0, AlertLimit - domainAlerts.Count - workflowAlerts.Count))
+             .Select(x => new ExecutiveCockpitAlertDto(
+                 x.Id,
+                 x.Status == WorkTaskStatus.Failed ? "high" : "medium",
+@@ -245,7 +267,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+                 $"/tasks?companyId={companyId}&taskId={x.Id}"))
+             .ToListAsync(cancellationToken);
+ 
+-        var alerts = workflowAlerts.Concat(taskAlerts)
++        var alerts = domainAlerts.Concat(workflowAlerts).Concat(taskAlerts)
+             .OrderByDescending(x => x.OccurredUtc)
+             .Take(AlertLimit)
+             .ToList();
+END_OF_PATCH

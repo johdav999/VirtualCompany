@@ -9,6 +9,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using VirtualCompany.Application.Documents;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.Companies;
@@ -22,38 +23,59 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
 {
     private readonly TimeProvider _timeProvider;
     private SqliteConnection? _connection;
+    private readonly IReadOnlyDictionary<string, string?> _configurationOverrides;
 
     public TestWebApplicationFactory()
-        : this(TimeProvider.System)
+        : this(TimeProvider.System, null)
     {
     }
 
-    internal TestWebApplicationFactory(TimeProvider timeProvider) => _timeProvider = timeProvider;
+    internal TestWebApplicationFactory(TimeProvider timeProvider)
+        : this(timeProvider, null)
+    {
+    }
+
+    internal TestWebApplicationFactory(IReadOnlyDictionary<string, string?> configurationOverrides)
+        : this(TimeProvider.System, configurationOverrides)
+    {
+    }
+
+    internal TestWebApplicationFactory(TimeProvider timeProvider, IReadOnlyDictionary<string, string?>? configurationOverrides) { _timeProvider = timeProvider; _configurationOverrides = configurationOverrides ?? new Dictionary<string, string?>(); }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.ConfigureAppConfiguration((_, configurationBuilder) =>
         {
-            configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+            var settings = new Dictionary<string, string?>
             {
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:Enabled"] = "false",
                 [$"{WorkflowSchedulerOptions.SectionName}:Enabled"] = "false",
                 [$"{WorkflowProgressionOptions.SectionName}:Enabled"] = "false",
                 [$"{TriggerWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{BriefingUpdateJobWorkerOptions.SectionName}:Enabled"] = "false",
+                [$"{CompanySimulationOptions.SectionName}:DefaultAutoAdvanceIntervalSeconds"] = "0",
+                [$"{CompanySimulationProgressionWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{BriefingSchedulerOptions.SectionName}:Enabled"] = "false",
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
                 [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
                 [$"{KnowledgeIndexingOptions.SectionName}:Enabled"] = "false",
                 [$"{KnowledgeEmbeddingOptions.SectionName}:Provider"] = "deterministic",
                 [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",
+                [$"{FinanceSeedWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{KnowledgeEmbeddingOptions.SectionName}:Dimensions"] = "256",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:Enabled"] = "true",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KeyVersion"] = "tests-v1",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KnowledgeTtlSeconds"] = "300",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:MemoryTtlSeconds"] = "300",
                 [$"{ObservabilityOptions.SectionName}:ObjectStorage:Enabled"] = "false"
-            });
+            };
+
+            foreach (var pair in _configurationOverrides)
+            {
+                settings[pair.Key] = pair.Value;
+            }
+
+            configurationBuilder.AddInMemoryCollection(settings);
         });
 
         builder.ConfigureServices(services =>
@@ -79,6 +101,10 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
             services.RemoveAll<ICompanyDocumentVirusScanner>();
             services.AddSingleton<TestCompanyDocumentVirusScanner>();
             services.AddSingleton<ICompanyDocumentVirusScanner>(provider => provider.GetRequiredService<TestCompanyDocumentVirusScanner>());
+            services.RemoveAll<IFinanceSeedTelemetry>();
+            services.AddSingleton<TestFinanceSeedTelemetry>();
+            services.AddSingleton<IFinanceSeedTelemetry>(provider => provider.GetRequiredService<TestFinanceSeedTelemetry>());
+
 
             services.AddSingleton<ICompanyInvitationSender>(provider => provider.GetRequiredService<TestCompanyInvitationSender>());
         });
@@ -96,6 +122,9 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
     public TestCompanyDocumentVirusScanner DocumentVirusScanner =>
         Services.GetRequiredService<TestCompanyDocumentVirusScanner>();
 
+    public TestFinanceSeedTelemetry FinanceSeedTelemetry =>
+        Services.GetRequiredService<TestFinanceSeedTelemetry>();
+
     public async Task SeedAsync(Func<VirtualCompanyDbContext, Task> seed)
     {
         using var scope = Services.CreateScope();
@@ -103,6 +132,14 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         await dbContext.Database.EnsureCreatedAsync();
         await seed(dbContext);
         await dbContext.SaveChangesAsync();
+    }
+
+    public async Task<T> ExecuteDbContextAsync<T>(Func<VirtualCompanyDbContext, Task<T>> callback)
+    {
+        using var scope = Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        await dbContext.Database.EnsureCreatedAsync();
+        return await callback(dbContext);
     }
 
     protected override void Dispose(bool disposing)
@@ -193,6 +230,13 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         public Task<InternalToolExecutionResponse> ExecuteAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken)
         {
             _requests.Enqueue(request);
+            if (TryCreateFinanceToolData(request.ToolName, out var financeData))
+            {
+                return Task.FromResult(InternalToolExecutionResponse.Succeeded(
+                    "Test finance tool execution completed.",
+                    financeData,
+                    BuildMetadata(request)));
+            }
 
             var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
             {
@@ -205,14 +249,53 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 ["executed"] = JsonValue.Create(true)
             };
 
-            var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            return Task.FromResult(InternalToolExecutionResponse.Succeeded("Test tool execution completed.", payload, BuildMetadata(request)));
+        }
+
+        private static Dictionary<string, JsonNode?> BuildMetadata(InternalToolExecutionRequest request) =>
+            new(StringComparer.OrdinalIgnoreCase)
             {
                 ["contractName"] = JsonValue.Create(nameof(TestCompanyToolExecutor)),
                 ["companyId"] = JsonValue.Create(request.CompanyId),
-                ["executionId"] = JsonValue.Create(request.ExecutionId)
+                ["executionId"] = JsonValue.Create(request.ExecutionId),
+                ["toolVersion"] = string.IsNullOrWhiteSpace(request.ToolVersion) ? null : JsonValue.Create(request.ToolVersion)
             };
 
-            return Task.FromResult(InternalToolExecutionResponse.Succeeded("Test tool execution completed.", payload, metadata));
+        private static bool TryCreateFinanceToolData(string toolName, out Dictionary<string, JsonNode?> data)
+        {
+            data = toolName switch
+            {
+                "get_cash_balance" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["cashBalance"] = new JsonObject
+                    {
+                        ["amount"] = JsonValue.Create(1234.56m),
+                        ["currency"] = JsonValue.Create("USD"),
+                        ["accounts"] = new JsonArray()
+                    }
+                },
+                "list_transactions" or "list_uncategorized_transactions" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["transactions"] = new JsonArray()
+                },
+                "list_invoices_awaiting_approval" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["invoices"] = new JsonArray()
+                },
+                "get_profit_and_loss_summary" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["profitAndLossSummary"] = new JsonObject
+                    {
+                        ["revenue"] = JsonValue.Create(1000m),
+                        ["expenses"] = JsonValue.Create(750m),
+                        ["netResult"] = JsonValue.Create(250m),
+                        ["currency"] = JsonValue.Create("USD")
+                    }
+                },
+                _ => []
+            };
+
+            return data.Count > 0;
         }
     }
 

@@ -1,0 +1,80 @@
+@page "/finance/admin/transparency/tools"
+@inherits FinanceTransparencyPageBase
+
+<PageTitle>Finance Tool Registry</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Finance tool registry"
+    Description="Inspect finance tool manifests, schema summaries, and provider adapter metadata."
+    LoadingMessage="Loading finance tool registry...">
+    @if (!HasTransparencyAccess)
+    {
+        <ForbiddenState
+            Title="Finance transparency access required"
+            Message="Finance transparency pages are limited to company admins and testers."
+            ReturnHref="@BuildFinanceHomeHref()"
+            ReturnText="Back to finance" />
+    }
+    else
+    {
+        <div class="wizard-card wizard-card--compact">
+            <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
+                <div>
+                    <h2 class="h5 mb-1">Finance tool manifest registry</h2>
+                    <p class="text-body-secondary mb-0">@(string.IsNullOrWhiteSpace(Summary) ? "Registered finance manifests are projected from the current runtime registry for the active company context." : Summary)</p>
+                </div>
+                <span class="badge text-bg-light">@Items.Count item@(Items.Count == 1 ? string.Empty : "s")</span>
+            </div>
+
+            <FinanceDataState
+                IsLoading="@IsListLoading"
+                IsEmpty="@IsListEmpty"
+                ErrorMessage="@ListErrorMessage"
+                LoadingTitle="Loading finance tool manifests"
+                LoadingMessage="Resolving finance tool manifest metadata."
+                EmptyTitle="No finance tool manifests available"
+                EmptyMessage="No finance tool manifests are currently registered."
+                ErrorTitle="Finance tool manifests are unavailable"
+                OnRetry="@ReloadAsync">
+                <div class="table-responsive">
+                    <table class="table finance-table mb-0">
+                        <thead>
+                            <tr>
+                                <th scope="col">Tool</th>
+                                <th scope="col">Version</th>
+                                <th scope="col">Version metadata</th>
+                                <th scope="col">Contract summary</th>
+                                <th scope="col">Schema summary</th>
+                                <th scope="col">Manifest source</th>
+                                <th scope="col">Provider adapter</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var item in Items)
+                            {
+                                <tr>
+                                    <td class="text-nowrap fw-semibold">@item.ToolName</td>
+                                    <td class="text-nowrap">@item.Version</td>
+                                    <td>@item.VersionMetadata</td>
+                                    <td>@item.ContractSummary</td>
+                                    <td>@(string.IsNullOrWhiteSpace(item.SchemaSummary) ? item.ContractSummary : item.SchemaSummary)</td>
+                                    <td>@FormatLabel(item.ManifestSource)</td>
+                                    <td>
+                                        <div>@FormatValue(item.ProviderAdapterName)</div>
+                                        @if (!string.IsNullOrWhiteSpace(item.ProviderAdapterId))
+                                        {
+                                            <div class="small text-body-secondary">@item.ProviderAdapterId</div>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </FinanceDataState>
+        </div>
+    }
+</FinancePageLayout>

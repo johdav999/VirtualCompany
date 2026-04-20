@@ -1,0 +1,166 @@
+@page "/finance/anomalies"
+@inherits FinancePageBase
+@using VirtualCompany.Web.Services
+
+<PageTitle>Finance Anomaly Workbench</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Finance anomaly workbench"
+    Description="Browse tenant-scoped finance anomalies with preserved filter state, paging, and drill-down links."
+    LoadingMessage="Loading finance anomaly workbench...">
+    <form class="agent-filter-bar mb-4" @onsubmit="HandleApplyFiltersAsync" @onsubmit:preventDefault="true">
+        <div>
+            <label class="form-label" for="finance-anomaly-type">Anomaly type</label>
+            <select id="finance-anomaly-type" class="form-select" @bind="Filters.AnomalyType" @bind:after="HandleFiltersChangedAsync">
+                <option value="">All anomaly types</option>
+                @foreach (var option in AnomalyTypeOptions)
+                {
+                    <option value="@option">@FinanceAnomalyPresentation.FormatLabel(option)</option>
+                }
+            </select>
+        </div>
+        <div>
+            <label class="form-label" for="finance-anomaly-status">Status</label>
+            <select id="finance-anomaly-status" class="form-select" @bind="Filters.Status" @bind:after="HandleFiltersChangedAsync">
+                <option value="">All statuses</option>
+                @foreach (var option in StatusOptions)
+                {
+                    <option value="@option">@FinanceAnomalyPresentation.FormatLabel(option)</option>
+                }
+            </select>
+        </div>
+        <div>
+            <label class="form-label" for="finance-anomaly-confidence-min">Confidence min</label>
+            <input id="finance-anomaly-confidence-min" class="form-control" type="number" min="0" max="1" step="0.01" @bind="Filters.ConfidenceMin" @bind:after="HandleFiltersChangedAsync" />
+        </div>
+        <div>
+            <label class="form-label" for="finance-anomaly-confidence-max">Confidence max</label>
+            <input id="finance-anomaly-confidence-max" class="form-control" type="number" min="0" max="1" step="0.01" @bind="Filters.ConfidenceMax" @bind:after="HandleFiltersChangedAsync" />
+        </div>
+        <div>
+            <label class="form-label" for="finance-anomaly-supplier">Supplier</label>
+            <input id="finance-anomaly-supplier" class="form-control" type="text" @bind="Filters.Supplier" @bind:after="HandleFiltersChangedAsync" />
+        </div>
+        <div>
+            <label class="form-label" for="finance-anomaly-from">Detected from</label>
+            <input id="finance-anomaly-from" class="form-control" type="date" @bind="Filters.DateFrom" @bind:format="yyyy-MM-dd" @bind:after="HandleFiltersChangedAsync" />
+        </div>
+        <div>
+            <label class="form-label" for="finance-anomaly-to">Detected to</label>
+            <input id="finance-anomaly-to" class="form-control" type="date" @bind="Filters.DateTo" @bind:format="yyyy-MM-dd" @bind:after="HandleFiltersChangedAsync" />
+        </div>
+        <div>
+            <label class="form-label" for="finance-anomaly-page-size">Page size</label>
+            <select id="finance-anomaly-page-size" class="form-select" @bind="Filters.PageSize" @bind:after="HandlePageSizeChangedAsync">
+                @foreach (var option in PageSizeOptions)
+                {
+                    <option value="@option">@option</option>
+                }
+            </select>
+        </div>
+        <div class="dashboard-actions">
+            <button class="btn btn-primary" type="submit">Apply filters</button>
+            <button class="btn btn-outline-secondary" type="button" @onclick="ClearFiltersAsync">Clear</button>
+        </div>
+    </form>
+
+    <section class="finance-summary-grid mb-4">
+        <article class="wizard-card finance-metric-card finance-metric-card--hero">
+            <span class="dashboard-kicker">Matching anomalies</span>
+            <h2 class="finance-metric-card__value">@(Workbench?.TotalCount ?? 0)</h2>
+            <p class="text-body-secondary mb-0">Filter and paging state stays in the URL so drill-down navigation can return to the same workbench view.</p>
+        </article>
+        <article class="wizard-card finance-metric-card">
+            <span class="dashboard-kicker">Current page</span>
+            <div class="finance-metric-card__value finance-metric-card__value--compact">@CurrentPageSummary</div>
+            <p class="text-body-secondary mb-0">@VisibleRangeSummary</p>
+        </article>
+    </section>
+
+    <FinanceDataState
+        IsLoading="@IsListLoading"
+        IsEmpty="@IsListEmpty"
+        ErrorMessage="@ListErrorMessage"
+        LoadingTitle="Loading anomaly workbench"
+        LoadingMessage="Fetching tenant-scoped anomalies, follow-up status, and related finance records."
+        EmptyTitle="No anomalies"
+        EmptyMessage="No finance anomalies match the current workbench filters."
+        RetryText="Reload workbench"
+        OnRetry="@ReloadAsync">
+        @if (Workbench is not null && Workbench.Items.Count > 0)
+        {
+            <section class="wizard-card">
+                <div class="table-responsive">
+                    <table class="table finance-anomaly-table">
+                        <thead>
+                            <tr>
+                                <th scope="col">Type</th>
+                                <th scope="col">Affected record</th>
+                                <th scope="col">Explanation</th>
+                                <th scope="col">Confidence</th>
+                                <th scope="col">Recommended action</th>
+                                <th scope="col">Follow-up status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var anomaly in Workbench.Items)
+                            {
+                                <tr>
+                                    <td>
+                                        <a class="fw-semibold text-decoration-none" href="@BuildDetailHref(anomaly)">@FinanceAnomalyPresentation.FormatLabel(anomaly.AnomalyType)</a>
+                                        <div class="small text-body-secondary">@FinanceAnomalyPresentation.FormatDateTime(anomaly.DetectedAtUtc)</div>
+                                    </td>
+                                    <td>
+                                        <div class="fw-semibold">@anomaly.AffectedRecordReference</div>
+                                        @if (!string.IsNullOrWhiteSpace(anomaly.SupplierName))
+                                        {
+                                            <div class="small text-body-secondary">@anomaly.SupplierName</div>
+                                        }
+                                        @if (anomaly.Deduplication is { } deduplication && FinanceAnomalyPresentation.HasDeduplicationMetadata(deduplication))
+                                        {
+                                            <div class="finance-anomaly-inline-meta small">
+                                                @if (!string.IsNullOrWhiteSpace(deduplication.Key))
+                                                {
+                                                    <span>Dedup key: @deduplication.Key</span>
+                                                }
+                                                @if (deduplication.WindowStartUtc.HasValue || deduplication.WindowEndUtc.HasValue)
+                                                {
+                                                    <span>Window: @FinanceAnomalyPresentation.FormatWindow(deduplication.WindowStartUtc, deduplication.WindowEndUtc)</span>
+                                                }
+                                            </div>
+                                        }
+                                    </td>
+                                    <td>@anomaly.ExplanationSummary</td>
+                                    <td class="text-nowrap">@FinanceAnomalyPresentation.FormatConfidence(anomaly.Confidence)</td>
+                                    <td>@anomaly.RecommendedAction</td>
+                                    <td class="text-nowrap">
+                                        @{
+                                            var followUpStatus = string.IsNullOrWhiteSpace(anomaly.FollowUpTaskStatus)
+                                                ? "not_linked"
+                                                : anomaly.FollowUpTaskStatus;
+                                        }
+
+                                        <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(followUpStatus)">
+                                            @FinanceAnomalyPresentation.FormatLabel(followUpStatus)
+                                        </span>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="finance-workbench-pagination mt-3">
+                    <span class="text-body-secondary">@VisibleRangeSummary</span>
+                    <div class="dashboard-actions">
+                        <button class="btn btn-outline-secondary" type="button" @onclick="PreviousPageAsync" disabled="@(!CanGoToPreviousPage)">Previous</button>
+                        <button class="btn btn-outline-secondary" type="button" @onclick="NextPageAsync" disabled="@(!CanGoToNextPage)">Next</button>
+                    </div>
+                </div>
+            </section>
+        }
+    </FinanceDataState>
+</FinancePageLayout>

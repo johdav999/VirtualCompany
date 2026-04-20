@@ -19,6 +19,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
     private readonly IAgentRuntimeProfileResolver _agentRuntimeProfileResolver;
     private readonly IPolicyGuardrailEngine _policyGuardrailEngine;
     private readonly ICompanyToolExecutor _companyToolExecutor;
+    private readonly ICompanyToolRegistry _companyToolRegistry;
     private readonly IAuditEventWriter _auditEventWriter;
     private readonly ICorrelationContextAccessor _correlationContextAccessor;
 
@@ -28,6 +29,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         IAgentRuntimeProfileResolver agentRuntimeProfileResolver,
         IPolicyGuardrailEngine policyGuardrailEngine,
         ICompanyToolExecutor companyToolExecutor,
+        ICompanyToolRegistry companyToolRegistry,
         IAuditEventWriter auditEventWriter,
         ICorrelationContextAccessor correlationContextAccessor)
     {
@@ -36,6 +38,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
         _policyGuardrailEngine = policyGuardrailEngine;
         _companyToolExecutor = companyToolExecutor;
+        _companyToolRegistry = companyToolRegistry;
         _auditEventWriter = auditEventWriter;
         _correlationContextAccessor = correlationContextAccessor;
     }
@@ -53,6 +56,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         var executionId = Guid.NewGuid();
         var actionType = ToolActionTypeValues.Parse(command.ActionType);
         var actionTypeValue = actionType.ToStorageValue();
+        var toolVersion = ResolveToolVersion(command.ToolName);
 
         var attempt = new ToolExecutionAttempt(
             executionId,
@@ -65,9 +69,11 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             command.TaskId,
             command.WorkflowInstanceId,
             correlationId,
-            startedAtUtc);
+            startedAtUtc,
+            toolVersion: toolVersion);
 
         var runtimeProfile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, agentId, cancellationToken);
+        var (toolPermissions, dataScopes) = ResolvePolicyBoundaries(runtimeProfile);
         var policyRequest = new PolicyEvaluationRequest(
             companyId,
             agentId,
@@ -75,8 +81,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             runtimeProfile.Status,
             runtimeProfile.AutonomyLevel,
             runtimeProfile.CanReceiveAssignments,
-            CloneNodes(runtimeProfile.ToolPermissions),
-            CloneNodes(runtimeProfile.DataScopes),
+            toolPermissions,
+            dataScopes,
             CloneNodes(runtimeProfile.ApprovalThresholds),
             CloneNodes(runtimeProfile.EscalationRules),
             command.ToolName,
@@ -115,7 +121,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 "policy_denied",
                 callerMessage,
                 metadata: BuildExecutionResultMetadata(command, decision, correlationId, executionId, userFacingMessage: callerMessage));
-            attempt.MarkDenied(serializedDecision, structuredResult.ToStructuredPayload(), DateTime.UtcNow);
+            attempt.MarkDenied(serializedDecision, structuredResult.ToStructuredPayload(), DateTime.UtcNow, callerMessage);
 
             await _auditEventWriter.WriteAsync(
                 new AuditEventWriteRequest(
@@ -212,13 +218,14 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 command.TaskId,
                 command.WorkflowInstanceId,
                 correlationId,
-                executionId),
+                executionId,
+                toolVersion),
             cancellationToken);
             result = NormalizeStructuredResult(result, command);
 
             if (string.Equals(result.Status, ToolExecutionStatus.Denied.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
             {
-                attempt.MarkDenied(serializedDecision, result.ToStructuredPayload(), DateTime.UtcNow);
+                attempt.MarkDenied(serializedDecision, result.ToStructuredPayload(), DateTime.UtcNow, result.ErrorMessage ?? result.ErrorCode);
 
                 await _auditEventWriter.WriteAsync(
                 new AuditEventWriteRequest(
@@ -323,6 +330,61 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
 
         return membership;
     }
+
+    private (Dictionary<string, JsonNode?> ToolPermissions, Dictionary<string, JsonNode?> DataScopes) ResolvePolicyBoundaries(
+        AgentRuntimeProfileDto runtimeProfile)
+    {
+        var toolPermissions = CloneNodes(runtimeProfile.ToolPermissions);
+        var dataScopes = CloneNodes(runtimeProfile.DataScopes);
+
+        if (!IsLauraFinanceAgent(runtimeProfile))
+        {
+            return (toolPermissions, dataScopes);
+        }
+
+        var financeDefinitions = _companyToolRegistry
+            .ListToolDefinitions()
+            .OrderBy(definition => definition.ToolName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var allowedTools = financeDefinitions
+            .Select(definition => definition.ToolName)
+            .ToArray();
+
+        var allowedActions = financeDefinitions
+            .Select(definition => definition.ActionType.ToStorageValue())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(action => action, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var deniedTools = _companyToolRegistry
+            .ListTools()
+            .Select(tool => tool.ToolName)
+            .Except(allowedTools, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(tool => tool, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return (
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["allowed"] = ToJsonArray(allowedTools),
+                ["actions"] = ToJsonArray(allowedActions),
+                ["denied"] = ToJsonArray(deniedTools),
+                ["deniedActions"] = new JsonArray()
+            },
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["read"] = new JsonArray(JsonValue.Create("finance")),
+                ["recommend"] = new JsonArray(JsonValue.Create("finance")),
+                ["execute"] = new JsonArray(JsonValue.Create("finance")),
+                ["write"] = new JsonArray()
+            });
+    }
+
+    private static bool IsLauraFinanceAgent(AgentRuntimeProfileDto runtimeProfile) =>
+        string.Equals(runtimeProfile.TemplateId, LauraFinanceAgentSeedData.TemplateId, StringComparison.OrdinalIgnoreCase) ||
+        (string.Equals(runtimeProfile.DisplayName, "Laura", StringComparison.OrdinalIgnoreCase) &&
+         string.Equals(runtimeProfile.Department, "Finance", StringComparison.OrdinalIgnoreCase));
 
     private Task WriteBoundaryEnforcementAuditAsync(
         Guid companyId,
@@ -432,6 +494,18 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
 
         thresholdContext["toolName"] = JsonValue.Create(command.ToolName);
         thresholdContext["actionType"] = JsonValue.Create(ToolActionTypeValues.Parse(command.ActionType).ToStorageValue());
+        thresholdContext["toolExecutionId"] = decision.Audit is null
+            ? null
+            : JsonValue.Create(decision.Audit.ExecutionId);
+        thresholdContext["toolExecutionAttemptId"] = thresholdContext["toolExecutionId"]?.DeepClone();
+
+        if (command.TaskId.HasValue)
+        {
+            thresholdContext["taskId"] = JsonValue.Create(command.TaskId.Value);
+            thresholdContext["originatingTaskId"] = JsonValue.Create(command.TaskId.Value);
+        }
+
+        thresholdContext["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null;
 
         if (!string.IsNullOrWhiteSpace(command.Scope))
         {
@@ -493,7 +567,11 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 ["requestedByUserId"] = requestedByUserId,
                 ["toolName"] = command.ToolName,
                 ["actionType"] = ToolActionTypeValues.Parse(command.ActionType).ToStorageValue(),
+                ["toolExecutionAttemptId"] = executionId,
                 ["scope"] = command.Scope,
+                ["taskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
+                ["originatingTaskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
+                ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
                 ["approvalTarget"] = TryGetNonEmptyString(decision.Metadata, "approvalTarget")
             }
         };
@@ -503,6 +581,9 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             ["schemaVersion"] = JsonValue.Create("2026-04-12"),
             ["approvalRequestId"] = JsonValue.Create(approvalRequestId),
             ["executionId"] = JsonValue.Create(executionId),
+            ["toolExecutionAttemptId"] = JsonValue.Create(executionId),
+            ["taskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
+            ["originatingTaskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
             ["status"] = JsonValue.Create("pending"),
             ["currentStep"] = JsonValue.Create("approval_request_created"),
             ["steps"] = steps
@@ -589,6 +670,12 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
 
         return jsonObject;
     }
+
+    private static JsonArray ToJsonArray(IEnumerable<string> values) =>
+        new(values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => (JsonNode?)JsonValue.Create(value.Trim()))
+            .ToArray());
 
     private static string BuildAuditRationaleSummary(ToolExecutionDecisionDto decision)
     {
@@ -681,4 +768,9 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             ? System.Diagnostics.Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
             : _correlationContextAccessor.CorrelationId!;
     }
+
+    private string ResolveToolVersion(string toolName) =>
+        _companyToolRegistry.TryGetTool(toolName, out var registration) &&
+        !string.IsNullOrWhiteSpace(registration.Version)
+            ? registration.Version : "unknown";
 }

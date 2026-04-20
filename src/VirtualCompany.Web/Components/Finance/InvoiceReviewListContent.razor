@@ -1,0 +1,71 @@
+@using System.Globalization
+
+<FinanceDataState
+    IsLoading="@IsLoading"
+    IsEmpty="@(!IsLoading && string.IsNullOrWhiteSpace(ErrorMessage) && Items.Count == 0)"
+    ErrorMessage="@ErrorMessage"
+    LoadingTitle="Loading invoice reviews"
+    LoadingMessage="Fetching finance workflow review recommendations for the active company."
+    EmptyTitle="No invoice reviews matched the active filters"
+    EmptyMessage="Adjust the review filters and try again."
+    ErrorTitle="Invoice reviews are unavailable"
+    OnRetry="@OnRetry">
+    <div class="table-responsive">
+        <table class="table align-middle invoice-review-table">
+            <thead>
+                <tr>
+                    <th scope="col">Invoice number</th>
+                    <th scope="col">Supplier name</th>
+                    <th scope="col" class="finance-table__number">Amount</th>
+                    <th scope="col">Currency</th>
+                    <th scope="col">Risk level</th>
+                    <th scope="col">Recommendation status</th>
+                    <th scope="col" class="finance-table__number">Confidence</th>
+                    <th scope="col">Last updated</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in Items)
+                {
+                    <tr>
+                        <td>
+                            <a href="@BuildDetailHref(item)">@item.InvoiceNumber</a>
+                        </td>
+                        <td>@item.SupplierName</td>
+                        <td class="finance-table__number">@item.Amount.ToString("N2", CultureInfo.InvariantCulture)</td>
+                        <td>@item.Currency</td>
+                        <td>@FormatLabel(item.RiskLevel)</td>
+                        <td>@FormatLabel(item.RecommendationStatus)</td>
+                        <td class="finance-table__number">@FormatConfidence(item.Confidence)</td>
+                        <td>@FormatDateTime(item.LastUpdatedUtc)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</FinanceDataState>
+
+@code {
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public IReadOnlyList<FinanceInvoiceReviewListItemResponse> Items { get; set; } = [];
+    [Parameter] public EventCallback OnRetry { get; set; }
+    [Parameter] public Func<FinanceInvoiceReviewListItemResponse, string>? BuildDetailLink { get; set; }
+
+    private string BuildDetailHref(FinanceInvoiceReviewListItemResponse item) =>
+        BuildDetailLink?.Invoke(item) ?? "#";
+
+    private static string FormatDateTime(DateTime value) =>
+        value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+
+    private static string FormatConfidence(decimal confidence)
+    {
+        var clamped = Math.Clamp(confidence, 0m, 1m);
+        return $"{clamped:P0}";
+    }
+
+    private static string FormatLabel(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "n/a"
+            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+}

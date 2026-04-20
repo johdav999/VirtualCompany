@@ -1,0 +1,349 @@
+diff --git a/tests/VirtualCompany.Api.Tests/BusinessSignalEngineTests.cs b/tests/VirtualCompany.Api.Tests/BusinessSignalEngineTests.cs
+index f0f0f0f..f1f1f1f 100644
+--- a/tests/VirtualCompany.Api.Tests/BusinessSignalEngineTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BusinessSignalEngineTests.cs
+@@ -1,6 +1,7 @@
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Domain.Signals;
+ using Xunit;
+@@ -71,4 +72,81 @@ public sealed class BusinessSignalEngineTests : IClassFixture<TestWebApplication
+         var signals = await engine.GenerateSignals(companyId);
+ 
+         Assert.NotEmpty(signals);
+     }
++
++    [Fact]
++    public async Task GenerateSignals_returns_populated_signals_for_requested_company_without_cross_tenant_leakage()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var otherUserId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var otherAgentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.AddRange(
++                new User(userId, "requested-signals@example.com", "Requested Signals", "dev-header", "requested-signals-user"),
++                new User(otherUserId, "other-signals@example.com", "Other Signals", "dev-header", "other-signals-user"));
++
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Requested Signals Co"),
++                new Company(otherCompanyId, "Other Signals Co"));
++
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), otherCompanyId, otherUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++
++            dbContext.Agents.AddRange(
++                new Agent(agentId, companyId, "ops", "Avery Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active),
++                new Agent(otherAgentId, otherCompanyId, "ops", "Otis Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
++
++            var requestedTaskOne = new WorkTask(Guid.NewGuid(), companyId, "ops", "Follow up on delayed order", null, WorkTaskPriority.High, agentId, null, "user", userId);
++            requestedTaskOne.UpdateStatus(WorkTaskStatus.InProgress);
++            var requestedTaskTwo = new WorkTask(Guid.NewGuid(), companyId, "ops", "Review support backlog", null, WorkTaskPriority.Normal, agentId, null, "user", userId);
++            requestedTaskTwo.UpdateStatus(WorkTaskStatus.AwaitingApproval);
++
++            var otherTaskOne = new WorkTask(Guid.NewGuid(), otherCompanyId, "ops", "Escalate payroll issue", null, WorkTaskPriority.High, otherAgentId, null, "user", otherUserId);
++            otherTaskOne.UpdateStatus(WorkTaskStatus.Blocked);
++            var otherTaskTwo = new WorkTask(Guid.NewGuid(), otherCompanyId, "ops", "Patch finance importer", null, WorkTaskPriority.High, otherAgentId, null, "user", otherUserId);
++            otherTaskTwo.UpdateStatus(WorkTaskStatus.InProgress);
++            var otherTaskThree = new WorkTask(Guid.NewGuid(), otherCompanyId, "ops", "Review outage notes", null, WorkTaskPriority.High, otherAgentId, null, "user", otherUserId);
++            otherTaskThree.UpdateStatus(WorkTaskStatus.New);
++
++            dbContext.WorkTasks.AddRange(requestedTaskOne, requestedTaskTwo, otherTaskOne, otherTaskTwo, otherTaskThree);
++
++            dbContext.ApprovalRequests.AddRange(
++                ApprovalRequest.CreateForTarget(
++                    Guid.NewGuid(),
++                    companyId,
++                    ApprovalTargetEntityType.Task,
++                    requestedTaskTwo.Id,
++                    "user",
++                    userId,
++                    "threshold",
++                    [],
++                    null,
++                    userId,
++                    []),
++                ApprovalRequest.CreateForTarget(
++                    Guid.NewGuid(),
++                    otherCompanyId,
++                    ApprovalTargetEntityType.Task,
++                    otherTaskOne.Id,
++                    "user",
++                    otherUserId,
++                    "threshold",
++                    [],
++                    null,
++                    otherUserId,
++                    []));
++
++            return Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        var engine = scope.ServiceProvider.GetRequiredService<ISignalEngine>();
++
++        var signals = await engine.GenerateSignals(companyId);
++
++        Assert.NotEmpty(signals);
++
++        var operationalLoad = Assert.Single(signals.Where(signal => signal.Type == BusinessSignalType.OperationalLoad));
++        Assert.Equal(BusinessSignalSeverity.Warning, operationalLoad.Severity);
++        Assert.Equal(2m, operationalLoad.MetricValue.GetValueOrDefault());
++        Assert.False(string.IsNullOrWhiteSpace(operationalLoad.Title));
++        Assert.False(string.IsNullOrWhiteSpace(operationalLoad.Summary));
++        Assert.Contains("2 open work item(s)", operationalLoad.Summary);
++        Assert.Contains($"companyId={companyId:D}", operationalLoad.ActionUrl!);
++
++        var approvalBottleneck = Assert.Single(signals.Where(signal => signal.Type == BusinessSignalType.ApprovalBottleneck));
++        Assert.Equal(BusinessSignalSeverity.Info, approvalBottleneck.Severity);
++        Assert.Equal(1m, approvalBottleneck.MetricValue.GetValueOrDefault());
++        Assert.False(string.IsNullOrWhiteSpace(approvalBottleneck.Title));
++        Assert.False(string.IsNullOrWhiteSpace(approvalBottleneck.Summary));
++        Assert.Contains("1 approval(s) are pending.", approvalBottleneck.Summary);
++        Assert.Contains($"companyId={companyId:D}", approvalBottleneck.ActionUrl!);
++    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs
+index a0a0a0a..a1a1a1a 100644
+--- a/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs
+@@ -1,5 +1,6 @@
+ using System.Net;
+ using System.Net.Http.Json;
++using System.Text.Json;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+@@ -58,7 +59,74 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
+         Assert.Null(snapshot.RunwayDays);
+     }
+ 
+-    private HttpClient CreateAuthenticatedClient()
++    [Fact]
++    public async Task Finance_snapshot_averages_last_thirty_days_of_expenses_and_keeps_company_data_isolated()
++    {
++        var asOfUtc = new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero);
++        using var factory = new TestWebApplicationFactory(new FixedTimeProvider(asOfUtc));
++
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var cashAccountId = Guid.NewGuid();
++        var expenseAccountId = Guid.NewGuid();
++        var otherCashAccountId = Guid.NewGuid();
++        var otherExpenseAccountId = Guid.NewGuid();
++
++        await factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "dashboard-finance-window@example.com", "Dashboard Finance Window", "dev-header", "dashboard-finance-user"));
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Windowed Finance Co"),
++                new Company(otherCompanyId, "Other Finance Co"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++
++            dbContext.FinanceAccounts.AddRange(
++                new FinanceAccount(cashAccountId, companyId, "1000", "Operating Cash", "cash", "USD", 60000m, asOfUtc.AddMonths(-2).UtcDateTime),
++                new FinanceAccount(expenseAccountId, companyId, "6000", "Operating Expenses", "expense", "USD", 0m, asOfUtc.AddMonths(-2).UtcDateTime),
++                new FinanceAccount(otherCashAccountId, otherCompanyId, "1000", "Other Cash", "cash", "USD", 200000m, asOfUtc.AddMonths(-2).UtcDateTime),
++                new FinanceAccount(otherExpenseAccountId, otherCompanyId, "6000", "Other Expenses", "expense", "USD", 0m, asOfUtc.AddMonths(-2).UtcDateTime));
++
++            dbContext.FinanceTransactions.AddRange(
++                new FinanceTransaction(Guid.NewGuid(), companyId, expenseAccountId, null, null, null, asOfUtc.AddDays(-5).UtcDateTime, "operating_expense", -12000m, "USD", "Payroll", "exp-1"),
++                new FinanceTransaction(Guid.NewGuid(), companyId, expenseAccountId, null, null, null, asOfUtc.AddDays(-15).UtcDateTime, "operating_expense", -9000m, "USD", "Infrastructure", "exp-2"),
++                new FinanceTransaction(Guid.NewGuid(), companyId, expenseAccountId, null, null, null, asOfUtc.AddDays(-29).UtcDateTime, "operating_expense", -9000m, "USD", "Contractors", "exp-3"),
++                new FinanceTransaction(Guid.NewGuid(), companyId, expenseAccountId, null, null, null, asOfUtc.AddDays(-31).UtcDateTime, "operating_expense", -15000m, "USD", "Older expense", "exp-4"),
++                new FinanceTransaction(Guid.NewGuid(), otherCompanyId, otherExpenseAccountId, null, null, null, asOfUtc.AddDays(-7).UtcDateTime, "operating_expense", -60000m, "USD", "Other payroll", "other-exp-1"));
++
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(factory);
++        var response = await client.GetAsync($"/api/dashboard/finance-snapshot?companyId={companyId:D}");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadAsStringAsync();
++        var snapshot = JsonSerializer.Deserialize<FinanceSnapshotResponse>(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
++
++        Assert.NotNull(snapshot);
++        Assert.Equal(companyId, snapshot!.CompanyId);
++        Assert.Equal(60000m, snapshot.Cash);
++        Assert.Equal(1000m, snapshot.BurnRate);
++        Assert.Equal(60, snapshot.RunwayDays);
++        Assert.Equal("warning", snapshot.RiskLevel);
++        Assert.True(snapshot.HasFinanceData);
++        Assert.Contains("\"cash\":", payload);
++        Assert.Contains("\"burnRate\":", payload);
++        Assert.Contains("\"runwayDays\":", payload);
++        Assert.Contains("\"riskLevel\":", payload);
++    }
++
++    private HttpClient CreateAuthenticatedClient(TestWebApplicationFactory? factory = null)
+     {
+-        var client = _factory.CreateClient();
++        var client = (factory ?? _factory).CreateClient();
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "dashboard-finance-user");
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "dashboard-finance@example.com");
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Dashboard Finance");
+@@ -103,4 +171,13 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
+         public bool HasFinanceData { get; set; }
+         public string Currency { get; set; } = string.Empty;
+     }
++
++    private sealed class FixedTimeProvider : TimeProvider
++    {
++        private readonly DateTimeOffset _utcNow;
++
++        public FixedTimeProvider(DateTimeOffset utcNow) => _utcNow = utcNow;
++
++        public override DateTimeOffset GetUtcNow() => _utcNow;
++    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/BusinessSignalsPanelTests.cs b/tests/VirtualCompany.Api.Tests/BusinessSignalsPanelTests.cs
+new file mode 100644
+index 0000000..b2b2b2b
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/BusinessSignalsPanelTests.cs
+@@ -0,0 +1,53 @@
++using Bunit;
++using VirtualCompany.Web.Components;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class BusinessSignalsPanelTests
++{
++    [Fact]
++    public void Business_signals_panel_renders_signals_with_severity_classes_icons_and_no_legacy_kpis()
++    {
++        using var context = new TestContext();
++        var detectedAtUtc = new DateTime(2026, 4, 19, 12, 0, 0, DateTimeKind.Utc);
++
++        var signals = new List<BusinessSignalViewModel>
++        {
++            new()
++            {
++                Type = "operationalLoad",
++                Severity = "warning",
++                Title = "Operational load is building",
++                Summary = "Open work is rising faster than available capacity.",
++                MetricValue = 2.5m,
++                MetricLabel = "open_tasks_per_agent",
++                ActionLabel = "Open tasks",
++                ActionUrl = "/tasks?companyId=11111111-1111-1111-1111-111111111111",
++                DetectedAtUtc = detectedAtUtc
++            },
++            new()
++            {
++                Type = "approval-bottleneck",
++                Severity = "critical",
++                Title = "Approvals are waiting on decisions",
++                Summary = "5 approval(s) are pending.",
++                ActionLabel = "Review approvals",
++                ActionUrl = "/approvals?companyId=11111111-1111-1111-1111-111111111111&status=pending",
++                DetectedAtUtc = detectedAtUtc
++            }
++        };
++
++        var cut = context.RenderComponent<BusinessSignalsPanel>(parameters => parameters.Add(component => component.Signals, signals));
++
++        var warningSignal = cut.Find("[data-testid='business-signal-operationalload']");
++        Assert.Contains("business-signal--warning", warningSignal.ClassName);
++        Assert.Equal("~", warningSignal.QuerySelector(".business-signal__icon")!.TextContent.Trim());
++        Assert.Contains("Operational load", warningSignal.TextContent);
++
++        var criticalSignal = cut.Find("[data-testid='business-signal-approval-bottleneck']");
++        Assert.Contains("business-signal--critical", criticalSignal.ClassName);
++        Assert.Equal("!", criticalSignal.QuerySelector(".business-signal__icon")!.TextContent.Trim());
++        Assert.Contains("Approval bottleneck", criticalSignal.TextContent);
++
++        Assert.Empty(cut.FindAll(".kpi-tile"));
++        Assert.DoesNotContain("workflow exceptions", cut.Markup, StringComparison.OrdinalIgnoreCase);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSnapshotCardTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSnapshotCardTests.cs
+new file mode 100644
+index 0000000..c3c3c3c
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceSnapshotCardTests.cs
+@@ -0,0 +1,65 @@
++using Bunit;
++using VirtualCompany.Web.Components.Finance;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceSnapshotCardTests
++{
++    private static readonly DateTime SnapshotUtc = new(2026, 4, 19, 12, 0, 0, DateTimeKind.Utc);
++
++    [Fact]
++    public void Finance_snapshot_card_shows_connect_accounting_cta_when_finance_data_is_missing()
++    {
++        using var context = new TestContext();
++        var companyId = Guid.Parse("9e57e8b8-f4d9-4d2c-9f09-f58d25e26be9");
++
++        var cut = context.RenderComponent<FinanceSnapshotCard>(parameters => parameters
++            .Add(component => component.CompanyId, companyId)
++            .Add(component => component.Snapshot, new DashboardFinanceSnapshotViewModel
++            {
++                CompanyId = companyId,
++                Cash = 0m,
++                BurnRate = 0m,
++                RunwayDays = null,
++                RiskLevel = "missing",
++                HasFinanceData = false,
++                Currency = "USD",
++                AsOfUtc = SnapshotUtc
++            }));
++
++        var cta = cut.Find("[data-testid='connect-accounting-cta']");
++        Assert.Equal("Connect accounting", cta.TextContent.Trim());
++        Assert.Equal(FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId), cta.GetAttribute("href"));
++        Assert.NotEmpty(cut.FindAll("[data-testid='finance-snapshot-empty']"));
++    }
++
++    [Fact]
++    public void Finance_snapshot_card_shows_cash_runway_and_risk_badge_when_finance_data_is_available()
++    {
++        using var context = new TestContext();
++        var companyId = Guid.Parse("5d7ae44d-04db-43a0-ab8d-97a21544d9ba");
++
++        var cut = context.RenderComponent<FinanceSnapshotCard>(parameters => parameters
++            .Add(component => component.CompanyId, companyId)
++            .Add(component => component.Snapshot, new DashboardFinanceSnapshotViewModel
++            {
++                CompanyId = companyId,
++                Cash = 125400.25m,
++                BurnRate = 5700m,
++                RunwayDays = 22,
++                RiskLevel = "critical",
++                HasFinanceData = true,
++                Currency = "USD",
++                AsOfUtc = SnapshotUtc
++            }));
++
++        Assert.Contains("USD 125,400.25", cut.Find("[data-testid='executive-cockpit-cash-position']").TextContent);
++        Assert.Contains("22 days", cut.Find("[data-testid='executive-cockpit-runway']").TextContent);
++
++        var riskBadge = cut.Find("[data-testid='executive-cockpit-runway-status']");
++        Assert.Contains("Critical", riskBadge.TextContent);
++        Assert.Contains("finance-risk-pill--critical", riskBadge.ClassName);
++
++        Assert.Contains("Burn rate: USD 5,700.00 per day.", cut.Markup);
++        Assert.Empty(cut.FindAll("[data-testid='connect-accounting-cta']"));
++    }
++}
+END_OF_PATCH

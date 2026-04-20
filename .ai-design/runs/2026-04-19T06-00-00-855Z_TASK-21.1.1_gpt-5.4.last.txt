@@ -1,0 +1,844 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 6f9e871..c0f8683 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -123,6 +123,28 @@ public sealed record RunScheduledCompanySimulationCommand(
+ public sealed record CompanySimulationClockDto(
+     Guid CompanyId,
+     DateTime CurrentUtc,
++    bool Enabled,
++    bool AutoAdvanceEnabled,
++    int DefaultStepHours,
++    int AutoAdvanceIntervalSeconds,
++    DateTime? LastAdvancedUtc);
++
++public sealed record StartCompanySimulationStateCommand(
++    Guid CompanyId,
++    DateTime StartSimulatedUtc,
++    bool GenerationEnabled,
++    int Seed,
++    string? DeterministicConfigurationJson = null,
++    Guid? SessionId = null,
++    DateTime? TransitionedUtc = null);
++
++public sealed record UpdateCompanySimulationStateCommand(
++    Guid CompanyId,
++    DateTime CurrentSimulatedUtc,
++    DateTime? LastProgressedUtc = null,
++    bool? GenerationEnabled = null,
++    string? DeterministicConfigurationJson = null,
++    DateTime? UpdatedUtc = null);
++
++public sealed record PauseCompanySimulationStateCommand(
++    Guid CompanyId,
++    DateTime? PausedUtc = null);
++
++public sealed record ResumeCompanySimulationStateCommand(
++    Guid CompanyId,
++    DateTime? ResumedUtc = null);
++
++public sealed record StopCompanySimulationStateCommand(
++    Guid CompanyId,
++    DateTime? StoppedUtc = null);
++
++public interface ICompanySimulationStateRepository
++{
++    Task<CompanySimulationState?> GetCurrentAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<CompanySimulationState?> GetByActiveSessionAsync(Guid companyId, Guid activeSessionId, CancellationToken cancellationToken);
++    Task<CompanySimulationState> StartAsync(StartCompanySimulationStateCommand command, CancellationToken cancellationToken);
++    Task<CompanySimulationState> UpdateAsync(UpdateCompanySimulationStateCommand command, CancellationToken cancellationToken);
++    Task<CompanySimulationState> PauseAsync(PauseCompanySimulationStateCommand command, CancellationToken cancellationToken);
++    Task<CompanySimulationState> ResumeAsync(ResumeCompanySimulationStateCommand command, CancellationToken cancellationToken);
++    Task<CompanySimulationState> StopAsync(StopCompanySimulationStateCommand command, CancellationToken cancellationToken);
++}
++
++public sealed record CompanySimulationClockDto(
++    Guid CompanyId,
++    DateTime CurrentUtc,
+     bool Enabled,
+     bool AutoAdvanceEnabled,
+     int DefaultStepHours,
+diff --git a/src/VirtualCompany.Domain/Entities/SimulationStateEntities.cs b/src/VirtualCompany.Domain/Entities/SimulationStateEntities.cs
+new file mode 100644
+index 0000000..f6963b4
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/SimulationStateEntities.cs
+@@ -0,0 +1,196 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class CompanySimulationState : ICompanyOwnedEntity
++{
++    private const int DeterministicConfigurationMaxLength = 16000;
++
++    private CompanySimulationState()
++    {
++    }
++
++    public CompanySimulationState(
++        Guid id,
++        Guid companyId,
++        Guid activeSessionId,
++        CompanySimulationStatus status,
++        DateTime startSimulatedUtc,
++        DateTime currentSimulatedUtc,
++        DateTime? lastProgressedUtc,
++        bool generationEnabled,
++        int seed,
++        string? deterministicConfigurationJson,
++        DateTime createdUtc,
++        DateTime updatedUtc,
++        DateTime? pausedUtc = null,
++        DateTime? stoppedUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (activeSessionId == Guid.Empty)
++        {
++            throw new ArgumentException("ActiveSessionId is required.", nameof(activeSessionId));
++        }
++
++        CompanySimulationStatusValues.EnsureSupported(status, nameof(status));
++
++        var normalizedStartSimulatedUtc = EntityTimestampNormalizer.NormalizeUtc(startSimulatedUtc, nameof(startSimulatedUtc));
++        var normalizedCurrentSimulatedUtc = EntityTimestampNormalizer.NormalizeUtc(currentSimulatedUtc, nameof(currentSimulatedUtc));
++        if (normalizedCurrentSimulatedUtc < normalizedStartSimulatedUtc)
++        {
++            throw new ArgumentException("Current simulated time cannot be before the start simulated time.", nameof(currentSimulatedUtc));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Status = status;
++        StartSimulatedUtc = normalizedStartSimulatedUtc;
++        CurrentSimulatedUtc = normalizedCurrentSimulatedUtc;
++        LastProgressedUtc = lastProgressedUtc.HasValue
++            ? EntityTimestampNormalizer.NormalizeUtc(lastProgressedUtc.Value, nameof(lastProgressedUtc))
++            : null;
++        GenerationEnabled = generationEnabled;
++        Seed = seed;
++        ActiveSessionId = activeSessionId;
++        DeterministicConfigurationJson = NormalizeDeterministicConfiguration(deterministicConfigurationJson);
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
++        PausedUtc = pausedUtc.HasValue ? EntityTimestampNormalizer.NormalizeUtc(pausedUtc.Value, nameof(pausedUtc)) : null;
++        StoppedUtc = stoppedUtc.HasValue ? EntityTimestampNormalizer.NormalizeUtc(stoppedUtc.Value, nameof(stoppedUtc)) : null;
++
++        if (Status == CompanySimulationStatus.Stopped)
++        {
++            ActiveSessionId = null;
++        }
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public CompanySimulationStatus Status { get; private set; }
++    public DateTime StartSimulatedUtc { get; private set; }
++    public DateTime CurrentSimulatedUtc { get; private set; }
++    public DateTime? LastProgressedUtc { get; private set; }
++    public bool GenerationEnabled { get; private set; }
++    public int Seed { get; private set; }
++    public Guid? ActiveSessionId { get; private set; }
++    public string? DeterministicConfigurationJson { get; private set; }
++    public DateTime? PausedUtc { get; private set; }
++    public DateTime? StoppedUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    public bool IsRunning => Status == CompanySimulationStatus.Running;
++    public bool IsPaused => Status == CompanySimulationStatus.Paused;
++    public bool IsStopped => Status == CompanySimulationStatus.Stopped;
++
++    public void StartNewSession(
++        Guid activeSessionId,
++        DateTime startSimulatedUtc,
++        bool generationEnabled,
++        int seed,
++        string? deterministicConfigurationJson,
++        DateTime transitionedUtc)
++    {
++        if (activeSessionId == Guid.Empty)
++        {
++            throw new ArgumentException("ActiveSessionId is required.", nameof(activeSessionId));
++        }
++
++        var normalizedTransitionedUtc = EntityTimestampNormalizer.NormalizeUtc(transitionedUtc, nameof(transitionedUtc));
++        var normalizedStartSimulatedUtc = EntityTimestampNormalizer.NormalizeUtc(startSimulatedUtc, nameof(startSimulatedUtc));
++
++        Status = CompanySimulationStatus.Running;
++        StartSimulatedUtc = normalizedStartSimulatedUtc;
++        CurrentSimulatedUtc = normalizedStartSimulatedUtc;
++        LastProgressedUtc = null;
++        GenerationEnabled = generationEnabled;
++        Seed = seed;
++        ActiveSessionId = activeSessionId;
++        DeterministicConfigurationJson = NormalizeDeterministicConfiguration(deterministicConfigurationJson);
++        PausedUtc = null;
++        StoppedUtc = null;
++        UpdatedUtc = normalizedTransitionedUtc;
++    }
++
++    public void Update(
++        DateTime currentSimulatedUtc,
++        DateTime? lastProgressedUtc,
++        bool? generationEnabled,
++        string? deterministicConfigurationJson,
++        DateTime updatedUtc)
++    {
++        EnsureActiveSession();
++
++        var normalizedUpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
++        var normalizedCurrentSimulatedUtc = EntityTimestampNormalizer.NormalizeUtc(currentSimulatedUtc, nameof(currentSimulatedUtc));
++        if (normalizedCurrentSimulatedUtc < StartSimulatedUtc)
++        {
++            throw new ArgumentException("Current simulated time cannot be before the start simulated time.", nameof(currentSimulatedUtc));
++        }
++
++        CurrentSimulatedUtc = normalizedCurrentSimulatedUtc;
++        LastProgressedUtc = lastProgressedUtc.HasValue
++            ? EntityTimestampNormalizer.NormalizeUtc(lastProgressedUtc.Value, nameof(lastProgressedUtc))
++            : LastProgressedUtc;
++
++        if (generationEnabled.HasValue)
++        {
++            GenerationEnabled = generationEnabled.Value;
++        }
++
++        if (deterministicConfigurationJson is not null)
++        {
++            DeterministicConfigurationJson = NormalizeDeterministicConfiguration(deterministicConfigurationJson);
++        }
++
++        UpdatedUtc = normalizedUpdatedUtc;
++    }
++
++    public void Pause(DateTime pausedUtc)
++    {
++        EnsureActiveSession();
++        Status = CompanySimulationStatus.Paused;
++        PausedUtc = EntityTimestampNormalizer.NormalizeUtc(pausedUtc, nameof(pausedUtc));
++        UpdatedUtc = PausedUtc.Value;
++    }
++
++    public void Resume(DateTime resumedUtc)
++    {
++        EnsureActiveSession();
++        Status = CompanySimulationStatus.Running;
++        PausedUtc = null;
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(resumedUtc, nameof(resumedUtc));
++    }
++
++    public void Stop(DateTime stoppedUtc)
++    {
++        EnsureActiveSession();
++        Status = CompanySimulationStatus.Stopped;
++        StoppedUtc = EntityTimestampNormalizer.NormalizeUtc(stoppedUtc, nameof(stoppedUtc));
++        ActiveSessionId = null;
++        PausedUtc = null;
++        UpdatedUtc = StoppedUtc.Value;
++    }
++
++    private void EnsureActiveSession()
++    {
++        if (ActiveSessionId is null || Status == CompanySimulationStatus.Stopped)
++        {
++            throw new InvalidOperationException("Simulation state does not have an active session.");
++        }
++    }
++
++    private static string? NormalizeDeterministicConfiguration(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > DeterministicConfigurationMaxLength)
++        {
++            throw new ArgumentOutOfRangeException(nameof(value), $"Deterministic configuration must be {DeterministicConfigurationMaxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Enums/CompanySimulationStatus.cs b/src/VirtualCompany.Domain/Enums/CompanySimulationStatus.cs
+new file mode 100644
+index 0000000..e6dbdaf
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/CompanySimulationStatus.cs
+@@ -0,0 +1,74 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum CompanySimulationStatus
++{
++    Running = 1,
++    Paused = 2,
++    Stopped = 3
++}
++
++public static class CompanySimulationStatusValues
++{
++    public static IReadOnlyList<string> AllowedValues { get; } =
++    [
++        "running",
++        "paused",
++        "stopped"
++    ];
++
++    public static string ToStorageValue(this CompanySimulationStatus status) =>
++        status switch
++        {
++            CompanySimulationStatus.Running => "running",
++            CompanySimulationStatus.Paused => "paused",
++            CompanySimulationStatus.Stopped => "stopped",
++            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported company simulation status.")
++        };
++
++    public static CompanySimulationStatus Parse(string value)
++    {
++        if (TryParse(value, out var status))
++        {
++            return status;
++        }
++
++        throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported company simulation status value.");
++    }
++
++    public static bool TryParse(string? value, out CompanySimulationStatus status)
++    {
++        status = CompanySimulationStatus.Running;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        return value.Trim().ToLowerInvariant() switch
++        {
++            "running" => SetStatus(CompanySimulationStatus.Running, out status),
++            "paused" => SetStatus(CompanySimulationStatus.Paused, out status),
++            "stopped" => SetStatus(CompanySimulationStatus.Stopped, out status),
++            _ => Enum.TryParse(value.Trim(), ignoreCase: true, out status)
++        };
++    }
++
++    private static bool SetStatus(CompanySimulationStatus value, out CompanySimulationStatus status)
++    {
++        status = value;
++        return true;
++    }
++
++    public static void EnsureSupported(CompanySimulationStatus status, string? paramName = null)
++    {
++        if (!Enum.IsDefined(status))
++        {
++            throw new ArgumentOutOfRangeException(paramName ?? nameof(status), status, "Unsupported company simulation status.");
++        }
++    }
++
++    public static string BuildCheckConstraintSql(string columnName)
++    {
++        if (string.IsNullOrWhiteSpace(columnName))
++        {
++            throw new ArgumentException("Column name is required.", nameof(columnName));
++        }
++
++        var allowedValues = string.Join(", ", AllowedValues.Select(value => $"'{value}'"));
++        return $"{columnName} IN ({allowedValues})";
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 8e82c82..50ad14e 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -340,6 +340,7 @@ public static class DependencyInjection
+         services.AddScoped<ExecutionExceptionService>();
+         services.AddScoped<ICompanySimulationService, CompanySimulationService>();
+         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
++        services.AddScoped<ICompanySimulationStateRepository, EfCompanySimulationStateRepository>();
+         services.AddScoped<IExecutionExceptionQueryService>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+         services.AddScoped<CompanyAlertService>();
+         services.AddScoped<ICompanyAlertService>(provider => provider.GetRequiredService<CompanyAlertService>());
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateRepository.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateRepository.cs
+new file mode 100644
+index 0000000..7b8cf45
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateRepository.cs
+@@ -0,0 +1,139 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class EfCompanySimulationStateRepository : ICompanySimulationStateRepository
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public EfCompanySimulationStateRepository(VirtualCompanyDbContext dbContext) =>
++        _dbContext = dbContext;
++
++    public Task<CompanySimulationState?> GetCurrentAsync(Guid companyId, CancellationToken cancellationToken) =>
++        _dbContext.CompanySimulationStates
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
++
++    public Task<CompanySimulationState?> GetByActiveSessionAsync(Guid companyId, Guid activeSessionId, CancellationToken cancellationToken) =>
++        _dbContext.CompanySimulationStates
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == companyId &&
++                     x.ActiveSessionId.HasValue &&
++                     x.ActiveSessionId.Value == activeSessionId,
++                cancellationToken);
++
++    public async Task<CompanySimulationState> StartAsync(
++        StartCompanySimulationStateCommand command,
++        CancellationToken cancellationToken)
++    {
++        ValidateCompany(command.CompanyId);
++
++        var transitionedUtc = NormalizeUtc(command.TransitionedUtc ?? DateTime.UtcNow);
++        var sessionId = command.SessionId ?? Guid.NewGuid();
++        var existing = await GetCurrentAsync(command.CompanyId, cancellationToken);
++
++        if (existing is null)
++        {
++            existing = new CompanySimulationState(
++                Guid.NewGuid(),
++                command.CompanyId,
++                sessionId,
++                CompanySimulationStatus.Running,
++                command.StartSimulatedUtc,
++                command.StartSimulatedUtc,
++                null,
++                command.GenerationEnabled,
++                command.Seed,
++                command.DeterministicConfigurationJson,
++                transitionedUtc,
++                transitionedUtc);
++
++            await _dbContext.CompanySimulationStates.AddAsync(existing, cancellationToken);
++        }
++        else
++        {
++            existing.StartNewSession(
++                sessionId,
++                command.StartSimulatedUtc,
++                command.GenerationEnabled,
++                command.Seed,
++                command.DeterministicConfigurationJson,
++                transitionedUtc);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return existing;
++    }
++
++    public async Task<CompanySimulationState> UpdateAsync(
++        UpdateCompanySimulationStateCommand command,
++        CancellationToken cancellationToken)
++    {
++        ValidateCompany(command.CompanyId);
++        var state = await RequireCurrentAsync(command.CompanyId, cancellationToken);
++        state.Update(
++            command.CurrentSimulatedUtc,
++            command.LastProgressedUtc,
++            command.GenerationEnabled,
++            command.DeterministicConfigurationJson,
++            command.UpdatedUtc ?? DateTime.UtcNow);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return state;
++    }
++
++    public async Task<CompanySimulationState> PauseAsync(
++        PauseCompanySimulationStateCommand command,
++        CancellationToken cancellationToken)
++    {
++        ValidateCompany(command.CompanyId);
++        var state = await RequireCurrentAsync(command.CompanyId, cancellationToken);
++        state.Pause(command.PausedUtc ?? DateTime.UtcNow);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return state;
++    }
++
++    public async Task<CompanySimulationState> ResumeAsync(
++        ResumeCompanySimulationStateCommand command,
++        CancellationToken cancellationToken)
++    {
++        ValidateCompany(command.CompanyId);
++        var state = await RequireCurrentAsync(command.CompanyId, cancellationToken);
++        state.Resume(command.ResumedUtc ?? DateTime.UtcNow);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return state;
++    }
++
++    public async Task<CompanySimulationState> StopAsync(
++        StopCompanySimulationStateCommand command,
++        CancellationToken cancellationToken)
++    {
++        ValidateCompany(command.CompanyId);
++        var state = await RequireCurrentAsync(command.CompanyId, cancellationToken);
++        state.Stop(command.StoppedUtc ?? DateTime.UtcNow);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return state;
++    }
++
++    private async Task<CompanySimulationState> RequireCurrentAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var state = await GetCurrentAsync(companyId, cancellationToken);
++        return state ?? throw new KeyNotFoundException($"Simulation state for company '{companyId}' was not found.");
++    }
++
++    private static void ValidateCompany(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++    }
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind switch
++        {
++            DateTimeKind.Utc => value,
++            DateTimeKind.Local => value.ToUniversalTime(),
++            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
++        };
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index ddc6f89..9b0b490 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -2966,6 +2966,40 @@ internal sealed class FinanceSeedAnomalyConfiguration : IEntityTypeConfiguration
+     }
+ }
+ 
++internal sealed class CompanySimulationStateConfiguration : IEntityTypeConfiguration<CompanySimulationState>
++{
++    public void Configure(EntityTypeBuilder<CompanySimulationState> builder)
++    {
++        builder.ToTable("company_simulation_states");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(status => status.ToStorageValue(), value => CompanySimulationStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.CurrentSimulatedUtc).HasColumnName("current_simulated_at").IsRequired();
++        builder.Property(x => x.LastProgressedUtc).HasColumnName("last_progressed_at");
++        builder.Property(x => x.GenerationEnabled).HasColumnName("generation_enabled").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.Seed).HasColumnName("seed").IsRequired();
++        builder.Property(x => x.ActiveSessionId).HasColumnName("active_session_id");
++        builder.Property(x => x.StartSimulatedUtc).HasColumnName("start_simulated_at").IsRequired();
++        builder.Property(x => x.DeterministicConfigurationJson).HasColumnName("deterministic_configuration_json").HasColumnType("nvarchar(max)");
++        builder.Property(x => x.PausedUtc).HasColumnName("paused_at");
++        builder.Property(x => x.StoppedUtc).HasColumnName("stopped_at");
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasCheckConstraint("CK_company_simulation_states_status", CompanySimulationStatusValues.BuildCheckConstraintSql("status"));
++        builder.HasCheckConstraint("CK_company_simulation_states_active_session", "(status = 'stopped' AND active_session_id IS NULL) OR (status IN ('running', 'paused') AND active_session_id IS NOT NULL)");
++        builder.HasIndex(x => x.CompanyId).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.ActiveSessionId });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal static class ActiveProviderConstraint
+ {
+     // EF model configuration is provider-agnostic here; the expression is valid for SQL Server and SQLite.
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260419110000_AddCompanySimulationStatePersistence.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260419110000_AddCompanySimulationStatePersistence.cs
+new file mode 100644
+index 0000000..f81b036
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260419110000_AddCompanySimulationStatePersistence.cs
+@@ -0,0 +1,79 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddCompanySimulationStatePersistence : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "company_simulation_states",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    current_simulated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    last_progressed_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    generation_enabled = table.Column<bool>(type: "bit", nullable: false, defaultValue: true),
++                    seed = table.Column<int>(type: "int", nullable: false),
++                    active_session_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    start_simulated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    deterministic_configuration_json = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                    paused_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    stopped_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_company_simulation_states", x => x.id);
++                    table.CheckConstraint("CK_company_simulation_states_active_session", "(status = 'stopped' AND active_session_id IS NULL) OR (status IN ('running', 'paused') AND active_session_id IS NOT NULL)");
++                    table.CheckConstraint("CK_company_simulation_states_status", "status IN ('running', 'paused', 'stopped')");
++                    table.ForeignKey(
++                        name: "FK_company_simulation_states_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_company_simulation_states_company_id",
++                table: "company_simulation_states",
++                column: "company_id",
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_company_simulation_states_company_id_active_session_id",
++                table: "company_simulation_states",
++                columns: new[] { "company_id", "active_session_id" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(name: "company_simulation_states");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 8392437..1bcc13c 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -87,6 +87,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<FinanceSimulationStepLog> FinanceSimulationStepLogs => Set<FinanceSimulationStepLog>();
+     public DbSet<FinanceSeedBackfillRun> FinanceSeedBackfillRuns => Set<FinanceSeedBackfillRun>();
+     public DbSet<FinanceSeedBackfillAttempt> FinanceSeedBackfillAttempts => Set<FinanceSeedBackfillAttempt>();
++    public DbSet<CompanySimulationState> CompanySimulationStates => Set<CompanySimulationState>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+ 
+@@ -300,5 +301,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FinanceSimulationStepLog>()
+             .HasQueryFilter(log =>
+                 CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CompanySimulationState>()
++            .HasQueryFilter(state =>
++                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationStateRepositoryTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationStateRepositoryTests.cs
+new file mode 100644
+index 0000000..6c589af
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationStateRepositoryTests.cs
+@@ -0,0 +1,183 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class CompanySimulationStateRepositoryTests
++{
++    [Fact]
++    public async Task Start_and_get_current_state_persists_company_scoped_session()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var startSimulatedUtc = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc);
++
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(companyId, "Simulation Company"));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        var state = await repository.StartAsync(
++            new StartCompanySimulationStateCommand(
++                companyId,
++                startSimulatedUtc,
++                GenerationEnabled: true,
++                Seed: 42,
++                DeterministicConfigurationJson: """{"profile":"baseline","speed":"1d/10s"}"""),
++            CancellationToken.None);
++
++        var stored = await repository.GetCurrentAsync(companyId, CancellationToken.None);
++
++        Assert.NotNull(stored);
++        Assert.Equal(state.Id, stored!.Id);
++        Assert.Equal(companyId, stored.CompanyId);
++        Assert.Equal(CompanySimulationStatus.Running, stored.Status);
++        Assert.Equal(startSimulatedUtc, stored.StartSimulatedUtc);
++        Assert.Equal(startSimulatedUtc, stored.CurrentSimulatedUtc);
++        Assert.True(stored.GenerationEnabled);
++        Assert.Equal(42, stored.Seed);
++        Assert.NotNull(stored.ActiveSessionId);
++    }
++
++    [Fact]
++    public async Task Update_pause_resume_stop_and_restart_preserve_expected_session_semantics()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(companyId, "Lifecycle Company"));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        var initial = await repository.StartAsync(
++            new StartCompanySimulationStateCommand(companyId, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), true, 11),
++            CancellationToken.None);
++        var initialSessionId = initial.ActiveSessionId;
++
++        var updated = await repository.UpdateAsync(
++            new UpdateCompanySimulationStateCommand(
++                companyId,
++                new DateTime(2026, 4, 4, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 4, 19, 9, 0, 0, DateTimeKind.Utc),
++                GenerationEnabled: false,
++                DeterministicConfigurationJson: """{"profile":"paused-ready"}"""),
++            CancellationToken.None);
++        var paused = await repository.PauseAsync(
++            new PauseCompanySimulationStateCommand(companyId, new DateTime(2026, 4, 19, 9, 5, 0, DateTimeKind.Utc)),
++            CancellationToken.None);
++        var resumed = await repository.ResumeAsync(
++            new ResumeCompanySimulationStateCommand(companyId, new DateTime(2026, 4, 19, 9, 10, 0, DateTimeKind.Utc)),
++            CancellationToken.None);
++        var stopped = await repository.StopAsync(
++            new StopCompanySimulationStateCommand(companyId, new DateTime(2026, 4, 19, 9, 15, 0, DateTimeKind.Utc)),
++            CancellationToken.None);
++        var restarted = await repository.StartAsync(
++            new StartCompanySimulationStateCommand(
++                companyId,
++                new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc),
++                GenerationEnabled: true,
++                Seed: 22,
++                DeterministicConfigurationJson: """{"profile":"restart"}"""),
++            CancellationToken.None);
++
++        Assert.Equal(new DateTime(2026, 4, 4, 0, 0, 0, DateTimeKind.Utc), updated.CurrentSimulatedUtc);
++        Assert.Equal(new DateTime(2026, 4, 19, 9, 0, 0, DateTimeKind.Utc), updated.LastProgressedUtc);
++        Assert.False(updated.GenerationEnabled);
++        Assert.Equal(CompanySimulationStatus.Paused, paused.Status);
++        Assert.Equal(new DateTime(2026, 4, 4, 0, 0, 0, DateTimeKind.Utc), paused.CurrentSimulatedUtc);
++        Assert.Equal(CompanySimulationStatus.Running, resumed.Status);
++        Assert.Equal(initialSessionId, resumed.ActiveSessionId);
++        Assert.Equal(CompanySimulationStatus.Stopped, stopped.Status);
++        Assert.Null(stopped.ActiveSessionId);
++        Assert.Equal(new DateTime(2026, 4, 19, 9, 15, 0, DateTimeKind.Utc), stopped.StoppedUtc);
++        Assert.Null(await repository.GetByActiveSessionAsync(companyId, initialSessionId!.Value, CancellationToken.None));
++        Assert.Equal(CompanySimulationStatus.Running, restarted.Status);
++        Assert.NotNull(restarted.ActiveSessionId);
++        Assert.NotEqual(initialSessionId, restarted.ActiveSessionId);
++        Assert.Equal(new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc), restarted.StartSimulatedUtc);
++        Assert.Equal(new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc), restarted.CurrentSimulatedUtc);
++        Assert.Null(restarted.LastProgressedUtc);
++        Assert.Null(restarted.StoppedUtc);
++        Assert.True(restarted.GenerationEnabled);
++        Assert.Equal(22, restarted.Seed);
++    }
++
++    [Fact]
++    public async Task Repository_and_query_filter_enforce_company_isolation()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++
++        await using (var seedContext = await CreateDbContextAsync(connection))
++        {
++            seedContext.Companies.AddRange(new Company(companyAId, "Company A"), new Company(companyBId, "Company B"));
++            await seedContext.SaveChangesAsync();
++
++            var repository = new EfCompanySimulationStateRepository(seedContext);
++            await repository.StartAsync(new StartCompanySimulationStateCommand(companyAId, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), true, 1), CancellationToken.None);
++            await repository.StartAsync(new StartCompanySimulationStateCommand(companyBId, new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc), false, 2), CancellationToken.None);
++        }
++
++        Guid sessionAId;
++        await using (var companyAContext = await CreateDbContextAsync(connection, companyAId))
++        {
++            var visible = await companyAContext.CompanySimulationStates.AsNoTracking().ToListAsync();
++            var state = Assert.Single(visible);
++            sessionAId = state.ActiveSessionId!.Value;
++            Assert.Equal(companyAId, state.CompanyId);
++        }
++
++        await using var companyBContext = await CreateDbContextAsync(connection, companyBId);
++        var repositoryB = new EfCompanySimulationStateRepository(companyBContext);
++        var visibleToB = await companyBContext.CompanySimulationStates.AsNoTracking().ToListAsync();
++
++        Assert.Single(visibleToB);
++        Assert.Equal(companyBId, visibleToB[0].CompanyId);
++        Assert.Null(await repositoryB.GetByActiveSessionAsync(companyBId, sessionAId, CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task Deterministic_inputs_round_trip_unchanged()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        const string deterministicConfiguration = """{"startDate":"2026-04-01T00:00:00Z","profile":"replayable","generationEnabled":true}""";
++
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(companyId, "Deterministic Company"));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        await repository.StartAsync(
++            new StartCompanySimulationStateCommand(companyId, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), true, 8675309, deterministicConfiguration),
++            CancellationToken.None);
++
++        var stored = await repository.GetCurrentAsync(companyId, CancellationToken.None);
++
++        Assert.NotNull(stored);
++        Assert.Equal(8675309, stored!.Seed);
++        Assert.Equal(new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), stored.StartSimulatedUtc);
++        Assert.Equal(deterministicConfiguration, stored.DeterministicConfigurationJson);
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static async Task<VirtualCompanyDbContext> CreateDbContextAsync(SqliteConnection connection, Guid? companyId = null)
++    {
++        var accessor = new RequestCompanyContextAccessor();
++        accessor.SetCompanyId(companyId);
++        var dbContext = new VirtualCompanyDbContext(
++            new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++                .UseSqlite(connection)
++                .Options,
++            accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        return dbContext;
++    }
++}
+END_OF_PATCH

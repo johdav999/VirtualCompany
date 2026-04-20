@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-19.3.3",
+  "promptPath": ".ai-design/prompts/TASK-19.3.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T21:57:40.444Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T21-57-40-444Z_TASK-19.3.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T21-57-40-444Z_TASK-19.3.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T22:06:27.908Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "Detail.AffectedRecordReference);\n+\n+        var registryResponse = await client.GetAsync($\"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/anomaly-injection\");\n+\n+        Assert.Equal(HttpStatusCode.OK, registryResponse.StatusCode);\n+\n+        var registry = await registryResponse.Content.ReadFromJsonAsync<FinanceSandboxAnomalyInjectionResponse>();\n+        Assert.NotNull(registry);\n+        Assert.Contains(\n+            registry!.RegistryEntries,\n+            entry => entry.Id == injectedDetail.Id && !string.IsNullOrWhiteSpace(entry.AffectedRecordReference));\n+    }\n+\n+    [Fact]\n+    public async Task Simulation_control_endpoints_reject_invalid_hour_increment()\n+    {\n+        var seed = await SeedSandboxAdminCompanyAsync();\n+        var identity = seed.GetIdentity(\"owner\");\n+        using var client = CreateAuthenticatedClient(identity.Subject, identity.Email, identity.DisplayName);\n+\n+        var response = await client.PostAsJsonAsync(\n+            $\"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/simulation-controls/advance\",\n+            new FinanceSandboxSimulationAdvanceRequest\n+            {\n+                CompanyId = seed.CompanyId,\n+                IncrementHours = 0,\n+                ExecutionStepHours = 24,\n+                Accelerated = true\n+            });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+\n+        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();\n+        Assert.NotNull(payload);\n+        Assert.Equal(\"Finance validation failed\", payload!.Title);\n+        Assert.Contains(nameof(FinanceSandboxSimulationAdvanceRequest.IncrementHours), payload.Errors.Keys);\n+        Assert.Contains(\"positive hour increment\", payload.Errors[nameof(FinanceSandboxSimulationAdvanceRequest.IncrementHours)][0], StringComparison.OrdinalIgnoreCase);\n+    }\n \n     [Fact]\n     public async Task Anomaly_injection_endpoint_returns_profiles_even_when_registry_is_empty()\nEND_OF_PATCH\n",
+  "stderrTail": "dReference);\n+\n+        var registryResponse = await client.GetAsync($\"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/anomaly-injection\");\n+\n+        Assert.Equal(HttpStatusCode.OK, registryResponse.StatusCode);\n+\n+        var registry = await registryResponse.Content.ReadFromJsonAsync<FinanceSandboxAnomalyInjectionResponse>();\n+        Assert.NotNull(registry);\n+        Assert.Contains(\n+            registry!.RegistryEntries,\n+            entry => entry.Id == injectedDetail.Id && !string.IsNullOrWhiteSpace(entry.AffectedRecordReference));\n+    }\n+\n+    [Fact]\n+    public async Task Simulation_control_endpoints_reject_invalid_hour_increment()\n+    {\n+        var seed = await SeedSandboxAdminCompanyAsync();\n+        var identity = seed.GetIdentity(\"owner\");\n+        using var client = CreateAuthenticatedClient(identity.Subject, identity.Email, identity.DisplayName);\n+\n+        var response = await client.PostAsJsonAsync(\n+            $\"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/simulation-controls/advance\",\n+            new FinanceSandboxSimulationAdvanceRequest\n+            {\n+                CompanyId = seed.CompanyId,\n+                IncrementHours = 0,\n+                ExecutionStepHours = 24,\n+                Accelerated = true\n+            });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+\n+        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();\n+        Assert.NotNull(payload);\n+        Assert.Equal(\"Finance validation failed\", payload!.Title);\n+        Assert.Contains(nameof(FinanceSandboxSimulationAdvanceRequest.IncrementHours), payload.Errors.Keys);\n+        Assert.Contains(\"positive hour increment\", payload.Errors[nameof(FinanceSandboxSimulationAdvanceRequest.IncrementHours)][0], StringComparison.OrdinalIgnoreCase);\n+    }\n \n     [Fact]\n     public async Task Anomaly_injection_endpoint_returns_profiles_even_when_registry_is_empty()\nEND_OF_PATCH\ntokens used\n144,699\n",
+  "verbosityMode": "summary"
+}

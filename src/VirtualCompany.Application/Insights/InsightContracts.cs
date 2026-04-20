@@ -16,6 +16,7 @@ public sealed record ActionQueueItemDto(
     DateTime? DueUtc,
     string SlaState,
     int PriorityScore,
+    int ImpactScore,
     string Priority,
     string DeepLink,
     bool IsAcknowledged,
@@ -23,6 +24,15 @@ public sealed record ActionQueueItemDto(
     string StableSortKey);
 
 public sealed record AcknowledgeInsightCommand(string InsightKey);
+
+public sealed record ActionQueuePageDto(
+    IReadOnlyList<ActionQueueItemDto> Items,
+    int PageNumber,
+    int PageSize,
+    int TotalCount,
+    int TotalPages,
+    bool HasPreviousPage,
+    bool HasNextPage);
 
 public sealed record InsightCandidate(
     string InsightKey,
@@ -44,6 +54,7 @@ public sealed record InsightCandidate(
 public sealed record ScoredInsightCandidate(
     InsightCandidate Candidate,
     int PriorityScore,
+    int ImpactScore,
     ActionInsightPriority Priority);
 
 public sealed record ActionDeepLinkTarget(ActionInsightTargetType TargetType, Guid TargetId);
@@ -64,6 +75,10 @@ public static class ActionDeepLinkRoutes
 public interface IActionInsightService
 {
     Task<IReadOnlyList<ActionQueueItemDto>> GetActionQueueAsync(Guid companyId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<ActionQueueItemDto>> GetTopActionsAsync(Guid companyId, int count, CancellationToken cancellationToken);
+
+    Task<ActionQueuePageDto> GetAllActionsAsync(Guid companyId, int pageNumber, int pageSize, CancellationToken cancellationToken);
 
     Task<ActionQueueItemDto?> AcknowledgeAsync(Guid companyId, string insightKey, CancellationToken cancellationToken);
 }
@@ -94,19 +109,12 @@ public sealed class DefaultInsightScoringService : IInsightScoringService
         return new ScoredInsightCandidate(
             candidate,
             score,
+            score,
             ActionInsightPriorityValues.FromScore(score));
     }
 
     public IReadOnlyList<ScoredInsightCandidate> Prioritize(IEnumerable<InsightCandidate> candidates, DateTime nowUtc) =>
-        candidates
-            .Select(candidate => Score(candidate, nowUtc))
-            .OrderByDescending(scored => scored.PriorityScore)
-            .ThenBy(scored => scored.Candidate.DueUtc ?? DateTime.MaxValue)
-            // Equal priority uses immutable action identity fields so refreshes keep the same ordering.
-            .ThenBy(scored => scored.Candidate.CreatedUtc)
-            .ThenBy(scored => scored.Candidate.InsightKey, StringComparer.Ordinal)
-            .ThenBy(scored => scored.Candidate.TargetId)
-            .ToList();
+        ActionQueueOrdering.Order(candidates.Select(candidate => Score(candidate, nowUtc)));
 
     private static int SourceWeight(ActionInsightType type) =>
         type switch
@@ -157,6 +165,19 @@ public sealed class DefaultInsightScoringService : IInsightScoringService
     private static int SeverityWeight(int severityWeight) => Math.Clamp(severityWeight, 0, 20);
 
     private static int OccurrenceWeight(int occurrenceCount) => Math.Clamp(Math.Max(occurrenceCount, 1) - 1, 0, 5);
+}
+
+public static class ActionQueueOrdering
+{
+    public static IReadOnlyList<ScoredInsightCandidate> Order(IEnumerable<ScoredInsightCandidate> candidates) =>
+        candidates
+            .OrderByDescending(scored => (int)scored.Priority)
+            .ThenBy(scored => scored.Candidate.DueUtc.HasValue ? 0 : 1)
+            .ThenBy(scored => scored.Candidate.DueUtc ?? DateTime.MaxValue)
+            .ThenByDescending(scored => scored.ImpactScore)
+            .ThenBy(scored => scored.Candidate.SourceEntityId)
+            .ThenBy(scored => scored.Candidate.InsightKey, StringComparer.Ordinal)
+            .ToList();
 }
 
 public sealed class DefaultActionDeepLinkResolver : IActionDeepLinkResolver

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.FileProviders;
 using System.Net.Sockets;
 using System.Text.Json;
 using VirtualCompany.Web;
@@ -9,6 +10,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddHttpContextAccessor();
+builder.Services.Configure<FinanceSimulationControlPanelOptions>(builder.Configuration.GetSection(FinanceSimulationControlPanelOptions.SectionName));
+builder.Services.AddScoped<IFinanceSandboxAdminService, FinanceSandboxAdminService>();
+builder.Services.AddScoped<FinanceAccessResolver>();
+builder.Services.AddScoped<IDashboardInteractionService, DashboardInteractionService>();
 
 builder.Services.AddScoped(sp =>
 {
@@ -79,6 +84,11 @@ builder.Services.AddScoped(sp => new ActionInsightApiClient(
     ShouldUseOfflineMode(
         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new TodayFocusApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
 builder.Services.AddScoped(sp => new ActionInsightApiClient(
     sp.GetRequiredService<HttpClient>(),
     ShouldUseOfflineMode(
@@ -89,11 +99,31 @@ builder.Services.AddScoped(sp => new ActivityFeedApiClient(
     ShouldUseOfflineMode(
         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new FinanceApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    sp.GetRequiredService<ILogger<FinanceApiClient>>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new DashboardSummaryApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
 
 var app = builder.Build();
 
 app.UseHttpsRedirection();
 app.UseStaticFiles();
+var sharedImagesPath = Path.GetFullPath(Path.Combine(app.Environment.ContentRootPath, "..", "..", "images"));
+if (Directory.Exists(sharedImagesPath))
+{
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new PhysicalFileProvider(sharedImagesPath),
+        RequestPath = "/images"
+    });
+}
 app.UseAntiforgery();
 
 app.MapRazorComponents<App>()

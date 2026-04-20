@@ -1,0 +1,96 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+index 8c1f4d2..4f8a6b7 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -1,4 +1,6 @@
++using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+@@ -10,18 +12,25 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFina
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyContextAccessor? _companyContextAccessor;
++    private readonly IServiceProvider? _serviceProvider;
+ 
+     public CompanyFinanceCommandService(VirtualCompanyDbContext dbContext)
+-        : this(dbContext, null)
++        : this(dbContext, null, null)
+     {
+     }
+ 
+     public CompanyFinanceCommandService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyContextAccessor? companyContextAccessor)
++        : this(dbContext, companyContextAccessor, null)
++    {
++    }
++
++    public CompanyFinanceCommandService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor? companyContextAccessor,
++        IServiceProvider? serviceProvider)
+     {
+         _dbContext = dbContext;
+         _companyContextAccessor = companyContextAccessor;
++        _serviceProvider = serviceProvider;
+     }
+ 
+     public async Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
+@@ -43,7 +52,9 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFina
+         invoice!.ChangeApprovalStatus(command.Status);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+-        return MapInvoice(invoice);
++        var dto = MapInvoice(invoice);
++        await TriggerInvoiceReviewWorkflowIfAwaitingApprovalAsync(command, dto, cancellationToken);
++        return dto;
+     }
+ 
+     public async Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(
+@@ -141,6 +152,37 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFina
+         }
+     }
+ 
++    private async Task TriggerInvoiceReviewWorkflowIfAwaitingApprovalAsync(
++        UpdateFinanceInvoiceApprovalStatusCommand command,
++        FinanceInvoiceDto invoice,
++        CancellationToken cancellationToken)
++    {
++        if (!IsAwaitingApprovalStatus(invoice.Status))
++        {
++            return;
++        }
++
++        var workflowService = _serviceProvider?.GetService<IInvoiceReviewWorkflowService>();
++        if (workflowService is null)
++        {
++            return;
++        }
++
++        await workflowService.ExecuteAsync(
++            new ReviewFinanceInvoiceWorkflowCommand(
++                command.CompanyId,
++                command.InvoiceId,
++                null,
++                null,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["trigger"] = JsonValue.Create("invoice_status_awaiting_approval"),
++                    ["invoiceStatus"] = JsonValue.Create(invoice.Status)
++                }),
++            cancellationToken);
++    }
++
++    private static bool IsAwaitingApprovalStatus(string? status) =>
++        string.Equals(status?.Trim(), "awaiting_approval", StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(status?.Trim(), "awaiting-approval", StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(status?.Trim(), "awaiting approval", StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(status?.Trim(), "pending_approval", StringComparison.OrdinalIgnoreCase);
++
+     private static void EnsureRecordTenant(ICompanyOwnedEntity? entity, Guid companyId, string recordName)
+     {
+         if (entity is null)
+END_OF_PATCH

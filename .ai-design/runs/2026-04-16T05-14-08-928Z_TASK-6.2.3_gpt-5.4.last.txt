@@ -1,0 +1,444 @@
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+new file mode 100644
+index 0000000..c50d26b
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -0,0 +1,115 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("internal/companies/{companyId:guid}/finance")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class InternalFinanceController : ControllerBase
++{
++    private readonly IFinanceReadService _financeReadService;
++
++    public InternalFinanceController(IFinanceReadService financeReadService)
++    {
++        _financeReadService = financeReadService;
++    }
++
++    [HttpGet("cash-balance")]
++    public async Task<ActionResult<FinanceCashBalanceDto>> GetCashBalanceAsync(
++        Guid companyId,
++        [FromQuery] DateTime? asOfUtc,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetCashBalanceAsync(
++                new GetFinanceCashBalanceQuery(companyId, asOfUtc),
++                cancellationToken));
++
++    [HttpGet("profit-and-loss/monthly")]
++    public async Task<ActionResult<FinanceMonthlyProfitAndLossDto>> GetMonthlyProfitAndLossAsync(
++        Guid companyId,
++        [FromQuery] int year,
++        [FromQuery] int month,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetMonthlyProfitAndLossAsync(
++                new GetFinanceMonthlyProfitAndLossQuery(companyId, year, month),
++                cancellationToken));
++
++    [HttpGet("expense-breakdown")]
++    public async Task<ActionResult<FinanceExpenseBreakdownDto>> GetExpenseBreakdownAsync(
++        Guid companyId,
++        [FromQuery] DateTime startUtc,
++        [FromQuery] DateTime endUtc,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetExpenseBreakdownAsync(
++                new GetFinanceExpenseBreakdownQuery(companyId, startUtc, endUtc),
++                cancellationToken));
++
++    [HttpGet("transactions")]
++    public async Task<ActionResult<IReadOnlyList<FinanceTransactionDto>>> GetTransactionsAsync(
++        Guid companyId,
++        [FromQuery] DateTime? startUtc,
++        [FromQuery] DateTime? endUtc,
++        [FromQuery] int limit,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetTransactionsAsync(
++                new GetFinanceTransactionsQuery(companyId, startUtc, endUtc, limit),
++                cancellationToken));
++
++    [HttpGet("invoices")]
++    public async Task<ActionResult<IReadOnlyList<FinanceInvoiceDto>>> GetInvoicesAsync(
++        Guid companyId,
++        [FromQuery] DateTime? startUtc,
++        [FromQuery] DateTime? endUtc,
++        [FromQuery] int limit,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetInvoicesAsync(
++                new GetFinanceInvoicesQuery(companyId, startUtc, endUtc, limit),
++                cancellationToken));
++
++    [HttpGet("balances")]
++    public async Task<ActionResult<IReadOnlyList<FinanceAccountBalanceDto>>> GetBalancesAsync(
++        Guid companyId,
++        [FromQuery] DateTime? asOfUtc,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetBalancesAsync(
++                new GetFinanceBalancesQuery(companyId, asOfUtc),
++                cancellationToken));
++
++    private async Task<ActionResult<T>> ExecuteReadAsync<T>(Func<Task<T>> read)
++    {
++        try
++        {
++            return Ok(await read());
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (ArgumentException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message));
++        }
++        catch (ArgumentOutOfRangeException ex)
++        {
++            return BadRequest(CreateProblemDetails(ex.Message));
++        }
++    }
++
++    private ProblemDetails CreateProblemDetails(string detail) =>
++        new()
++        {
++            Title = "Invalid finance read request.",
++            Detail = detail,
++            Status = StatusCodes.Status400BadRequest,
++            Instance = HttpContext.Request.Path
++        };
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 9bda19a..eb2e37a 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -1,4 +1,5 @@
+ using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+@@ -9,14 +10,23 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     private const int MaxLimit = 500;
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
+ 
+     public CompanyFinanceReadService(VirtualCompanyDbContext dbContext)
++        : this(dbContext, null)
++    {
++    }
++
++    public CompanyFinanceReadService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor? companyContextAccessor)
+     {
+         _dbContext = dbContext;
++        _companyContextAccessor = companyContextAccessor;
+     }
+ 
+     public async Task<FinanceCashBalanceDto> GetCashBalanceAsync(
+         GetFinanceCashBalanceQuery query,
+         CancellationToken cancellationToken)
+     {
+-        EnsureCompanyId(query.CompanyId);
++        EnsureTenant(query.CompanyId);
+         var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? DateTime.UtcNow;
+ 
+         var accountBalances = await BuildAccountBalancesAsync(query.CompanyId, asOfUtc, cancellationToken);
+@@ -61,7 +71,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     public async Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(
+         GetFinanceMonthlyProfitAndLossQuery query,
+         CancellationToken cancellationToken)
+     {
+-        EnsureCompanyId(query.CompanyId);
++        EnsureTenant(query.CompanyId);
+         if (query.Month is < 1 or > 12)
+         {
+             throw new ArgumentOutOfRangeException(nameof(query), "Month must be between 1 and 12.");
+@@ -115,7 +125,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     public async Task<FinanceExpenseBreakdownDto> GetExpenseBreakdownAsync(
+         GetFinanceExpenseBreakdownQuery query,
+         CancellationToken cancellationToken)
+     {
+-        EnsureCompanyId(query.CompanyId);
++        EnsureTenant(query.CompanyId);
+         var startUtc = NormalizeUtc(query.StartUtc) ?? throw new ArgumentException("Start date is required.", nameof(query));
+         var endUtc = NormalizeUtc(query.EndUtc) ?? throw new ArgumentException("End date is required.", nameof(query));
+         if (startUtc >= endUtc)
+@@ -163,7 +173,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     public async Task<IReadOnlyList<FinanceTransactionDto>> GetTransactionsAsync(
+         GetFinanceTransactionsQuery query,
+         CancellationToken cancellationToken)
+     {
+-        EnsureCompanyId(query.CompanyId);
++        EnsureTenant(query.CompanyId);
+         var startUtc = NormalizeUtc(query.StartUtc);
+         var endUtc = NormalizeUtc(query.EndUtc);
+         var limit = NormalizeLimit(query.Limit);
+@@ -211,7 +221,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     public async Task<IReadOnlyList<FinanceInvoiceDto>> GetInvoicesAsync(
+         GetFinanceInvoicesQuery query,
+         CancellationToken cancellationToken)
+     {
+-        EnsureCompanyId(query.CompanyId);
++        EnsureTenant(query.CompanyId);
+         var startUtc = NormalizeUtc(query.StartUtc);
+         var endUtc = NormalizeUtc(query.EndUtc);
+         var limit = NormalizeLimit(query.Limit);
+@@ -261,7 +271,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     public async Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(
+         GetFinanceBalancesQuery query,
+         CancellationToken cancellationToken)
+     {
+-        EnsureCompanyId(query.CompanyId);
++        EnsureTenant(query.CompanyId);
+         var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? DateTime.UtcNow;
+         return await BuildAccountBalancesAsync(query.CompanyId, asOfUtc, cancellationToken);
+     }
+@@ -343,6 +353,18 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+         }
+     }
+ 
++    private void EnsureTenant(Guid companyId)
++    {
++        EnsureCompanyId(companyId);
++
++        if (_companyContextAccessor is not null &&
++            (!_companyContextAccessor.IsResolved ||
++             _companyContextAccessor.CompanyId is not Guid currentCompanyId ||
++             currentCompanyId != companyId))
++        {
++            throw new UnauthorizedAccessException("Finance reads are scoped to the active company context.");
++        }
++    }
++
+     private static int NormalizeLimit(int limit) =>
+         limit <= 0
+             ? DefaultLimit
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+new file mode 100644
+index 0000000..ef8a507
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -0,0 +1,226 @@
++using System.Net;
++using System.Net.Http.Json;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinanceReadEndpointsIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Internal_finance_read_endpoints_return_typed_company_scoped_payloads()
++    {
++        var seed = await SeedFinanceCompanyAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var asOfUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
++        var cashResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/cash-balance?asOfUtc={Uri.EscapeDataString(asOfUtc.ToString("O"))}");
++        Assert.Equal(HttpStatusCode.OK, cashResponse.StatusCode);
++        var cashBalance = await cashResponse.Content.ReadFromJsonAsync<CashBalanceResponse>();
++        Assert.NotNull(cashBalance);
++        Assert.Equal(seed.CompanyId, cashBalance!.CompanyId);
++        Assert.Equal("USD", cashBalance.Currency);
++        Assert.NotEmpty(cashBalance.Accounts);
++
++        var profitAndLossResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/profit-and-loss/monthly?year=2025&month=12");
++        Assert.Equal(HttpStatusCode.OK, profitAndLossResponse.StatusCode);
++        var profitAndLoss = await profitAndLossResponse.Content.ReadFromJsonAsync<MonthlyProfitAndLossResponse>();
++        Assert.NotNull(profitAndLoss);
++        Assert.Equal(seed.CompanyId, profitAndLoss!.CompanyId);
++        Assert.Equal(2025, profitAndLoss.Year);
++        Assert.Equal(12, profitAndLoss.Month);
++        Assert.Equal(profitAndLoss.Revenue - profitAndLoss.Expenses, profitAndLoss.NetResult);
++
++        var startUtc = new DateTime(2025, 12, 1, 0, 0, 0, DateTimeKind.Utc);
++        var endUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
++        var breakdownResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/expense-breakdown?startUtc={Uri.EscapeDataString(startUtc.ToString("O"))}&endUtc={Uri.EscapeDataString(endUtc.ToString("O"))}");
++        Assert.Equal(HttpStatusCode.OK, breakdownResponse.StatusCode);
++        var breakdown = await breakdownResponse.Content.ReadFromJsonAsync<ExpenseBreakdownResponse>();
++        Assert.NotNull(breakdown);
++        Assert.Equal(seed.CompanyId, breakdown!.CompanyId);
++        Assert.NotEmpty(breakdown.Categories);
++        Assert.Equal(breakdown.Categories.Sum(x => x.Amount), breakdown.TotalExpenses);
++
++        var transactionsResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions?limit=3");
++        Assert.Equal(HttpStatusCode.OK, transactionsResponse.StatusCode);
++        var transactions = await transactionsResponse.Content.ReadFromJsonAsync<List<TransactionResponse>>();
++        Assert.NotNull(transactions);
++        Assert.Equal(3, transactions!.Count);
++        Assert.All(transactions, transaction => Assert.NotEqual(Guid.Empty, transaction.Id));
++
++        var invoicesResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/invoices?limit=2");
++        Assert.Equal(HttpStatusCode.OK, invoicesResponse.StatusCode);
++        var invoices = await invoicesResponse.Content.ReadFromJsonAsync<List<InvoiceResponse>>();
++        Assert.NotNull(invoices);
++        Assert.Equal(2, invoices!.Count);
++        Assert.All(invoices, invoice => Assert.NotEqual(Guid.Empty, invoice.Id));
++
++        var balancesResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/balances?asOfUtc={Uri.EscapeDataString(asOfUtc.ToString("O"))}");
++        Assert.Equal(HttpStatusCode.OK, balancesResponse.StatusCode);
++        var balances = await balancesResponse.Content.ReadFromJsonAsync<List<AccountBalanceResponse>>();
++        Assert.NotNull(balances);
++        Assert.Equal(3, balances!.Count);
++        Assert.All(balances, balance => Assert.Equal("USD", balance.Currency));
++    }
++
++    [Fact]
++    public async Task Internal_finance_read_endpoints_reject_cross_tenant_requests()
++    {
++        var seed = await SeedFinanceCompanyAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.OtherCompanyId}/finance/cash-balance");
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
++    private async Task<FinanceEndpointSeed> SeedFinanceCompanyAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var subject = $"finance-reader-{Guid.NewGuid():N}";
++        var email = $"{subject}@example.com";
++        const string displayName = "Finance Reader";
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Finance Read Company"),
++                new Company(otherCompanyId, "Other Finance Read Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++
++            FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++            FinanceSeedData.AddMockFinanceData(dbContext, otherCompanyId);
++            return Task.CompletedTask;
++        });
++
++        return new FinanceEndpointSeed(companyId, otherCompanyId, subject, email, displayName);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private sealed record FinanceEndpointSeed(
++        Guid CompanyId,
++        Guid OtherCompanyId,
++        string Subject,
++        string Email,
++        string DisplayName);
++
++    private sealed class CashBalanceResponse
++    {
++        public Guid CompanyId { get; set; }
++        public DateTime AsOfUtc { get; set; }
++        public decimal Amount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public List<AccountBalanceResponse> Accounts { get; set; } = [];
++    }
++
++    private sealed class AccountBalanceResponse
++    {
++        public Guid AccountId { get; set; }
++        public string AccountCode { get; set; } = string.Empty;
++        public string AccountName { get; set; } = string.Empty;
++        public string AccountType { get; set; } = string.Empty;
++        public decimal Amount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public DateTime AsOfUtc { get; set; }
++    }
++
++    private sealed class MonthlyProfitAndLossResponse
++    {
++        public Guid CompanyId { get; set; }
++        public int Year { get; set; }
++        public int Month { get; set; }
++        public DateTime StartUtc { get; set; }
++        public DateTime EndUtc { get; set; }
++        public decimal Revenue { get; set; }
++        public decimal Expenses { get; set; }
++        public decimal NetResult { get; set; }
++        public string Currency { get; set; } = string.Empty;
++    }
++
++    private sealed class ExpenseBreakdownResponse
++    {
++        public Guid CompanyId { get; set; }
++        public DateTime StartUtc { get; set; }
++        public DateTime EndUtc { get; set; }
++        public decimal TotalExpenses { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public List<ExpenseCategoryResponse> Categories { get; set; } = [];
++    }
++
++    private sealed class ExpenseCategoryResponse
++    {
++        public string Category { get; set; } = string.Empty;
++        public decimal Amount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++    }
++
++    private sealed class TransactionResponse
++    {
++        public Guid Id { get; set; }
++        public Guid AccountId { get; set; }
++        public string AccountName { get; set; } = string.Empty;
++        public Guid? CounterpartyId { get; set; }
++        public string? CounterpartyName { get; set; }
++        public Guid? InvoiceId { get; set; }
++        public Guid? BillId { get; set; }
++        public DateTime TransactionUtc { get; set; }
++        public string TransactionType { get; set; } = string.Empty;
++        public decimal Amount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public string Description { get; set; } = string.Empty;
++        public string ExternalReference { get; set; } = string.Empty;
++    }
++
++    private sealed class InvoiceResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CounterpartyId { get; set; }
++        public string CounterpartyName { get; set; } = string.Empty;
++        public string InvoiceNumber { get; set; } = string.Empty;
++        public DateTime IssuedUtc { get; set; }
++        public DateTime DueUtc { get; set; }
++        public decimal Amount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++    }
++}
+END_OF_PATCH

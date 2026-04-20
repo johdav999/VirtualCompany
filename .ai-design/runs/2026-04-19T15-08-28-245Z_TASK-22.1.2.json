@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-22.1.2",
+  "promptPath": ".ai-design/prompts/TASK-22.1.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-19T15:08:28.245Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-19T15-08-28-245Z_TASK-22.1.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-19T15-08-28-245Z_TASK-22.1.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-19T15:12:03.185Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": " feed.\");\n+            dbContext.WorkTasks.Add(peerTask);\n+\n             var approval = ApprovalRequest.CreateForTarget(\n                 Guid.NewGuid(),\n                 companyId,\n@@ -135,13 +171,26 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW\n                 \"corr-risk\",\n                 \"fingerprint-risk\"));\n \n+            dbContext.Alerts.Add(new Alert(\n+                otherCompanyAlertId,\n+                otherCompanyId,\n+                AlertType.Risk,\n+                AlertSeverity.Critical,\n+                hiddenOtherTenantAlertTitle,\n+                \"This alert belongs to a different tenant and must not leak into the requested feed.\",\n+                new Dictionary<string, System.Text.Json.Nodes.JsonNode?>\n+                {\n+                    [\"policy\"] = System.Text.Json.Nodes.JsonValue.Create(\"cash_runway\")\n+                },\n+                \"corr-risk-other\",\n+                \"fingerprint-risk-other\"));\n+\n             await dbContext.SaveChangesAsync();\n \n             var approvalEntry = await dbContext.ApprovalRequests.Include(request => request.Steps).SingleAsync(request => request.CompanyId == companyId);\n             var step = Assert.Single(approvalEntry.Steps);\n             Assert.Equal(ApprovalStepApproverType.User, step.ApproverType);\n         });\n \n-        return new SeedResult(companyId, userId);\n+        return new SeedResult(companyId, userId, hiddenPeerTaskTitle, hiddenOtherTenantAlertTitle);\n     }\n \n-    private sealed record SeedResult(Guid CompanyId, Guid UserId);\n+    private sealed record SeedResult(Guid CompanyId, Guid UserId, string HiddenPeerTaskTitle, string HiddenOtherTenantAlertTitle);\n \n     private sealed class FocusItemResponse\n     {\n@@ -155,4 +204,4 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW\n         public string NavigationTarget { get; set; } = string.Empty;\n         public string? SourceType { get; set; }\n     }\n-}\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "    dbContext.WorkTasks.Add(peerTask);\n+\n             var approval = ApprovalRequest.CreateForTarget(\n                 Guid.NewGuid(),\n                 companyId,\n@@ -135,13 +171,26 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW\n                 \"corr-risk\",\n                 \"fingerprint-risk\"));\n \n+            dbContext.Alerts.Add(new Alert(\n+                otherCompanyAlertId,\n+                otherCompanyId,\n+                AlertType.Risk,\n+                AlertSeverity.Critical,\n+                hiddenOtherTenantAlertTitle,\n+                \"This alert belongs to a different tenant and must not leak into the requested feed.\",\n+                new Dictionary<string, System.Text.Json.Nodes.JsonNode?>\n+                {\n+                    [\"policy\"] = System.Text.Json.Nodes.JsonValue.Create(\"cash_runway\")\n+                },\n+                \"corr-risk-other\",\n+                \"fingerprint-risk-other\"));\n+\n             await dbContext.SaveChangesAsync();\n \n             var approvalEntry = await dbContext.ApprovalRequests.Include(request => request.Steps).SingleAsync(request => request.CompanyId == companyId);\n             var step = Assert.Single(approvalEntry.Steps);\n             Assert.Equal(ApprovalStepApproverType.User, step.ApproverType);\n         });\n \n-        return new SeedResult(companyId, userId);\n+        return new SeedResult(companyId, userId, hiddenPeerTaskTitle, hiddenOtherTenantAlertTitle);\n     }\n \n-    private sealed record SeedResult(Guid CompanyId, Guid UserId);\n+    private sealed record SeedResult(Guid CompanyId, Guid UserId, string HiddenPeerTaskTitle, string HiddenOtherTenantAlertTitle);\n \n     private sealed class FocusItemResponse\n     {\n@@ -155,4 +204,4 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW\n         public string NavigationTarget { get; set; } = string.Empty;\n         public string? SourceType { get; set; }\n     }\n-}\n+}\nEND_OF_PATCH\ntokens used\n85,761\n",
+  "verbosityMode": "verbose"
+}

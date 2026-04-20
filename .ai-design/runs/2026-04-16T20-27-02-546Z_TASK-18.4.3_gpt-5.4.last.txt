@@ -1,0 +1,401 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
+index 5bb0e97..a9bff65 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
+@@ -91,6 +91,12 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
+     public async Task<ExecutiveCockpitFinanceAlertDetailDto?> GetAlertDetailAsync(
+         Guid companyId,
+         Guid alertId,
+         CancellationToken cancellationToken)
+     {
++        var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null || !await CanViewFinanceAsync(companyId, membership, cancellationToken))
++        {
++            throw new UnauthorizedAccessException("Finance alert detail requires finance access for the selected company.");
++        }
++
+         var alert = await _dbContext.Alerts
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == alertId, cancellationToken);
+@@ -104,7 +110,7 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
+             alert.Severity.ToStorageValue(),
+             alert.Status.ToStorageValue(),
+             BuildContributingFactors(alert),
+-            await BuildActionsAsync(companyId, membership?.MembershipRole.ToStorageValue() ?? string.Empty, cancellationToken),
++            await BuildActionsAsync(companyId, membership.MembershipRole.ToStorageValue(), cancellationToken),
+             BuildDeepLinks(companyId),
+             BuildAlertDetailRoute(companyId, alert.Id));
+     }
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index d97f042..72df3ad 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -121,6 +121,24 @@
+                         </div>
+                         <p class="text-body-secondary mb-0">Last refreshed @dashboard.Finance.CashPosition.LastRefreshedUtc.ToLocalTime():g</p>
+                         <a class="mt-3" href="@dashboard.Finance.CashPosition.Route">Open cash detail</a>
++                        @if (FinanceActions("view_cash_position").Any())
++                        {
++                            <div class="dashboard-actions mt-3">
++                                @foreach (var action in FinanceActions("view_cash_position"))
++                                {
++                                    @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && HasDrillRoute(action.Route))
++                                    {
++                                        <a class="btn btn-outline-primary" href="@action.Route">@action.Label</a>
++                                    }
++                                    else
++                                    {
++                                        <button class="btn btn-outline-primary"
++                                                type="button"
++                                                @onclick="() => ExecuteFinanceActionAsync(action)"
++                                                disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
++                                    }
++                                }
++                            </div>
++                        }
+                     </article>
+ 
+                     <article class="wizard-card finance-metric-card">
+@@ -128,6 +146,24 @@
+                         <div class="finance-metric-card__value finance-metric-card__value--compact">@dashboard.Finance.Runway.DisplayValue</div>
+                         <div class="finance-risk-pill finance-risk-pill--@NormalizeCssToken(dashboard.Finance.Runway.StatusLabel)">@dashboard.Finance.Runway.StatusLabel</div>
+                         <a class="mt-3" href="@dashboard.Finance.Runway.Route">Review runway detail</a>
++                        @if (FinanceActions("inspect_anomaly", "open_finance_summary").Any())
++                        {
++                            <div class="dashboard-actions mt-3">
++                                @foreach (var action in FinanceActions("inspect_anomaly", "open_finance_summary"))
++                                {
++                                    @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && HasDrillRoute(action.Route))
++                                    {
++                                        <a class="btn btn-outline-primary" href="@action.Route">@action.Label</a>
++                                    }
++                                    else
++                                    {
++                                        <button class="btn btn-outline-primary"
++                                                type="button"
++                                                @onclick="() => ExecuteFinanceActionAsync(action)"
++                                                disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
++                                    }
++                                }
++                            </div>
++                        }
+                     </article>
+                 </div>
+ 
+@@ -149,6 +185,24 @@
+                                 }
+                             </ul>
+                         }
++                        @if (dashboard.Finance.LowCashAlert.AvailableActions.Count > 0)
++                        {
++                            <div class="dashboard-actions mt-3">
++                                @foreach (var action in dashboard.Finance.LowCashAlert.AvailableActions)
++                                {
++                                    @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && HasDrillRoute(action.Route))
++                                    {
++                                        <a class="btn btn-outline-primary" href="@action.Route">@action.Label</a>
++                                    }
++                                    else
++                                    {
++                                        <button class="btn btn-outline-primary"
++                                                type="button"
++                                                @onclick="() => ExecuteFinanceActionAsync(action)"
++                                                disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
++                                    }
++                                }
++                            </div>
++                        }
+                     </section>
+                 }
+ 
+@@ -161,14 +215,12 @@
+                     <div class="alert alert-warning mt-3 mb-0">@financeActionErrorMessage</div>
+                 }
+ 
+-                <div class="dashboard-actions mt-3">
+-                    @foreach (var action in dashboard.Finance.AvailableActions)
+-                    {
+-                        <button class="btn btn-outline-primary" type="button" @onclick="() => ExecuteFinanceActionAsync(action)" disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
+-                    }
+-                    @foreach (var link in dashboard.Finance.DeepLinks)
+-                    {
+-                        <a class="btn btn-outline-secondary" href="@link.Route">@link.Label</a>
++                @if (dashboard.Finance.DeepLinks.Count > 0)
++                {
++                    <div class="dashboard-actions mt-3">
++                        @foreach (var link in dashboard.Finance.DeepLinks)
++                        {
++                            <a class="btn btn-outline-secondary" href="@link.Route">@link.Label</a>
++                        }
+                     }
+-                </div>
++                }
+             </article>
+         }
+@@ -563,6 +615,16 @@
+     private bool IsFinanceActionRunning(string actionKey) =>
+         string.Equals(activeFinanceActionKey, actionKey, StringComparison.OrdinalIgnoreCase);
+ 
++    private IEnumerable<ExecutiveCockpitFinanceActionViewModel> FinanceActions(params string[] keys)
++    {
++        if (dashboard?.Finance is null || keys.Length == 0)
++        {
++            return [];
++        }
++
++        var keySet = new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase);
++        return dashboard.Finance.AvailableActions.Where(action => keySet.Contains(action.Key));
++    }
++
+     private async Task ExecuteFinanceActionAsync(ExecutiveCockpitFinanceActionViewModel action)
+     {
+         if (CompanyId == Guid.Empty || !action.IsEnabled)
+@@ -577,6 +639,14 @@
+ 
+         try
+         {
++            if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
++            {
++                if (HasDrillRoute(action.Route))
++                {
++                    Navigation.NavigateTo(action.Route!);
++                }
++                return;
++            }
++
+             switch (action.Key)
+             {
+                 case "review_invoice" when action.TargetId is Guid invoiceId:
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
+index b3d97af..e6f56d4 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
+@@ -76,6 +76,23 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+         Assert.Null(dashboard!.Finance);
+         Assert.Null(dashboard.CashPosition);
+     }
++
++    [Fact]
++    public async Task Finance_alert_detail_endpoint_denies_company_members_without_finance_policy_access()
++    {
++        var seed = await SeedFinanceCockpitCompanyAsync();
++
++        using var ownerClient = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, seed.OwnerDisplayName);
++        var ownerDashboardResponse = await ownerClient.GetAsync($"/api/companies/{seed.CompanyId}/executive-cockpit");
++        var ownerDashboard = await ownerDashboardResponse.Content.ReadFromJsonAsync<FinanceCockpitDashboardResponse>();
++        Assert.NotNull(ownerDashboard?.Finance?.LowCashAlert);
++
++        using var employeeClient = CreateAuthenticatedClient(seed.EmployeeSubject, seed.EmployeeEmail, seed.EmployeeDisplayName);
++        var response = await employeeClient.GetAsync(
++            $"/api/companies/{seed.CompanyId}/executive-cockpit/finance-alerts/{ownerDashboard!.Finance!.LowCashAlert!.AlertId}");
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
+ 
+     [Fact]
+     public void Runway_classifier_maps_thresholds_to_expected_statuses()
+diff --git a/tests/VirtualCompany.Api.Tests/LowCashAlertPageTests.cs b/tests/VirtualCompany.Api.Tests/LowCashAlertPageTests.cs
+new file mode 100644
+index 0000000..eb713c2
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/LowCashAlertPageTests.cs
+@@ -0,0 +1,188 @@
++using System.Net;
++using System.Net.Http.Json;
++using Bunit;
++using Bunit.TestDoubles;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Web.Pages.Finance;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class LowCashAlertPageTests
++{
++    [Fact]
++    public void Low_cash_alert_page_renders_finance_links_and_triggers_review_invoice_action()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        var alertId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
++        var invoiceId = Guid.Parse("7edb1408-42d4-4a79-9aa2-3a2d2c84da3f");
++        var financeRequests = new List<CapturedFinanceRequest>();
++
++        using var context = new TestContext();
++        context.Services.AddSingleton(new FinanceAccessResolver());
++        context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            return Task.FromResult(request.RequestUri?.AbsolutePath switch
++            {
++                "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, "owner")),
++                _ => CreateNotFoundResponse()
++            });
++        })) { BaseAddress = new Uri("http://localhost/") });
++
++        context.Services.AddSingleton(new ExecutiveCockpitApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            return Task.FromResult(request.RequestUri?.AbsolutePath switch
++            {
++                var path when request.Method == HttpMethod.Get &&
++                               path == $"/api/companies/{companyId:D}/executive-cockpit/finance-alerts/{alertId:D}" =>
++                    CreateJsonResponse(CreateAlertDetail(companyId, alertId, invoiceId)),
++                _ => CreateNotFoundResponse()
++            });
++        })) { BaseAddress = new Uri("http://localhost/") });
++
++        context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            financeRequests.Add(new CapturedFinanceRequest(
++                request.RequestUri?.AbsolutePath ?? string.Empty,
++                request.Headers.TryGetValues("X-Company-Id", out var values) ? values.Single() : null));
++
++            return Task.FromResult(request.RequestUri?.AbsolutePath switch
++            {
++                var path when request.Method == HttpMethod.Post &&
++                               path == $"/internal/companies/{companyId:D}/finance/invoices/{invoiceId:D}/review-workflow" =>
++                    CreateJsonResponse(new { workflowInstanceId = Guid.NewGuid() }),
++                _ => CreateNotFoundResponse()
++            });
++        })) { BaseAddress = new Uri("http://localhost/") });
++
++        var navigation = context.Services.GetRequiredService<FakeNavigationManager>();
++        navigation.NavigateTo($"http://localhost/finance/alerts/{alertId:D}?companyId={companyId:D}");
++
++        var cut = context.RenderComponent<LowCashAlertPage>(parameters => parameters
++            .Add(x => x.AlertId, alertId)
++            .Add(x => x.CompanyId, companyId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Low-cash summary", cut.Markup);
++            Assert.Contains("Cash runway dropped below the critical threshold.", cut.Markup);
++            Assert.Contains("Average monthly burn is USD 18,500.00.", cut.Markup);
++
++            var hrefs = cut.FindAll("a")
++                .Select(link => link.GetAttribute("href"))
++                .OfType<string>()
++                .ToArray();
++
++            Assert.Contains($"/finance/monthly-summary?companyId={companyId:D}", hrefs);
++            Assert.Contains($"/finance/cash-position?companyId={companyId:D}", hrefs);
++        });
++
++        var reviewInvoiceButton = cut.FindAll("button")
++            .Single(button => button.TextContent.Contains("Review invoice", StringComparison.Ordinal));
++
++        reviewInvoiceButton.Click();
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Single(financeRequests);
++            Assert.Equal(
++                $"/internal/companies/{companyId:D}/finance/invoices/{invoiceId:D}/review-workflow",
++                financeRequests[0].Path);
++            Assert.Equal(companyId.ToString(), financeRequests[0].CompanyHeaderValue);
++            Assert.Equal(
++                $"http://localhost/finance/reviews/{invoiceId:D}?companyId={companyId:D}",
++                navigation.Uri);
++        });
++    }
++
++    private static CurrentUserContextViewModel CreateCurrentUserContext(Guid companyId, string membershipRole) =>
++        new()
++        {
++            Memberships =
++            [
++                new CompanyMembershipViewModel
++                {
++                    CompanyId = companyId,
++                    CompanyName = "Contoso Labs",
++                    MembershipRole = membershipRole,
++                    Status = "active"
++                }
++            ],
++            ActiveCompany = new ResolvedCompanyContextViewModel
++            {
++                CompanyId = companyId,
++                CompanyName = "Contoso Labs",
++                MembershipRole = membershipRole,
++                Status = "active"
++            }
++        };
++
++    private static ExecutiveCockpitFinanceAlertDetailViewModel CreateAlertDetail(Guid companyId, Guid alertId, Guid invoiceId) =>
++        new()
++        {
++            AlertId = alertId,
++            Severity = "warning",
++            Status = "open",
++            Summary = "Cash runway dropped below the critical threshold.",
++            ContributingFactors =
++            [
++                "Available cash is USD 42,000.00.",
++                "Average monthly burn is USD 18,500.00."
++            ],
++            AvailableActions =
++            [
++                new ExecutiveCockpitFinanceActionViewModel
++                {
++                    Key = "review_invoice",
++                    Label = "Review invoice",
++                    IsEnabled = true,
++                    Route = FinanceRoutes.BuildInvoiceReviewDetailPath(invoiceId, companyId),
++                    OrchestrationEndpoint = $"/internal/companies/{companyId:D}/finance/invoices/{invoiceId:D}/review-workflow",
++                    HttpMethod = "POST",
++                    TargetId = invoiceId
++                },
++                new ExecutiveCockpitFinanceActionViewModel
++                {
++                    Key = "open_finance_summary",
++                    Label = "Open finance summary",
++                    IsEnabled = true,
++                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId),
++                    HttpMethod = "GET"
++                }
++            ],
++            Links =
++            [
++                new ExecutiveCockpitDeepLinkViewModel
++                {
++                    Key = "finance_summary",
++                    Label = "Finance summary",
++                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId)
++                },
++                new ExecutiveCockpitDeepLinkViewModel
++                {
++                    Key = "cash_detail",
++                    Label = "Cash detail",
++                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)
++                }
++            ],
++            Route = FinanceRoutes.BuildAlertDetailPath(alertId, companyId)
++        };
++
++    private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>
++        new(HttpStatusCode.OK)
++        {
++            Content = JsonContent.Create(payload)
++        };
++
++    private static HttpResponseMessage CreateNotFoundResponse() =>
++        new(HttpStatusCode.NotFound);
++
++    private sealed record CapturedFinanceRequest(
++        string Path,
++        string? CompanyHeaderValue);
++
++    private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler
++    {
++        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
++
++        public AsyncStubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
++        {
++            _handler = handler;
++        }
++
++        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
++            _handler(request, cancellationToken);
++    }
++}
+END_OF_PATCH

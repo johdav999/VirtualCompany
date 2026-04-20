@@ -1,0 +1,46 @@
+<article class="border rounded-3 p-3 h-100 d-flex flex-column justify-content-between dashboard-action-card" data-testid="dashboard-action-card">
+    <div>
+        <div class="d-flex justify-content-between align-items-start gap-2">
+            <strong class="dashboard-action-card__title">@Title</strong>
+            <span class="@PriorityBadgeClass">@DisplayPriority</span>
+        </div>
+
+        <p class="text-body-secondary mt-2 mb-0 dashboard-action-card__description">@Description</p>
+
+        @if (!string.IsNullOrWhiteSpace(Context))
+        {
+            <p class="small text-body-secondary mt-3 mb-0 dashboard-action-card__context">@Context</p>
+        }
+    </div>
+
+    <div class="mt-3 d-flex justify-content-end">
+        <button class="btn btn-outline-primary btn-sm"
+                type="button"
+                @onclick="OnClick">
+            @ActionLabel
+        </button>
+    </div>
+</article>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string Description { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string Priority { get; set; } = string.Empty;
+    [Parameter] public string? Context { get; set; }
+    [Parameter] public string ActionLabel { get; set; } = "Open";
+    [Parameter] public EventCallback OnClick { get; set; }
+
+    private string DisplayPriority => Priority.Trim() switch
+    {
+        "" => "Medium",
+        var value => char.ToUpperInvariant(value[0]) + value[1..].ToLowerInvariant()
+    };
+
+    private string PriorityBadgeClass => DisplayPriority switch
+    {
+        "Critical" => "badge text-bg-danger",
+        "High" => "badge text-bg-dark",
+        "Medium" => "badge text-bg-primary",
+        _ => "badge text-bg-secondary"
+    };
+}

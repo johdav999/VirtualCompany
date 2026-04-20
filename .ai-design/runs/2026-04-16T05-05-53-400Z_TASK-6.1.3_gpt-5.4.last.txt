@@ -1,0 +1,202 @@
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+@@ -1,23 +1,34 @@
++using System.Security.Cryptography;
++using System.Text;
+ using VirtualCompany.Domain.Entities;
+ 
+ namespace VirtualCompany.Infrastructure.Persistence;
+ 
+ public static class FinanceSeedData
+ {
+-    public static FinanceSeedResult AddMockFinanceData(VirtualCompanyDbContext dbContext, Guid companyId)
++    private static readonly DateTime DefaultSeedAnchorUtc = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
++
++    public static FinanceSeedResult AddMockFinanceData(VirtualCompanyDbContext dbContext, Guid companyId) =>
++        AddMockFinanceData(dbContext, companyId, DefaultSeedAnchorUtc);
++
++    public static FinanceSeedResult AddMockFinanceData(VirtualCompanyDbContext dbContext, Guid companyId, DateTime seedAnchorUtc)
+     {
+         if (companyId == Guid.Empty)
+         {
+             throw new ArgumentException("CompanyId is required.", nameof(companyId));
+         }
+ 
+-        var now = DateTime.UtcNow;
++        var anchorUtc = seedAnchorUtc.Kind == DateTimeKind.Utc
++            ? seedAnchorUtc
++            : seedAnchorUtc.ToUniversalTime();
++
+         var accounts = new[]
+         {
+-            new FinanceAccount(Guid.NewGuid(), companyId, "1000", "Operating Cash", "asset", "USD", 25000m, now.AddDays(-90)),
+-            new FinanceAccount(Guid.NewGuid(), companyId, "1100", "Receivables", "asset", "USD", 12000m, now.AddDays(-90)),
+-            new FinanceAccount(Guid.NewGuid(), companyId, "2000", "Payables", "liability", "USD", -8000m, now.AddDays(-90))
++            new FinanceAccount(StableId(companyId, "account:operating-cash"), companyId, "1000", "Operating Cash", "asset", "USD", 25000m, anchorUtc.AddDays(-90)),
++            new FinanceAccount(StableId(companyId, "account:receivables"), companyId, "1100", "Receivables", "asset", "USD", 12000m, anchorUtc.AddDays(-90)),
++            new FinanceAccount(StableId(companyId, "account:payables"), companyId, "2000", "Payables", "liability", "USD", -8000m, anchorUtc.AddDays(-90))
+         };
+ 
+         var counterparties = new[]
+         {
+-            new FinanceCounterparty(Guid.NewGuid(), companyId, "Northwind Analytics", "customer", "ap@northwind.example"),
+-            new FinanceCounterparty(Guid.NewGuid(), companyId, "Contoso Supplies", "vendor", "billing@contoso.example"),
+-            new FinanceCounterparty(Guid.NewGuid(), companyId, "Fabrikam Cloud", "vendor", "finance@fabrikam.example"),
+-            new FinanceCounterparty(Guid.NewGuid(), companyId, "Adventure Works", "customer", "payables@adventure.example"),
+-            new FinanceCounterparty(Guid.NewGuid(), companyId, "Tailspin Logistics", "vendor", "ar@tailspin.example")
++            new FinanceCounterparty(StableId(companyId, "counterparty:northwind-analytics"), companyId, "Northwind Analytics", "customer", "ap@northwind.example"),
++            new FinanceCounterparty(StableId(companyId, "counterparty:contoso-supplies"), companyId, "Contoso Supplies", "vendor", "billing@contoso.example"),
++            new FinanceCounterparty(StableId(companyId, "counterparty:fabrikam-cloud"), companyId, "Fabrikam Cloud", "vendor", "finance@fabrikam.example"),
++            new FinanceCounterparty(StableId(companyId, "counterparty:adventure-works"), companyId, "Adventure Works", "customer", "payables@adventure.example"),
++            new FinanceCounterparty(StableId(companyId, "counterparty:tailspin-logistics"), companyId, "Tailspin Logistics", "vendor", "ar@tailspin.example")
+         };
+ 
+         var invoices = Enumerable.Range(1, 5)
+             .Select(index => new FinanceInvoice(
+-                Guid.NewGuid(),
++                StableId(companyId, $"invoice:{index:000}"),
+                 companyId,
+                 counterparties[index % 2 == 0 ? 0 : 3].Id,
+-                $"INV-{now:yyyyMM}-{index:000}",
+-                now.AddDays(-45 + index),
+-                now.AddDays(-15 + index),
++                $"INV-{anchorUtc:yyyyMM}-{index:000}",
++                anchorUtc.AddDays(-45 + index),
++                anchorUtc.AddDays(-15 + index),
+                 2400m + (index * 325m),
+                 "USD",
+                 index % 3 == 0 ? "paid" : "open"))
+@@ -25,12 +36,12 @@ public static class FinanceSeedData
+         var bills = Enumerable.Range(1, 5)
+             .Select(index => new FinanceBill(
+-                Guid.NewGuid(),
++                StableId(companyId, $"bill:{index:000}"),
+                 companyId,
+                 counterparties[1 + (index % 3)].Id,
+-                $"BILL-{now:yyyyMM}-{index:000}",
+-                now.AddDays(-40 + index),
+-                now.AddDays(-10 + index),
++                $"BILL-{anchorUtc:yyyyMM}-{index:000}",
++                anchorUtc.AddDays(-40 + index),
++                anchorUtc.AddDays(-10 + index),
+                 900m + (index * 210m),
+                 "USD",
+                 index % 2 == 0 ? "paid" : "open"))
+@@ -52,13 +63,13 @@ public static class FinanceSeedData
+ 
+             transactions.Add(new FinanceTransaction(
+-                Guid.NewGuid(),
++                StableId(companyId, $"transaction:{index:0000}"),
+                 companyId,
+                 account.Id,
+                 counterparty.Id,
+                 invoice?.Id,
+                 bill?.Id,
+-                now.AddDays(-49 + index),
++                anchorUtc.AddDays(-49 + index),
+                 isRevenue ? "customer_payment" : "vendor_payment",
+                 amount,
+                 "USD",
+@@ -75,11 +86,11 @@ public static class FinanceSeedData
+                     .Where(transaction => transaction.AccountId == account.Id)
+                     .Sum(transaction => transaction.Amount);
+ 
+-                return new FinanceBalance(Guid.NewGuid(), companyId, account.Id, now, account.OpeningBalance + posted, account.Currency);
++                return new FinanceBalance(StableId(companyId, $"balance:{account.Code}"), companyId, account.Id, anchorUtc, account.OpeningBalance + posted, account.Currency);
+             })
+             .ToArray();
+ 
+-        var policy = new FinancePolicyConfiguration(Guid.NewGuid(), companyId, "USD", 10000m, 5000m, true);
++        var policy = new FinancePolicyConfiguration(StableId(companyId, "policy:default"), companyId, "USD", 10000m, 5000m, true);
+ 
+         dbContext.FinanceAccounts.AddRange(accounts);
+         dbContext.FinanceCounterparties.AddRange(counterparties);
+@@ -100,6 +111,16 @@ public static class FinanceSeedData
+             balances.Select(x => x.Id).ToArray(),
+             policy.Id);
+     }
++
++    private static Guid StableId(Guid companyId, string name)
++    {
++        var hash = MD5.HashData(Encoding.UTF8.GetBytes($"{companyId:N}:{name}"));
++
++        hash[6] = (byte)((hash[6] & 0x0F) | 0x30);
++        hash[8] = (byte)((hash[8] & 0x3F) | 0x80);
++
++        return new Guid(hash);
++    }
+ }
+ 
+ public sealed record FinanceSeedResult(
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceTenantIsolationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceTenantIsolationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceTenantIsolationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceTenantIsolationTests.cs
+@@ -47,6 +47,49 @@ public sealed class FinanceTenantIsolationTests : IClassFixture<TestWebApplicati
+         }
+     }
+ 
++    [Fact]
++    public void Finance_seed_is_deterministic_for_same_tenant_and_anchor()
++    {
++        var companyId = Guid.Parse("11111111-1111-1111-1111-111111111111");
++        var anchorUtc = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc);
++
++        using var firstContext = CreateFinanceSeedContext();
++        using var secondContext = CreateFinanceSeedContext();
++
++        var first = FinanceSeedData.AddMockFinanceData(firstContext, companyId, anchorUtc);
++        var second = FinanceSeedData.AddMockFinanceData(secondContext, companyId, anchorUtc);
++
++        Assert.Equal(first.AccountIds, second.AccountIds);
++        Assert.Equal(first.CounterpartyIds, second.CounterpartyIds);
++        Assert.Equal(first.InvoiceIds, second.InvoiceIds);
++        Assert.Equal(first.BillIds, second.BillIds);
++        Assert.Equal(first.TransactionIds, second.TransactionIds);
++        Assert.Equal(first.BalanceIds, second.BalanceIds);
++        Assert.Equal(first.PolicyConfigurationId, second.PolicyConfigurationId);
++
++        var firstTransactions = firstContext.ChangeTracker.Entries<FinanceTransaction>()
++            .Select(entry => entry.Entity)
++            .OrderBy(transaction => transaction.ExternalReference)
++            .Select(transaction => new { transaction.Id, transaction.TransactionUtc, transaction.Amount, transaction.ExternalReference })
++            .ToArray();
++
++        var secondTransactions = secondContext.ChangeTracker.Entries<FinanceTransaction>()
++            .Select(entry => entry.Entity)
++            .OrderBy(transaction => transaction.ExternalReference)
++            .Select(transaction => new { transaction.Id, transaction.TransactionUtc, transaction.Amount, transaction.ExternalReference })
++            .ToArray();
++
++        Assert.Equal(firstTransactions, secondTransactions);
++
++        var firstBalances = firstContext.ChangeTracker.Entries<FinanceBalance>()
++            .Select(entry => new { entry.Entity.AccountId, entry.Entity.AsOfUtc, entry.Entity.Amount })
++            .OrderBy(balance => balance.AccountId)
++            .ToArray();
++
++        var secondBalances = secondContext.ChangeTracker.Entries<FinanceBalance>()
++            .Select(entry => new { entry.Entity.AccountId, entry.Entity.AsOfUtc, entry.Entity.Amount })
++            .OrderBy(balance => balance.AccountId)
++            .ToArray();
++
++        Assert.Equal(firstBalances, secondBalances);
++    }
++
+     [Fact]
+     public async Task Finance_queries_are_scoped_to_active_company_context()
+     {
+@@ -130,5 +173,8 @@ public sealed class FinanceTenantIsolationTests : IClassFixture<TestWebApplicati
+             FinanceSeedData.AddMockFinanceData(dbContext, companyBId);
+             return Task.CompletedTask;
+         });
+-    }
++
++    private static VirtualCompanyDbContext CreateFinanceSeedContext() =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite("Data Source=:memory:")
++            .Options);
+ }
+END_OF_PATCH

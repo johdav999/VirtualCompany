@@ -1,0 +1,537 @@
+diff --git a/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs b/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs
+index e116df8..597c9b3 100644
+--- a/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs
++++ b/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs
+@@ -72,7 +72,8 @@ public sealed record CompanySimulationStateDto(
+     bool BackgroundJobsEnabled = true,
+     bool SupportsStepForwardOneDay = false,
+     string? DisabledReason = null,
+-    bool SupportsRefresh = true)
++    bool SupportsRefresh = true,
++    IReadOnlyList<CompanySimulationRunHistoryDto>? RecentHistory = null)
+ {
+     public static CompanySimulationStateDto NotStarted(Guid companyId) =>
+         new(
+@@ -80,7 +81,7 @@ public sealed record CompanySimulationStateDto(
+             CompanySimulationLifecycleStatusValues.NotStarted,
+             null,
+             null,
+-            null,
++            true,
+             null,
+             null,
+             null,
+@@ -94,11 +95,13 @@ public sealed record CompanySimulationStateDto(
+             BackendExecutionEnabled: true,
+             BackgroundJobsEnabled: true,
+             SupportsStepForwardOneDay: true,
+-            SupportsRefresh: true);
++            SupportsRefresh: true,
++            RecentHistory: []);
+ 
+     public static CompanySimulationStateDto Disabled(
+         Guid companyId,
+-        SimulationFeatureStateDto featureState) =>
++        SimulationFeatureStateDto featureState,
++        IReadOnlyList<CompanySimulationRunHistoryDto>? recentHistory = null) =>
+         new(
+             companyId,
+             CompanySimulationLifecycleStatusValues.NotStarted,
+@@ -114,7 +117,8 @@ public sealed record CompanySimulationStateDto(
+             BackendExecutionEnabled: featureState.BackendExecutionEnabled,
+             BackgroundJobsEnabled: featureState.BackgroundJobsEnabled,
+             SupportsStepForwardOneDay: false,
+             DisabledReason: featureState.DisabledMessage,
+-            SupportsRefresh: true);
++            SupportsRefresh: true,
++            RecentHistory: recentHistory ?? []);
+ }
+ 
+ public interface ICompanySimulationStateService
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs
+index d918245..2c8c4cb 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs
+@@ -76,7 +76,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+         var featureState = _featureGate?.GetState() ?? new SimulationFeatureStateDto(true, true, true, string.Empty);
+         var history = await GetRecentHistoryAsync(query.CompanyId, 10, cancellationToken);
+         if (!featureState.BackendExecutionEnabled)
+         {
+-            return CompanySimulationStateDto.Disabled(query.CompanyId, featureState);
++            return CompanySimulationStateDto.Disabled(query.CompanyId, featureState, history);
+         }
+ 
+         var state = await _repository.GetCurrentAsync(query.CompanyId, cancellationToken);
+@@ -84,7 +84,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+         {
+             var emptyState = CompanySimulationStateDto.NotStarted(query.CompanyId) with
+-            { UiVisible = featureState.UiVisible, BackendExecutionEnabled = featureState.BackendExecutionEnabled, BackgroundJobsEnabled = featureState.BackgroundJobsEnabled, DisabledReason = featureState.BackendExecutionEnabled ? null : featureState.DisabledMessage };
++            { UiVisible = featureState.UiVisible, BackendExecutionEnabled = featureState.BackendExecutionEnabled, BackgroundJobsEnabled = featureState.BackgroundJobsEnabled, DisabledReason = featureState.BackendExecutionEnabled ? null : featureState.DisabledMessage, RecentHistory = history };
+             return emptyState;
+         }
+ 
+@@ -94,7 +94,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+             state = (await ProgressStateIfDueAsync(query.CompanyId, cancellationToken)).State ?? state;
+         }
+ 
+-        return Map(state, featureState);
++        return Map(state, featureState, history);
+     }
+ 
+     public async Task<CompanySimulationStateDto> StartAsync(
+@@ -124,7 +124,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+                 TransitionedUtc: transitionedUtc),
+             cancellationToken);
+ 
+-        return Map(state);
++        return await MapWithHistoryAsync(state, cancellationToken);
+     }
+ 
+     public async Task<CompanySimulationStateDto> UpdateSettingsAsync(
+@@ -152,7 +152,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+                     GetUtcNow()),
+                 cancellationToken);
+-            return Map(draft);
++            return await MapWithHistoryAsync(draft, cancellationToken);
+         }
+         if (state.IsRunning)
+         {
+@@ -176,7 +176,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+                 cancellationToken);
+-            return Map(state);
++            return await MapWithHistoryAsync(state, cancellationToken);
+         }
+ 
+         var generationEnabled = state.IsRunning ? null : command.GenerationEnabled;
+@@ -191,7 +191,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+                 UpdatedUtc: command.UpdatedUtc ?? DateTime.UtcNow),
+             cancellationToken);
+ 
+-        return Map(state);
++        return await MapWithHistoryAsync(state, cancellationToken);
+     }
+ 
+     public async Task<CompanySimulationStateDto> PauseAsync(
+@@ -211,7 +211,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+             new PauseCompanySimulationStateCommand(command.CompanyId, GetUtcNow()),
+             cancellationToken);
+ 
+-        return Map(state);
++        return await MapWithHistoryAsync(state, cancellationToken);
+     }
+ 
+     public async Task<CompanySimulationStateDto> ResumeAsync(
+@@ -231,7 +231,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+             new ResumeCompanySimulationStateCommand(command.CompanyId, GetUtcNow()),
+             cancellationToken);
+ 
+-        return Map(state);
++        return await MapWithHistoryAsync(state, cancellationToken);
+     }
+ 
+     public async Task<CompanySimulationStateDto> StepForwardOneDayAsync(
+@@ -271,7 +271,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+             }
+         }
+ 
+-        return Map(updated, _featureGate?.GetState());
++        return await MapWithHistoryAsync(updated, cancellationToken);
+     }
+ 
+     public async Task<CompanySimulationStateDto> StopAsync(
+@@ -294,7 +294,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+             new StopCompanySimulationStateCommand(command.CompanyId, GetUtcNow()),
+             cancellationToken);
+ 
+-        return Map(state);
++        return await MapWithHistoryAsync(state, cancellationToken);
+     }
+ 
+     public async Task<IReadOnlyList<CompanySimulationRunHistoryDto>> GetRecentHistoryAsync(Guid companyId, int limit, CancellationToken cancellationToken)
+@@ -310,6 +310,12 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+         return histories.Select(MapHistory).ToArray();
+     }
+ 
++    private async Task<CompanySimulationStateDto> MapWithHistoryAsync(
++        CompanySimulationState state,
++        CancellationToken cancellationToken)
++    {
++        return Map(state, _featureGate?.GetState(), await GetRecentHistoryAsync(state.CompanyId, 10, cancellationToken));
++    }
++
+     internal async Task<bool> ProgressIfDueAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         if (_featureGate?.IsBackgroundExecutionAllowed() == false)
+@@ -444,7 +450,9 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+         };
+ 
+-    private static CompanySimulationStateDto Map(CompanySimulationState state, SimulationFeatureStateDto? featureState = null)
++    private static CompanySimulationStateDto Map(
++        CompanySimulationState state,
++        SimulationFeatureStateDto? featureState = null,
++        IReadOnlyList<CompanySimulationRunHistoryDto>? history = null)
+     {
+         var resolved = featureState ?? new SimulationFeatureStateDto(true, true, true, string.Empty);
+         return new(
+@@ -466,7 +474,8 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+             BackgroundJobsEnabled: resolved.BackgroundJobsEnabled,
+             SupportsStepForwardOneDay: resolved.BackendExecutionEnabled,
+             DisabledReason: resolved.BackendExecutionEnabled ? null : resolved.DisabledMessage,
+-            SupportsRefresh: true);
++            SupportsRefresh: true,
++            RecentHistory: history ?? []);
+     }
+ 
+     private static CompanySimulationRunHistoryDto MapHistory(CompanySimulationRunHistory history) =>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
+index d790cbb..9cc770e 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
+@@ -28,7 +28,9 @@ public partial class FinancePage : FinancePageBase, IDisposable
+     protected bool RequestedGenerationEnabled { get; private set; } = true;
+ 
+     protected bool IsSimulationControlPanelVisible =>
+-        SimulationControlPanelOptionsAccessor.Value.UiVisible &&
++        SimulationControlPanelOptionsAccessor.Value.UiVisible &&
++        (SimulationState?.UiVisible ?? true) &&
+         IsFinanceReady;
+     protected bool CanManageSimulation => FinanceAccess.CanManageSimulation(AccessState.MembershipRole);
+     protected bool IsSimulationBackendExecutionEnabled => SimulationState?.BackendExecutionEnabled ?? true;
+@@ -479,7 +481,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
+         }
+         if (RecentSimulationHistory.FirstOrDefault()?.CurrentSimulatedDateTime is DateTime historyCurrentSimulatedDateTime)
+         {
+-            return currentSimulatedDateTime;
++            return historyCurrentSimulatedDateTime;
+         }
+ 
+         if (EntryState?.SeededAtUtc is DateTime seededAtUtc)
+@@ -556,7 +558,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
+             SupportsRefresh = true,
+             SupportsStepForwardOneDay = true,
+             DeterministicConfigurationJson = state.DeterministicConfigurationJson
++            ,UiVisible = state.UiVisible,
++            BackendExecutionEnabled = state.BackendExecutionEnabled,
++            BackgroundJobsEnabled = state.BackgroundJobsEnabled,
++            DisabledReason = state.DisabledReason,
++            RecentHistory = state.RecentHistory.Select(CloneRunHistory).ToList()
+         };
+     }
+ 
++    private static FinanceCompanySimulationRunHistoryResponse CloneRunHistory(FinanceCompanySimulationRunHistoryResponse run) =>
++        new()
++        {
++            SessionId = run.SessionId,
++            Status = run.Status,
++            StartedUtc = run.StartedUtc,
++            CompletedUtc = run.CompletedUtc,
++            LastUpdatedUtc = run.LastUpdatedUtc,
++            GenerationEnabled = run.GenerationEnabled,
++            Seed = run.Seed,
++            StartSimulatedDateTime = run.StartSimulatedDateTime,
++            CurrentSimulatedDateTime = run.CurrentSimulatedDateTime,
++            InjectedAnomalies = run.InjectedAnomalies.ToList(),
++            Warnings = run.Warnings.ToList(),
++            Errors = run.Errors.ToList(),
++            StatusTransitions = run.StatusTransitions.Select(CloneStatusTransition).ToList(),
++            DayLogs = run.DayLogs.Select(CloneDayLog).ToList()
++        };
++
++    private static FinanceCompanySimulationStatusTransitionResponse CloneStatusTransition(FinanceCompanySimulationStatusTransitionResponse transition) =>
++        new()
++        {
++            Status = transition.Status,
++            TransitionedUtc = transition.TransitionedUtc,
++            Message = transition.Message
++        };
++
++    private static FinanceCompanySimulationDayLogResponse CloneDayLog(FinanceCompanySimulationDayLogResponse dayLog) =>
++        new()
++        {
++            SimulatedDateUtc = dayLog.SimulatedDateUtc,
++            TransactionsGenerated = dayLog.TransactionsGenerated,
++            InvoicesGenerated = dayLog.InvoicesGenerated,
++            BillsGenerated = dayLog.BillsGenerated,
++            RecurringExpenseInstancesGenerated = dayLog.RecurringExpenseInstancesGenerated,
++            AlertsGenerated = dayLog.AlertsGenerated,
++            InjectedAnomalies = dayLog.InjectedAnomalies.ToList(),
++            Warnings = dayLog.Warnings.ToList(),
++            Errors = dayLog.Errors.ToList()
++        };
++
+     private static string FormatSimulationTimestamp(DateTime? value, string emptyValue) =>
+         value.HasValue ? $"{value.Value:yyyy-MM-dd HH:mm:ss} UTC" : emptyValue;
+diff --git a/src/VirtualCompany.Web/appsettings.Development.json b/src/VirtualCompany.Web/appsettings.Development.json
+index 835c140..89d7e52 100644
+--- a/src/VirtualCompany.Web/appsettings.Development.json
++++ b/src/VirtualCompany.Web/appsettings.Development.json
+@@ -6,7 +6,7 @@
+   },
+   "SimulationFeatures": {
+-    "UiVisible": true,
++    "UiVisible": false,
+     "PollIntervalMilliseconds": 1000
+   }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
+index 18e3088..665404a 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
+@@ -249,6 +249,91 @@ public sealed class CompanySimulationStateServiceTests
+         Assert.Equal(new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc), afterStop.CurrentSimulatedDateTime);
+         Assert.Equal(new DateTime(2026, 4, 19, 12, 0, 40, DateTimeKind.Utc), afterStop.LastProgressionTimestamp);
+     }
++
++    [Fact]
++    public async Task Get_state_includes_recent_history_with_day_logs_for_operator_review()
++    {
++        var companyId = Guid.NewGuid();
++        var timeProvider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero));
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(companyId, "History Company"));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        var service = new CompanySimulationStateService(repository, timeProvider, NullLogger<CompanySimulationStateService>.Instance);
++
++        var started = await repository.StartAsync(
++            new StartCompanySimulationStateCommand(
++                companyId,
++                new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                GenerationEnabled: true,
++                Seed: 42,
++                DeterministicConfigurationJson: """{"profile":"baseline"}""",
++                TransitionedUtc: new DateTime(2026, 4, 19, 12, 0, 0, DateTimeKind.Utc)),
++            CancellationToken.None);
++
++        await repository.RecordFinanceGenerationAsync(
++            companyId,
++            started.ActiveSessionId!.Value,
++            new CompanySimulationFinanceGenerationResultDto(
++                companyId,
++                started.ActiveSessionId.Value,
++                DaysProcessed: 1,
++                InvoicesCreated: 1,
++                BillsCreated: 1,
++                TransactionsCreated: 2,
++                BalancesCreated: 0,
++                RecurringExpenseInstancesCreated: 1,
++                WorkflowTasksCreated: 0,
++                ApprovalRequestsCreated: 0,
++                AuditEventsCreated: 0,
++                ActivityEventsCreated: 0,
++                AlertsCreated: 1,
++                DailyLogs:
++                [
++                    new CompanySimulationFinanceGenerationDayLogDto(
++                        new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc),
++                        TransactionsCreated: 2,
++                        InvoicesCreated: 1,
++                        BillsCreated: 1,
++                        RecurringExpenseInstancesCreated: 1,
++                        AlertsCreated: 1,
++                        InjectedAnomalies: ["duplicate_vendor_charge"],
++                        Warnings: ["Manual review recommended."],
++                        Errors: ["Synthetic generation failure was captured safely."])
++                ]),
++            new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc),
++            CancellationToken.None);
++
++        await repository.StopAsync(
++            new StopCompanySimulationStateCommand(companyId, new DateTime(2026, 4, 19, 12, 5, 0, DateTimeKind.Utc)),
++            CancellationToken.None);
++
++        var state = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
++
++        var run = Assert.Single(state.RecentHistory!);
++        var dayLog = Assert.Single(run.DayLogs);
++
++        Assert.Equal(started.ActiveSessionId, run.SessionId);
++        Assert.Equal(CompanySimulationLifecycleStatusValues.Stopped, run.Status);
++        Assert.Equal(42, run.Seed);
++        Assert.Contains("duplicate_vendor_charge", run.InjectedAnomalies);
++        Assert.Contains("Manual review recommended.", run.Warnings);
++        Assert.Contains("Synthetic generation failure was captured safely.", run.Errors);
++        Assert.Equal(new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc), dayLog.SimulatedDateUtc);
++        Assert.Equal(5, dayLog.GeneratedRecordCount);
++        Assert.Contains("duplicate_vendor_charge", dayLog.InjectedAnomalies);
++        Assert.Contains("Manual review recommended.", dayLog.Warnings);
++        Assert.Contains("Synthetic generation failure was captured safely.", dayLog.Errors);
++    }
++
++    [Fact]
++    public async Task Disabled_state_still_returns_recent_history_for_operator_review()
++    {
++        var companyId = Guid.NewGuid();
++        var timeProvider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero));
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(companyId, "Disabled History Company"));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        var started = await repository.StartAsync(
++            new StartCompanySimulationStateCommand(companyId, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), true, 17),
++            CancellationToken.None);
++        await repository.StopAsync(new StopCompanySimulationStateCommand(companyId, new DateTime(2026, 4, 19, 12, 2, 0, DateTimeKind.Utc)), CancellationToken.None);
++
++        var gate = new TestSimulationFeatureGate(uiVisible: true, backendExecutionEnabled: false, backgroundJobsEnabled: false);
++        var service = new CompanySimulationStateService(
++            repository,
++            timeProvider,
++            companyContextAccessor: null,
++            distributedLockProvider: null,
++            financeGenerationPolicy: null,
++            featureGate: gate,
++            logger: NullLogger<CompanySimulationStateService>.Instance);
++
++        var state = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
++
++        Assert.False(state.BackendExecutionEnabled);
++        Assert.Equal("Simulation is disabled by configuration.", state.DisabledReason);
++        Assert.Single(state.RecentHistory!);
++        Assert.Equal(started.ActiveSessionId, state.RecentHistory[0].SessionId);
++    }
+ 
+     [Fact]
+     public async Task Stop_and_restart_create_a_clean_session_without_carrying_elapsed_time_forward()
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePageTests.cs b/tests/VirtualCompany.Api.Tests/FinancePageTests.cs
+index 02ca362..d929f3e 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancePageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePageTests.cs
+@@ -198,6 +198,68 @@ public sealed class FinancePageTests
+         cut.WaitForAssertion(() => Assert.Contains("Simulation started.", cut.Markup));
+     }
+ 
++    [Fact]
++    public void Finance_page_hides_simulation_panel_when_ui_visibility_is_disabled_by_state()
++    {
++        var companyId = Guid.Parse("69deecbb-5d56-4fd6-8eaf-b04b870c9732");
++        var entryResponses = new ConcurrentQueue<FinanceEntryInitializationResponse>(new[]
++        {
++            new FinanceEntryInitializationResponse
++            {
++                CompanyId = companyId,
++                InitializationStatus = FinanceEntryInitializationContractValues.Ready,
++                ProgressState = FinanceEntryProgressStateContractValues.Seeded,
++                SeedingState = FinanceSeedingStateContractValues.FullySeeded,
++                Message = "Finance data is ready."
++            }
++        });
++
++        using var harness = CreateHarness(
++            companyId,
++            CreateCurrentUser(companyId, "owner"),
++            entryResponses,
++            requestResponse: null,
++            retryResponse: null,
++            manualSeedResponse: null,
++            simulationStateResponse: new FinanceCompanySimulationStateResponse
++            {
++                CompanyId = companyId,
++                Status = FinanceCompanySimulationStatusValues.NotStarted,
++                UiVisible = false,
++                BackendExecutionEnabled = true,
++                BackgroundJobsEnabled = true
++            });
++        harness.Navigation.NavigateTo($"http://localhost/finance?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<FinancePage>(parameters => parameters.Add(x => x.CompanyId, companyId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.DoesNotContain("Finance progression controls", cut.Markup);
++            Assert.DoesNotContain("Generate financial data during simulation", cut.Markup);
++        });
++    }
++
++    [Fact]
++    public void Finance_page_renders_recent_simulation_history_with_day_level_logs()
++    {
++        var companyId = Guid.Parse("bfa52e67-bf7d-4619-b024-c4f8b180184b");
++        var entryResponses = new ConcurrentQueue<FinanceEntryInitializationResponse>(new[]
++        {
++            new FinanceEntryInitializationResponse
++            {
++                CompanyId = companyId,
++                InitializationStatus = FinanceEntryInitializationContractValues.Ready,
++                ProgressState = FinanceEntryProgressStateContractValues.Seeded,
++                SeedingState = FinanceSeedingStateContractValues.FullySeeded,
++                Message = "Finance data is ready."
++            }
++        });
++
++        using var harness = CreateHarness(
++            companyId,
++            CreateCurrentUser(companyId, "owner"),
++            entryResponses,
++            requestResponse: null,
++            retryResponse: null,
++            manualSeedResponse: null,
++            simulationStateResponse: new FinanceCompanySimulationStateResponse
++            {
++                CompanyId = companyId,
++                Status = FinanceCompanySimulationStatusValues.Stopped,
++                UiVisible = true,
++                BackendExecutionEnabled = true,
++                BackgroundJobsEnabled = true,
++                GenerationEnabled = true,
++                RecentHistory =
++                [
++                    new FinanceCompanySimulationRunHistoryResponse
++                    {
++                        SessionId = Guid.Parse("8d4efba1-d099-4b02-8916-f51b21965d5b"),
++                        Status = FinanceCompanySimulationStatusValues.Stopped,
++                        StartedUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                        CompletedUtc = new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc),
++                        LastUpdatedUtc = new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc),
++                        Seed = 42,
++                        GenerationEnabled = true,
++                        StartSimulatedDateTime = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                        CurrentSimulatedDateTime = new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc),
++                        InjectedAnomalies = ["duplicate_vendor_charge"],
++                        Warnings = ["Manual review recommended."],
++                        Errors = ["Safe generation failure summary."],
++                        DayLogs =
++                        [
++                            new FinanceCompanySimulationDayLogResponse
++                            {
++                                SimulatedDateUtc = new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc),
++                                TransactionsGenerated = 2,
++                                InvoicesGenerated = 1,
++                                BillsGenerated = 1,
++                                RecurringExpenseInstancesGenerated = 1,
++                                InjectedAnomalies = ["duplicate_vendor_charge"],
++                                Warnings = ["Manual review recommended."],
++                                Errors = ["Safe generation failure summary."]
++                            }
++                        ]
++                    }
++                ]
++            });
++        harness.Navigation.NavigateTo($"http://localhost/finance?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<FinancePage>(parameters => parameters.Add(x => x.CompanyId, companyId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Recent simulation history", cut.Markup);
++            Assert.Contains("duplicate_vendor_charge", cut.Markup);
++            Assert.Contains("Manual review recommended.", cut.Markup);
++            Assert.Contains("2026-04-02", cut.Markup);
++            Assert.Contains(">5<", cut.Markup);
++        });
++    }
++
+     private static FinancePageHarness CreateHarness(
+         Guid companyId,
+         CurrentUserContextViewModel currentUser,
+@@ -329,3 +391,4 @@ public sealed class FinancePageTests
+         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+             _handler(request, cancellationToken);
+     }
+ }
++END_OF_PATCH

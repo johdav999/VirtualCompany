@@ -1,0 +1,539 @@
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePageBase.cs b/src/VirtualCompany.Web/Pages/Finance/FinancePageBase.cs
+index 7a3d3c1..5f6f7f5 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/FinancePageBase.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePageBase.cs
+@@ -11,6 +11,7 @@ public abstract class FinancePageBase : ComponentBase
+     public Guid? CompanyId { get; set; }
+ 
+     protected bool IsLoading { get; private set; } = true;
++    protected CurrentUserContextViewModel? CurrentUserContext { get; private set; }
+     protected string? ErrorMessage { get; private set; }
+     protected FinanceAccessState AccessState { get; private set; } =
+         FinanceAccessState.Forbidden("Finance access is unavailable.");
+@@ -22,8 +23,9 @@ public abstract class FinancePageBase : ComponentBase
+ 
+         try
+         {
+-            var currentUser = await ApiClient.GetCurrentUserContextAsync();
+-            AccessState = FinanceAccessResolver.Resolve(currentUser, CompanyId);
++            CurrentUserContext = await ApiClient.GetCurrentUserContextAsync();
++
++            AccessState = FinanceAccessResolver.Resolve(CurrentUserContext, CompanyId);
+ 
+             // Normalize direct finance navigation onto an explicit company-scoped URL.
+             if (AccessState.IsAllowed && CompanyId is null && AccessState.CompanyId is Guid resolvedCompanyId)
+@@ -33,6 +35,7 @@ public abstract class FinancePageBase : ComponentBase
+         catch (OnboardingApiException ex)
+         {
+             ErrorMessage = ex.Message;
++            CurrentUserContext = null;
+             AccessState = FinanceAccessState.Forbidden("Finance is unavailable while the active company context cannot be resolved.");
+         }
+         finally { IsLoading = false; }
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+index 7fefebd..7dbed9e 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+@@ -33,9 +33,18 @@
+                     <div id="seed-generation-form" class="row g-3">
+                         <div class="col-md-6">
+                             <label class="form-label" for="seed-company">Company</label>
+-                            <input id="seed-company" class="form-control" value="@_seedGenerationForm.CompanyName" disabled />
+-                            <div class="form-text">The active finance company context is applied automatically for seed generation.</div>
++                            <InputSelect id="seed-company"
++                                         class="form-select"
++                                         Value="_seedGenerationForm.CompanyId"
++                                         ValueChanged="HandleCompanySelectionChangedAsync"
++                                         ValueExpression="() => _seedGenerationForm.CompanyId"
++                                         disabled="@(_isSubmittingSeedGeneration || _companyOptions.Count <= 1)">
++                                @foreach (var option in _companyOptions)
++                                {
++                                    <option value="@option.CompanyId">@option.CompanyName</option>
++                                }
++                            </InputSelect>
+                             <ValidationMessage For="@(() => _seedGenerationForm.CompanyId)" />
++                            <div class="form-text">@CompanySelectionDescription</div>
+                         </div>
+                         <div class="col-md-3">
+                             <label class="form-label" for="seed-value">Seed value</label>
+@@ -68,58 +77,95 @@
+                         <div class="alert @(_seedGenerationResult.Succeeded ? "alert-success" : "alert-danger")" role="status">
+                             @_seedGenerationResult.Message
+                         </div>
+-
+-                        <div class="row g-3 mb-3">
+-                            <div class="col-sm-6 col-lg-3">
+-                                <div class="border rounded p-3 h-100">
+-                                    <div class="text-body-secondary small">Created</div>
+-                                    <div class="fs-4 fw-semibold">@_seedGenerationResult.CreatedCount</div>
++                        <section class="border rounded p-3 mb-3" aria-labelledby="generation-summary-title">
++                            <h3 id="generation-summary-title" class="h6 mb-3">Generation summary</h3>
++                            <div class="row g-3 mb-3">
++                                <div class="col-sm-6 col-lg-3">
++                                    <div class="border rounded p-3 h-100">
++                                        <div class="text-body-secondary small">Created</div>
++                                        <div class="fs-4 fw-semibold">@_seedGenerationResult.CreatedCount</div>
++                                    </div>
+                                 </div>
+-                            </div>
+-                            <div class="col-sm-6 col-lg-3">
+-                                <div class="border rounded p-3 h-100">
+-                                    <div class="text-body-secondary small">Updated</div>
+-                                    <div class="fs-4 fw-semibold">@_seedGenerationResult.UpdatedCount</div>
++                                <div class="col-sm-6 col-lg-3">
++                                    <div class="border rounded p-3 h-100">
++                                        <div class="text-body-secondary small">Updated</div>
++                                        <div class="fs-4 fw-semibold">@_seedGenerationResult.UpdatedCount</div>
++                                    </div>
+                                 </div>
+                             </div>
+-                        </div>
+ 
+-                        @if (_seedGenerationResult.ReferentialIntegrityErrors.Count > 0)
+-                        {
+-                            <div class="mb-3">
+-                                <h3 class="h6">Referential integrity errors</h3>
+-                                <ul class="mb-0">
+-                                    @foreach (var issue in _seedGenerationResult.ReferentialIntegrityErrors)
+-                                    {
+-                                        <li>@issue.Message</li>
+-                                    }
+-                                </ul>
+-                            </div>
+-                        }
++                            <dl class="row mb-0">
++                                <dt class="col-sm-3">Company</dt>
++                                <dd class="col-sm-9">@_seedGenerationForm.CompanyName</dd>
++                                <dt class="col-sm-3">Seed value</dt>
++                                <dd class="col-sm-9">@_seedGenerationResult.SeedValue</dd>
++                                <dt class="col-sm-3">Anchor date</dt>
++                                <dd class="col-sm-9">@_seedGenerationResult.AnchorDateUtc.ToString("yyyy-MM-dd")</dd>
++                                <dt class="col-sm-3">Generation mode</dt>
++                                <dd class="col-sm-9">@GetGenerationModeLabel(_seedGenerationResult.GenerationMode)</dd>
++                            </dl>
++                        </section>
++
++                        <section class="border rounded p-3" aria-labelledby="validation-results-title">
++                            <h3 id="validation-results-title" class="h6 mb-3">Validation results</h3>
++
++                            @if (_seedGenerationResult.ReferentialIntegrityErrors.Count > 0)
++                            {
++                                <div class="mb-3">
++                                    <h4 class="h6 text-danger">Referential integrity errors</h4>
++                                    <ul class="mb-0">
++                                        @foreach (var issue in _seedGenerationResult.ReferentialIntegrityErrors)
++                                        {
++                                            <li>
++                                                @if (!string.IsNullOrWhiteSpace(issue.Code))
++                                                {
++                                                    <span class="fw-semibold">@issue.Code:</span>
++                                                    <span> </span>
++                                                }
++                                                @issue.Message
++                                            </li>
++                                        }
++                                    </ul>
++                                </div>
++                            }
+ 
+-                        @if (_seedGenerationResult.Errors.Count > 0)
+-                        {
+-                            <div class="mb-3">
+-                                <h3 class="h6">Validation errors</h3>
+-                                <ul class="mb-0">
+-                                    @foreach (var issue in _seedGenerationResult.Errors)
+-                                    {
+-                                        <li>@issue.Message</li>
+-                                    }
+-                                </ul>
+-                            </div>
+-                        }
++                            @if (_seedGenerationResult.Errors.Count > 0)
++                            {
++                                <div class="mb-3">
++                                    <h4 class="h6 text-danger">Validation errors</h4>
++                                    <ul class="mb-0">
++                                        @foreach (var issue in _seedGenerationResult.Errors)
++                                        {
++                                            <li>
++                                                @if (!string.IsNullOrWhiteSpace(issue.Code))
++                                                {
++                                                    <span class="fw-semibold">@issue.Code:</span>
++                                                    <span> </span>
++                                                }
++                                                @issue.Message
++                                            </li>
++                                        }
++                                    </ul>
++                                </div>
++                            }
+ 
+-                        @if (_seedGenerationResult.Warnings.Count > 0)
+-                        {
+-                            <div>
+-                                <h3 class="h6">Warnings</h3>
+-                                <ul class="mb-0">
+-                                    @foreach (var issue in _seedGenerationResult.Warnings)
+-                                    {
+-                                        <li>@issue.Message</li>
+-                                    }
+-                                </ul>
+-                            </div>
+-                        }
+-                        else if (_seedGenerationResult.Succeeded && _seedGenerationResult.Errors.Count == 0 && _seedGenerationResult.ReferentialIntegrityErrors.Count == 0)
+-                        {
+-                            <p class="text-success mb-0">Validation completed without errors or warnings.</p>
+-                        }
++                            @if (_seedGenerationResult.Warnings.Count > 0)
++                            {
++                                <div class="mb-0">
++                                    <h4 class="h6 text-warning-emphasis">Warnings</h4>
++                                    <ul class="mb-0">
++                                        @foreach (var issue in _seedGenerationResult.Warnings)
++                                        {
++                                            <li>
++                                                @if (!string.IsNullOrWhiteSpace(issue.Code))
++                                                {
++                                                    <span class="fw-semibold">@issue.Code:</span>
++                                                    <span> </span>
++                                                }
++                                                @issue.Message
++                                            </li>
++                                        }
++                                    </ul>
++                                </div>
++                            }
++                            else if (_seedGenerationResult.Succeeded && _seedGenerationResult.Errors.Count == 0 && _seedGenerationResult.ReferentialIntegrityErrors.Count == 0)
++                            {
++                                <p class="text-success mb-0">Validation completed without errors or warnings.</p>
++                            }
++                        </section>
+                     </div>
+                 }
+             </article>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+index 71d20cd..0ca1a64 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+@@ -10,6 +10,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private readonly SeedGenerationFormModel _seedGenerationForm = new();
+     private readonly IReadOnlyList<GenerationModeOption> _generationModeOptions =
+     [
++        new(FinanceSandboxSeedGenerationModes.Refresh, "Replace existing dataset", "Generate a clean sandbox dataset for the active company."),
+         new(FinanceSandboxSeedGenerationModes.Refresh, "Replace existing dataset", "Generate a clean sandbox dataset for the active company."),
+         new(FinanceSandboxSeedGenerationModes.RefreshWithAnomalies, "Replace and inject anomalies", "Generate the dataset and add anomaly scenarios for validation coverage.")
+     ];
+@@ -17,6 +18,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private ValidationMessageStore _seedGenerationMessageStore = default!;
+     private FinanceSandboxSeedGenerationViewModel? _seedGenerationResult;
+     private string? _seedGenerationErrorMessage;
++    private readonly List<CompanyOption> _companyOptions = [];
+     private bool _isSubmittingSeedGeneration;
+     private int _datasetGenerationSectionVersion;
+ 
+@@ -30,6 +32,11 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         _generationModeOptions.FirstOrDefault(option => string.Equals(option.Value, _seedGenerationForm.GenerationMode, StringComparison.OrdinalIgnoreCase))?.Description
+         ?? "Select how the sandbox dataset should be generated.";
+ 
++    private string CompanySelectionDescription =>
++        _companyOptions.Count > 1
++            ? "Changing company updates the tenant-scoped route before you submit the generation request."
++            : "The active finance company context is applied automatically for seed generation.";
++
+     protected override void OnInitialized()
+     {
+         _seedGenerationEditContext = new EditContext(_seedGenerationForm);
+@@ -42,11 +49,24 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     {
+         await base.OnParametersSetAsync();
+ 
++        _companyOptions.Clear();
++        _companyOptions.AddRange(GetSandboxAdminCompanyOptions());
++
+         if (AccessState.CompanyId is Guid companyId)
+         {
++            var companyChanged = _seedGenerationForm.CompanyId != Guid.Empty && _seedGenerationForm.CompanyId != companyId;
+             _seedGenerationForm.CompanyId = companyId;
+-            _seedGenerationForm.CompanyName = AccessState.CompanyName ?? "Active company";
++            _seedGenerationForm.CompanyName = ResolveCompanyName(companyId);
++
++            if (companyChanged)
++            {
++                _seedGenerationResult = null;
++                _seedGenerationErrorMessage = null;
++                ClearSeedGenerationValidation();
++            }
+         }
++        else if (_companyOptions.Count > 0 && _seedGenerationForm.CompanyId == Guid.Empty)
++        {
++            await HandleCompanySelectionChangedAsync(_companyOptions[0].CompanyId);
++        }
+ 
+         if (_seedGenerationForm.AnchorDateUtc == default)
+         {
+@@ -55,9 +75,37 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         }
+     }
+ 
++    private Task HandleCompanySelectionChangedAsync(Guid companyId)
++    {
++        if (_isSubmittingSeedGeneration || companyId == Guid.Empty || companyId == _seedGenerationForm.CompanyId)
++        {
++            return Task.CompletedTask;
++        }
++
++        var selectedCompany = _companyOptions.FirstOrDefault(option => option.CompanyId == companyId);
++        _seedGenerationForm.CompanyId = companyId;
++        _seedGenerationForm.CompanyName = selectedCompany?.CompanyName ?? ResolveCompanyName(companyId);
++        _seedGenerationResult = null;
++        _seedGenerationErrorMessage = null;
++        ClearSeedGenerationValidation();
++
++        Navigation.NavigateTo(FinanceRoutes.WithCompanyContext(FinanceRoutes.SandboxAdmin, companyId));
++        return Task.CompletedTask;
++    }
++
++    private string GetGenerationModeLabel(string value) =>
++        _generationModeOptions.FirstOrDefault(option => string.Equals(option.Value, value, StringComparison.OrdinalIgnoreCase))?.Label
++        ?? value;
++
+     private async Task HandleSeedGenerationSubmitAsync()
+     {
+-        if (_isSubmittingSeedGeneration || AccessState.CompanyId is not Guid companyId)
++        if (_isSubmittingSeedGeneration || _seedGenerationForm.CompanyId == Guid.Empty)
++        {
++            return;
++        }
++
++        var companyId = _seedGenerationForm.CompanyId;
++        _seedGenerationForm.CompanyName = ResolveCompanyName(companyId);
++
++        if (_isSubmittingSeedGeneration)
+         {
+             return;
+         }
+@@ -113,6 +161,23 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private static DateTime NormalizeAnchorDate(DateTime value) =>
+         DateTime.SpecifyKind(value.Date, DateTimeKind.Utc);
+ 
++    private IReadOnlyList<CompanyOption> GetSandboxAdminCompanyOptions() =>
++        (CurrentUserContext?.Memberships ?? [])
++            .Where(membership =>
++                string.Equals(membership.Status, "active", StringComparison.OrdinalIgnoreCase) &&
++                FinanceAccess.CanAccessSandboxAdmin(membership.MembershipRole))
++            .GroupBy(membership => membership.CompanyId)
++            .Select(group => group.First())
++            .OrderBy(membership => membership.CompanyName, StringComparer.OrdinalIgnoreCase)
++            .Select(membership => new CompanyOption(
++                membership.CompanyId,
++                membership.CompanyName,
++                membership.MembershipRole))
++            .ToArray();
++
++    private string ResolveCompanyName(Guid companyId) =>
++        _companyOptions.FirstOrDefault(option => option.CompanyId == companyId)?.CompanyName
++        ?? AccessState.CompanyName ?? "Active company";
++
+     private Task<FinanceSandboxDatasetGenerationViewModel?> LoadDatasetGenerationAsync(Guid companyId, CancellationToken cancellationToken) =>
+         SandboxAdminService.GetDatasetGenerationAsync(companyId, cancellationToken);
+ 
+@@ -182,4 +247,9 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private sealed record GenerationModeOption(
+         string Value,
+         string Label,
+-        string Description);
++        string Description);
++
++    private sealed record CompanyOption(
++        Guid CompanyId,
++        string CompanyName,
++        string MembershipRole);
+ }
+diff --git a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+index 4e5a7f1..321c5c6 100644
+--- a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
++++ b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+@@ -37,6 +37,10 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+ 
+         return new FinanceSandboxSeedGenerationViewModel
+         {
++            CompanyId = response.CompanyId,
++            SeedValue = response.SeedValue,
++            AnchorDateUtc = response.AnchorDateUtc,
++            GenerationMode = response.GenerationMode,
+             Succeeded = response.Succeeded,
+             CreatedCount = response.CreatedCount,
+             UpdatedCount = response.UpdatedCount,
+@@ -127,6 +131,10 @@ public sealed class FinanceSandboxSeedGenerationCommand
+ 
+ public sealed class FinanceSandboxSeedGenerationViewModel
+ {
++    public Guid CompanyId { get; set; }
++    public int SeedValue { get; set; }
++    public DateTime AnchorDateUtc { get; set; }
++    public string GenerationMode { get; set; } = string.Empty;
+     public bool Succeeded { get; set; }
+     public int CreatedCount { get; set; }
+     public int UpdatedCount { get; set; }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+index a3d2b12..ef8364f 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+@@ -49,6 +49,36 @@ public sealed class FinanceSandboxAdminPageTests
+         Assert.Equal(5, sandboxService.TotalCalls);
+     }
+ 
++    [Fact]
++    public void Sandbox_admin_page_exposes_tenant_aware_company_selection_for_seed_generation()
++    {
++        var primaryCompanyId = Guid.Parse("1b40e8b2-465a-4c35-bb52-eb41523c5df6");
++        var secondaryCompanyId = Guid.Parse("5e73f3c4-f39c-4254-861a-8065ea57f031");
++        var sandboxService = new StubFinanceSandboxAdminService();
++        var currentUser = CreateCurrentUserContext(
++            primaryCompanyId,
++            "admin",
++            [
++                new CompanyMembershipViewModel
++                {
++                    MembershipId = Guid.NewGuid(),
++                    CompanyId = primaryCompanyId,
++                    CompanyName = "Contoso Finance",
++                    MembershipRole = "admin",
++                    Status = "active"
++                },
++                new CompanyMembershipViewModel
++                {
++                    MembershipId = Guid.NewGuid(),
++                    CompanyId = secondaryCompanyId,
++                    CompanyName = "Fabrikam Treasury",
++                    MembershipRole = "tester",
++                    Status = "active"
++                }
++            ]);
++
++        using var harness = CreateHarness(currentUser, sandboxService);
++        var cut = RenderSandboxAdmin(harness, primaryCompanyId);
++        var companySelect = cut.Find("#seed-company");
++
++        Assert.Contains("Contoso Finance", companySelect.InnerHtml);
++        Assert.Contains("Fabrikam Treasury", companySelect.InnerHtml);
++
++        companySelect.Change(secondaryCompanyId.ToString());
++
++        Assert.Contains($"companyId={secondaryCompanyId:D}", harness.Navigation.Uri, StringComparison.OrdinalIgnoreCase);
++    }
++
+     [Fact]
+     public void Sandbox_admin_page_sections_load_independently_and_support_loading_empty_error_and_content_states()
+     {
+@@ -166,6 +196,10 @@ public sealed class FinanceSandboxAdminPageTests
+         cut.WaitForAssertion(() =>
+         {
+             Assert.Contains("Seed dataset generated successfully.", cut.Markup);
++            Assert.Contains("Generation summary", cut.Markup);
++            Assert.Contains("Validation results", cut.Markup);
++            Assert.Contains(">302<", cut.Markup);
++            Assert.Contains("Replace existing dataset", cut.Markup);
+             Assert.Contains(">87<", cut.Markup);
+             Assert.Contains(">0<", cut.Markup);
+             Assert.Contains("Validation completed without errors or warnings.", cut.Markup);
+@@ -203,6 +237,7 @@ public sealed class FinanceSandboxAdminPageTests
+         cut.WaitForAssertion(() =>
+         {
+             Assert.Contains("Referential integrity errors", cut.Markup);
++            Assert.Contains("Validation results", cut.Markup);
+             Assert.Contains("Transactions must reference valid accounts.", cut.Markup);
+             Assert.Contains("Validation errors", cut.Markup);
+             Assert.Contains("Transactions must be inside the seeded history window.", cut.Markup);
+@@ -253,7 +288,15 @@ public sealed class FinanceSandboxAdminPageTests
+         });
+     }
+ 
+-    private static SandboxAdminHarness CreateHarness(Guid companyId, string membershipRole, StubFinanceSandboxAdminService sandboxService)
++    private static IRenderedComponent<SandboxAdminPage> RenderSandboxAdmin(SandboxAdminHarness harness, Guid companyId)
++    {
++        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
++        return harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId));
++    }
++
++    private static SandboxAdminHarness CreateHarness(
++        CurrentUserContextViewModel currentUserContext,
++        StubFinanceSandboxAdminService sandboxService)
+     {
+         var context = new TestContext();
+ 
+@@ -263,19 +306,27 @@ public sealed class FinanceSandboxAdminPageTests
+         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
+         {
+             return Task.FromResult(request.RequestUri?.AbsolutePath switch
+             {
+-                "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
++                "/api/auth/me" => CreateJsonResponse(currentUserContext),
+                 _ => CreateNotFoundResponse()
+             });
+         }))
+         {
+             BaseAddress = new Uri("http://localhost/")
+         }));
+ 
+         return new SandboxAdminHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
+     }
+ 
+-    private static CurrentUserContextViewModel CreateCurrentUserContext(Guid companyId, string membershipRole) =>
++    private static SandboxAdminHarness CreateHarness(Guid companyId, string membershipRole, StubFinanceSandboxAdminService sandboxService) =>
++        CreateHarness(CreateCurrentUserContext(companyId, membershipRole), sandboxService);
++
++    private static CurrentUserContextViewModel CreateCurrentUserContext(
++        Guid companyId,
++        string membershipRole,
++        IReadOnlyList<CompanyMembershipViewModel>? memberships = null)
++    {
++        var resolvedMemberships = memberships?.ToList()
++            ?? [
++                new CompanyMembershipViewModel
++                {
++                    MembershipId = Guid.NewGuid(),
++                    CompanyId = companyId,
++                    CompanyName = "Contoso Finance",
++                    MembershipRole = membershipRole,
++                    Status = "active"
++                }
++            ];
++        var activeMembership = resolvedMemberships.First(membership => membership.CompanyId == companyId);
++
++        return new CurrentUserContextViewModel
+         new()
+         {
+-            Memberships =
+-            [
+-                new CompanyMembershipViewModel
+-                {
+-                    MembershipId = Guid.NewGuid(),
+-                    CompanyId = companyId,
+-                    CompanyName = "Contoso Finance",
+-                    MembershipRole = membershipRole,
+-                    Status = "active"
+-                }
+-            ],
++            Memberships = resolvedMemberships,
+             ActiveCompany = new ResolvedCompanyContextViewModel
+             {
+-                MembershipId = Guid.NewGuid(),
+-                CompanyId = companyId,
+-                CompanyName = "Contoso Finance",
+-                MembershipRole = membershipRole,
+-                Status = "active"
++                MembershipId = activeMembership.MembershipId,
++                CompanyId = activeMembership.CompanyId,
++                CompanyName = activeMembership.CompanyName,
++                MembershipRole = activeMembership.MembershipRole,
++                Status = activeMembership.Status
+             }
+         };
++    }
+ 
+     private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>
+         new(HttpStatusCode.OK)
+END_OF_PATCH

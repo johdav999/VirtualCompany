@@ -1,0 +1,828 @@
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 3a7d5b1..c9c1d84 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -191,7 +191,7 @@ public sealed class InternalFinanceController : ControllerBase
+     }
+ 
+     [HttpGet("invoices/{invoiceId:guid}")]
+-    public async Task<ActionResult<FinanceInvoiceDetailDto>> GetInvoiceDetailAsync(
++    public async Task<ActionResult<FinanceInvoiceDetailResponse>> GetInvoiceDetailAsync(
+         Guid companyId,
+         Guid invoiceId,
+         CancellationToken cancellationToken)
+@@ -205,21 +205,37 @@ public sealed class InternalFinanceController : ControllerBase
+                 return NotFound(CreateProblemDetails("Finance invoice was not found.", "Finance record was not found.", StatusCodes.Status404NotFound));
+             }
+ 
+-            var workflow = await _invoiceReviewWorkflowService.GetLatestByInvoiceAsync(companyId, invoiceId, cancellationToken);
+-            var approval = await TryGetApprovalAsync(companyId, workflow?.ApprovalRequestId, cancellationToken);
+-            return Ok(detail with
++            var review = await _invoiceReviewWorkflowService.GetLatestByInvoiceAsync(companyId, invoiceId, cancellationToken);
++            var existingWorkflowContext = detail.WorkflowContext;
++            var relatedApprovalId = review?.ApprovalRequestId ?? existingWorkflowContext?.ApprovalRequestId;
++            var approval = await TryGetApprovalAsync(companyId, relatedApprovalId, cancellationToken);
++            var workflowContext = review is null
++                ? existingWorkflowContext
++                : new FinanceInvoiceWorkflowContextDto(
++                    review.WorkflowInstanceId,
++                    review.TaskId,
++                    "Invoice review workflow",
++                    review.ReviewTaskStatus,
++                    review.ApprovalRequestId,
++                    review.InvoiceClassification,
++                    review.RiskLevel,
++                    review.RecommendedAction,
++                    review.Rationale,
++                    review.ConfidenceScore,
++                    review.RequiresHumanApproval,
++                    approval?.Status,
++                    BuildApprovalAssigneeSummary(approval),
++                    review.WorkflowInstanceId.HasValue,
++                    approval is not null);
++
++            var recommendationDetails = BuildRecommendationDetails(review, workflowContext);
++            var workflowHistory = await BuildWorkflowHistoryAsync(
++                companyId,
++                review,
++                workflowContext,
++                relatedApprovalId,
++                cancellationToken);
++
++            return Ok(new FinanceInvoiceDetailResponse(
++                detail.Id,
++                detail.CounterpartyId,
++                detail.CounterpartyName,
++                detail.InvoiceNumber,
++                detail.IssuedUtc,
++                detail.DueUtc,
++                detail.Amount,
++                detail.Currency,
++                detail.Status,
++                workflowContext,
++                detail.Permissions,
++                detail.LinkedDocument,
++                recommendationDetails,
++                workflowHistory));
+-            {
+-                WorkflowContext = workflow is null
+-                    ? null
+-                    : new FinanceInvoiceWorkflowContextDto(
+-                        workflow.WorkflowInstanceId,
+-                        workflow.TaskId,
+-                        "Invoice review workflow",
+-                        workflow.ReviewTaskStatus,
+-                        workflow.ApprovalRequestId,
+-                        workflow.InvoiceClassification,
+-                        workflow.RiskLevel,
+-                        workflow.RecommendedAction,
+-                        workflow.Rationale,
+-                        workflow.ConfidenceScore,
+-                        workflow.RequiresHumanApproval,
+-                        approval?.Status,
+-                        BuildApprovalAssigneeSummary(approval),
+-                        workflow.WorkflowInstanceId.HasValue,
+-                        approval is not null)
+-            });
+         }
+         catch (UnauthorizedAccessException)
+         {
+@@ -458,20 +474,20 @@ public sealed class InternalFinanceController : ControllerBase
+         var relatedApprovalId = review?.ApprovalRequestId ?? fallbackWorkflowContext?.ApprovalRequestId;
+         var recommendationDetails = BuildRecommendationDetails(review, fallbackWorkflowContext);
+         var workflowHistory = await BuildWorkflowHistoryAsync(
+             companyId,
+             review,
+             fallbackWorkflowContext,
+             relatedApprovalId,
+             cancellationToken);
+ 
+         return new FinanceInvoiceReviewDetailResponse(
+             invoice.Id,
+             invoice.InvoiceNumber,
+             invoice.CounterpartyName,
+             invoice.Amount,
+             invoice.Currency,
+             invoice.Status,
+-            recommendationDetails.Risk,
+-            recommendationDetails.CurrentWorkflowStatus,
+-            recommendationDetails.RationaleSummary,
+-            recommendationDetails.RecommendedAction,
+-            recommendationDetails.Confidence,
++            recommendationDetails?.Risk ?? string.Empty,
++            recommendationDetails?.CurrentWorkflowStatus ?? string.Empty,
++            recommendationDetails?.RationaleSummary ?? string.Empty,
++            recommendationDetails?.RecommendedAction ?? string.Empty,
++            recommendationDetails?.Confidence ?? 0m,
+             review?.LastUpdatedUtc ?? invoice.IssuedUtc,
+             invoice.Id,
+             relatedApprovalId,
+             BuildReviewActionAvailability(invoice, review),
+             recommendationDetails,
+@@ -479,14 +495,24 @@ public sealed class InternalFinanceController : ControllerBase
+     }
+ 
+-    private static FinanceInvoiceRecommendationDetailsResponse BuildRecommendationDetails(
++    private static FinanceInvoiceRecommendationDetailsResponse? BuildRecommendationDetails(
+         FinanceInvoiceReviewWorkflowResultDto? review,
+-        FinanceInvoiceWorkflowContextDto? fallbackWorkflowContext) =>
+-        new(
+-            review?.InvoiceClassification ?? fallbackWorkflowContext?.Classification ?? "unknown",
+-            review?.RiskLevel ?? fallbackWorkflowContext?.RiskLevel ?? "unknown",
+-            review?.Rationale ?? fallbackWorkflowContext?.Rationale ?? "No recommendation details available yet.",
+-            review?.ConfidenceScore ?? fallbackWorkflowContext?.Confidence ?? 0m,
+-            review?.RecommendedAction ?? fallbackWorkflowContext?.RecommendedAction ?? "no_action",
+-            review?.ReviewTaskStatus ?? fallbackWorkflowContext?.ReviewTaskStatus ?? "not_started");
++        FinanceInvoiceWorkflowContextDto? fallbackWorkflowContext)
++    {
++        if (review is null && fallbackWorkflowContext is null)
++        {
++            return null;
++        }
++
++        return new FinanceInvoiceRecommendationDetailsResponse(
++            review?.InvoiceClassification ?? fallbackWorkflowContext?.Classification ?? string.Empty,
++            review?.RiskLevel ?? fallbackWorkflowContext?.RiskLevel ?? string.Empty,
++            review?.Rationale ?? fallbackWorkflowContext?.Rationale ?? string.Empty,
++            review?.ConfidenceScore ?? fallbackWorkflowContext?.Confidence ?? 0m,
++            review?.RecommendedAction ?? fallbackWorkflowContext?.RecommendedAction ?? string.Empty,
++            review?.ReviewTaskStatus ?? fallbackWorkflowContext?.ReviewTaskStatus ?? string.Empty);
++    }
+ 
+     private static FinanceInvoiceReviewListItemResponse MapInvoiceReviewListItem(
+         FinanceInvoiceDto invoice,
+         FinanceInvoiceReviewWorkflowResultDto? review) =>
+@@ -601,18 +627,32 @@ public sealed class InternalFinanceController : ControllerBase
+     private static IReadOnlyList<FinanceInvoiceWorkflowHistoryItemResponse> NormalizeWorkflowHistory(
+         IEnumerable<FinanceInvoiceWorkflowHistoryItemResponse> items)
+     {
+         var orderedItems = items
+             .Where(item => item is not null)
++            .Select(item => item with
++            {
++                EventId = NormalizeWorkflowHistoryEventId(item.EventId) ?? string.Empty,
++                EventType = string.IsNullOrWhiteSpace(item.EventType) ? "Review" : item.EventType.Trim(),
++                ActorOrSourceDisplayName = string.IsNullOrWhiteSpace(item.ActorOrSourceDisplayName) ? "System" : item.ActorOrSourceDisplayName.Trim()
++            })
++            .OrderBy(item => item.OccurredAtUtc == default ? 1 : 0)
+             .OrderByDescending(item => item.OccurredAtUtc)
++            .ThenBy(item => item.EventType, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(item => item.ActorOrSourceDisplayName, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(item => item.EventId, StringComparer.OrdinalIgnoreCase)
+             .ToList();
+ 
+         var uniqueItems = new List<FinanceInvoiceWorkflowHistoryItemResponse>(orderedItems.Count);
+         var seenEventIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+ 
+         foreach (var item in orderedItems)
+         {
+-            if (!string.IsNullOrWhiteSpace(item.EventId))
++            var normalizedEventId = NormalizeWorkflowHistoryEventId(item.EventId);
++            if (normalizedEventId is not null)
+             {
+-                if (!seenEventIds.Add(item.EventId))
++                if (!seenEventIds.Add(normalizedEventId))
+                 {
+                     continue;
+                 }
+             }
+ 
+@@ -620,6 +660,10 @@ public sealed class InternalFinanceController : ControllerBase
+         }
+ 
+         return uniqueItems;
+     }
++
++    private static string? NormalizeWorkflowHistoryEventId(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+ 
+     private static string ResolveWorkflowHistoryEventType(AuditHistoryListItem item)
+     {
+         var action = item.Action.Trim().ToLowerInvariant();
+@@ -772,6 +816,21 @@ public sealed class InternalFinanceController : ControllerBase
+     Guid CounterpartyId,
+     string CounterpartyName,
+     string InvoiceNumber,
++    DateTime IssuedUtc,
++    DateTime DueUtc,
++    decimal Amount,
++    string Currency,
++    string Status,
++    FinanceInvoiceWorkflowContextDto? WorkflowContext,
++    FinanceActionPermissionsDto Permissions,
++    FinanceLinkedDocumentAccessDto LinkedDocument,
++    FinanceInvoiceRecommendationDetailsResponse? RecommendationDetails = null,
++    IReadOnlyList<FinanceInvoiceWorkflowHistoryItemResponse>? WorkflowHistory = null);
++
++public sealed record FinanceInvoiceReviewListItemResponse(
++    Guid Id,
++    string InvoiceNumber,
++    string SupplierName,
++    decimal Amount,
++    string Currency,
++    string Status,
+     string RiskLevel,
+     string RecommendationStatus,
+     string RecommendationOutcome,
+@@ -779,18 +838,6 @@ public sealed record FinanceInvoiceReviewListItemResponse(
+     DateTime LastUpdatedUtc);
+ 
+-public sealed record FinanceInvoiceReviewDetailResponse(
+-    Guid Id,
+-    string InvoiceNumber,
+-    string SupplierName,
+-    decimal Amount,
+-    string Currency,
+-    string Status,
+-    string RiskLevel,
+-    string RecommendationStatus,
+-    string RecommendationSummary,
+-    string RecommendedAction,
+-    decimal Confidence,
+-    DateTime LastUpdatedUtc,
++public sealed record FinanceInvoiceReviewDetailResponse(
++    Guid Id,
++    string InvoiceNumber,
++    string SupplierName,
++    decimal Amount,
++    string Currency,
++    string Status,
++    string RiskLevel,
++    string RecommendationStatus,
++    string RecommendationSummary,
++    string RecommendedAction,
++    decimal Confidence,
++    DateTime LastUpdatedUtc,
+     Guid SourceInvoiceId,
+     Guid? RelatedApprovalId,
+     FinanceInvoiceReviewActionAvailabilityResponse Actions,
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailContent.razor b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailContent.razor
+index 0fd2c5a..5ca5ff5 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailContent.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailContent.razor
+@@ -35,7 +35,7 @@ else
+ 
+         <section class="mt-4" aria-label="Recommendation details">
+             <h3 class="h5">Recommendation details</h3>
+-            @if (ResolveRecommendationDetails(Detail) is { } recommendationDetails)
++            @if (InvoiceWorkflowPresentation.ResolveRecommendationDetails(Detail) is { } recommendationDetails)
+             {
+                 <dl class="kv-list mb-0">
+                     <dt>Classification</dt>
+@@ -58,9 +58,9 @@ else
+ 
+         <section class="mt-4" aria-label="Workflow history">
+             <h3 class="h5">Workflow history</h3>
+-            @if (Detail.WorkflowHistory is { Count: > 0 })
++            @if (InvoiceWorkflowPresentation.NormalizeWorkflowHistory(Detail.WorkflowHistory) is { Count: > 0 } workflowHistory)
+             {
+                 <div class="list-group list-group-flush">
+-                    @foreach (var entry in Detail.WorkflowHistory)
++                    @foreach (var entry in workflowHistory)
+                     {
+                         <div class="list-group-item px-0">
+                             <div class="d-flex justify-content-between gap-3">
+@@ -131,19 +131,6 @@ else
+     private static string FormatCurrency(decimal amount, string currency) =>
+         $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+ 
+-    private FinanceInvoiceRecommendationDetailsResponse? ResolveRecommendationDetails(FinanceInvoiceReviewDetailResponse detail) =>
+-        detail.RecommendationDetails ??
+-        (string.IsNullOrWhiteSpace(detail.RecommendationSummary) &&
+-         string.IsNullOrWhiteSpace(detail.RecommendedAction) &&
+-         string.IsNullOrWhiteSpace(detail.RecommendationStatus) &&
+-         string.IsNullOrWhiteSpace(detail.RiskLevel)
+-            ? null
+-            : new FinanceInvoiceRecommendationDetailsResponse
+-            {
+-                Risk = detail.RiskLevel,
+-                RationaleSummary = detail.RecommendationSummary,
+-                Confidence = detail.Confidence,
+-                RecommendedAction = detail.RecommendedAction,
+-                CurrentWorkflowStatus = detail.RecommendationStatus
+-            });
+-
+     private static string FormatDateTime(DateTime value) =>
+-        value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
++        value == default
++            ? "Unknown time"
++            : value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+ 
+     private static string FormatConfidence(decimal confidence)
+     {
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
+index 264f126..d77e13c 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
+@@ -121,6 +121,64 @@
+                         </div>
+                         <p class="text-body-secondary mb-4">@SelectedInvoice.WorkflowContext.Rationale</p>
+                     }
++
++                    <h3 class="h6">Recommendation details</h3>
++                    @if (InvoiceWorkflowPresentation.ResolveRecommendationDetails(SelectedInvoice) is { } recommendationDetails)
++                    {
++                        <dl class="mb-4">
++                            <dt>Classification</dt>
++                            <dd>@FormatLabel(recommendationDetails.Classification)</dd>
++                            <dt>Risk</dt>
++                            <dd>@FormatLabel(recommendationDetails.Risk)</dd>
++                            <dt>Rationale summary</dt>
++                            <dd>@recommendationDetails.RationaleSummary</dd>
++                            <dt>Confidence</dt>
++                            <dd>@FormatConfidence(recommendationDetails.Confidence)</dd>
++                            <dt>Recommended action</dt>
++                            <dd>@FormatLabel(recommendationDetails.RecommendedAction)</dd>
++                            <dt>Current workflow status</dt>
++                            <dd>@FormatLabel(recommendationDetails.CurrentWorkflowStatus)</dd>
++                        </dl>
++                    }
++                    else
++                    {
++                        <p class="text-body-secondary mb-4">No recommendation details available yet.</p>
++                    }
++
++                    <h3 class="h6">Workflow history</h3>
++                    @if (InvoiceWorkflowPresentation.NormalizeWorkflowHistory(SelectedInvoice.WorkflowHistory) is { Count: > 0 } workflowHistory)
++                    {
++                        <div class="list-group list-group-flush mb-4">
++                            @foreach (var entry in workflowHistory)
++                            {
++                                <div class="list-group-item px-0">
++                                    <div class="d-flex justify-content-between gap-3">
++                                        <div>
++                                            <div class="fw-semibold">@entry.EventType</div>
++                                            <div class="small text-body-secondary">@FormatActorOrSource(entry.ActorOrSourceDisplayName)</div>
++                                        </div>
++                                        <div class="small text-body-secondary text-end">@FormatDateTime(entry.OccurredAtUtc)</div>
++                                    </div>
++                                    @if (BuildAuditHref(entry.RelatedAuditId) is { } auditHref || BuildApprovalHref(entry.RelatedApprovalId) is { } approvalHref)
++                                    {
++                                        <div class="small mt-2">
++                                            @if (!string.IsNullOrWhiteSpace(auditHref))
++                                            {
++                                                <a href="@auditHref">Audit detail</a>
++                                            }
++                                            @if (!string.IsNullOrWhiteSpace(auditHref) && !string.IsNullOrWhiteSpace(approvalHref))
++                                            {
++                                                <span class="text-body-secondary"> | </span>
++                                            }
++                                            @if (!string.IsNullOrWhiteSpace(approvalHref))
++                                            {
++                                                <a href="@approvalHref">Approval detail</a>
++                                            }
++                                        </div>
++                                    }
++                                </div>
++                            }
++                        </div>
++                    }
++                    else
++                    {
++                        <p class="text-body-secondary mb-4">No workflow history available yet.</p>
++                    }
+ 
+                     <h3 class="h6">Linked document</h3>
+                     <FinanceLinkedResourceState
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
+index c85138c..23f7baa 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
+@@ -149,6 +149,10 @@ public partial class InvoicesPage : FinancePageBase
+     private string BuildApprovalHref(Guid approvalRequestId) =>
+         $"/approvals?companyId={AccessState.CompanyId}&approvalId={approvalRequestId:D}";
+ 
++    private string? BuildAuditHref(Guid? auditEventId) =>
++        auditEventId is Guid resolvedAuditEventId
++            ? $"/audit/{resolvedAuditEventId:D}?companyId={AccessState.CompanyId}"
++            : null;
++
+     private string GetInvoiceListItemClass(Guid invoiceId) =>
+         InvoiceId == invoiceId
+             ? "list-group-item list-group-item-action active"
+@@ -160,6 +164,18 @@ public partial class InvoicesPage : FinancePageBase
+     private static string FormatDate(DateTime value) =>
+         value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+ 
++    private static string FormatDateTime(DateTime value) =>
++        value == default
++            ? "Unknown time"
++            : value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
++
++    private static string FormatConfidence(decimal confidence)
++    {
++        var clamped = Math.Clamp(confidence, 0m, 1m);
++        return $"{clamped:P0}";
++    }
++
++    private static string FormatActorOrSource(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? "System" : value.Trim();
++
+     private static string FormatLabel(string? value) =>
+         string.IsNullOrWhiteSpace(value)
+             ? "n/a"
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 3cf97db..12ccd35 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -393,6 +393,8 @@ public sealed class FinanceInvoiceDetailResponse
+     public decimal Amount { get; set; }
+     public string Currency { get; set; } = string.Empty;
+     public string Status { get; set; } = string.Empty;
++    public FinanceInvoiceRecommendationDetailsResponse? RecommendationDetails { get; set; }
++    public List<FinanceInvoiceWorkflowHistoryItemResponse> WorkflowHistory { get; set; } = [];
+     public FinanceInvoiceWorkflowContextResponse? WorkflowContext { get; set; }
+     public FinanceActionPermissionsResponse Permissions { get; set; } = new();
+     public FinanceLinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
+diff --git a/src/VirtualCompany.Web/Services/InvoiceWorkflowPresentation.cs b/src/VirtualCompany.Web/Services/InvoiceWorkflowPresentation.cs
+new file mode 100644
+index 0000000..0ea41ad
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/InvoiceWorkflowPresentation.cs
+@@ -0,0 +1,118 @@
++namespace VirtualCompany.Web.Services;
++
++public static class InvoiceWorkflowPresentation
++{
++    public static FinanceInvoiceRecommendationDetailsResponse? ResolveRecommendationDetails(
++        FinanceInvoiceReviewDetailResponse? detail)
++    {
++        if (detail is null)
++        {
++            return null;
++        }
++
++        return NormalizeRecommendation(detail.RecommendationDetails)
++            ?? NormalizeRecommendation(new FinanceInvoiceRecommendationDetailsResponse
++            {
++                Risk = detail.RiskLevel,
++                RationaleSummary = detail.RecommendationSummary,
++                Confidence = detail.Confidence,
++                RecommendedAction = detail.RecommendedAction,
++                CurrentWorkflowStatus = detail.RecommendationStatus
++            });
++    }
++
++    public static FinanceInvoiceRecommendationDetailsResponse? ResolveRecommendationDetails(
++        FinanceInvoiceDetailResponse? detail)
++    {
++        if (detail is null)
++        {
++            return null;
++        }
++
++        return NormalizeRecommendation(detail.RecommendationDetails)
++            ?? NormalizeRecommendation(detail.WorkflowContext is null
++                ? null
++                : new FinanceInvoiceRecommendationDetailsResponse
++                {
++                    Classification = detail.WorkflowContext.Classification,
++                    Risk = detail.WorkflowContext.RiskLevel,
++                    RationaleSummary = detail.WorkflowContext.Rationale,
++                    Confidence = detail.WorkflowContext.Confidence,
++                    RecommendedAction = detail.WorkflowContext.RecommendedAction,
++                    CurrentWorkflowStatus = detail.WorkflowContext.ReviewTaskStatus
++                });
++    }
++
++    public static IReadOnlyList<FinanceInvoiceWorkflowHistoryItemResponse> NormalizeWorkflowHistory(
++        IEnumerable<FinanceInvoiceWorkflowHistoryItemResponse>? items)
++    {
++        if (items is null)
++        {
++            return [];
++        }
++
++        var orderedItems = items
++            .Where(item => item is not null)
++            .Select(CloneHistoryItem)
++            .OrderBy(item => item.OccurredAtUtc == default ? 1 : 0)
++            .ThenByDescending(item => item.OccurredAtUtc)
++            .ThenBy(item => NormalizeText(item.EventType) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(item => NormalizeText(item.ActorOrSourceDisplayName) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(item => NormalizeEventId(item.EventId) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++        var uniqueItems = new List<FinanceInvoiceWorkflowHistoryItemResponse>(orderedItems.Count);
++        var seenEventIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++
++        foreach (var item in orderedItems)
++        {
++            var normalizedEventId = NormalizeEventId(item.EventId);
++            if (normalizedEventId is not null && !seenEventIds.Add(normalizedEventId))
++            {
++                continue;
++            }
++
++            item.EventId = normalizedEventId ?? string.Empty;
++            item.EventType = NormalizeText(item.EventType) ?? "Review";
++            item.ActorOrSourceDisplayName = NormalizeText(item.ActorOrSourceDisplayName) ?? "System";
++            uniqueItems.Add(item);
++        }
++
++        return uniqueItems;
++    }
++
++    private static FinanceInvoiceRecommendationDetailsResponse? NormalizeRecommendation(
++        FinanceInvoiceRecommendationDetailsResponse? input)
++    {
++        if (input is null)
++        {
++            return null;
++        }
++
++        var recommendation = new FinanceInvoiceRecommendationDetailsResponse
++        {
++            Classification = NormalizeText(input.Classification) ?? string.Empty,
++            Risk = NormalizeText(input.Risk) ?? string.Empty,
++            RationaleSummary = NormalizeText(input.RationaleSummary) ?? string.Empty,
++            Confidence = Math.Clamp(input.Confidence, 0m, 1m),
++            RecommendedAction = NormalizeText(input.RecommendedAction) ?? string.Empty,
++            CurrentWorkflowStatus = NormalizeText(input.CurrentWorkflowStatus) ?? string.Empty
++        };
++
++        return string.IsNullOrWhiteSpace(recommendation.Classification) &&
++               string.IsNullOrWhiteSpace(recommendation.Risk) &&
++               string.IsNullOrWhiteSpace(recommendation.RationaleSummary) &&
++               string.IsNullOrWhiteSpace(recommendation.RecommendedAction) &&
++               string.IsNullOrWhiteSpace(recommendation.CurrentWorkflowStatus) &&
++               recommendation.Confidence <= 0m
++            ? null
++            : recommendation;
++    }
++
++    private static FinanceInvoiceWorkflowHistoryItemResponse CloneHistoryItem(
++        FinanceInvoiceWorkflowHistoryItemResponse item) =>
++        new()
++        {
++            EventId = item.EventId,
++            EventType = item.EventType,
++            ActorOrSourceDisplayName = item.ActorOrSourceDisplayName,
++            OccurredAtUtc = item.OccurredAtUtc,
++            RelatedAuditId = item.RelatedAuditId,
++            RelatedApprovalId = item.RelatedApprovalId
++        };
++
++    private static string? NormalizeEventId(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
++
++    private static string? NormalizeText(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInvoiceDetailMappingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInvoiceDetailMappingIntegrationTests.cs
+index 786d841..717b4c7 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceInvoiceDetailMappingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceInvoiceDetailMappingIntegrationTests.cs
+@@ -97,6 +97,18 @@ public sealed class FinanceInvoiceDetailMappingIntegrationTests : IClassFixture<
+         Assert.True(detail.Permissions.CanChangeInvoiceApprovalStatus);
+         Assert.True(detail.Permissions.CanManagePolicyConfiguration);
+         Assert.Equal("missing", detail.LinkedDocument.Availability);
++        Assert.NotNull(detail.RecommendationDetails);
++        Assert.Equal("overdue_invoice", detail.RecommendationDetails!.Classification);
++        Assert.Equal("medium", detail.RecommendationDetails.Risk);
++        Assert.Equal("request_human_approval", detail.RecommendationDetails.RecommendedAction);
++        Assert.Equal("awaiting_approval", detail.RecommendationDetails.CurrentWorkflowStatus);
++        Assert.NotNull(detail.WorkflowHistory);
++        Assert.NotEmpty(detail.WorkflowHistory);
++        Assert.Equal(
++            detail.WorkflowHistory.Select(x => x.EventId).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
++            detail.WorkflowHistory.Count(x => !string.IsNullOrWhiteSpace(x.EventId)));
++        Assert.True(detail.WorkflowHistory.SequenceEqual(
++            InvoiceWorkflowPresentation.NormalizeWorkflowHistory(detail.WorkflowHistory)));
++        Assert.Contains(detail.WorkflowHistory, item => item.RelatedApprovalId == detail.WorkflowContext!.ApprovalRequestId);
+         Assert.Equal("Linked document is no longer available.", detail.LinkedDocument.Message);
+         Assert.False(detail.LinkedDocument.CanNavigate);
+         Assert.Null(detail.LinkedDocument.Document);
+diff --git a/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs b/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs
+index 64f6682..61d6af1 100644
+--- a/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs
++++ b/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs
+@@ -205,6 +205,61 @@ public sealed class InvoiceReviewComponentTests
+         Assert.Contains($"/approvals?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72&approvalId={approvalId:D}", cut.Markup);
+     }
+ 
++    [Fact]
++    public void Invoice_workflow_presentation_sorts_descending_deduplicates_by_event_id_and_preserves_blank_ids()
++    {
++        var newestAuditId = Guid.Parse("db84057d-2d39-4322-8f57-bf0687cc748e");
++        var approvalId = Guid.Parse("b1143925-4938-4e74-a421-7b5cb8855ff8");
++
++        var history = InvoiceWorkflowPresentation.NormalizeWorkflowHistory(
++        [
++            new FinanceInvoiceWorkflowHistoryItemResponse
++            {
++                EventId = " duplicate-event ",
++                EventType = "Approval",
++                ActorOrSourceDisplayName = "Finance Approver",
++                OccurredAtUtc = new DateTime(2026, 4, 16, 8, 30, 0, DateTimeKind.Utc),
++                RelatedApprovalId = approvalId
++            },
++            new FinanceInvoiceWorkflowHistoryItemResponse
++            {
++                EventId = "duplicate-event",
++                EventType = "Approval",
++                ActorOrSourceDisplayName = "Finance Approver",
++                OccurredAtUtc = new DateTime(2026, 4, 16, 8, 0, 0, DateTimeKind.Utc),
++                RelatedApprovalId = approvalId
++            },
++            new FinanceInvoiceWorkflowHistoryItemResponse
++            {
++                EventId = string.Empty,
++                EventType = "Task execution",
++                ActorOrSourceDisplayName = "System",
++                OccurredAtUtc = default
++            },
++            new FinanceInvoiceWorkflowHistoryItemResponse
++            {
++                EventId = "tool-1",
++                EventType = "Tool event",
++                ActorOrSourceDisplayName = "System",
++                OccurredAtUtc = new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc),
++                RelatedAuditId = newestAuditId
++            }
++        ]);
++
++        Assert.Equal(3, history.Count);
++        Assert.Equal("tool-1", history[0].EventId);
++        Assert.Equal("duplicate-event", history[1].EventId);
++        Assert.Equal(string.Empty, history[2].EventId);
++        Assert.Equal(newestAuditId, history[0].RelatedAuditId);
++        Assert.Equal(approvalId, history[1].RelatedApprovalId);
++    }
++
++    [Fact]
++    public void Invoice_workflow_presentation_resolves_invoice_detail_recommendation_from_structured_fields_only()
++    {
++        var recommendation = InvoiceWorkflowPresentation.ResolveRecommendationDetails(new FinanceInvoiceDetailResponse
++        {
++            WorkflowContext = new FinanceInvoiceWorkflowContextResponse
++            {
++                Classification = "overdue_invoice",
++                RiskLevel = "high",
++                RecommendedAction = "request_human_approval",
++                Rationale = "Payment terms and due date require finance review.",
++                Confidence = 0.88m,
++                ReviewTaskStatus = "awaiting_approval"
++            }
++        });
++
++        Assert.NotNull(recommendation);
++        Assert.Equal("overdue_invoice", recommendation!.Classification);
++        Assert.Equal("high", recommendation.Risk);
++        Assert.Equal("Payment terms and due date require finance review.", recommendation.RationaleSummary);
++        Assert.Equal("request_human_approval", recommendation.RecommendedAction);
++        Assert.Equal("awaiting_approval", recommendation.CurrentWorkflowStatus);
++        Assert.Equal(0.88m, recommendation.Confidence);
++    }
++
+     [Fact]
+     public void Invoice_review_detail_component_renders_non_blocking_empty_states_for_recommendation_and_history()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/InvoiceReviewWorkbenchPageTests.cs b/tests/VirtualCompany.Api.Tests/InvoiceReviewWorkbenchPageTests.cs
+index 2a4f474..e8267b4 100644
+--- a/tests/VirtualCompany.Api.Tests/InvoiceReviewWorkbenchPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/InvoiceReviewWorkbenchPageTests.cs
+@@ -250,6 +250,61 @@ public sealed class InvoiceReviewWorkbenchPageTests
+         cut.WaitForAssertion(() =>
+         {
+             Assert.Contains("Invoice review unavailable", cut.Markup);
+             Assert.Contains("Invoice review lookup failed.", cut.Markup);
+         });
+     }
++
++    [Fact]
++    public void Invoices_page_renders_recommendation_details_workflow_history_and_deep_links()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
++        var approvalId = Guid.Parse("7edb1408-42d4-4a79-9aa2-3a2d2c84da3f");
++        var auditId = Guid.Parse("db84057d-2d39-4322-8f57-bf0687cc748e");
++
++        using var harness = CreateInvoicesHarness(
++            companyId,
++            [new FinanceInvoiceResponse
++            {
++                Id = invoiceId,
++                CounterpartyId = Guid.NewGuid(),
++                CounterpartyName = "Contoso Supplies",
++                InvoiceNumber = "INV-24051",
++                IssuedUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                DueUtc = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),
++                Amount = 15420.50m,
++                Currency = "USD",
++                Status = "pending_approval"
++            }],
++            new FinanceInvoiceDetailResponse
++            {
++                Id = invoiceId,
++                CounterpartyId = Guid.NewGuid(),
++                CounterpartyName = "Contoso Supplies",
++                InvoiceNumber = "INV-24051",
++                IssuedUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                DueUtc = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),
++                Amount = 15420.50m,
++                Currency = "USD",
++                Status = "pending_approval",
++                RecommendationDetails = new FinanceInvoiceRecommendationDetailsResponse
++                {
++                    Classification = "overdue_invoice",
++                    Risk = "high",
++                    RationaleSummary = "Payment terms and due date require finance review.",
++                    Confidence = 0.88m,
++                    RecommendedAction = "request_human_approval",
++                    CurrentWorkflowStatus = "awaiting_approval"
++                },
++                WorkflowHistory =
++                [
++                    new FinanceInvoiceWorkflowHistoryItemResponse
++                    {
++                        EventId = "tool-1",
++                        EventType = "Tool event",
++                        ActorOrSourceDisplayName = "System",
++                        OccurredAtUtc = new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc),
++                        RelatedAuditId = auditId
++                    },
++                    new FinanceInvoiceWorkflowHistoryItemResponse
++                    {
++                        EventId = "approval-1",
++                        EventType = "Approval",
++                        ActorOrSourceDisplayName = "User finance-approver",
++                        OccurredAtUtc = new DateTime(2026, 4, 16, 8, 45, 0, DateTimeKind.Utc),
++                        RelatedApprovalId = approvalId
++                    }
++                ],
++                Permissions = new FinanceActionPermissionsResponse(),
++                LinkedDocument = new FinanceLinkedDocumentAccessResponse { Availability = "none", Message = "No linked document is attached." }
++            });
++
++        harness.Navigation.NavigateTo($"http://localhost/finance/invoices/{invoiceId:D}?companyId={companyId:D}");
++        var cut = harness.Context.RenderComponent<InvoicesPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId)
++            .Add(x => x.InvoiceId, invoiceId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Recommendation details", cut.Markup);
++            Assert.Contains("Overdue invoice", cut.Markup);
++            Assert.Contains("Workflow history", cut.Markup);
++            Assert.Contains($"/audit/{auditId:D}?companyId={companyId:D}", cut.Markup);
++            Assert.Contains($"/approvals?companyId={companyId:D}&approvalId={approvalId:D}", cut.Markup);
++        });
++    }
+ 
+     private static IRenderedComponent<InvoiceReviewsPage> RenderInvoiceReviewsPage(
+         InvoiceReviewsHarness harness,
+@@ -340,6 +395,44 @@ public sealed class InvoiceReviewWorkbenchPageTests
+ 
+         return new InvoiceReviewDetailHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
+     }
++
++    private static InvoiceReviewDetailHarness CreateInvoicesHarness(
++        Guid companyId,
++        IReadOnlyList<FinanceInvoiceResponse> invoices,
++        FinanceInvoiceDetailResponse detail,
++        string membershipRole = "owner")
++    {
++        var context = new TestContext();
++
++        context.Services.AddSingleton(new FinanceAccessResolver());
++        context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            return Task.FromResult(request.RequestUri?.AbsolutePath switch
++            {
++                "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
++                _ => CreateNotFoundResponse()
++            });
++        })) { BaseAddress = new Uri("http://localhost/") });
++
++        context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            if (request.Method == HttpMethod.Get &&
++                request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/invoices")
++            {
++                return Task.FromResult(CreateJsonResponse<IReadOnlyList<FinanceInvoiceResponse>>(invoices));
++            }
++
++            if (request.Method == HttpMethod.Get &&
++                request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/invoices/{detail.Id:D}")
++            {
++                return Task.FromResult(CreateJsonResponse(detail));
++            }
++
++            return Task.FromResult(CreateNotFoundResponse());
++        })) { BaseAddress = new Uri("http://localhost/") });
++
++        return new InvoiceReviewDetailHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
++    }
+ 
+     private static FinanceInvoiceReviewListItemResponse CreateReviewListItem(Guid? invoiceId = null) =>
+         new()
+@@ -469,4 +562,4 @@ public sealed class InvoiceReviewWorkbenchPageTests
+         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+             _handler(request, cancellationToken);
+     }
+-}
+-END_OF_PATCH
+\ No newline at end of file
++}
++END_OF_PATCH

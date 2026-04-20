@@ -1,0 +1,340 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -28,6 +28,12 @@ public sealed record AgentWorkloadSummaryDto(
+     string HealthStatus,
+     string Summary);
+ 
++public sealed record AgentConfigurationSettingsDto(
++    int PersonaVersion,
++    int WorkflowVersion,
++    Dictionary<string, JsonNode?> Persona,
++    Dictionary<string, JsonNode?> WorkflowCapabilities);
++
+ public sealed record AgentRosterItemDto(
+     Guid Id,
+     Guid CompanyId,
+@@ -41,6 +47,7 @@ public sealed record AgentRosterItemDto(
+     string? AvatarUrl,
+     string Personality,
+     string AutonomyLevel,
++    Dictionary<string, JsonNode?> WorkflowCapabilities,
+     AgentWorkloadSummaryDto WorkloadSummary,
+     string? ProfileRoute);
+ 
+@@ -136,6 +143,7 @@ public sealed record AgentProfileViewDto(
+     string Personality,
+     string? RoleBrief,
+     string AutonomyLevel,
++    AgentConfigurationSettingsDto Configuration,
+     Dictionary<string, JsonNode?> Objectives,
+     Dictionary<string, JsonNode?> Kpis,
+     Dictionary<string, JsonNode?> ToolPermissions,
+@@ -183,6 +191,7 @@ public sealed record AgentOperatingProfileDto(
+     string Status,
+     string? AvatarUrl,
+     string? RoleBrief,
++    AgentConfigurationSettingsDto Configuration,
+     Dictionary<string, JsonNode?> Objectives,
+     Dictionary<string, JsonNode?> Kpis,
+     Dictionary<string, JsonNode?> ToolPermissions,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -181,6 +181,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+                     agent.AvatarUrl,
+                     ResolvePersonalitySummary(agent.Personality),
+                     agent.AutonomyLevel.ToStorageValue(),
++                    BuildWorkflowCapabilities(agent),
+                     BuildWorkloadSummary(agent, execution, approval, audit?.LastActivityUtc),
+                     BuildAgentProfileRoute(agent.CompanyId, agent.Id));
+             })
+@@ -684,6 +685,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             agent.AvatarUrl,
+             agent.RoleBrief,
++            BuildConfigurationSettings(agent),
+             CloneNodes(agent.Objectives),
+             CloneNodes(agent.Kpis),
+             visibility.CanViewPermissions ? CloneNodes(agent.Tools) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+@@ -739,6 +741,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             ResolvePersonalitySummary(agent.Personality),
+             agent.RoleBrief,
+             agent.AutonomyLevel.ToStorageValue(),
++            BuildConfigurationSettings(agent),
+             CloneNodes(agent.Objectives),
+             CloneNodes(agent.Kpis),
+             visibility.CanViewPermissions ? CloneNodes(agent.Tools) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+@@ -771,6 +774,45 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         return new AgentProfileVisibilityDto(canViewPermissions, canViewThresholds, canViewWorkingHours, canEditAgent, canEditRoleBrief, canEditObjectives, canEditKpis, canEditWorkingHours, canEditStatus, canEditSensitiveGovernance, canPauseOrRestrictAgent);
+     }
+ 
++    private static AgentConfigurationSettingsDto BuildConfigurationSettings(Agent agent) =>
++        new(
++            ResolveConfigurationVersion(agent.Personality, "personaVersion"),
++            ResolveConfigurationVersion(agent.TriggerLogic, "workflowVersion"),
++            CloneNodes(agent.Personality),
++            BuildWorkflowCapabilities(agent));
++
++    private static Dictionary<string, JsonNode?> BuildWorkflowCapabilities(Agent agent)
++    {
++        if (!agent.TriggerLogic.TryGetValue("workflowCapabilities", out var node) ||
++            node is not JsonObject workflowCapabilities)
++        {
++            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        return workflowCapabilities.ToDictionary(
++            pair => pair.Key,
++            pair => pair.Value?.DeepClone(),
++            StringComparer.OrdinalIgnoreCase);
++    }
++
++    private static int ResolveConfigurationVersion(IReadOnlyDictionary<string, JsonNode?> payload, string key)
++    {
++        if (!payload.TryGetValue(key, out var node) || node is not JsonValue value)
++        {
++            return 1;
++        }
++
++        if (value.TryGetValue<int>(out var intValue) && intValue > 0)
++        {
++            return intValue;
++        }
++
++        if (value.TryGetValue<string>(out var text) &&
++            int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) &&
++            parsed > 0)
++        {
++            return parsed;
++        }
++
++        return 1;
++    }
++
+     private static IReadOnlyList<AgentProfileSectionDto> BuildProfileSections(AgentProfileVisibilityDto visibility)
+     {
+         var sections = new List<AgentProfileSectionDto>
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+@@ -102,6 +102,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             userId,
+             CompanyMembershipRole.Owner,
+             CompanyMembershipStatus.Active));
++        await EnsureLauraFinanceAgentSeededAsync(company.Id, cancellationToken);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return new CreateCompanyResultDto(company.Id, company.Name, BuildDashboardPath(company.Id, includeStarterGuidance: true), guidance);
+@@ -329,6 +331,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         company.CompleteOnboarding(
+             CompletedWizardStep,
+             selectedTemplateId,
+             SerializeState(merged, selectedTemplateId, CompletedWizardStep, true, guidance));
++        await EnsureLauraFinanceAgentSeededAsync(company.Id, cancellationToken);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+@@ -340,6 +343,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             guidance);
+     }
+ 
++    private async Task EnsureLauraFinanceAgentSeededAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var alreadySeeded = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AnyAsync(x => x.CompanyId == companyId && x.TemplateId == LauraFinanceAgentSeedData.TemplateId, cancellationToken);
++
++        if (!alreadySeeded)
++        {
++            _dbContext.Agents.Add(LauraFinanceAgentSeedData.CreateCompanyAgent(companyId));
++        }
++    }
++
+     private async Task<Company?> GetLatestOwnedOnboardingAsync(Guid userId, CancellationToken cancellationToken)
+     {
+         return await _dbContext.Companies
+diff --git a/src/VirtualCompany.Infrastructure/Companies/LauraFinanceAgentSeedData.cs b/src/VirtualCompany.Infrastructure/Companies/LauraFinanceAgentSeedData.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/LauraFinanceAgentSeedData.cs
+@@ -0,0 +1,165 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++internal static class LauraFinanceAgentSeedData
++{
++    public const string TemplateId = "laura-finance-agent";
++    private const int PersonaVersion = 1;
++    private const int WorkflowVersion = 1;
++
++    public static Agent CreateCompanyAgent(Guid companyId) =>
++        new(
++            Guid.NewGuid(),
++            companyId,
++            TemplateId,
++            "Laura",
++            "Finance Agent",
++            "Finance",
++            "/avatars/agents/laura-finance.png",
++            AgentSeniority.Senior,
++            AgentStatus.Active,
++            AgentAutonomyLevel.Guided,
++            Personality(),
++            Objectives(),
++            Kpis(),
++            ToolPermissions(),
++            DataScopes(),
++            ApprovalThresholds(),
++            EscalationRules(),
++            "Conservative finance agent focused on accounting accuracy, variance checks, cash visibility, and early risk detection.",
++            WorkflowSettings(),
++            WorkingHours(),
++            CommunicationProfile());
++
++    private static Dictionary<string, JsonNode?> Personality() =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["personaVersion"] = JsonValue.Create(PersonaVersion),
++            ["summary"] = JsonValue.Create("Conservative, precise finance operator who verifies figures before recommending action."),
++            ["traits"] = new JsonArray(
++                JsonValue.Create("conservative"),
++                JsonValue.Create("precise")),
++            ["roleMetadata"] = new JsonObject
++            {
++                ["roleKey"] = "finance",
++                ["roleFamily"] = "finance",
++                ["personaName"] = "Laura",
++                ["responsibilityDomain"] = "finance",
++                ["description"] = "Finance persona for accounting accuracy, anomaly review, and cash-risk escalation."
++            }
++        };
++
++    private static Dictionary<string, JsonNode?> Objectives() =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["primary"] = new JsonArray(
++                JsonValue.Create("Maintain accurate finance records"),
++                JsonValue.Create("Detect cash, invoice, and transaction risks early"),
++                JsonValue.Create("Recommend finance actions only inside approved policy boundaries")),
++            ["accuracy"] = new JsonObject
++            {
++                ["description"] = "Reconcile finance data before surfacing conclusions.",
++                ["required"] = true
++            },
++            ["riskDetection"] = new JsonObject
++            {
++                ["description"] = "Flag overdue invoices, anomalous transactions, cash runway warnings, and approval exceptions.",
++                ["required"] = true
++            }
++        };
++
++    private static Dictionary<string, JsonNode?> Kpis() =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["targets"] = new JsonArray(
++                JsonValue.Create("finance_record_accuracy"),
++                JsonValue.Create("risk_detection_coverage"),
++                JsonValue.Create("approval_policy_adherence"))
++        };
++
++    private static Dictionary<string, JsonNode?> ToolPermissions() =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["allowed"] = new JsonArray(
++                JsonValue.Create("get_cash_balance"),
++                JsonValue.Create("list_transactions"),
++                JsonValue.Create("list_uncategorized_transactions"),
++                JsonValue.Create("list_invoices_awaiting_approval"),
++                JsonValue.Create("get_profit_and_loss_summary"),
++                JsonValue.Create("recommend_transaction_category"),
++                JsonValue.Create("recommend_invoice_approval_decision"),
++                JsonValue.Create("categorize_transaction"),
++                JsonValue.Create("approve_invoice")),
++            ["actions"] = new JsonArray(
++                JsonValue.Create("read"),
++                JsonValue.Create("recommend"),
++                JsonValue.Create("execute")),
++            ["denied"] = new JsonArray(
++                JsonValue.Create("tasks.get"),
++                JsonValue.Create("tasks.list"),
++                JsonValue.Create("tasks.update_status"),
++                JsonValue.Create("approvals.create_request"),
++                JsonValue.Create("knowledge.search"),
++                JsonValue.Create("erp"))
++        };
++
++    private static Dictionary<string, JsonNode?> DataScopes() =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["read"] = new JsonArray(JsonValue.Create("finance")),
++            ["recommend"] = new JsonArray(JsonValue.Create("finance")),
++            ["execute"] = new JsonArray(JsonValue.Create("finance")),
++            ["write"] = new JsonArray()
++        };
++
++    private static Dictionary<string, JsonNode?> ApprovalThresholds() =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["financePolicy"] = new JsonObject
++            {
++                ["respectCompanyFinanceThresholds"] = true,
++                ["requireApprovalForExecute"] = true
++            }
++        };
++
++    private static Dictionary<string, JsonNode?> EscalationRules() =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["critical"] = new JsonArray(
++                JsonValue.Create("cash_runway_critical"),
++                JsonValue.Create("large_unexplained_transaction"),
++                JsonValue.Create("invoice_approval_policy_exception"),
++                JsonValue.Create("financial_data_integrity_gap")),
++            ["escalateTo"] = JsonValue.Create("owner"),
++            ["notifyAfterMinutes"] = JsonValue.Create(15)
++        };
++
++    private static Dictionary<string, JsonNode?> WorkflowSettings() =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["workflowVersion"] = JsonValue.Create(WorkflowVersion),
++            ["enabled"] = JsonValue.Create(true),
++            ["workflowCapabilities"] = new JsonObject
++            {
++                ["defaults"] = new JsonArray(
++                    JsonValue.Create("cash_balance_review"),
++                    JsonValue.Create("transaction_categorization_review"),
++                    JsonValue.Create("invoice_approval_review"),
++                    JsonValue.Create("profit_and_loss_summary"),
++                    JsonValue.Create("finance_risk_detection")),
++                ["requiresApproval"] = new JsonArray(
++                    JsonValue.Create("categorize_transaction"),
++                    JsonValue.Create("approve_invoice")),
++                ["financeBoundary"] = JsonValue.Create("finance")
++            },
++            ["conditions"] = new JsonArray()
++        };
++
++    private static Dictionary<string, JsonNode?> WorkingHours() =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["timezone"] = JsonValue.Create("UTC"),
++            ["windows"] = new JsonArray()
++        };
++
++    private static Dictionary<string, JsonNode?> CommunicationProfile() =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["tone"] = JsonValue.Create("precise"),
++            ["defaultAudience"] = JsonValue.Create("finance_owner"),
++            ["summaryStyle"] = JsonValue.Create("evidence_first")
++        };
++}
+END_OF_PATCH

@@ -1,0 +1,90 @@
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+index 7e1a8f4..afc86df 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+@@ -195,7 +195,17 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             .AsNoTracking()
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
+ 
+-        return document is null ? null : MapDto(document);
++        if (document is null)
++        {
++            return null;
++        }
++
++        if (!_accessPolicyEvaluator.CanAccess(BuildAccessContext(companyId, membership), document))
++        {
++            throw new UnauthorizedAccessException("The current user cannot access this document.");
++        }
++
++        return MapDto(document);
+     }
+ 
+     private void EnqueueDocumentUploadedEvent(CompanyKnowledgeDocument document)
+@@ -405,11 +415,6 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             return null;
+         }
+ 
+-        if (!_accessPolicyEvaluator.CanAccess(BuildAccessContext(companyId, membership), document))
+-        {
+-            throw new UnauthorizedAccessException("The current user cannot access this document.");
+-        }
+-
+         RewindStream(content);
+         using var sha256 = SHA256.Create();
+         var hash = await sha256.ComputeHashAsync(content, cancellationToken);
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+index d4f5e1b..ed18244 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -151,6 +151,35 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+             employeeTransactions!, transaction => transaction.LinkedDocument is not null && transaction.LinkedDocument.Id == restrictedDocumentId);
+     }
+ 
++    [Fact]
++    public async Task Linked_finance_document_retrieval_respects_knowledge_access_and_tenant_scope()
++    {
++        var seed = await SeedFinanceCompanyAsync();
++        var sharedDocumentId = seed.DocumentIds[0];
++        var restrictedDocumentId = seed.DocumentIds[4];
++
++        using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var ownerResponse = await ownerClient.GetAsync($"/api/companies/{seed.CompanyId}/documents/{restrictedDocumentId}");
++
++        Assert.Equal(HttpStatusCode.OK, ownerResponse.StatusCode);
++        var ownerDocument = await ownerResponse.Content.ReadFromJsonAsync<CompanyDocumentResponse>();
++        Assert.NotNull(ownerDocument);
++        Assert.Equal(restrictedDocumentId, ownerDocument!.Id);
++        Assert.Equal(seed.CompanyId, ownerDocument.CompanyId);
++
++        using var employeeClient = CreateAuthenticatedClient(seed.EmployeeSubject, seed.EmployeeEmail, seed.EmployeeDisplayName);
++        var employeeSharedResponse = await employeeClient.GetAsync($"/api/companies/{seed.CompanyId}/documents/{sharedDocumentId}");
++
++        Assert.Equal(HttpStatusCode.OK, employeeSharedResponse.StatusCode);
++
++        var employeeRestrictedResponse = await employeeClient.GetAsync($"/api/companies/{seed.CompanyId}/documents/{restrictedDocumentId}");
++
++        Assert.Equal(HttpStatusCode.Forbidden, employeeRestrictedResponse.StatusCode);
++
++        var crossTenantResponse = await ownerClient.GetAsync($"/api/companies/{seed.OtherCompanyId}/documents/{restrictedDocumentId}");
++
++        Assert.Equal(HttpStatusCode.Forbidden, crossTenantResponse.StatusCode);
++    }
++
+     private async Task<FinanceEndpointSeed> SeedFinanceCompanyAsync()
+     {
+         var userId = Guid.NewGuid();
+@@ -330,5 +359,13 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         public string OriginalFileName { get; set; } = string.Empty;
+         public string ContentType { get; set; } = string.Empty;
+     }
++
++    private sealed class CompanyDocumentResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CompanyId { get; set; }
++        public string Title { get; set; } = string.Empty;
++        public string OriginalFileName { get; set; } = string.Empty;
++    }
+ }
+END_OF_PATCH

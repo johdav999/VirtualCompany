@@ -29,10 +29,15 @@ public sealed class CompanyContextResolutionMiddleware : IMiddleware
         routeCompanyIdValue ??= context.Request.RouteValues.TryGetValue("tenantId", out var routeTenantId)
             ? routeTenantId?.ToString()
             : null;
+        var queryCompanyIdValue = context.Request.Query.TryGetValue("companyId", out var queryCompanyId)
+            ? queryCompanyId.FirstOrDefault()
+            : null;
 
         var headerCompanyIdValue = context.Request.Headers[CompanyHeaderName].FirstOrDefault();
 
-        if (string.IsNullOrWhiteSpace(routeCompanyIdValue) && string.IsNullOrWhiteSpace(headerCompanyIdValue))
+        if (string.IsNullOrWhiteSpace(routeCompanyIdValue) &&
+            string.IsNullOrWhiteSpace(queryCompanyIdValue) &&
+            string.IsNullOrWhiteSpace(headerCompanyIdValue))
         {
             if (requiresCompanyContext)
             {
@@ -44,6 +49,7 @@ public sealed class CompanyContextResolutionMiddleware : IMiddleware
         }
 
         if (!TryParseCompanyId(routeCompanyIdValue, out var parsedRouteCompanyId) ||
+            !TryParseCompanyId(queryCompanyIdValue, out var parsedQueryCompanyId) ||
             !TryParseCompanyId(headerCompanyIdValue, out var parsedHeaderCompanyId))
         {
             await WriteBadRequestAsync(context, "Company context must be a valid GUID.");
@@ -51,14 +57,22 @@ public sealed class CompanyContextResolutionMiddleware : IMiddleware
         }
 
         if (parsedRouteCompanyId.HasValue &&
+            parsedQueryCompanyId.HasValue &&
+            parsedRouteCompanyId.Value != parsedQueryCompanyId.Value)
+        {
+            await WriteBadRequestAsync(context, "Route companyId and query companyId must match when both are supplied.");
+            return;
+        }
+
+        if ((parsedRouteCompanyId ?? parsedQueryCompanyId).HasValue &&
             parsedHeaderCompanyId.HasValue &&
-            parsedRouteCompanyId.Value != parsedHeaderCompanyId.Value)
+            (parsedRouteCompanyId ?? parsedQueryCompanyId)!.Value != parsedHeaderCompanyId.Value)
         {
             await WriteBadRequestAsync(context, "Route companyId and X-Company-Id must match when both are supplied.");
             return;
         }
 
-        _companyContextAccessor.SetCompanyId(parsedRouteCompanyId ?? parsedHeaderCompanyId);
+        _companyContextAccessor.SetCompanyId(parsedRouteCompanyId ?? parsedQueryCompanyId ?? parsedHeaderCompanyId);
         await next(context);
     }
 

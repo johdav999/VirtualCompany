@@ -62,7 +62,7 @@ public sealed class KnowledgeAccessPolicyEvaluator : IKnowledgeAccessPolicyEvalu
     }
 
     private static bool EvaluateIdentifierConstraint(
-        IReadOnlyDictionary<string, JsonNode?> properties,
+        IDictionary<string, JsonNode?> properties,
         IReadOnlyList<string> keys,
         string? currentValue)
     {
@@ -80,7 +80,7 @@ public sealed class KnowledgeAccessPolicyEvaluator : IKnowledgeAccessPolicyEvalu
     }
 
     private static bool EvaluateScopeConstraint(
-        IReadOnlyDictionary<string, JsonNode?> properties,
+        IDictionary<string, JsonNode?> properties,
         IReadOnlyList<string>? currentScopes)
     {
         if (!TryGetConfiguredIdentifiers(properties, ScopeKeys, out var configuredScopes, out var exists))
@@ -102,7 +102,7 @@ public sealed class KnowledgeAccessPolicyEvaluator : IKnowledgeAccessPolicyEvalu
     }
 
     private static bool EvaluateAgentConstraint(
-        IReadOnlyDictionary<string, JsonNode?> properties,
+        IDictionary<string, JsonNode?> properties,
         Guid? agentId)
     {
         if (!TryGetConfiguredIdentifiers(properties, AgentKeys, out var configuredAgents, out var exists))
@@ -118,11 +118,11 @@ public sealed class KnowledgeAccessPolicyEvaluator : IKnowledgeAccessPolicyEvalu
         return agentId.HasValue && configuredAgents.Contains(agentId.Value.ToString("D"));
     }
 
-    private static bool HasConfiguredIdentifiers(IReadOnlyDictionary<string, JsonNode?> properties, IReadOnlyList<string> keys) =>
+    private static bool HasConfiguredIdentifiers(IDictionary<string, JsonNode?> properties, IReadOnlyList<string> keys) =>
         TryGetConfiguredIdentifiers(properties, keys, out var configuredValues, out var exists) && exists && configuredValues.Count > 0;
 
     private static bool TryGetConfiguredIdentifiers(
-        IReadOnlyDictionary<string, JsonNode?> properties,
+        IDictionary<string, JsonNode?> properties,
         IReadOnlyList<string> keys,
         out HashSet<string> configuredValues,
         out bool exists)
@@ -172,7 +172,7 @@ public sealed class KnowledgeAccessPolicyEvaluator : IKnowledgeAccessPolicyEvalu
         }
     }
 
-    private static bool HasTrueBoolean(IReadOnlyDictionary<string, JsonNode?> properties, IReadOnlyList<string> keys)
+    private static bool HasTrueBoolean(IDictionary<string, JsonNode?> properties, IReadOnlyList<string> keys)
     {
         foreach (var key in keys)
         {

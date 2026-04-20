@@ -6,7 +6,8 @@ public enum BackgroundExecutionType
     WorkflowProgression = 2,
     Retry = 3,
     LongRunningTask = 4,
-    OutboxDispatch = 5
+    OutboxDispatch = 5,
+    FinanceSeed = 6
 }
 
 public enum BackgroundExecutionStatus
@@ -52,7 +53,8 @@ public static class BackgroundExecutionTypeValues
         [BackgroundExecutionType.WorkflowProgression] = "workflow_progression",
         [BackgroundExecutionType.Retry] = "retry",
         [BackgroundExecutionType.LongRunningTask] = "long_running_task",
-        [BackgroundExecutionType.OutboxDispatch] = "outbox_dispatch"
+        [BackgroundExecutionType.OutboxDispatch] = "outbox_dispatch",
+        [BackgroundExecutionType.FinanceSeed] = "finance_seed"
     };
 
     private static readonly IReadOnlyDictionary<string, BackgroundExecutionType> ReverseValues =

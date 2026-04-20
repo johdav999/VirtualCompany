@@ -8,6 +8,12 @@ namespace VirtualCompany.Infrastructure.Companies;
 public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
 {
     private const string SafeDeniedExplanation = "This action was blocked by policy.";
+    private readonly ICompanyToolRegistry _toolRegistry;
+
+    public PolicyGuardrailEngine(ICompanyToolRegistry toolRegistry)
+    {
+        _toolRegistry = toolRegistry;
+    }
 
     public ToolExecutionDecisionDto Evaluate(PolicyEvaluationRequest request)
     {
@@ -94,6 +100,34 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
 
         var toolName = request.ToolName.Trim();
         var normalizedScope = string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope.Trim();
+        if (!_toolRegistry.TryGetTool(toolName, out var registeredTool))
+        {
+            metadata["registryPolicyState"] = JsonValue.Create("unregistered");
+            return Deny(
+                request,
+                normalizedAction,
+                [PolicyDecisionReasonCodes.ToolNotConfigured],
+                "The requested tool is not registered for trusted execution.",
+                metadata,
+                thresholdEvaluations);
+        }
+
+        metadata["registryPolicyState"] = JsonValue.Create("registered");
+        metadata["registeredToolVersion"] = JsonValue.Create(registeredTool.Version);
+        metadata["registeredToolActions"] = ToJsonArray(registeredTool.SupportedActions.Select(static action => action.ToStorageValue()));
+        if (!registeredTool.Supports(actionType, normalizedScope))
+        {
+            metadata["registryActionAllowed"] = JsonValue.Create(false);
+            return Deny(
+                request,
+                normalizedAction,
+                [PolicyDecisionReasonCodes.ToolActionTypeMismatch, PolicyDecisionReasonCodes.ToolActionNotPermitted],
+                "The requested action type or scope does not match the registered tool metadata.",
+                metadata,
+                thresholdEvaluations);
+        }
+
+        metadata["registryActionAllowed"] = JsonValue.Create(true);
         if (!TryGetIdentifierSet(request.ToolPermissions, "allowed", out var allowedTools, out var allowedToolsExists) ||
             !TryGetIdentifierSet(request.ToolPermissions, "denied", out var deniedTools, out _) ||
             !TryGetIdentifierSet(request.ToolPermissions, "actions", out var allowedActions, out var allowedActionsExists) ||
@@ -552,7 +586,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
         if (!TryGetEscalationTarget(request.EscalationRules, out var approvalTarget))
         {
             metadata["approvalRequirementState"] = JsonValue.Create("missing_route");
-        metadata["decisionOutcome"] = JsonValue.Create(PolicyDecisionOutcomeValues.Allow);
+            metadata["decisionOutcome"] = JsonValue.Create(PolicyDecisionOutcomeValues.Deny);
             return Deny(
                 request,
                 evaluatedActionType,
@@ -921,7 +955,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
         PolicyDecisionReasonCodes.InvalidActionType => "action",
         PolicyDecisionReasonCodes.InvalidAutonomyLevel or PolicyDecisionReasonCodes.AutonomyLevelBlocksAction or PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval => "autonomy",
         PolicyDecisionReasonCodes.MissingPolicyConfiguration or PolicyDecisionReasonCodes.InvalidPolicyConfiguration or PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration => "policy_configuration",
-        PolicyDecisionReasonCodes.ToolNotConfigured or PolicyDecisionReasonCodes.ToolExplicitlyDenied or PolicyDecisionReasonCodes.ToolNotPermitted or PolicyDecisionReasonCodes.ToolActionNotPermitted => "tool",
+        PolicyDecisionReasonCodes.ToolNotConfigured or PolicyDecisionReasonCodes.ToolExplicitlyDenied or PolicyDecisionReasonCodes.ToolNotPermitted or PolicyDecisionReasonCodes.ToolActionTypeMismatch or PolicyDecisionReasonCodes.ToolActionNotPermitted => "tool",
         PolicyDecisionReasonCodes.ScopeNotPermitted or PolicyDecisionReasonCodes.ScopeContextMissing or PolicyDecisionReasonCodes.DataScopeViolation => "scope",
         PolicyDecisionReasonCodes.ApprovalRequiredByPolicy or PolicyDecisionReasonCodes.ApprovalRouteMissing or PolicyDecisionReasonCodes.ApprovalRequired => "approval",
         PolicyDecisionReasonCodes.ThresholdContextMissing or PolicyDecisionReasonCodes.ThresholdConfigurationMissing or PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval => "threshold",
@@ -945,6 +979,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
         PolicyDecisionReasonCodes.ToolNotConfigured => "The requested tool identity is missing or invalid.",
         PolicyDecisionReasonCodes.ToolExplicitlyDenied => "The tool is explicitly denied.",
         PolicyDecisionReasonCodes.ToolNotPermitted => "The tool is outside the allowed tool set.",
+        PolicyDecisionReasonCodes.ToolActionTypeMismatch => "The requested action type does not match the registered tool metadata.",
         PolicyDecisionReasonCodes.ToolActionNotPermitted => "The requested action type is outside the allowed tool action set.",
         PolicyDecisionReasonCodes.ScopeNotPermitted => "The requested scope is not permitted.",
         PolicyDecisionReasonCodes.DataScopeViolation => "The requested scope violates the configured data boundary.",

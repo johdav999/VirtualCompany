@@ -19,6 +19,9 @@ public static class CompanyOutboxTopics
     public const string WorkflowStateChanged = SupportedPlatformEventTypeRegistry.WorkflowStateChanged;
     public const string ApprovalUpdated = SupportedPlatformEventTypeRegistry.ApprovalUpdated;
     public const string AgentStatusUpdated = SupportedPlatformEventTypeRegistry.AgentStatusUpdated;
+    public const string FinanceTransactionCreated = SupportedPlatformEventTypeRegistry.FinanceTransactionCreated;
+    public const string FinanceInvoiceCreated = SupportedPlatformEventTypeRegistry.FinanceInvoiceCreated;
+    public const string FinanceThresholdBreached = SupportedPlatformEventTypeRegistry.FinanceThresholdBreached;
 }
 
 public sealed record CompanyInvitationDeliveryRequestedMessage(

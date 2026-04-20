@@ -1,23 +1,28 @@
 namespace VirtualCompany.Application.Cockpit;
 
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Signals;
 
 public sealed record GetExecutiveCockpitDashboardQuery(Guid CompanyId);
-
 public sealed record GetExecutiveCockpitWidgetPayloadQuery(
     Guid CompanyId,
     string WidgetKey,
     string? Department,
     DateTime? StartUtc,
     DateTime? EndUtc);
+public sealed record GetExecutiveCockpitFinanceAlertDetailQuery(Guid CompanyId, Guid AlertId);
 
 public sealed record ExecutiveCockpitDashboardDto(
     Guid CompanyId,
     string CompanyName,
     DateTime GeneratedAtUtc,
+    IReadOnlyList<BusinessSignal> BusinessSignals,
     DateTime? CacheTimestampUtc,
     IReadOnlyList<ExecutiveCockpitSummaryKpiDto> SummaryKpis,
     ExecutiveCockpitDailyBriefingDto? DailyBriefing,
+    FinanceCashPositionDto? CashPosition,
+    ExecutiveCockpitFinanceDto? Finance,
     ExecutiveCockpitPendingApprovalsDto PendingApprovals,
     IReadOnlyList<ExecutiveCockpitAlertDto> Alerts,
     IReadOnlyList<ExecutiveCockpitDepartmentKpiDto> DepartmentKpis,
@@ -41,18 +46,21 @@ public sealed record ExecutiveCockpitSummaryKpiDto(
 
 public static class ExecutiveCockpitWidgetKeys
 {
+    public const string BusinessSignals = "business-signals";
     public const string SummaryKpis = "summary-kpis";
     public const string DailyBriefing = "daily-briefing";
     public const string PendingApprovals = "pending-approvals";
     public const string Alerts = "alerts";
     public const string DepartmentKpis = "department-kpis";
     public const string DepartmentSections = "department-sections";
+    public const string CashPosition = "cash-position";
     public const string RecentActivity = "recent-activity";
+    public const string Finance = "finance";
     public const string Kpis = "kpis";
 
     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        SummaryKpis, DailyBriefing, PendingApprovals, Alerts, DepartmentKpis, DepartmentSections, RecentActivity, Kpis
+        BusinessSignals, SummaryKpis, DailyBriefing, PendingApprovals, Alerts, DepartmentKpis, DepartmentSections, CashPosition, RecentActivity, Finance, Kpis
     };
 }
 
@@ -62,6 +70,78 @@ public static class ExecutiveCockpitTrendDirections
     public const string Down = "down";
     public const string Flat = "flat";
     public const string Unknown = "unknown";
+}
+
+public sealed record ExecutiveCockpitFinanceDto(
+    ExecutiveCockpitFinanceCashWidgetDto CashPosition,
+    ExecutiveCockpitFinanceRunwayWidgetDto Runway,
+    ExecutiveCockpitFinanceAlertDetailDto? LowCashAlert,
+    IReadOnlyList<ExecutiveCockpitFinanceActionDto> AvailableActions,
+    IReadOnlyList<ExecutiveCockpitDeepLinkDto> DeepLinks);
+
+public sealed record ExecutiveCockpitFinanceCashWidgetDto(
+    decimal Amount,
+    string Currency,
+    string DisplayValue,
+    string TrendDirection,
+    decimal? TrendAmount,
+    string TrendDisplay,
+    DateTime LastRefreshedUtc,
+    string Route);
+
+public sealed record ExecutiveCockpitFinanceRunwayWidgetDto(
+    int? EstimatedRunwayDays,
+    decimal? EstimatedRunwayMonths,
+    string DisplayValue,
+    FinanceRunwayHealthStatus Status,
+    string StatusLabel,
+    string Route);
+
+public sealed record ExecutiveCockpitFinanceAlertDetailDto(
+    Guid AlertId,
+    string Summary,
+    string Severity,
+    string Status,
+    IReadOnlyList<string> ContributingFactors,
+    IReadOnlyList<ExecutiveCockpitFinanceActionDto> AvailableActions,
+    IReadOnlyList<ExecutiveCockpitDeepLinkDto> Links,
+    string Route);
+
+public sealed record ExecutiveCockpitFinanceActionDto(
+    string Key,
+    string Label,
+    bool IsEnabled,
+    string? Route,
+    string? OrchestrationEndpoint,
+    string HttpMethod,
+    Guid? TargetId);
+
+public sealed record ExecutiveCockpitDeepLinkDto(
+    string Key,
+    string Label,
+    string Route);
+
+public static class ExecutiveCockpitFinanceRunwayStatusClassifier
+{
+    public static FinanceRunwayHealthStatus Classify(
+        int? estimatedRunwayDays,
+        int warningThresholdDays,
+        int criticalThresholdDays)
+    {
+        if (!estimatedRunwayDays.HasValue)
+        {
+            return FinanceRunwayHealthStatus.Healthy;
+        }
+
+        if (estimatedRunwayDays.Value <= criticalThresholdDays)
+        {
+            return FinanceRunwayHealthStatus.Critical;
+        }
+
+        return estimatedRunwayDays.Value <= warningThresholdDays
+            ? FinanceRunwayHealthStatus.Warning
+            : FinanceRunwayHealthStatus.Healthy;
+    }
 }
 
 public sealed record ExecutiveCockpitKpiTrend(
@@ -204,9 +284,16 @@ public sealed record DepartmentDashboardSectionDto(
     bool HasData,
     IReadOnlyDictionary<string, int> SummaryCounts,
     bool IsEmpty,
+    DepartmentDashboardRepresentativeDto? Representative,
     DepartmentDashboardNavigationDto Navigation,
     DepartmentDashboardEmptyStateDto EmptyState,
     IReadOnlyList<DepartmentDashboardWidgetDto> Widgets);
+
+public sealed record DepartmentDashboardRepresentativeDto(
+    Guid AgentId,
+    string DisplayName,
+    string RoleName,
+    string? AvatarUrl);
 
 public sealed record DepartmentDashboardWidgetDto(
     Guid Id,
@@ -257,6 +344,10 @@ public interface IExecutiveCockpitDashboardService
 
     Task<ExecutiveCockpitWidgetPayloadDto> GetWidgetAsync(
         GetExecutiveCockpitWidgetPayloadQuery query,
+        CancellationToken cancellationToken);
+
+    Task<ExecutiveCockpitFinanceAlertDetailDto?> GetFinanceAlertDetailAsync(
+        GetExecutiveCockpitFinanceAlertDetailQuery query,
         CancellationToken cancellationToken);
 }
 
@@ -354,3 +445,13 @@ public sealed record CachedExecutiveCockpitWidgetDto<TPayload>(
     string WidgetKey,
     DateTime CachedAtUtc,
     TPayload Payload);
+
+public interface IExecutiveCockpitFinanceAdapter
+{
+    Task<ExecutiveCockpitFinanceDto?> GetAsync(Guid companyId, CancellationToken cancellationToken);
+
+    Task<ExecutiveCockpitFinanceAlertDetailDto?> GetAlertDetailAsync(
+        Guid companyId,
+        Guid alertId,
+        CancellationToken cancellationToken);
+}

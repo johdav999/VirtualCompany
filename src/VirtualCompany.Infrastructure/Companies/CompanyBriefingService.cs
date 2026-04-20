@@ -7,6 +7,7 @@ using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Briefings;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
@@ -29,6 +30,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
     private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
     private readonly IBriefingInsightAggregationService _insightAggregationService;
+    private readonly IFinanceCashPositionWorkflowService _financeCashPositionWorkflowService;
 
     public CompanyBriefingService(
         VirtualCompanyDbContext dbContext,
@@ -38,6 +40,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
         ICompanyOutboxEnqueuer outboxEnqueuer,
         IBriefingUpdateJobProducer briefingUpdateJobProducer,
         IBriefingInsightAggregationService insightAggregationService,
+        IFinanceCashPositionWorkflowService financeCashPositionWorkflowService,
         ILogger<CompanyBriefingService> logger)
     {
         _dbContext = dbContext;
@@ -48,6 +51,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
         _logger = logger;
         _insightAggregationService = insightAggregationService;
         _briefingUpdateJobProducer = briefingUpdateJobProducer;
+        _financeCashPositionWorkflowService = financeCashPositionWorkflowService;
     }
 
     public async Task<BriefingAggregateResultDto> AggregateAsync(
@@ -583,6 +587,9 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
         var blockedWorkflowCount = await _dbContext.WorkflowInstances
             .IgnoreQueryFilters()
             .CountAsync(x => x.CompanyId == companyId && x.State == WorkflowInstanceStatus.Blocked, cancellationToken);
+        var cashPosition = await _financeCashPositionWorkflowService.EvaluateAsync(
+            new EvaluateFinanceCashPositionWorkflowCommand(companyId),
+            cancellationToken);
         var criticalAlertsCount = await _dbContext.Alerts
             .IgnoreQueryFilters()
             .CountAsync(x => x.CompanyId == companyId &&
@@ -614,6 +621,36 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
                 AgentId = x.AgentId == Guid.Empty ? null : x.AgentId,
                 CompanyEntityId = x.TargetEntityId,
                 Assessment = x.Status.ToStorageValue()
+            })
+            .ToList();
+
+        var alertRows = await _dbContext.Alerts
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId &&
+                        x.Status != AlertStatus.Resolved &&
+                        x.Status != AlertStatus.Closed)
+            .OrderByDescending(x => x.LastDetectedUtc ?? x.UpdatedUtc)
+            .Take(10)
+            .Select(x => new { x.Id, x.SourceAgentId, x.Severity, x.Status, x.Title, x.Summary, x.LastDetectedUtc, x.UpdatedUtc, x.Metadata })
+            .ToListAsync(cancellationToken);
+        var alerts = alertRows
+            .Select(x => ApplyPriority(new BriefingAggregateItemDto(
+                "alerts",
+                x.Title,
+                x.Summary,
+                x.Severity.ToStorageValue(),
+                x.Status.ToStorageValue(),
+                "alert",
+                x.Id,
+                x.LastDetectedUtc ?? x.UpdatedUtc,
+                x.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
+                [new BriefingSourceReferenceDto("alert", x.Id, x.Title, x.Status.ToStorageValue(), $"/dashboard?companyId={companyId}")]),
+                ResolvePriority(severityRules, "alerts", "alert", "severity", x.Severity.ToStorageValue())) with
+            {
+                AgentId = x.SourceAgentId,
+                CompanyEntityId = x.Id,
+                Assessment = x.Severity.ToStorageValue()
             })
             .ToList();
 
@@ -693,109 +730,59 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
             })
             .ToList();
 
-        var persistedAlertRows = await _dbContext.Alerts
+        var notableAgentRows = await _dbContext.AuditEvents
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == companyId &&
-                        x.Status != AlertStatus.Resolved &&
-                        x.Status != AlertStatus.Closed)
-            .OrderByDescending(x => x.Severity)
-            .ThenByDescending(x => x.UpdatedUtc)
-            .Take(10)
-            .Select(x => new { x.Id, x.Title, x.Summary, x.Type, x.Severity, x.Status, x.SourceAgentId, x.CorrelationId, x.UpdatedUtc })
-            .ToListAsync(cancellationToken);
-        var persistedAlerts = persistedAlertRows
-            .Select(x => ApplyPriority(new BriefingAggregateItemDto(
-                "alerts",
-                x.Title,
-                x.Summary,
-                x.Severity.ToStorageValue(),
-                x.Status.ToStorageValue(),
-                "alert",
-                x.Id,
-                x.UpdatedUtc,
-                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["alertType"] = JsonValue.Create(x.Type.ToStorageValue()),
-                    ["correlationId"] = JsonValue.Create(x.CorrelationId)
-                },
-                [])
-            , ResolvePriority(severityRules, "alerts", "alert", "severity", x.Severity.ToStorageValue())) with
-            {
-                AgentId = x.SourceAgentId,
-                CompanyEntityId = x.Id,
-                EventCorrelationId = x.CorrelationId,
-                Assessment = x.Status.ToStorageValue()
-            })
-            .ToList();
-        var workflowExceptionRows = await _dbContext.WorkflowExceptions
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x => x.CompanyId == companyId && x.Status == WorkflowExceptionStatus.Open)
+            .Where(x => x.CompanyId == companyId && x.OccurredUtc >= window.StartUtc && x.OccurredUtc < window.EndUtc)
             .OrderByDescending(x => x.OccurredUtc)
             .Take(10)
-            .Select(x => new { x.Id, x.WorkflowInstanceId, x.Title, x.Details, x.Status, x.ExceptionType, x.OccurredUtc, x.WorkflowInstance.State })
+            .Select(x => new { x.Id, x.Action, x.TargetType, x.TargetId, x.Outcome, x.RationaleSummary, x.OccurredUtc })
             .ToListAsync(cancellationToken);
-        var alerts = workflowExceptionRows
+        var notableAgentUpdates = notableAgentRows
             .Select(x => ApplyPriority(new BriefingAggregateItemDto(
-                "alerts",
-                x.Title,
-                x.Details,
-                "high",
-                x.Status.ToStorageValue(),
-                "workflow_exception",
+                "agent_updates",
+                x.Action,
+                string.IsNullOrWhiteSpace(x.RationaleSummary) ? $"{x.TargetType} {x.Outcome}." : x.RationaleSummary!,
+                null,
+                x.Outcome,
+                "audit_event",
                 x.Id,
                 x.OccurredUtc,
                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
                 {
-                    ["exceptionType"] = JsonValue.Create(x.ExceptionType.ToStorageValue())
+                    ["targetType"] = JsonValue.Create(x.TargetType),
+                    ["targetId"] = JsonValue.Create(x.TargetId)
                 },
-                [CreateWorkflowReference(companyId, x.WorkflowInstanceId, x.Title, x.State.ToStorageValue())])
-            , ResolvePriority(severityRules, "alerts", "workflow_instance", "status", x.State.ToStorageValue())) with
-            {
-                CompanyEntityId = x.Id,
-                WorkflowInstanceId = x.WorkflowInstanceId,
-                Assessment = x.Status.ToStorageValue()
-            })
+                [new BriefingSourceReferenceDto("audit_event", x.Id, x.Action, x.Outcome, null)]),
+                new BriefingPriorityResolution(BriefingSectionPriorityCategory.Informational, 15, "informational_agent_update")))
             .ToList();
-        alerts.AddRange(persistedAlerts);
 
-        var agentRows = await _dbContext.ToolExecutionAttempts
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x => x.CompanyId == companyId && x.StartedUtc >= window.StartUtc && x.StartedUtc < window.EndUtc)
-            .OrderByDescending(x => x.StartedUtc)
-            .Take(25)
-            .Select(x => new { x.AgentId, x.Status, x.ToolName, x.TaskId, x.WorkflowInstanceId, x.CorrelationId, x.StartedUtc })
-            .ToListAsync(cancellationToken);
-        var notableAgentUpdates = agentRows
-            .GroupBy(x => new { x.AgentId, x.Status })
-            .Select(x => ApplyPriority(new BriefingAggregateItemDto(
-                "notable_agent_updates",
-                $"{x.Count()} agent tool execution(s) {x.Key.Status.ToStorageValue()}",
-                string.Join(", ", x.Select(item => item.ToolName).Distinct().Take(3)),
-                null,
-                x.Key.Status.ToStorageValue(),
-                "agent",
-                x.Key.AgentId,
-                x.Max(item => item.StartedUtc),
-                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["toolNames"] = JsonSerializer.SerializeToNode(x.Select(item => item.ToolName).Distinct().Take(5), SerializerOptions)
-                },
-                [])
-            , ResolvePriority(severityRules, "notable_agent_updates", "agent", "status", x.Key.Status.ToStorageValue())) with
-            {
-                AgentId = x.Key.AgentId,
-                CompanyEntityId = x.Key.AgentId,
-                WorkflowInstanceId = x.Select(item => item.WorkflowInstanceId).FirstOrDefault(id => id.HasValue),
-                TaskId = x.Select(item => item.TaskId).FirstOrDefault(id => id.HasValue),
-                EventCorrelationId = x.Select(item => item.CorrelationId).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
-                Assessment = x.Key.Status.ToStorageValue()
-            })
-            .OrderByDescending(x => x.OccurredUtc)
-            .Take(10)
-            .ToList();
+        kpiHighlights.Add(ApplyPriority(new BriefingAggregateItemDto(
+            "kpi_highlights",
+            "Cash runway",
+            $"Available cash is {cashPosition.AvailableBalance:0.##} {cashPosition.Currency}; estimated runway is {(cashPosition.EstimatedRunwayDays.HasValue ? $"{cashPosition.EstimatedRunwayDays.Value} days" : "unavailable")}. {cashPosition.Rationale}",
+            cashPosition.AlertState.IsLowCash ? cashPosition.RiskLevel : null,
+            cashPosition.AlertState.AlertStatus,
+            "finance_cash_position",
+            companyId,
+            cashPosition.AsOfUtc,
+            BuildCashPositionMetadata(cashPosition),
+            []), ResolvePriority(severityRules, "kpi_highlights", "task", "status", "completed")));
+        if (cashPosition.AlertState.IsLowCash)
+        {
+            alerts.Add(ApplyPriority(new BriefingAggregateItemDto(
+                "alerts",
+                "Low cash alert",
+                cashPosition.Rationale,
+                cashPosition.RiskLevel,
+                cashPosition.AlertState.AlertStatus,
+                "finance_cash_position",
+                cashPosition.AlertState.AlertId ?? companyId,
+                cashPosition.AsOfUtc,
+                BuildCashPositionMetadata(cashPosition),
+                [new BriefingSourceReferenceDto("finance_cash_position", cashPosition.AlertState.AlertId ?? companyId, "Cash position", cashPosition.AlertState.AlertStatus, $"/dashboard?companyId={companyId}")]),
+                ResolvePriority(severityRules, "alerts", "alert", "severity", cashPosition.RiskLevel)));
+        }
 
         alerts = OrderAggregateItems(alerts);
         pendingApprovals = OrderAggregateItems(pendingApprovals);
@@ -809,7 +796,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
                 criticalAlertsCount,
                 openApprovalsCount,
                 blockedWorkflowCount,
-                overdueTaskRows.Count)
+                overdueTaskRows.Count),
+            CashPosition = cashPosition
         };
         var insightPayload = _insightAggregationService.Aggregate(new BriefingInsightAggregationRequest(companyId, null, BuildInsightContributions(companyId, result)));
         var structuredSections = await EnrichStructuredSectionsAsync(companyId, OrderStructuredSections(insightPayload.Sections, result), result, cancellationToken);
@@ -912,7 +900,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
 
         return new BriefingAggregate(
             approvals, kpiHighlights, alerts, anomalies, agentHighlights, sourceReferences,
-            aggregate.NarrativeText, aggregate.StructuredSections, aggregate.SummaryCounts);
+            aggregate.NarrativeText, aggregate.StructuredSections, aggregate.CashPosition, aggregate.SummaryCounts);
     }
 
     private static BriefingItem ToBriefingItem(BriefingAggregateItemDto item)
@@ -929,7 +917,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
                 ? item.References
                 : CreateSourceReference(item),
             item.PriorityCategory,
-            item.PriorityScore);
+            item.PriorityScore,
+            item.Metadata);
     }
 
     private static IReadOnlyList<BriefingInsightContributionDto> BuildInsightContributions(Guid companyId, BriefingAggregateResultDto aggregate) =>
@@ -1092,6 +1081,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
             ["narrativeText"] = JsonValue.Create(aggregate.NarrativeText),
             ["structuredSections"] = JsonSerializer.SerializeToNode(aggregate.StructuredSections, SerializerOptions),
             ["summaryCounts"] = JsonSerializer.SerializeToNode(aggregate.SummaryCounts, SerializerOptions),
+            ["cashPosition"] = JsonSerializer.SerializeToNode(aggregate.CashPosition, SerializerOptions),
+            ["financeWorkflowOutputs"] = JsonSerializer.SerializeToNode(aggregate.KpiHighlights.Concat(aggregate.Alerts).Concat(aggregate.Anomalies).Select(x => x.Metadata.TryGetValue("workflowOutput", out var output) ? output : null).Where(x => x is not null), SerializerOptions),
             ["appliedFocusAreas"] = JsonSerializer.SerializeToNode(preferences.IncludedFocusAreas, SerializerOptions),
             ["minimumPriorityThresholdApplied"] = JsonValue.Create(preferences.PriorityThreshold.ToStorageValue()),
             ["preferenceSource"] = JsonValue.Create(preferences.Source.ToStorageValue())
@@ -1160,6 +1151,27 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
 
         return [new BriefingSourceReferenceDto(item.SourceEntityType, item.SourceEntityId.Value, item.Title, item.Status, null)];
     }
+
+    private static Dictionary<string, JsonNode?> BuildCashPositionMetadata(FinanceCashPositionDto cashPosition) =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["availableBalance"] = JsonValue.Create(cashPosition.AvailableBalance),
+            ["currency"] = JsonValue.Create(cashPosition.Currency),
+            ["averageMonthlyBurn"] = JsonValue.Create(cashPosition.AverageMonthlyBurn),
+            ["estimatedRunwayDays"] = cashPosition.EstimatedRunwayDays.HasValue ? JsonValue.Create(cashPosition.EstimatedRunwayDays.Value) : null,
+            ["warningRunwayDays"] = JsonValue.Create(cashPosition.Thresholds.WarningRunwayDays),
+            ["criticalRunwayDays"] = JsonValue.Create(cashPosition.Thresholds.CriticalRunwayDays),
+            ["isLowCash"] = JsonValue.Create(cashPosition.AlertState.IsLowCash),
+            ["alertId"] = cashPosition.AlertState.AlertId.HasValue ? JsonValue.Create(cashPosition.AlertState.AlertId.Value) : null,
+            ["alertStatus"] = JsonValue.Create(cashPosition.AlertState.AlertStatus),
+            ["classification"] = JsonValue.Create(cashPosition.Classification),
+            ["riskLevel"] = JsonValue.Create(cashPosition.RiskLevel),
+            ["recommendedAction"] = JsonValue.Create(cashPosition.RecommendedAction),
+            ["rationale"] = JsonValue.Create(cashPosition.Rationale),
+            ["confidence"] = JsonValue.Create(cashPosition.Confidence),
+            ["sourceWorkflow"] = JsonValue.Create(cashPosition.SourceWorkflow),
+            ["workflowOutput"] = JsonSerializer.SerializeToNode(cashPosition.WorkflowOutput, SerializerOptions)
+        };
 
     private static decimal? TryReadDecimal(Dictionary<string, JsonNode?> metadata, string key)
     {
@@ -1803,7 +1815,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
 
     private sealed record BriefingWindow(DateTime StartUtc, DateTime EndUtc);
     private sealed record DueCompany(Guid Id, string Name, string? Timezone);
-    private sealed record BriefingItem(string Kind, string Text, Guid EntityId, DateTime OccurredUtc, IReadOnlyList<BriefingSourceReferenceDto> References, BriefingSectionPriorityCategory PriorityCategory, int PriorityScore);
+    private sealed record BriefingItem(string Kind, string Text, Guid EntityId, DateTime OccurredUtc, IReadOnlyList<BriefingSourceReferenceDto> References, BriefingSectionPriorityCategory PriorityCategory, int PriorityScore, IReadOnlyDictionary<string, JsonNode?> Metadata);
     private sealed record BriefingAggregate(
         IReadOnlyList<BriefingItem> Approvals,
         IReadOnlyList<BriefingItem> KpiHighlights,
@@ -1813,6 +1825,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
         IReadOnlyList<BriefingSourceReferenceDto> SourceReferences,
         string NarrativeText,
         IReadOnlyList<AggregatedBriefingSectionDto> StructuredSections,
+        FinanceCashPositionDto? CashPosition,
         BriefingSummaryCountsDto SummaryCounts = null!)
     {
         public BriefingSummaryCountsDto SummaryCounts { get; init; } = SummaryCounts ?? new BriefingSummaryCountsDto(0, 0, 0, 0);
@@ -1841,6 +1854,9 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
         new("medium_task_awaiting_approval", "anomalies", "task", "status", "awaiting_approval", BriefingSectionPriorityCategory.Medium, 55),
         new("informational_task_completed", "kpi_highlights", "task", "status", "completed", BriefingSectionPriorityCategory.Informational, 20),
         new("critical_alert", "alerts", "alert", "severity", "critical", BriefingSectionPriorityCategory.Critical, 100),
+        new("critical_finance_cash_position", "alerts", "alert", "severity", "critical", BriefingSectionPriorityCategory.Critical, 100),
+        new("high_finance_cash_position", "alerts", "alert", "severity", "high", BriefingSectionPriorityCategory.High, 90),
+        new("medium_finance_cash_position", "alerts", "alert", "severity", "medium", BriefingSectionPriorityCategory.Medium, 50),
         new("high_alert", "alerts", "alert", "severity", "high", BriefingSectionPriorityCategory.High, 90),
         new("medium_alert", "alerts", "alert", "severity", "medium", BriefingSectionPriorityCategory.Medium, 50),
     ];

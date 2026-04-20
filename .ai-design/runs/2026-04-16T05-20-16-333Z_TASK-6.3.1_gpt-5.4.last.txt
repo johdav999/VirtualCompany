@@ -1,0 +1,815 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 7d9d8c1..c0f9b32 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -24,6 +24,21 @@ public sealed record GetFinanceBalancesQuery(
+     Guid CompanyId,
+     DateTime? AsOfUtc = null);
+ 
++public sealed record UpdateFinanceInvoiceApprovalStatusCommand(
++    Guid CompanyId,
++    Guid InvoiceId,
++    string Status);
++
++public sealed record UpdateFinanceTransactionCategoryCommand(
++    Guid CompanyId,
++    Guid TransactionId,
++    string Category);
++
++public sealed record GetFinancePolicyConfigurationQuery(
++    Guid CompanyId);
++
++public sealed record UpsertFinancePolicyConfigurationCommand(
++    Guid CompanyId,
++    FinancePolicyConfigurationDto Configuration);
++
+ public sealed record FinanceCashBalanceDto(
+     Guid CompanyId,
+     DateTime AsOfUtc,
+@@ -86,6 +101,25 @@ public sealed record FinanceInvoiceDto(
+     string Currency,
+     string Status);
+ 
++public sealed record FinancePolicyConfigurationDto(
++    Guid CompanyId,
++    string ApprovalCurrency,
++    decimal InvoiceApprovalThreshold,
++    decimal BillApprovalThreshold,
++    bool RequireCounterpartyForTransactions,
++    decimal AnomalyDetectionLowerBound,
++    decimal AnomalyDetectionUpperBound,
++    int CashRunwayWarningThresholdDays,
++    int CashRunwayCriticalThresholdDays);
++
++public interface IFinanceCommandService
++{
++    Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
++        UpdateFinanceInvoiceApprovalStatusCommand command,
++        CancellationToken cancellationToken);
++
++    Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(
++        UpdateFinanceTransactionCategoryCommand command,
++        CancellationToken cancellationToken);
++}
++
+ public interface IFinanceReadService
+ {
+     Task<FinanceCashBalanceDto> GetCashBalanceAsync(
+@@ -112,3 +146,15 @@ public interface IFinanceReadService
+     Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(
+         GetFinanceBalancesQuery query,
+         CancellationToken cancellationToken);
+ }
++
++public interface IFinancePolicyConfigurationService
++{
++    Task<FinancePolicyConfigurationDto> GetPolicyConfigurationAsync(
++        GetFinancePolicyConfigurationQuery query,
++        CancellationToken cancellationToken);
++
++    Task<FinancePolicyConfigurationDto> UpsertPolicyConfigurationAsync(
++        UpsertFinancePolicyConfigurationCommand command,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+index 1ed14f1..94961d2 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+@@ -214,6 +214,11 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
+     public FinanceInvoice? Invoice { get; private set; }
+     public FinanceBill? Bill { get; private set; }
+ 
++    public void ChangeCategory(string category)
++    {
++        TransactionType = NormalizeRequired(category, nameof(category), 64);
++    }
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+@@ -282,6 +287,20 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
+     public FinanceCounterparty Counterparty { get; private set; } = null!;
+     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
+ 
++    public void ChangeApprovalStatus(string status)
++    {
++        var normalized = NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        if (!IsValidApprovalStatusTransition(Status, normalized))
++        {
++            throw new InvalidOperationException($"Invoice status cannot transition from '{Status}' to '{normalized}'.");
++        }
++
++        Status = normalized;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static bool IsValidApprovalStatusTransition(string current, string next) =>
++        (current.ToLowerInvariant(), next) is ("open" or "pending" or "pending_approval", "approved" or "rejected") or ("approved", "paid" or "void") or ("rejected", "open" or "void");
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+@@ -435,7 +454,17 @@ public sealed class FinancePolicyConfiguration : ICompanyOwnedEntity
+     {
+     }
+ 
+-    public FinancePolicyConfiguration(Guid id, Guid companyId, string approvalCurrency, decimal invoiceApprovalThreshold, decimal billApprovalThreshold, bool requireCounterpartyForTransactions)
++    public FinancePolicyConfiguration(
++        Guid id,
++        Guid companyId,
++        string approvalCurrency,
++        decimal invoiceApprovalThreshold,
++        decimal billApprovalThreshold,
++        bool requireCounterpartyForTransactions,
++        decimal anomalyDetectionLowerBound = -10000m,
++        decimal anomalyDetectionUpperBound = 10000m,
++        int cashRunwayWarningThresholdDays = 90,
++        int cashRunwayCriticalThresholdDays = 30)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -447,6 +476,10 @@ public sealed class FinancePolicyConfiguration : ICompanyOwnedEntity
+         InvoiceApprovalThreshold = invoiceApprovalThreshold;
+         BillApprovalThreshold = billApprovalThreshold;
+         RequireCounterpartyForTransactions = requireCounterpartyForTransactions;
++        AnomalyDetectionLowerBound = anomalyDetectionLowerBound;
++        AnomalyDetectionUpperBound = anomalyDetectionUpperBound;
++        CashRunwayWarningThresholdDays = cashRunwayWarningThresholdDays;
++        CashRunwayCriticalThresholdDays = cashRunwayCriticalThresholdDays;
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+     }
+@@ -457,9 +490,35 @@ public sealed class FinancePolicyConfiguration : ICompanyOwnedEntity
+     public decimal InvoiceApprovalThreshold { get; private set; }
+     public decimal BillApprovalThreshold { get; private set; }
+     public bool RequireCounterpartyForTransactions { get; private set; }
++    public decimal AnomalyDetectionLowerBound { get; private set; }
++    public decimal AnomalyDetectionUpperBound { get; private set; }
++    public int CashRunwayWarningThresholdDays { get; private set; }
++    public int CashRunwayCriticalThresholdDays { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
++    public void Update(
++        string approvalCurrency,
++        decimal invoiceApprovalThreshold,
++        decimal billApprovalThreshold,
++        bool requireCounterpartyForTransactions,
++        decimal anomalyDetectionLowerBound,
++        decimal anomalyDetectionUpperBound,
++        int cashRunwayWarningThresholdDays,
++        int cashRunwayCriticalThresholdDays)
++    {
++        if (anomalyDetectionLowerBound >= anomalyDetectionUpperBound)
++        {
++            throw new ArgumentException("Anomaly detection lower bound must be less than upper bound.", nameof(anomalyDetectionLowerBound));
++        }
++
++        ApprovalCurrency = NormalizeRequired(approvalCurrency, nameof(approvalCurrency), 3).ToUpperInvariant();
++        InvoiceApprovalThreshold = invoiceApprovalThreshold;
++        BillApprovalThreshold = billApprovalThreshold;
++        RequireCounterpartyForTransactions = requireCounterpartyForTransactions;
++        AnomalyDetectionLowerBound = anomalyDetectionLowerBound;
++        AnomalyDetectionUpperBound = anomalyDetectionUpperBound;
++        CashRunwayWarningThresholdDays = cashRunwayWarningThresholdDays;
++        CashRunwayCriticalThresholdDays = cashRunwayCriticalThresholdDays;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 55fb7c2..eb63ed1 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -291,6 +291,8 @@ public static class DependencyInjection
+         services.AddScoped<IExecutiveCockpitDashboardCacheInvalidator>(sp => sp.GetRequiredService<IExecutiveCockpitDashboardCache>());
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
++        services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
++        services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
+         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
+         services.AddScoped<IActivityEventWriter, EfActivityEventStore>();
+         services.AddScoped<IActivityFeedQueryService, EfActivityEventStore>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+new file mode 100644
+index 0000000..55c62b4
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -0,0 +1,227 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFinancePolicyConfigurationService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
++
++    public CompanyFinanceCommandService(VirtualCompanyDbContext dbContext)
++        : this(dbContext, null)
++    {
++    }
++
++    public CompanyFinanceCommandService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor? companyContextAccessor)
++    {
++        _dbContext = dbContext;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public async Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
++        UpdateFinanceInvoiceApprovalStatusCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        if (command.InvoiceId == Guid.Empty)
++        {
++            throw new ArgumentException("Invoice id is required.", nameof(command));
++        }
++
++        var invoice = await _dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .Include(x => x.Counterparty)
++            .SingleOrDefaultAsync(x => x.Id == command.InvoiceId, cancellationToken);
++
++        EnsureRecordTenant(invoice, command.CompanyId, "invoice");
++        invoice!.ChangeApprovalStatus(command.Status);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return MapInvoice(invoice);
++    }
++
++    public async Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(
++        UpdateFinanceTransactionCategoryCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        if (command.TransactionId == Guid.Empty)
++        {
++            throw new ArgumentException("Transaction id is required.", nameof(command));
++        }
++
++        var transaction = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .Include(x => x.Account)
++            .Include(x => x.Counterparty)
++            .SingleOrDefaultAsync(x => x.Id == command.TransactionId, cancellationToken);
++
++        EnsureRecordTenant(transaction, command.CompanyId, "transaction");
++        transaction!.ChangeCategory(command.Category);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return MapTransaction(transaction);
++    }
++
++    public async Task<FinancePolicyConfigurationDto> GetPolicyConfigurationAsync(
++        GetFinancePolicyConfigurationQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++
++        var configuration = await _dbContext.FinancePolicyConfigurations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId, cancellationToken);
++
++        return configuration is null
++            ? CreateDefaultPolicy(query.CompanyId)
++            : MapPolicy(configuration);
++    }
++
++    public async Task<FinancePolicyConfigurationDto> UpsertPolicyConfigurationAsync(
++        UpsertFinancePolicyConfigurationCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        if (command.Configuration.CompanyId != command.CompanyId)
++        {
++            throw new UnauthorizedAccessException("Finance policy writes are scoped to the active company context.");
++        }
++
++        var configuration = await _dbContext.FinancePolicyConfigurations
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId, cancellationToken);
++
++        if (configuration is null)
++        {
++            configuration = new FinancePolicyConfiguration(
++                Guid.NewGuid(),
++                command.CompanyId,
++                command.Configuration.ApprovalCurrency,
++                command.Configuration.InvoiceApprovalThreshold,
++                command.Configuration.BillApprovalThreshold,
++                command.Configuration.RequireCounterpartyForTransactions,
++                command.Configuration.AnomalyDetectionLowerBound,
++                command.Configuration.AnomalyDetectionUpperBound,
++                command.Configuration.CashRunwayWarningThresholdDays,
++                command.Configuration.CashRunwayCriticalThresholdDays);
++
++            _dbContext.FinancePolicyConfigurations.Add(configuration);
++        }
++        else
++        {
++            configuration.Update(
++                command.Configuration.ApprovalCurrency,
++                command.Configuration.InvoiceApprovalThreshold,
++                command.Configuration.BillApprovalThreshold,
++                command.Configuration.RequireCounterpartyForTransactions,
++                command.Configuration.AnomalyDetectionLowerBound,
++                command.Configuration.AnomalyDetectionUpperBound,
++                command.Configuration.CashRunwayWarningThresholdDays,
++                command.Configuration.CashRunwayCriticalThresholdDays);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapPolicy(configuration);
++    }
++
++    private void EnsureTenant(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++
++        if (_companyContextAccessor?.CompanyId is Guid currentCompanyId && currentCompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException("Finance writes are scoped to the active company context.");
++        }
++    }
++
++    private static void EnsureRecordTenant(ICompanyOwnedEntity? entity, Guid companyId, string recordName)
++    {
++        if (entity is null)
++        {
++            throw new KeyNotFoundException($"Finance {recordName} was not found.");
++        }
++
++        if (entity.CompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException($"Finance {recordName} belongs to a different company.");
++        }
++    }
++
++    private static FinanceInvoiceDto MapInvoice(FinanceInvoice invoice) =>
++        new(
++            invoice.Id,
++            invoice.CounterpartyId,
++            invoice.Counterparty.Name,
++            invoice.InvoiceNumber,
++            invoice.IssuedUtc,
++            invoice.DueUtc,
++            invoice.Amount,
++            invoice.Currency,
++            invoice.Status);
++
++    private static FinanceTransactionDto MapTransaction(FinanceTransaction transaction) =>
++        new(
++            transaction.Id,
++            transaction.AccountId,
++            transaction.Account.Name,
++            transaction.CounterpartyId,
++            transaction.Counterparty?.Name,
++            transaction.InvoiceId,
++            transaction.BillId,
++            transaction.TransactionUtc,
++            transaction.TransactionType,
++            transaction.Amount,
++            transaction.Currency,
++            transaction.Description,
++            transaction.ExternalReference);
++
++    private static FinancePolicyConfigurationDto MapPolicy(FinancePolicyConfiguration configuration) =>
++        new(
++            configuration.CompanyId,
++            configuration.ApprovalCurrency,
++            configuration.InvoiceApprovalThreshold,
++            configuration.BillApprovalThreshold,
++            configuration.RequireCounterpartyForTransactions,
++            configuration.AnomalyDetectionLowerBound,
++            configuration.AnomalyDetectionUpperBound,
++            configuration.CashRunwayWarningThresholdDays,
++            configuration.CashRunwayCriticalThresholdDays);
++
++    private static FinancePolicyConfigurationDto CreateDefaultPolicy(Guid companyId) =>
++        new(
++            companyId,
++            "USD",
++            10000m,
++            5000m,
++            true,
++            -10000m,
++            10000m,
++            90,
++            30);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 4f7d7ef..c390aa8 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -2489,7 +2489,7 @@ internal sealed class InsightAcknowledgmentConfiguration : IEntityTypeConfigurat
+     }
+ }
+ 
+-internal sealed class FinanceAccountConfiguration : IEntityTypeConfiguration<FinanceAccount>
++internal sealed class FinanceAccountConfigurationLegacy : IEntityTypeConfiguration<FinanceAccount>
+ {
+     public void Configure(EntityTypeBuilder<FinanceAccount> builder)
+     {
+@@ -2516,7 +2516,7 @@ internal sealed class FinanceAccountConfiguration : IEntityTypeConfiguration<Fin
+     }
+ }
+ 
+-internal sealed class FinanceCounterpartyConfiguration : IEntityTypeConfiguration<FinanceCounterparty>
++internal sealed class FinanceCounterpartyConfigurationLegacy : IEntityTypeConfiguration<FinanceCounterparty>
+ {
+     public void Configure(EntityTypeBuilder<FinanceCounterparty> builder)
+     {
+@@ -2538,7 +2538,7 @@ internal sealed class FinanceCounterpartyConfiguration : IEntityTypeConfiguratio
+     }
+ }
+ 
+-internal sealed class FinanceInvoiceConfiguration : IEntityTypeConfiguration<FinanceInvoice>
++internal sealed class FinanceInvoiceConfigurationLegacy : IEntityTypeConfiguration<FinanceInvoice>
+ {
+     public void Configure(EntityTypeBuilder<FinanceInvoice> builder)
+     {
+@@ -2566,7 +2566,7 @@ internal sealed class FinanceInvoiceConfiguration : IEntityTypeConfiguration<Fin
+     }
+ }
+ 
+-internal sealed class FinanceBillConfiguration : IEntityTypeConfiguration<FinanceBill>
++internal sealed class FinanceBillConfigurationLegacy : IEntityTypeConfiguration<FinanceBill>
+ {
+     public void Configure(EntityTypeBuilder<FinanceBill> builder)
+     {
+@@ -2594,7 +2594,7 @@ internal sealed class FinanceBillConfiguration : IEntityTypeConfiguration<Financ
+     }
+ }
+ 
+-internal sealed class FinanceTransactionConfiguration : IEntityTypeConfiguration<FinanceTransaction>
++internal sealed class FinanceTransactionConfigurationLegacy : IEntityTypeConfiguration<FinanceTransaction>
+ {
+     public void Configure(EntityTypeBuilder<FinanceTransaction> builder)
+     {
+@@ -2623,7 +2623,7 @@ internal sealed class FinanceTransactionConfiguration : IEntityTypeConfiguration
+     }
+ }
+ 
+-internal sealed class FinanceBalanceConfiguration : IEntityTypeConfiguration<FinanceBalance>
++internal sealed class FinanceBalanceConfigurationLegacy : IEntityTypeConfiguration<FinanceBalance>
+ {
+     public void Configure(EntityTypeBuilder<FinanceBalance> builder)
+     {
+@@ -2643,7 +2643,7 @@ internal sealed class FinanceBalanceConfiguration : IEntityTypeConfiguration<Fin
+     }
+ }
+ 
+-internal sealed class FinancePolicyConfigurationConfiguration : IEntityTypeConfiguration<FinancePolicyConfiguration>
++internal sealed class FinancePolicyConfigurationConfigurationLegacy : IEntityTypeConfiguration<FinancePolicyConfiguration>
+ {
+     public void Configure(EntityTypeBuilder<FinancePolicyConfiguration> builder)
+     {
+@@ -2657,6 +2657,10 @@ internal sealed class FinancePolicyConfigurationConfiguration : IEntityTypeConfi
+         builder.Property(x => x.InvoiceApprovalThreshold).HasColumnName("invoice_approval_threshold").HasColumnType("decimal(18,2)").IsRequired();
+         builder.Property(x => x.BillApprovalThreshold).HasColumnName("bill_approval_threshold").HasColumnType("decimal(18,2)").IsRequired();
+         builder.Property(x => x.RequireCounterpartyForTransactions).HasColumnName("require_counterparty_for_transactions").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.AnomalyDetectionLowerBound).HasColumnName("anomaly_detection_lower_bound").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.AnomalyDetectionUpperBound).HasColumnName("anomaly_detection_upper_bound").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.CashRunwayWarningThresholdDays).HasColumnName("cash_runway_warning_threshold_days").IsRequired();
++        builder.Property(x => x.CashRunwayCriticalThresholdDays).HasColumnName("cash_runway_critical_threshold_days").IsRequired();
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+ 
+@@ -2832,6 +2836,10 @@ internal sealed class FinancePolicyConfigurationConfiguration : IEntityTypeConfi
+         builder.Property(x => x.InvoiceApprovalThreshold).HasColumnName("invoice_approval_threshold").HasColumnType("decimal(18,2)").IsRequired();
+         builder.Property(x => x.BillApprovalThreshold).HasColumnName("bill_approval_threshold").HasColumnType("decimal(18,2)").IsRequired();
+         builder.Property(x => x.RequireCounterpartyForTransactions).HasColumnName("require_counterparty_for_transactions").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.AnomalyDetectionLowerBound).HasColumnName("anomaly_detection_lower_bound").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.AnomalyDetectionUpperBound).HasColumnName("anomaly_detection_upper_bound").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.CashRunwayWarningThresholdDays).HasColumnName("cash_runway_warning_threshold_days").IsRequired();
++        builder.Property(x => x.CashRunwayCriticalThresholdDays).HasColumnName("cash_runway_critical_threshold_days").IsRequired();
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+index 8270948..a6fb04d 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+@@ -105,7 +105,7 @@ public static class FinanceSeedData
+             })
+             .ToArray();
+ 
+-        var policy = new FinancePolicyConfiguration(StableId(companyId, "policy:default"), companyId, "USD", 10000m, 5000m, true);
++        var policy = new FinancePolicyConfiguration(StableId(companyId, "policy:default"), companyId, "USD", 10000m, 5000m, true, -10000m, 10000m, 90, 30);
+ 
+         dbContext.FinanceAccounts.AddRange(accounts);
+         dbContext.FinanceCounterparties.AddRange(counterparties);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416120000_AddFinancePolicyConfigurationControls.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416120000_AddFinancePolicyConfigurationControls.cs
+new file mode 100644
+index 0000000..5cc8295
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416120000_AddFinancePolicyConfigurationControls.cs
+@@ -0,0 +1,61 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddFinancePolicyConfigurationControls : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<decimal>(
++                name: "anomaly_detection_lower_bound",
++                table: "finance_policy_configurations",
++                type: "decimal(18,2)",
++                nullable: false,
++                defaultValue: -10000m);
++
++            migrationBuilder.AddColumn<decimal>(
++                name: "anomaly_detection_upper_bound",
++                table: "finance_policy_configurations",
++                type: "decimal(18,2)",
++                nullable: false,
++                defaultValue: 10000m);
++
++            migrationBuilder.AddColumn<int>(
++                name: "cash_runway_warning_threshold_days",
++                table: "finance_policy_configurations",
++                type: "int",
++                nullable: false,
++                defaultValue: 90);
++
++            migrationBuilder.AddColumn<int>(
++                name: "cash_runway_critical_threshold_days",
++                table: "finance_policy_configurations",
++                type: "int",
++                nullable: false,
++                defaultValue: 30);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropColumn(
++                name: "anomaly_detection_lower_bound",
++                table: "finance_policy_configurations");
++
++            migrationBuilder.DropColumn(
++                name: "anomaly_detection_upper_bound",
++                table: "finance_policy_configurations");
++
++            migrationBuilder.DropColumn(
++                name: "cash_runway_warning_threshold_days",
++                table: "finance_policy_configurations");
++
++            migrationBuilder.DropColumn(
++                name: "cash_runway_critical_threshold_days",
++                table: "finance_policy_configurations");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
+new file mode 100644
+index 0000000..e0323c7
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
+@@ -0,0 +1,244 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceCommandServiceTests
++{
++    [Fact]
++    public async Task Update_invoice_approval_status_succeeds_for_authorized_tenant()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedFinanceWriteScenario(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++        var result = await service.UpdateInvoiceApprovalStatusAsync(
++            new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, "approved"),
++            CancellationToken.None);
++
++        Assert.Equal("approved", result.Status);
++        Assert.Equal("approved", await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceId).Select(x => x.Status).SingleAsync());
++    }
++
++    [Fact]
++    public async Task Update_transaction_category_succeeds_for_authorized_tenant()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedFinanceWriteScenario(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++        var result = await service.UpdateTransactionCategoryAsync(
++            new UpdateFinanceTransactionCategoryCommand(companyId, seed.TransactionId, "software_subscriptions"),
++            CancellationToken.None);
++
++        Assert.Equal("software_subscriptions", result.TransactionType);
++        Assert.Equal("software_subscriptions", await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());
++    }
++
++    [Fact]
++    public async Task Finance_writes_reject_records_from_another_tenant()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyAId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seedB = SeedFinanceWriteScenario(dbContext, companyBId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++
++        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
++            service.UpdateInvoiceApprovalStatusAsync(
++                new UpdateFinanceInvoiceApprovalStatusCommand(companyAId, seedB.InvoiceId, "approved"),
++                CancellationToken.None));
++        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
++            service.UpdateTransactionCategoryAsync(
++                new UpdateFinanceTransactionCategoryCommand(companyAId, seedB.TransactionId, "software_subscriptions"),
++                CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task Finance_writes_reject_invalid_invoice_status_transition()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedFinanceWriteScenario(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++        await service.UpdateInvoiceApprovalStatusAsync(
++            new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, "approved"),
++            CancellationToken.None);
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() =>
++            service.UpdateInvoiceApprovalStatusAsync(
++                new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, "open"),
++                CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task Policy_configuration_is_persisted_and_retrieved_as_typed_configuration()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        dbContext.Companies.Add(new Company(companyId, "Policy Company"));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++        var saved = await service.UpsertPolicyConfigurationAsync(
++            new UpsertFinancePolicyConfigurationCommand(
++                companyId,
++                new FinancePolicyConfigurationDto(
++                    companyId,
++                    "eur",
++                    12500m,
++                    7500m,
++                    true,
++                    -2500m,
++                    15000m,
++                    120,
++                    45)),
++            CancellationToken.None);
++
++        var retrieved = await service.GetPolicyConfigurationAsync(
++            new GetFinancePolicyConfigurationQuery(companyId),
++            CancellationToken.None);
++
++        Assert.Equal("EUR", saved.ApprovalCurrency);
++        Assert.Equal(saved, retrieved);
++        Assert.Equal(1, await dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection, ICompanyContextAccessor accessor) =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options,
++            accessor);
++
++    private static FinanceWriteSeed SeedFinanceWriteScenario(VirtualCompanyDbContext dbContext, Guid companyId)
++    {
++        var accountId = Guid.NewGuid();
++        var counterpartyId = Guid.NewGuid();
++        var invoiceId = Guid.NewGuid();
++        var transactionId = Guid.NewGuid();
++
++        dbContext.Companies.Add(new Company(companyId, $"Finance Write Company {companyId:N}"));
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            accountId,
++            companyId,
++            "1000",
++            "Operating Cash",
++            "asset",
++            "USD",
++            1000m,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.FinanceCounterparties.Add(new FinanceCounterparty(
++            counterpartyId,
++            companyId,
++            "Customer",
++            "customer",
++            "customer@example.com"));
++        dbContext.FinanceInvoices.Add(new FinanceInvoice(
++            invoiceId,
++            companyId,
++            counterpartyId,
++            $"INV-{invoiceId:N}"[..16],
++            new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 2, 2, 0, 0, 0, DateTimeKind.Utc),
++            2000m,
++            "USD",
++            "open"));
++        dbContext.FinanceTransactions.Add(new FinanceTransaction(
++            transactionId,
++            companyId,
++            accountId,
++            counterpartyId,
++            invoiceId,
++            null,
++            new DateTime(2026, 1, 3, 0, 0, 0, DateTimeKind.Utc),
++            "customer_payment",
++            2000m,
++            "USD",
++            "Customer payment",
++            $"PAY-{transactionId:N}"[..20]));
++
++        return new FinanceWriteSeed(invoiceId, transactionId);
++    }
++
++    private sealed record FinanceWriteSeed(Guid InvoiceId, Guid TransactionId);
++
++    private sealed class TestCompanyContextAccessor : ICompanyContextAccessor
++    {
++        public TestCompanyContextAccessor(Guid companyId)
++        {
++            CompanyId = companyId;
++        }
++
++        public Guid? CompanyId { get; private set; }
++        public Guid? UserId { get; private set; }
++        public bool IsResolved => Membership is not null;
++        public ResolvedCompanyMembershipContext? Membership { get; private set; }
++
++        public void SetCompanyId(Guid? companyId)
++        {
++            CompanyId = companyId;
++            Membership = null;
++            UserId = null;
++        }
++
++        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext)
++        {
++            Membership = companyContext;
++            CompanyId = companyContext?.CompanyId;
++            UserId = companyContext?.UserId;
++        }
++    }
++}
+END_OF_PATCH

@@ -204,6 +204,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
                     agent.AvatarUrl,
                     ResolvePersonalitySummary(agent.Personality),
                     agent.AutonomyLevel.ToStorageValue(),
+                    BuildRoleMetadata(agent),
+                    BuildWorkflowCapabilities(agent),
                     BuildWorkloadSummary(agent, execution, approval, audit?.LastActivityUtc),
                     BuildAgentProfileRoute(agent.CompanyId, agent.Id));
             })
@@ -683,6 +685,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
             agent.Status.ToStorageValue(),
             agent.AvatarUrl,
             agent.RoleBrief,
+            BuildConfigurationSettings(agent),
             CloneNodes(agent.Objectives),
             CloneNodes(agent.Kpis),
             visibility.CanViewPermissions ? CloneNodes(agent.Tools) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
@@ -749,6 +752,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
             ResolvePersonalitySummary(agent.Personality),
             agent.RoleBrief,
             agent.AutonomyLevel.ToStorageValue(),
+            BuildConfigurationSettings(agent),
             CloneNodes(agent.Objectives),
             CloneNodes(agent.Kpis),
             visibility.CanViewPermissions ? CloneNodes(agent.Tools) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
@@ -763,6 +767,76 @@ public sealed class CompanyAgentService : ICompanyAgentService
             BuildProfileSections(visibility),
             BuildAnalyticsPreview(),
             agent.UpdatedUtc);
+    }
+
+    private static AgentConfigurationSettingsDto BuildConfigurationSettings(Agent agent) =>
+        new(
+            ResolveConfigurationVersion(agent.Personality, "personaVersion"),
+            ResolveConfigurationVersion(agent.TriggerLogic, "workflowVersion"),
+            CloneNodes(agent.Personality),
+            BuildWorkflowCapabilities(agent));
+
+    private static Dictionary<string, JsonNode?> BuildRoleMetadata(Agent agent)
+    {
+        if (agent.Personality.TryGetValue("roleMetadata", out var node) &&
+            node is JsonObject roleMetadata)
+        {
+            return roleMetadata.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value?.DeepClone(),
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        var roleKey = string.IsNullOrWhiteSpace(agent.Department)
+            ? agent.RoleName
+            : agent.Department;
+
+        return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["roleKey"] = JsonValue.Create(roleKey.Trim().ToLowerInvariant().Replace(' ', '_')),
+            ["roleFamily"] = JsonValue.Create(agent.Department),
+            ["personaName"] = JsonValue.Create(agent.DisplayName),
+            ["responsibilityDomain"] = JsonValue.Create(agent.Department),
+            ["description"] = JsonValue.Create(string.IsNullOrWhiteSpace(agent.RoleBrief)
+                ? agent.RoleName
+                : agent.RoleBrief)
+        };
+    }
+
+    private static Dictionary<string, JsonNode?> BuildWorkflowCapabilities(Agent agent)
+    {
+        if (!agent.TriggerLogic.TryGetValue("workflowCapabilities", out var node) ||
+            node is not JsonObject workflowCapabilities)
+        {
+            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return workflowCapabilities.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value?.DeepClone(),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static int ResolveConfigurationVersion(IReadOnlyDictionary<string, JsonNode?> payload, string key)
+    {
+        if (!payload.TryGetValue(key, out var node) || node is not JsonValue value)
+        {
+            return 1;
+        }
+
+        if (value.TryGetValue<int>(out var intValue) && intValue > 0)
+        {
+            return intValue;
+        }
+
+        if (value.TryGetValue<string>(out var text) &&
+            int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) &&
+            parsed > 0)
+        {
+            return parsed;
+        }
+
+        return 1;
     }
 
     private static AgentProfileVisibilityDto BuildProfileVisibility(CompanyMembershipRole membershipRole)

@@ -30,6 +30,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
     private readonly CompanyDocumentOptions _options;
     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
     private readonly ILogger<CompanyDocumentService> _logger;
+    private readonly IKnowledgeAccessPolicyEvaluator _accessPolicyEvaluator;
 
     public CompanyDocumentService(
         VirtualCompanyDbContext dbContext,
@@ -41,7 +42,8 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
         IDocumentIngestionOrchestrator ingestionOrchestrator,
         IOptions<CompanyDocumentOptions> options,
         ICompanyOutboxEnqueuer outboxEnqueuer,
-        ILogger<CompanyDocumentService> logger)
+        ILogger<CompanyDocumentService> logger,
+        IKnowledgeAccessPolicyEvaluator accessPolicyEvaluator)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
@@ -53,6 +55,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
         _options = options.Value;
         _outboxEnqueuer = outboxEnqueuer;
         _logger = logger;
+        _accessPolicyEvaluator = accessPolicyEvaluator;
     }
 
     public async Task<CompanyKnowledgeDocumentDto> UploadAsync(Guid companyId, UploadCompanyDocumentCommand command, CancellationToken cancellationToken)
@@ -169,7 +172,8 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
 
     public async Task<IReadOnlyList<CompanyKnowledgeDocumentDto>> ListAsync(Guid companyId, CancellationToken cancellationToken)
     {
-        await EnsureReadAccessAsync(companyId, cancellationToken);
+        var membership = await EnsureReadAccessAsync(companyId, cancellationToken);
+        var accessContext = BuildAccessContext(companyId, membership);
 
         var documents = await _dbContext.CompanyKnowledgeDocuments
             .AsNoTracking()
@@ -178,18 +182,31 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
             .ThenByDescending(x => x.Id)
             .ToListAsync(cancellationToken);
 
-        return documents.Select(MapDto).ToArray();
+        return documents
+            .Where(document => _accessPolicyEvaluator.CanAccess(accessContext, document))
+            .Select(MapDto)
+            .ToArray();
     }
 
     public async Task<CompanyKnowledgeDocumentDto?> GetAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
     {
-        await EnsureReadAccessAsync(companyId, cancellationToken);
+        var membership = await EnsureReadAccessAsync(companyId, cancellationToken);
 
         var document = await _dbContext.CompanyKnowledgeDocuments
             .AsNoTracking()
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
 
-        return document is null ? null : MapDto(document);
+        if (document is null)
+        {
+            return null;
+        }
+
+        if (!_accessPolicyEvaluator.CanAccess(BuildAccessContext(companyId, membership), document))
+        {
+            throw new UnauthorizedAccessException("The current user cannot access this document.");
+        }
+
+        return MapDto(document);
     }
 
     private void EnqueueDocumentUploadedEvent(CompanyKnowledgeDocument document)
@@ -230,14 +247,26 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
             causationId: document.Id.ToString("N"));
     }
 
-    private async Task EnsureReadAccessAsync(Guid companyId, CancellationToken cancellationToken)
+    private async Task<ResolvedCompanyMembershipContext> EnsureReadAccessAsync(Guid companyId, CancellationToken cancellationToken)
     {
         var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
         if (membership is null)
         {
             throw new UnauthorizedAccessException("The current user cannot access documents for this company.");
         }
+
+        return membership;
     }
+
+    private static CompanyKnowledgeAccessContext BuildAccessContext(
+        Guid companyId,
+        ResolvedCompanyMembershipContext membership) =>
+        new(
+            companyId,
+            membership.MembershipId,
+            membership.UserId,
+            membership.MembershipRole.ToStorageValue(),
+            Array.Empty<string>());
 
     private async Task EnsureManagementAccessAsync(Guid companyId, CancellationToken cancellationToken)
     {

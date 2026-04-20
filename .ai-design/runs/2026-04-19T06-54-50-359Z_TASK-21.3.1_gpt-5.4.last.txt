@@ -1,0 +1,895 @@
+diff --git a/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs b/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs
+--- a/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs
++++ b/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs
+@@ -1,4 +1,4 @@
+-namespace VirtualCompany.Application.Finance;
++namespace VirtualCompany.Application.Finance;
+ 
+ public static class CompanySimulationLifecycleStatusValues
+ {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs
+@@ -116,14 +116,21 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+         {
+             throw new ArgumentException("At least one simulation setting must be provided.", nameof(command));
+         }
+-
+-        var state = await RequireStateAsync(command.CompanyId, cancellationToken);
+-        if (state.IsRunning)
+-        {
+-            state = (await ProgressStateIfDueAsync(command.CompanyId, cancellationToken)).State ?? state;
+-        }
+-
+-        state = await _repository.UpdateAsync(
++
++        var state = await RequireStateAsync(command.CompanyId, cancellationToken);
++        if (state.IsRunning)
++        {
++            state = (await ProgressStateIfDueAsync(command.CompanyId, cancellationToken)).State ?? state;
++        }
++
++        if (state.IsRunning &&
++            command.GenerationEnabled.HasValue &&
++            command.GenerationEnabled.Value != state.GenerationEnabled)
++        {
++            throw new InvalidOperationException("Pause or stop the simulation before changing finance generation.");
++        }
++
++        var generationEnabled = state.IsRunning ? null : command.GenerationEnabled;
++        state = await _repository.UpdateAsync(
+             new UpdateCompanySimulationStateCommand(
+                 command.CompanyId,
+                 state.CurrentSimulatedUtc,
+-                state.LastProgressedUtc,
+-                command.GenerationEnabled,
++                state.LastProgressedUtc,
++                generationEnabled,
+                 command.DeterministicConfigurationJson,
+                 GetUtcNow()),
+             cancellationToken);
+diff --git a/src/VirtualCompany.Shared/FinanceAccess.cs b/src/VirtualCompany.Shared/FinanceAccess.cs
+--- a/src/VirtualCompany.Shared/FinanceAccess.cs
++++ b/src/VirtualCompany.Shared/FinanceAccess.cs
+@@ -25,6 +25,13 @@ public static class FinanceAccess
+         "manager",
+         "finance_approver"
+     };
++
++    private static readonly HashSet<string> FinanceSimulationManagerRoleValues = new(StringComparer.OrdinalIgnoreCase)
++    {
++        "owner",
++        "admin",
++        "manager"
++    };
+ 
+     public static IReadOnlyCollection<string> ViewRoles => FinanceViewRoleValues;
+     public static IReadOnlyCollection<string> SandboxAdminRoles => FinanceSandboxAdminRoleValues;
+@@ -47,6 +54,11 @@ public static class FinanceAccess
+         !string.IsNullOrWhiteSpace(membershipRole) &&
+         FinanceSandboxAdminRoleValues.Contains(membershipRole.Trim());
+ 
++    public static bool CanManageSimulation(string? membershipRole) =>
++        !string.IsNullOrWhiteSpace(membershipRole) &&
++        FinanceSimulationManagerRoleValues.Contains(membershipRole.Trim());
++
++
+     public static bool CanEditTransactionCategory(string? membershipRole) =>
+         !string.IsNullOrWhiteSpace(membershipRole) &&
+         FinanceTransactionEditRoleValues.Contains(membershipRole.Trim());
+diff --git a/src/VirtualCompany.Shared/FinanceCompanySimulationContracts.cs b/src/VirtualCompany.Shared/FinanceCompanySimulationContracts.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Shared/FinanceCompanySimulationContracts.cs
+@@ -0,0 +1,44 @@
++namespace VirtualCompany.Shared;
++
++public static class FinanceCompanySimulationStatusValues
++{
++    public const string NotStarted = "not_started";
++    public const string Running = "running";
++    public const string Paused = "paused";
++    public const string Stopped = "stopped";
++}
++
++public sealed class FinanceCompanySimulationStateResponse
++{
++    public Guid CompanyId { get; set; }
++    public string Status { get; set; } = FinanceCompanySimulationStatusValues.NotStarted;
++    public DateTime? CurrentSimulatedDateTime { get; set; }
++    public DateTime? LastProgressionTimestamp { get; set; }
++    public bool? GenerationEnabled { get; set; }
++    public int? Seed { get; set; }
++    public Guid? ActiveSessionId { get; set; }
++    public DateTime? StartSimulatedDateTime { get; set; }
++    public string? DeterministicConfigurationJson { get; set; }
++
++    public static FinanceCompanySimulationStateResponse NotStarted(Guid companyId) =>
++        new()
++        {
++            CompanyId = companyId,
++            Status = FinanceCompanySimulationStatusValues.NotStarted
++        };
++}
++
++public sealed class FinanceCompanySimulationStartRequest
++{
++    public DateTime StartSimulatedDateTime { get; set; }
++    public bool GenerationEnabled { get; set; }
++    public int Seed { get; set; }
++    public string? DeterministicConfigurationJson { get; set; }
++}
++
++public sealed class FinanceCompanySimulationUpdateRequest
++{
++    public bool? GenerationEnabled { get; set; }
++    public string? DeterministicConfigurationJson { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -9,6 +9,7 @@ var builder = WebApplication.CreateBuilder(args);
+ builder.Services.AddRazorComponents()
+     .AddInteractiveServerComponents();
+ builder.Services.AddHttpContextAccessor();
++builder.Services.Configure<FinanceSimulationControlPanelOptions>(builder.Configuration.GetSection(FinanceSimulationControlPanelOptions.SectionName));
+ builder.Services.AddScoped<IFinanceSandboxAdminService, FinanceSandboxAdminService>();
+ builder.Services.AddScoped<FinanceAccessResolver>();
+ 
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
+@@ -101,6 +101,57 @@
+             <button id="finance-seed-action" class="btn btn-outline-primary" type="button" @onclick="HandleManualSeedActionAsync" disabled="@IsSubmittingManualSeed">
+                 @(IsSubmittingManualSeed ? "Submitting..." : ManualSeedActionLabel)
+             </button>
++        </div>
++        @if (IsSimulationControlPanelVisible)
++        {
++            <section class="wizard-card finance-state-card mb-4" aria-live="polite">
++                <div class="d-flex flex-column gap-3">
++                    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
++                        <div>
++                            <div class="small text-uppercase text-body-secondary fw-semibold">Company simulation</div>
++                            <h2 class="h5 mb-2">Finance progression controls</h2>
++                            <p class="text-body-secondary mb-0">Control the active company simulation and keep finance queries aligned with the current simulated timeline.</p>
++                        </div>
++                        <div class="d-flex flex-wrap gap-2 align-items-center">
++                            <span class="@SimulationStatusBadgeClass">@SimulationStatusLabel</span>
++                            <button class="btn btn-outline-secondary" type="button" @onclick="RefreshSimulationStateAsync" disabled="@IsSimulationBusy">Refresh</button>
++                        </div>
++                    </div>
++                    @if (IsSimulationStateLoading && SimulationState is null)
++                    {
++                        <div class="text-body-secondary">Loading simulation state...</div>
++                    }
++                    @if (!string.IsNullOrWhiteSpace(SimulationStateErrorMessage))
++                    {
++                        <div class="alert alert-danger mb-0" role="alert">@SimulationStateErrorMessage</div>
++                    }
++                    else if (!string.IsNullOrWhiteSpace(SimulationActionMessage))
++                    {
++                        <div class="alert alert-success mb-0" role="status">@SimulationActionMessage</div>
++                    }
++                    <div class="row g-3">
++                        <div class="col-12 col-lg-4">
++                            <div class="border rounded-3 p-3 h-100">
++                                <div class="small text-uppercase text-body-secondary fw-semibold mb-1">Current simulated time</div>
++                                <div class="fw-semibold">@CurrentSimulatedDateTimeLabel</div>
++                            </div>
++                        </div>
++                        <div class="col-12 col-lg-4">
++                            <div class="border rounded-3 p-3 h-100">
++                                <div class="small text-uppercase text-body-secondary fw-semibold mb-1">Last progression</div>
++                                <div class="fw-semibold">@LastProgressionTimestampLabel</div>
++                            </div>
++                        </div>
++                        <div class="col-12 col-lg-4">
++                            <div class="border rounded-3 p-3 h-100">
++                                <div class="small text-uppercase text-body-secondary fw-semibold mb-1">Generation</div>
++                                <div class="fw-semibold">@GenerationStateLabel</div>
++                            </div>
++                        </div>
++                    </div>
++                    <div class="form-check form-switch">
++                        <input id="finance-simulation-generation" class="form-check-input" type="checkbox" checked="@RequestedGenerationEnabled" @onchange="HandleGenerationEnabledChangedAsync" disabled="@(!CanEditGenerationEnabled)" />
++                        <label class="form-check-label fw-semibold" for="finance-simulation-generation">Generate financial data</label>
++                    </div>
++                    <p class="text-body-secondary mb-0">@GenerationToggleHelpText</p>
++                    <div class="d-flex flex-wrap gap-2">
++                        <button class="btn btn-primary" type="button" @onclick="HandleStartSimulationAsync" disabled="@(!CanStartSimulation)">Start</button>
++                        <button class="btn btn-outline-secondary" type="button" @onclick="HandlePauseSimulationAsync" disabled="@(!CanPauseSimulation)">Pause</button>
++                        <button class="btn btn-outline-danger" type="button" @onclick="HandleStopSimulationAsync" disabled="@(!CanStopSimulation)">Stop</button>
++                    </div>
++                </div>
++            </section>
+         </div>
+         @if (IsManualSeedConfirmationVisible)
+         {
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
+@@ -1,12 +1,15 @@
+ using Microsoft.AspNetCore.Components;
++using Microsoft.Extensions.Options;
+ using VirtualCompany.Shared;
+ using VirtualCompany.Web.Services;
+ 
+ namespace VirtualCompany.Web.Pages.Finance;
+ 
+ public partial class FinancePage : FinancePageBase, IDisposable
+ {
+     [Inject] protected FinanceApiClient FinanceApiClient { get; set; } = default!;
++    [Inject] protected IOptions<FinanceSimulationControlPanelOptions> SimulationControlPanelOptionsAccessor { get; set; } = default!;
+ 
+     private const int PollIntervalMilliseconds = 750;
+ 
+     private CancellationTokenSource? _entryStateCts;
+     private int _entryStateVersion;
++    private CancellationTokenSource? _simulationStateCts;
++    private int _simulationStateVersion;
+ 
+     protected FinanceEntryInitializationResponse? EntryState { get; private set; }
+     protected bool IsEntryStateLoading { get; private set; }
+@@ -15,6 +18,26 @@ public partial class FinancePage : FinancePageBase, IDisposable
+     protected bool IsManualSeedConfirmationVisible { get; private set; }
+     protected bool IsSubmittingManualSeed { get; private set; }
+     protected bool ShowFinanceReadyBanner { get; private set; }
++    protected FinanceCompanySimulationStateResponse? SimulationState { get; private set; }
++    protected bool IsSimulationStateLoading { get; private set; }
++    protected string? SimulationStateErrorMessage { get; private set; }
++    protected string? SimulationActionMessage { get; private set; }
++    protected bool IsSimulationActionInFlight { get; private set; }
++    protected bool RequestedGenerationEnabled { get; private set; } = true;
++
++    protected bool IsSimulationControlPanelVisible =>
++        SimulationControlPanelOptionsAccessor.Value.Enabled &&
++        IsFinanceReady;
++
++    protected bool CanManageSimulation => FinanceAccess.CanManageSimulation(AccessState.MembershipRole);
++    protected bool IsSimulationBusy => IsSimulationStateLoading || IsSimulationActionInFlight;
++    protected bool CanStartSimulation => CanManageSimulation && !IsSimulationBusy && (SimulationState is null || IsSimulationNotStarted || IsSimulationPaused || IsSimulationStopped);
++    protected bool CanPauseSimulation => CanManageSimulation && !IsSimulationBusy && IsSimulationRunning;
++    protected bool CanStopSimulation => CanManageSimulation && !IsSimulationBusy && (IsSimulationRunning || IsSimulationPaused);
++    protected bool CanEditGenerationEnabled => CanManageSimulation && !IsSimulationBusy && (IsSimulationNotStarted || IsSimulationPaused || IsSimulationStopped);
++    protected string SimulationStatusLabel => ResolveSimulationStatusLabel(SimulationState?.Status);
++    protected string SimulationStatusBadgeClass => $"badge rounded-pill {ResolveSimulationStatusBadgeClass(SimulationState?.Status)}";
++    protected string CurrentSimulatedDateTimeLabel => FormatSimulationTimestamp(SimulationState?.CurrentSimulatedDateTime, "Not started");
++    protected string LastProgressionTimestampLabel => FormatSimulationTimestamp(SimulationState?.LastProgressionTimestamp, "No progression recorded yet");
++    protected string GenerationStateLabel => RequestedGenerationEnabled ? "On" : "Off";
+ 
+     protected bool IsFinanceRequested =>
+         string.Equals(EntryState?.ProgressState, FinanceEntryProgressStateContractValues.SeedingRequested, StringComparison.OrdinalIgnoreCase);
+@@ -49,6 +72,13 @@ public partial class FinancePage : FinancePageBase, IDisposable
+         EntryState?.ConfirmationMessage ??
+         "Regenerating finance data in replace mode overwrites the current seeded dataset for this company.";
+ 
++    protected string GenerationToggleHelpText =>
++        IsSimulationNotStarted
++            ? "The selected generation setting is applied when the next simulation session starts."
++            : CanEditGenerationEnabled
++                ? "Changes are saved to the active company simulation state."
++                : "Pause or stop the simulation before changing finance generation.";
++
+ 
+     protected string FinanceStateMessage =>
+         EntryState?.Message ??
+@@ -58,10 +88,12 @@ public partial class FinancePage : FinancePageBase, IDisposable
+     protected override async Task OnParametersSetAsync()
+     {
+         await base.OnParametersSetAsync();
+-
+-        CancelEntryStateRefresh();
+-        if (IsLoading || !AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
+-        {
++
++        CancelEntryStateRefresh();
++        CancelSimulationStateRefresh();
++        if (IsLoading || !AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
+             ResetEntryState();
++            ResetSimulationState();
+             return;
+         }
+ 
+@@ -91,12 +123,13 @@ public partial class FinancePage : FinancePageBase, IDisposable
+                 return;
+             }
+ 
+-            ApplyEntryState(entryState, previousState);
++            ApplyEntryState(entryState, previousState);
++            await LoadSimulationStateForEntryStateAsync(companyId);
+             if (ShouldPoll(entryState))
+             {
+                 IsEntryStateLoading = false;
+                 _ = PollUntilReadyAsync(companyId, operation.Version, operation.CancellationTokenSource);
+-            }
++            }
+         }
+         catch (OperationCanceledException) when (operation.CancellationTokenSource.IsCancellationRequested)
+         {
+@@ -145,7 +178,8 @@ public partial class FinancePage : FinancePageBase, IDisposable
+             }
+ 
+             var previousState = EntryState;
+-            ApplyEntryState(nextState, previousState);
++            ApplyEntryState(nextState, previousState);
++            await LoadSimulationStateForEntryStateAsync(companyId);
+             if (ShouldPoll(nextState))
+             {
+                 _ = PollUntilReadyAsync(companyId, loadVersion, cancellationTokenSource);
+@@ -185,7 +219,8 @@ public partial class FinancePage : FinancePageBase, IDisposable
+                     return;
+                 }
+ 
+-                ApplyEntryState(nextState, previousState);
++                ApplyEntryState(nextState, previousState);
++                await LoadSimulationStateForEntryStateAsync(companyId);
+                 await InvokeAsync(StateHasChanged);
+                 if (!ShouldPoll(nextState))
+                 {
+@@ -208,6 +243,175 @@ public partial class FinancePage : FinancePageBase, IDisposable
+         }
+     }
+ 
++    protected Task RefreshSimulationStateAsync() =>
++        AccessState.CompanyId is Guid companyId && IsSimulationControlPanelVisible && !IsSimulationActionInFlight
++            ? LoadSimulationStateAsync(companyId)
++            : Task.CompletedTask;
++
++    protected Task HandleStartSimulationAsync() =>
++        ExecuteSimulationMutationAsync(
++            async (companyId, cancellationToken) =>
++                IsSimulationPaused
++                    ? await FinanceApiClient.ResumeCompanySimulationAsync(companyId, cancellationToken)
++                    : await FinanceApiClient.StartCompanySimulationAsync(
++                        companyId,
++                        new FinanceCompanySimulationStartRequest
++                        {
++                            StartSimulatedDateTime = ResolveSimulationStartUtc(),
++                            GenerationEnabled = RequestedGenerationEnabled,
++                            Seed = ResolveSimulationSeed(companyId)
++                        },
++                        cancellationToken),
++            IsSimulationPaused ? "Simulation resumed." : "Simulation started.");
++
++    protected Task HandlePauseSimulationAsync() =>
++        ExecuteSimulationMutationAsync(
++            (companyId, cancellationToken) => FinanceApiClient.PauseCompanySimulationAsync(companyId, cancellationToken),
++            "Simulation paused.");
++
++    protected Task HandleStopSimulationAsync() =>
++        ExecuteSimulationMutationAsync(
++            (companyId, cancellationToken) => FinanceApiClient.StopCompanySimulationAsync(companyId, cancellationToken),
++            "Simulation stopped.");
++
++    protected async Task HandleGenerationEnabledChangedAsync(ChangeEventArgs args)
++    {
++        var nextValue = args.Value switch
++        {
++            bool boolValue => boolValue,
++            string stringValue when bool.TryParse(stringValue, out var parsed) => parsed,
++            _ => RequestedGenerationEnabled
++        };
++
++        var previousValue = RequestedGenerationEnabled;
++        RequestedGenerationEnabled = nextValue;
++        SimulationActionMessage = null;
++        SimulationStateErrorMessage = null;
++
++        if (!CanManageSimulation)
++        {
++            return;
++        }
++
++        if (AccessState.CompanyId is not Guid companyId || IsSimulationActionInFlight)
++        {
++            return;
++        }
++
++        if (IsSimulationNotStarted)
++        {
++            SimulationActionMessage = $"Generation is {(nextValue ? "enabled" : "disabled")} for the next simulation start.";
++            await InvokeAsync(StateHasChanged);
++            return;
++        }
++
++        if (!CanEditGenerationEnabled)
++        {
++            RequestedGenerationEnabled = SimulationState?.GenerationEnabled ?? previousValue;
++            await InvokeAsync(StateHasChanged);
++            return;
++        }
++
++        await ExecuteSimulationMutationAsync(
++            (resolvedCompanyId, cancellationToken) => FinanceApiClient.UpdateCompanySimulationSettingsAsync(
++                resolvedCompanyId,
++                new FinanceCompanySimulationUpdateRequest
++                {
++                    GenerationEnabled = nextValue
++                },
++                cancellationToken),
++            nextValue ? "Generation enabled." : "Generation disabled.");
++
++        if (!string.IsNullOrWhiteSpace(SimulationStateErrorMessage))
++        {
++            RequestedGenerationEnabled = SimulationState?.GenerationEnabled ?? previousValue;
++        }
++    }
++
++    private async Task LoadSimulationStateForEntryStateAsync(Guid companyId)
++    {
++        if (!IsSimulationControlPanelVisible)
++        {
++            ResetSimulationState();
++            return;
++        }
++
++        await LoadSimulationStateAsync(companyId);
++    }
++
++    private async Task LoadSimulationStateAsync(Guid companyId)
++    {
++        var operation = BeginSimulationStateOperation();
++        IsSimulationStateLoading = true;
++        SimulationStateErrorMessage = null;
++        await InvokeAsync(StateHasChanged);
++
++        try
++        {
++            var state = await FinanceApiClient.GetCompanySimulationStateAsync(companyId, operation.CancellationTokenSource.Token);
++            if (!IsCurrentSimulationOperation(operation.Version, operation.CancellationTokenSource))
++            {
++                return;
++            }
++
++            ApplySimulationState(state);
++            if (ShouldPollSimulation(state))
++            {
++                IsSimulationStateLoading = false;
++                _ = PollSimulationStateAsync(companyId, operation.Version, operation.CancellationTokenSource);
++            }
++        }
++        catch (OperationCanceledException) when (operation.CancellationTokenSource.IsCancellationRequested)
++        {
++        }
++        catch (FinanceApiException ex)
++        {
++            if (!IsCurrentSimulationOperation(operation.Version, operation.CancellationTokenSource))
++            {
++                return;
++            }
++
++            SimulationStateErrorMessage = ex.Message;
++            SimulationState = null;
++        }
++        finally
++        {
++            if (IsCurrentSimulationOperation(operation.Version, operation.CancellationTokenSource))
++            {
++                IsSimulationStateLoading = false;
++                await InvokeAsync(StateHasChanged);
++            }
++        }
++    }
++
++    private async Task PollSimulationStateAsync(Guid companyId, int loadVersion, CancellationTokenSource cancellationTokenSource)
++    {
++        while (!cancellationTokenSource.IsCancellationRequested)
++        {
++            try
++            {
++                await Task.Delay(GetSimulationPollIntervalMilliseconds(), cancellationTokenSource.Token);
++                var nextState = await FinanceApiClient.GetCompanySimulationStateAsync(companyId, cancellationTokenSource.Token);
++                if (!IsCurrentSimulationOperation(loadVersion, cancellationTokenSource))
++                {
++                    return;
++                }
++
++                ApplySimulationState(nextState);
++                await InvokeAsync(StateHasChanged);
++                if (!ShouldPollSimulation(nextState))
++                {
++                    return;
++                }
++            }
++            catch (OperationCanceledException) when (cancellationTokenSource.IsCancellationRequested)
++            {
++                break;
++            }
++            catch (FinanceApiException ex)
++            {
++                if (!IsCurrentSimulationOperation(loadVersion, cancellationTokenSource))
++                {
++                    return;
++                }
++
++                SimulationStateErrorMessage = ex.Message;
++                await InvokeAsync(StateHasChanged);
++                return;
++            }
++        }
++    }
++
+     protected async Task HandleManualSeedActionAsync()
+     {
+         ManualSeedErrorMessage = null;
+@@ -248,7 +452,8 @@ public partial class FinancePage : FinancePageBase, IDisposable
+     private static bool ShouldPoll(FinanceEntryInitializationResponse state) =>
+         string.Equals(state.ProgressState, FinanceEntryProgressStateContractValues.SeedingRequested, StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(state.ProgressState, FinanceEntryProgressStateContractValues.InProgress, StringComparison.OrdinalIgnoreCase) ||
+-        (string.IsNullOrWhiteSpace(state.ProgressState) &&
++        (string.IsNullOrWhiteSpace(state.ProgressState) &&
+          string.Equals(state.InitializationStatus, FinanceEntryInitializationContractValues.Initializing, StringComparison.OrdinalIgnoreCase));
+ 
+     private static bool IsReady(FinanceEntryInitializationResponse? state) =>
+@@ -286,16 +491,130 @@ public partial class FinancePage : FinancePageBase, IDisposable
+         EntryStateErrorMessage = null;
+         ManualSeedErrorMessage = null;
+         IsEntryStateLoading = false;
+-        IsSubmittingManualSeed = false;
++        IsSubmittingManualSeed = false;
+         IsManualSeedConfirmationVisible = false;
+         ShowFinanceReadyBanner = false;
+     }
+ 
+     private void CancelEntryStateRefresh()
+     {
+-        var cancellationTokenSource = Interlocked.Exchange(ref _entryStateCts, null);
++        var cancellationTokenSource = Interlocked.Exchange(ref _entryStateCts, null);
+         cancellationTokenSource?.Cancel();
+         cancellationTokenSource?.Dispose();
+     }
+ 
+-    public void Dispose() => CancelEntryStateRefresh();
++    private async Task ExecuteSimulationMutationAsync(
++        Func<Guid, CancellationToken, Task<FinanceCompanySimulationStateResponse>> callback,
++        string successMessage)
++    {
++        if (!CanManageSimulation || AccessState.CompanyId is not Guid companyId || IsSimulationActionInFlight)
++        {
++            return;
++        }
++
++        IsSimulationActionInFlight = true;
++        SimulationActionMessage = null;
++        SimulationStateErrorMessage = null;
++        await InvokeAsync(StateHasChanged);
++
++        try
++        {
++            var state = await callback(companyId, CancellationToken.None);
++            ApplySimulationState(state);
++            await LoadSimulationStateAsync(companyId);
++            if (string.IsNullOrWhiteSpace(SimulationStateErrorMessage))
++            {
++                SimulationActionMessage = successMessage;
++            }
++        }
++        catch (FinanceApiException ex)
++        {
++            SimulationStateErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsSimulationActionInFlight = false;
++            await InvokeAsync(StateHasChanged);
++        }
++    }
++
++    private void ApplySimulationState(FinanceCompanySimulationStateResponse state)
++    {
++        SimulationState = state;
++        if (state.GenerationEnabled.HasValue)
++        {
++            RequestedGenerationEnabled = state.GenerationEnabled.Value;
++        }
++    }
++
++    private (int Version, CancellationTokenSource CancellationTokenSource) BeginSimulationStateOperation()
++    {
++        var version = Interlocked.Increment(ref _simulationStateVersion);
++        var cancellationTokenSource = new CancellationTokenSource();
++        var previousCancellation = Interlocked.Exchange(ref _simulationStateCts, cancellationTokenSource);
++        previousCancellation?.Cancel();
++        previousCancellation?.Dispose();
++        return (version, cancellationTokenSource);
++    }
++
++    private bool IsCurrentSimulationOperation(int loadVersion, CancellationTokenSource cancellationTokenSource) =>
++        loadVersion == _simulationStateVersion &&
++        ReferenceEquals(_simulationStateCts, cancellationTokenSource) &&
++        !cancellationTokenSource.IsCancellationRequested;
++
++    private void ResetSimulationState()
++    {
++        SimulationState = null;
++        SimulationStateErrorMessage = null;
++        SimulationActionMessage = null;
++        IsSimulationStateLoading = false;
++        IsSimulationActionInFlight = false;
++        RequestedGenerationEnabled = true;
++    }
++
++    private void CancelSimulationStateRefresh()
++    {
++        var cancellationTokenSource = Interlocked.Exchange(ref _simulationStateCts, null);
++        cancellationTokenSource?.Cancel();
++        cancellationTokenSource?.Dispose();
++    }
++
++    public void Dispose()
++    {
++        CancelEntryStateRefresh();
++        CancelSimulationStateRefresh();
++    }
++
++    private bool IsSimulationRunning => IsSimulationStatus(FinanceCompanySimulationStatusValues.Running);
++    private bool IsSimulationPaused => IsSimulationStatus(FinanceCompanySimulationStatusValues.Paused);
++    private bool IsSimulationStopped => IsSimulationStatus(FinanceCompanySimulationStatusValues.Stopped);
++    private bool IsSimulationNotStarted => IsSimulationStatus(FinanceCompanySimulationStatusValues.NotStarted) || SimulationState is null;
++
++    private bool IsSimulationStatus(string status) =>
++        string.Equals(SimulationState?.Status, status, StringComparison.OrdinalIgnoreCase);
++
++    private static bool ShouldPollSimulation(FinanceCompanySimulationStateResponse state) =>
++        string.Equals(state.Status, FinanceCompanySimulationStatusValues.Running, StringComparison.OrdinalIgnoreCase);
++
++    private int GetSimulationPollIntervalMilliseconds() =>
++        Math.Max(250, SimulationControlPanelOptionsAccessor.Value.PollIntervalMilliseconds);
++
++    private DateTime ResolveSimulationStartUtc()
++    {
++        if (SimulationState?.CurrentSimulatedDateTime is DateTime currentSimulatedDateTime)
++        {
++            return currentSimulatedDateTime;
++        }
++
++        if (EntryState?.SeededAtUtc is DateTime seededAtUtc)
++        {
++            return DateTime.SpecifyKind(seededAtUtc, DateTimeKind.Utc);
++        }
++
++        var utcNow = DateTime.UtcNow;
++        return new DateTime(utcNow.Year, utcNow.Month, utcNow.Day, 0, 0, 0, DateTimeKind.Utc);
++    }
++
++    private int ResolveSimulationSeed(Guid companyId) =>
++        SimulationState?.Seed ?? (int)(BitConverter.ToUInt32(companyId.ToByteArray(), 0) & int.MaxValue);
++
++    private static string FormatSimulationTimestamp(DateTime? value, string emptyValue) =>
++        value.HasValue ? $"{value.Value:yyyy-MM-dd HH:mm:ss} UTC" : emptyValue;
++
++    private static string ResolveSimulationStatusLabel(string? status) =>
++        status?.Trim().ToLowerInvariant() switch
++        {
++            FinanceCompanySimulationStatusValues.Running => "Running",
++            FinanceCompanySimulationStatusValues.Paused => "Paused",
++            FinanceCompanySimulationStatusValues.Stopped => "Stopped",
++            _ => "Not started"
++        };
++
++    private static string ResolveSimulationStatusBadgeClass(string? status) =>
++        status?.Trim().ToLowerInvariant() switch
++        {
++            FinanceCompanySimulationStatusValues.Running => "text-bg-success",
++            FinanceCompanySimulationStatusValues.Paused => "text-bg-warning",
++            FinanceCompanySimulationStatusValues.Stopped => "text-bg-secondary",
++            _ => "text-bg-light"
++        };
+ 
+     private string ResolveRecommendedAction()
+     {
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -61,9 +61,43 @@ public sealed class FinanceApiClient
+             cancellationToken);
+     }
+ 
+-    public async Task<DateTime> GetFinanceReferenceUtcAsync(Guid companyId, CancellationToken cancellationToken = default)
+-    {
+-        var clock = await GetSimulationClockAsync(companyId, cancellationToken);
++    public Task<FinanceCompanySimulationStateResponse> GetCompanySimulationStateAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult(FinanceCompanySimulationStateResponse.NotStarted(companyId))
++            : GetAsync<FinanceCompanySimulationStateResponse>(companyId, $"internal/companies/{companyId}/simulation", allowNotFound: false, cancellationToken)!;
++
++    public Task<FinanceCompanySimulationStateResponse> StartCompanySimulationAsync(
++        Guid companyId,
++        FinanceCompanySimulationStartRequest request,
++        CancellationToken cancellationToken = default)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<FinanceCompanySimulationStartRequest, FinanceCompanySimulationStateResponse>(
++            companyId,
++            HttpMethod.Post,
++            $"internal/companies/{companyId}/simulation/start",
++            request,
++            cancellationToken);
++    }
++
++    public Task<FinanceCompanySimulationStateResponse> UpdateCompanySimulationSettingsAsync(
++        Guid companyId,
++        FinanceCompanySimulationUpdateRequest request,
++        CancellationToken cancellationToken = default)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<FinanceCompanySimulationUpdateRequest, FinanceCompanySimulationStateResponse>(
++            companyId,
++            HttpMethod.Patch,
++            $"internal/companies/{companyId}/simulation",
++            request,
++            cancellationToken);
++    }
++
++    public Task<FinanceCompanySimulationStateResponse> PauseCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        SendCompanySimulationMutationAsync(companyId, "pause", cancellationToken);
++
++    public Task<FinanceCompanySimulationStateResponse> ResumeCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        SendCompanySimulationMutationAsync(companyId, "resume", cancellationToken);
++
++    public Task<FinanceCompanySimulationStateResponse> StopCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        SendCompanySimulationMutationAsync(companyId, "stop", cancellationToken);
++
++    public async Task<DateTime> GetFinanceReferenceUtcAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        var simulationState = await GetCompanySimulationStateAsync(companyId, cancellationToken);
++        if (simulationState.CurrentSimulatedDateTime.HasValue)
++        {
++            return simulationState.CurrentSimulatedDateTime.Value;
++        }
++
++        var clock = await GetSimulationClockAsync(companyId, cancellationToken);
+         return clock?.SimulatedUtc ?? DateTime.UtcNow;
+     }
+ 
+@@ -345,10 +379,15 @@ public sealed class FinanceApiClient
+ 
+     public async Task<FinanceMonthlySummaryResponse?> GetMonthlySummaryAsync(Guid companyId, DateTime? referenceUtc = null, CancellationToken cancellationToken = default)
+     {
+-        FinanceSimulationClockResponse? clock = null;
++        FinanceSimulationClockResponse? clock = null;
+         var resolvedReferenceUtc = referenceUtc;
+         if (!resolvedReferenceUtc.HasValue)
+         {
++            var simulationState = await GetCompanySimulationStateAsync(companyId, cancellationToken);
++            if (simulationState.CurrentSimulatedDateTime.HasValue)
++            {
++                resolvedReferenceUtc = simulationState.CurrentSimulatedDateTime.Value;
++            }
++
+             clock = await GetSimulationClockAsync(companyId, cancellationToken);
+             resolvedReferenceUtc = clock?.SimulatedUtc ?? DateTime.UtcNow;
+         }
+@@ -596,6 +635,18 @@ public sealed class FinanceApiClient
+             throw new FinanceApiException("Finance changes are unavailable in offline mode. Configure ApiBaseUrl to use the live finance API.");
+         }
+     }
++
++    private Task<FinanceCompanySimulationStateResponse> SendCompanySimulationMutationAsync(
++        Guid companyId,
++        string action,
++        CancellationToken cancellationToken)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<object, FinanceCompanySimulationStateResponse>(
++            companyId,
++            HttpMethod.Post,
++            $"internal/companies/{companyId}/simulation/{action}",
++            new { },
++            cancellationToken);
++    }
+ 
+     private async Task<T?> GetAsync<T>(Guid companyId, string uri, bool allowNotFound, CancellationToken cancellationToken)
+     {
+diff --git a/src/VirtualCompany.Web/Services/FinanceSimulationControlPanelOptions.cs b/src/VirtualCompany.Web/Services/FinanceSimulationControlPanelOptions.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/FinanceSimulationControlPanelOptions.cs
+@@ -0,0 +1,9 @@
++namespace VirtualCompany.Web.Services;
++
++public sealed class FinanceSimulationControlPanelOptions
++{
++    public const string SectionName = "FinanceSimulationControls";
++
++    public bool Enabled { get; set; } = true;
++    public int PollIntervalMilliseconds { get; set; } = 1000;
++}
+diff --git a/src/VirtualCompany.Web/appsettings.Development.json b/src/VirtualCompany.Web/appsettings.Development.json
+--- a/src/VirtualCompany.Web/appsettings.Development.json
++++ b/src/VirtualCompany.Web/appsettings.Development.json
+@@ -4,5 +4,9 @@
+     "Subject": "alice",
+     "Email": "alice@example.com",
+     "DisplayName": "Alice Admin",
+-    "Provider": "dev-header"
++    "Provider": "dev-header"
++  },
++  "FinanceSimulationControls": {
++    "Enabled": true,
++    "PollIntervalMilliseconds": 1000
+   }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationControllerIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationControllerIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanySimulationControllerIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationControllerIntegrationTests.cs
+@@ -185,9 +185,27 @@ public sealed class CompanySimulationControllerIntegrationTests
+             new StartCompanySimulationRequest(new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc), true, 7));
+         Assert.Equal(HttpStatusCode.Conflict, secondStart.StatusCode);
+ 
++        var toggleWhileRunning = await client.PatchAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/simulation",
++            new UpdateCompanySimulationSettingsRequest(GenerationEnabled: false));
++        Assert.Equal(HttpStatusCode.Conflict, toggleWhileRunning.StatusCode);
++
+         var resumeWhileRunning = await client.PostAsync($"/internal/companies/{seed.CompanyId}/simulation/resume", content: null);
+-        Assert.Equal(HttpStatusCode.Conflict, resumeWhileRunning.StatusCode);
+-    }
++        Assert.Equal(HttpStatusCode.Conflict, resumeWhileRunning.StatusCode);
++
++        var pauseResponse = await client.PostAsync($"/internal/companies/{seed.CompanyId}/simulation/pause", content: null);
++        Assert.Equal(HttpStatusCode.OK, pauseResponse.StatusCode);
++
++        var toggleWhilePaused = await client.PatchAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/simulation",
++            new UpdateCompanySimulationSettingsRequest(GenerationEnabled: false));
++        Assert.Equal(HttpStatusCode.OK, toggleWhilePaused.StatusCode);
++
++        var stopResponse = await client.PostAsync($"/internal/companies/{seed.CompanyId}/simulation/stop", content: null);
++        Assert.Equal(HttpStatusCode.OK, stopResponse.StatusCode);
++
++        var toggleWhileStopped = await client.PatchAsJsonAsync($"/internal/companies/{seed.CompanyId}/simulation", new UpdateCompanySimulationSettingsRequest(GenerationEnabled: true));
++        Assert.Equal(HttpStatusCode.OK, toggleWhileStopped.StatusCode);
++    }
+ 
+     private static HttpClient CreateAuthenticatedClient(TestWebApplicationFactory factory, SeededCompany seed, bool includeCompanyHeader)
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
+@@ -36,6 +36,39 @@ public sealed class CompanySimulationStateServiceTests
+         Assert.Null(state.Seed);
+         Assert.Null(state.ActiveSessionId);
+     }
++
++    [Fact]
++    public async Task Generation_setting_changes_are_blocked_while_running_but_persist_when_paused_or_stopped()
++    {
++        var companyId = Guid.NewGuid();
++        var timeProvider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero));
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(companyId, "Simulation Company"));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        var service = new CompanySimulationStateService(repository, timeProvider, NullLogger<CompanySimulationStateService>.Instance);
++
++        await service.StartAsync(
++            new StartCompanySimulationCommand(companyId, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), true, 73),
++            CancellationToken.None);
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() => service.UpdateSettingsAsync(
++            new UpdateCompanySimulationSettingsCommand(companyId, GenerationEnabled: false),
++            CancellationToken.None));
++
++        await service.PauseAsync(new PauseCompanySimulationCommand(companyId), CancellationToken.None);
++        var paused = await service.UpdateSettingsAsync(
++            new UpdateCompanySimulationSettingsCommand(companyId, GenerationEnabled: false),
++            CancellationToken.None);
++
++        await service.StopAsync(new StopCompanySimulationCommand(companyId), CancellationToken.None);
++        var stopped = await service.UpdateSettingsAsync(
++            new UpdateCompanySimulationSettingsCommand(companyId, GenerationEnabled: true),
++            CancellationToken.None);
++
++        Assert.False(paused.GenerationEnabled);
++        Assert.True(stopped.GenerationEnabled);
++    }
+ 
+     [Fact]
+     public async Task Get_state_advances_only_complete_ten_second_buckets_and_resume_resets_the_baseline()
+END_OF_PATCH

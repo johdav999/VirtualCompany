@@ -1,0 +1,819 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 8e4b3a1..5d6a9f2 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -1,6 +1,7 @@
+ namespace VirtualCompany.Application.Cockpit;
+ 
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Application.Finance;
+ 
+ public sealed record GetExecutiveCockpitDashboardQuery(Guid CompanyId);
+ 
+@@ -19,6 +20,7 @@ public sealed record ExecutiveCockpitDashboardDto(
+     DateTime? CacheTimestampUtc,
+     IReadOnlyList<ExecutiveCockpitSummaryKpiDto> SummaryKpis,
+     ExecutiveCockpitDailyBriefingDto? DailyBriefing,
++    FinanceCashPositionDto? CashPosition,
+     ExecutiveCockpitPendingApprovalsDto PendingApprovals,
+     IReadOnlyList<ExecutiveCockpitAlertDto> Alerts,
+     IReadOnlyList<ExecutiveCockpitDepartmentKpiDto> DepartmentKpis,
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index f4e7c1a..d8c0fb1 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -13,6 +13,12 @@ public sealed record GetFinanceMonthlyProfitAndLossQuery(
+     int Year,
+     int Month);
+ 
++public sealed record GetFinanceCashPositionQuery(
++    Guid CompanyId,
++    DateTime? AsOfUtc = null,
++    decimal? AverageMonthlyBurn = null,
++    int BurnLookbackDays = 90);
++
+ public sealed record GetFinanceExpenseBreakdownQuery(
+     Guid CompanyId,
+     DateTime StartUtc,
+@@ -51,6 +57,11 @@ public sealed record EvaluateFinanceTransactionAnomalyCommand(
+     Guid? WorkflowInstanceId = null,
+     Guid? AgentId = null);
+ 
++public sealed record EvaluateFinanceCashPositionWorkflowCommand(
++    Guid CompanyId,
++    Guid? WorkflowInstanceId = null,
++    Guid? AgentId = null);
++
+ public sealed record FinanceCashBalanceDto(
+     Guid CompanyId,
+     DateTime AsOfUtc,
+@@ -76,6 +87,48 @@ public sealed record FinanceExpenseCategoryDto(
+     decimal Amount,
+     string Currency);
+ 
++public sealed record FinanceWorkflowOutputSchemaDto(
++    string Classification,
++    string RiskLevel,
++    string RecommendedAction,
++    string Rationale,
++    decimal Confidence,
++    string SourceWorkflow);
++
++public sealed record FinanceCashPositionAlertStateDto(
++    bool IsLowCash,
++    string RiskLevel,
++    bool AlertCreated,
++    bool AlertDeduplicated,
++    Guid? AlertId,
++    string? AlertStatus,
++    string Rationale);
++
++public sealed record FinanceCashPositionThresholdsDto(
++    int WarningRunwayDays,
++    int CriticalRunwayDays,
++    decimal? WarningCashAmount,
++    decimal? CriticalCashAmount,
++    string Currency);
++
++public sealed record FinanceCashPositionDto(
++    Guid CompanyId,
++    DateTime AsOfUtc,
++    decimal AvailableBalance,
++    string Currency,
++    decimal AverageMonthlyBurn,
++    int? EstimatedRunwayDays,
++    FinanceCashPositionThresholdsDto Thresholds,
++    FinanceCashPositionAlertStateDto AlertState,
++    FinanceWorkflowOutputSchemaDto WorkflowOutput)
++{
++    public string Classification => WorkflowOutput.Classification;
++    public string RiskLevel => WorkflowOutput.RiskLevel;
++    public string RecommendedAction => WorkflowOutput.RecommendedAction;
++    public string Rationale => WorkflowOutput.Rationale;
++    public decimal Confidence => WorkflowOutput.Confidence;
++    public string SourceWorkflow => WorkflowOutput.SourceWorkflow;
++}
++
+ public sealed record FinanceTransactionDto(
+     Guid Id,
+     Guid AccountId,
+@@ -143,7 +196,11 @@ public sealed record FinanceInvoiceReviewWorkflowResultDto(
+     bool RequiresHumanApproval,
+     FinanceInvoiceDto Invoice,
+     FinancePolicyConfigurationDto Policy,
+-    Dictionary<string, JsonNode?> OutputPayload);
++    Dictionary<string, JsonNode?> OutputPayload)
++{
++    public FinanceWorkflowOutputSchemaDto WorkflowOutput { get; init; } =
++        new("invoice_review", "low", "no_action", "No workflow output was recorded.", 0m, "invoice_review");
++}
+ 
+ public sealed record FinanceTransactionAnomalyEvaluationDto(
+     Guid CompanyId,
+@@ -159,7 +216,11 @@ public sealed record FinanceTransactionAnomalyDto(
+     Guid AlertId,
+     Guid FollowUpTaskId,
+     bool AlertCreated,
+-    bool AlertDeduplicated);
++    bool AlertDeduplicated)
++{
++    public FinanceWorkflowOutputSchemaDto WorkflowOutput { get; init; } =
++        new(AnomalyType, "medium", RecommendedAction, Explanation, Confidence, "transaction_anomaly_detection");
++}
+ 
+ public sealed record FinanceTransactionHistoricalBaselineDto(
+     int SampleSize,
+@@ -218,6 +279,11 @@ public interface IFinanceTransactionAnomalyDetectionService
+     Task<FinanceTransactionAnomalyEvaluationDto> EvaluateAsync(EvaluateFinanceTransactionAnomalyCommand command, CancellationToken cancellationToken);
+ }
+ 
++public interface IFinanceCashPositionWorkflowService
++{
++    Task<FinanceCashPositionDto> EvaluateAsync(EvaluateFinanceCashPositionWorkflowCommand command, CancellationToken cancellationToken);
++}
++
+ public interface IInvoiceReviewWorkflowService
+ {
+     Task<FinanceInvoiceReviewWorkflowResultDto> ExecuteAsync(ReviewFinanceInvoiceWorkflowCommand command, CancellationToken cancellationToken);
+@@ -269,6 +335,10 @@ public interface IFinanceReadService
+         GetFinanceCashBalanceQuery query,
+         CancellationToken cancellationToken);
+ 
++    Task<FinanceCashPositionDto> GetCashPositionAsync(
++        GetFinanceCashPositionQuery query,
++        CancellationToken cancellationToken);
++
+     Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(
+         GetFinanceMonthlyProfitAndLossQuery query,
+         CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 275c1a7..ebc5e19 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -17,13 +17,15 @@ public sealed class InternalFinanceController : ControllerBase
+     private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
+     private readonly IInvoiceReviewWorkflowService _invoiceReviewWorkflowService;
+     private readonly IFinanceTransactionAnomalyDetectionService _anomalyDetectionService;
++    private readonly IFinanceCashPositionWorkflowService _cashPositionWorkflowService;
+ 
+     public InternalFinanceController(
+         IFinanceReadService financeReadService,
+         IFinanceCommandService financeCommandService,
+         IFinancePolicyConfigurationService financePolicyConfigurationService,
+         IInvoiceReviewWorkflowService invoiceReviewWorkflowService,
+-        IFinanceTransactionAnomalyDetectionService anomalyDetectionService)
++        IFinanceTransactionAnomalyDetectionService anomalyDetectionService,
++        IFinanceCashPositionWorkflowService cashPositionWorkflowService)
+     {
+         _financeReadService = financeReadService;
+         _financeCommandService = financeCommandService;
+@@ -31,6 +33,7 @@ public sealed class InternalFinanceController : ControllerBase
+         _invoiceReviewWorkflowService = invoiceReviewWorkflowService;
+         _anomalyDetectionService = anomalyDetectionService;
++        _cashPositionWorkflowService = cashPositionWorkflowService;
+     }
+ 
+     [HttpGet("cash-balance")]
+@@ -44,6 +47,31 @@ public sealed class InternalFinanceController : ControllerBase
+                 new GetFinanceCashBalanceQuery(companyId, asOfUtc),
+                 cancellationToken));
+ 
++    [HttpGet("cash-position")]
++    public async Task<ActionResult<FinanceCashPositionDto>> GetCashPositionAsync(
++        Guid companyId,
++        [FromQuery] DateTime? asOfUtc,
++        [FromQuery] decimal? averageMonthlyBurn,
++        [FromQuery] int burnLookbackDays,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetCashPositionAsync(
++                new GetFinanceCashPositionQuery(companyId, asOfUtc, averageMonthlyBurn, burnLookbackDays),
++                cancellationToken));
++
++    [HttpPost("cash-position/evaluation")]
++    public async Task<ActionResult<FinanceCashPositionDto>> EvaluateCashPositionAsync(
++        Guid companyId,
++        [FromBody] EvaluateFinanceCashPositionRequest? request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _cashPositionWorkflowService.EvaluateAsync(
++                new EvaluateFinanceCashPositionWorkflowCommand(
++                    companyId,
++                    request?.WorkflowInstanceId,
++                    request?.AgentId),
++                cancellationToken));
++
+     [HttpGet("profit-and-loss/monthly")]
+     public async Task<ActionResult<FinanceMonthlyProfitAndLossDto>> GetMonthlyProfitAndLossAsync(
+         Guid companyId,
+@@ -267,5 +295,9 @@ public sealed record EvaluateFinanceTransactionAnomalyRequest(
+     Guid? WorkflowInstanceId,
+     Guid? AgentId);
+ 
++public sealed record EvaluateFinanceCashPositionRequest(
++    Guid? WorkflowInstanceId,
++    Guid? AgentId);
++
+ public sealed record UpdateFinanceTransactionCategoryRequest(string Category);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 1d71cf3..4c88946 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -6,6 +6,7 @@ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Briefings;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -25,6 +26,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+     private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
+     private readonly IBriefingInsightAggregationService _insightAggregationService;
++    private readonly IFinanceReadService _financeReadService;
+ 
+     public CompanyBriefingService(
+         VirtualCompanyDbContext dbContext,
+@@ -34,6 +36,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         ICompanyOutboxEnqueuer outboxEnqueuer,
+         IBriefingUpdateJobProducer briefingUpdateJobProducer,
+         IBriefingInsightAggregationService insightAggregationService,
++        IFinanceReadService financeReadService,
+         ILogger<CompanyBriefingService> logger)
+     {
+         _dbContext = dbContext;
+@@ -44,6 +47,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         _logger = logger;
+         _insightAggregationService = insightAggregationService;
+         _briefingUpdateJobProducer = briefingUpdateJobProducer;
++        _financeReadService = financeReadService;
+     }
+ 
+@@ -804,6 +808,20 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             })
+             .ToList();
+ 
++        var cashPosition = await _financeReadService.GetCashPositionAsync(
++            new GetFinanceCashPositionQuery(companyId, window.EndUtc),
++            cancellationToken);
++        kpiHighlights.Add(ApplyPriority(new BriefingAggregateItemDto(
++            "kpi_highlights",
++            "Cash runway",
++            $"Available cash is {cashPosition.AvailableBalance:0.##} {cashPosition.Currency}; estimated runway is {(cashPosition.EstimatedRunwayDays.HasValue ? $"{cashPosition.EstimatedRunwayDays.Value} days" : "unavailable")}. {cashPosition.Rationale}",
++            cashPosition.AlertState.IsLowCash ? cashPosition.RiskLevel : null,
++            cashPosition.AlertState.AlertStatus,
++            "finance_cash_position",
++            companyId,
++            cashPosition.AsOfUtc,
++            BuildCashPositionMetadata(cashPosition),
++            []), ResolvePriority(severityRules, "kpi_highlights", "task", "status", "completed")));
++
+         alerts = OrderAggregateItems(alerts);
+         pendingApprovals = OrderAggregateItems(pendingApprovals);
+         anomalies = OrderAggregateItems(anomalies);
+@@ -1093,6 +1111,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             ["structuredSections"] = JsonSerializer.SerializeToNode(aggregate.StructuredSections, SerializerOptions),
+             ["summaryCounts"] = JsonSerializer.SerializeToNode(aggregate.SummaryCounts, SerializerOptions),
++            ["financeWorkflowOutputs"] = JsonSerializer.SerializeToNode(aggregate.KpiHighlights.Concat(aggregate.Alerts).Concat(aggregate.Anomalies).Select(x => x.Metadata.TryGetValue("workflowOutput", out var output) ? output : null).Where(x => x is not null), SerializerOptions),
+             ["appliedFocusAreas"] = JsonSerializer.SerializeToNode(preferences.IncludedFocusAreas, SerializerOptions),
+             ["minimumPriorityThresholdApplied"] = JsonValue.Create(preferences.PriorityThreshold.ToStorageValue()),
+             ["preferenceSource"] = JsonValue.Create(preferences.Source.ToStorageValue())
+@@ -1155,6 +1174,22 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         return [new BriefingSourceReferenceDto(item.SourceEntityType, item.SourceEntityId.Value, item.Title, item.Status, null)];
+     }
+ 
++    private static Dictionary<string, JsonNode?> BuildCashPositionMetadata(FinanceCashPositionDto cashPosition) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["availableBalance"] = JsonValue.Create(cashPosition.AvailableBalance),
++            ["currency"] = JsonValue.Create(cashPosition.Currency),
++            ["averageMonthlyBurn"] = JsonValue.Create(cashPosition.AverageMonthlyBurn),
++            ["estimatedRunwayDays"] = cashPosition.EstimatedRunwayDays.HasValue ? JsonValue.Create(cashPosition.EstimatedRunwayDays.Value) : null,
++            ["warningRunwayDays"] = JsonValue.Create(cashPosition.Thresholds.WarningRunwayDays),
++            ["criticalRunwayDays"] = JsonValue.Create(cashPosition.Thresholds.CriticalRunwayDays),
++            ["isLowCash"] = JsonValue.Create(cashPosition.AlertState.IsLowCash),
++            ["alertId"] = cashPosition.AlertState.AlertId.HasValue ? JsonValue.Create(cashPosition.AlertState.AlertId.Value) : null,
++            ["alertStatus"] = JsonValue.Create(cashPosition.AlertState.AlertStatus),
++            ["workflowOutput"] = JsonSerializer.SerializeToNode(cashPosition.WorkflowOutput, SerializerOptions)
++        };
++
+     private static decimal? TryReadDecimal(Dictionary<string, JsonNode?> metadata, string key)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 2d2b81d..fac0b44 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+@@ -18,6 +19,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
+     private readonly IDepartmentDashboardConfigurationService _departmentDashboardConfigurationService;
+     private readonly IExecutiveCockpitDashboardCache _cache;
++    private readonly IFinanceReadService _financeReadService;
+     private readonly TimeProvider _timeProvider;
+     private readonly ILogger<CompanyExecutiveCockpitDashboardService> _logger;
+ 
+@@ -26,6 +28,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         ICompanyMembershipContextResolver membershipContextResolver,
+         IDepartmentDashboardConfigurationService departmentDashboardConfigurationService,
+         IExecutiveCockpitDashboardCache cache,
++        IFinanceReadService financeReadService,
+         TimeProvider timeProvider,
+         ILogger<CompanyExecutiveCockpitDashboardService> logger)
+     {
+@@ -33,6 +36,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         _membershipContextResolver = membershipContextResolver;
+         _departmentDashboardConfigurationService = departmentDashboardConfigurationService;
+         _cache = cache;
++        _financeReadService = financeReadService;
+         _timeProvider = timeProvider;
+         _logger = logger;
+     }
+@@ -175,6 +179,10 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+ 
+         var summaryKpis = await BuildSummaryKpisAsync(companyId, nowUtc, pendingApprovalCount, cancellationToken);
++        var cashPosition = await _financeReadService.GetCashPositionAsync(
++            new GetFinanceCashPositionQuery(companyId, nowUtc),
++            cancellationToken);
+ 
+         var pendingApprovals = new ExecutiveCockpitPendingApprovalsDto(
+             pendingApprovalCount,
+@@ -337,6 +345,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+             null,
+             summaryKpis,
+             dailyBriefing,
++            cashPosition,
+             pendingApprovals,
+             alerts,
+             departmentKpis,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCashPositionWorkflowService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCashPositionWorkflowService.cs
+new file mode 100644
+index 0000000..20bdf56
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCashPositionWorkflowService.cs
+@@ -0,0 +1,178 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyFinanceCashPositionWorkflowService : IFinanceCashPositionWorkflowService
++{
++    private const string SourceWorkflow = "cash_position_monitoring";
++    private const string CorrelationPrefix = "finance-cash-position";
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IFinanceReadService _financeReadService;
++
++    public CompanyFinanceCashPositionWorkflowService(
++        VirtualCompanyDbContext dbContext,
++        IFinanceReadService financeReadService)
++    {
++        _dbContext = dbContext;
++        _financeReadService = financeReadService;
++    }
++
++    public async Task<FinanceCashPositionDto> EvaluateAsync(
++        EvaluateFinanceCashPositionWorkflowCommand command,
++        CancellationToken cancellationToken)
++    {
++        Validate(command);
++
++        var position = await _financeReadService.GetCashPositionAsync(
++            new GetFinanceCashPositionQuery(command.CompanyId),
++            cancellationToken);
++        if (!position.AlertState.IsLowCash)
++        {
++            return position;
++        }
++
++        var sourceAgentId = command.AgentId ?? await ResolveLauraAgentIdAsync(command.CompanyId, cancellationToken);
++        var severity = ParseSeverity(position.RiskLevel);
++        var fingerprint = BuildFingerprint(command.CompanyId);
++        var correlationId = $"{CorrelationPrefix}:{command.CompanyId:N}";
++        var evidence = BuildEvidence(command, position);
++        var metadata = BuildMetadata(command, position);
++        var title = position.EstimatedRunwayDays.HasValue
++            ? $"Low cash runway: {position.EstimatedRunwayDays.Value} days"
++            : "Low cash position";
++
++        var existing = await _dbContext.Alerts
++            .IgnoreQueryFilters()
++            .Where(x =>
++                x.CompanyId == command.CompanyId &&
++                x.Fingerprint == fingerprint &&
++                (x.Status == AlertStatus.Open || x.Status == AlertStatus.Acknowledged))
++            .OrderByDescending(x => x.UpdatedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++
++        Alert alert;
++        var created = false;
++        var deduplicated = false;
++        if (existing is null)
++        {
++            alert = new Alert(
++                Guid.NewGuid(),
++                command.CompanyId,
++                AlertType.Risk,
++                severity,
++                title,
++                position.Rationale,
++                evidence,
++                correlationId,
++                fingerprint,
++                AlertStatus.Open,
++                sourceAgentId,
++                metadata);
++            _dbContext.Alerts.Add(alert);
++            created = true;
++        }
++        else
++        {
++            alert = existing;
++            alert.RefreshFromDuplicateDetection(
++                severity,
++                title,
++                position.Rationale,
++                evidence,
++                correlationId,
++                sourceAgentId,
++                metadata);
++            deduplicated = true;
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        var alertState = position.AlertState with
++        {
++            AlertCreated = created,
++            AlertDeduplicated = deduplicated,
++            AlertId = alert.Id,
++            AlertStatus = alert.Status.ToStorageValue()
++        };
++
++        return position with { AlertState = alertState };
++    }
++
++    private async Task<Guid?> ResolveLauraAgentIdAsync(Guid companyId, CancellationToken cancellationToken) =>
++        await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.CanReceiveAssignments &&
++                (x.TemplateId == "laura-finance" ||
++                 x.DisplayName.Contains("Laura") ||
++                 x.Department == "Finance"))
++            .OrderByDescending(x => x.TemplateId == "laura-finance")
++            .ThenByDescending(x => x.DisplayName.Contains("Laura"))
++            .Select(x => (Guid?)x.Id)
++            .FirstOrDefaultAsync(cancellationToken);
++
++    private static Dictionary<string, JsonNode?> BuildEvidence(
++        EvaluateFinanceCashPositionWorkflowCommand command,
++        FinanceCashPositionDto position) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["companyId"] = JsonValue.Create(command.CompanyId),
++            ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
++            ["availableBalance"] = JsonValue.Create(position.AvailableBalance),
++            ["currency"] = JsonValue.Create(position.Currency),
++            ["averageMonthlyBurn"] = JsonValue.Create(position.AverageMonthlyBurn),
++            ["estimatedRunwayDays"] = position.EstimatedRunwayDays.HasValue ? JsonValue.Create(position.EstimatedRunwayDays.Value) : null,
++            ["warningRunwayDays"] = JsonValue.Create(position.Thresholds.WarningRunwayDays),
++            ["criticalRunwayDays"] = JsonValue.Create(position.Thresholds.CriticalRunwayDays),
++            ["warningCashAmount"] = position.Thresholds.WarningCashAmount.HasValue ? JsonValue.Create(position.Thresholds.WarningCashAmount.Value) : null,
++            ["criticalCashAmount"] = position.Thresholds.CriticalCashAmount.HasValue ? JsonValue.Create(position.Thresholds.CriticalCashAmount.Value) : null,
++            ["classification"] = JsonValue.Create(position.Classification),
++            ["riskLevel"] = JsonValue.Create(position.RiskLevel),
++            ["recommendedAction"] = JsonValue.Create(position.RecommendedAction),
++            ["rationale"] = JsonValue.Create(position.Rationale),
++            ["confidence"] = JsonValue.Create(position.Confidence),
++            ["sourceWorkflow"] = JsonValue.Create(SourceWorkflow)
++        };
++
++    private static Dictionary<string, JsonNode?> BuildMetadata(
++        EvaluateFinanceCashPositionWorkflowCommand command,
++        FinanceCashPositionDto position) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["source"] = JsonValue.Create(SourceWorkflow),
++            ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
++            ["classification"] = JsonValue.Create(position.Classification),
++            ["riskLevel"] = JsonValue.Create(position.RiskLevel),
++            ["recommendedAction"] = JsonValue.Create(position.RecommendedAction),
++            ["confidence"] = JsonValue.Create(position.Confidence)
++        };
++
++    private static AlertSeverity ParseSeverity(string riskLevel) =>
++        riskLevel.Trim().ToLowerInvariant() switch
++        {
++            "critical" => AlertSeverity.Critical,
++            "high" => AlertSeverity.High,
++            "medium" => AlertSeverity.Medium,
++            _ => AlertSeverity.Low
++        };
++
++    private static string BuildFingerprint(Guid companyId) =>
++        $"{CorrelationPrefix}:{companyId:N}:low-cash".ToLowerInvariant();
++
++    private static void Validate(EvaluateFinanceCashPositionWorkflowCommand command)
++    {
++        if (command.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(command));
++        }
++
++        if (command.AgentId == Guid.Empty)
++        {
++            throw new ArgumentException("Agent id cannot be empty.", nameof(command));
++        }
++
++        if (command.WorkflowInstanceId == Guid.Empty)
++        {
++            throw new ArgumentException("Workflow instance id cannot be empty.", nameof(command));
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 4e381f9..9317d72 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -1,3 +1,4 @@
++using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Documents;
+@@ -65,6 +66,98 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+                 .ToList());
+     }
+ 
++    public async Task<FinanceCashPositionDto> GetCashPositionAsync(
++        GetFinanceCashPositionQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? DateTime.UtcNow;
++        var cashBalance = await GetCashBalanceAsync(
++            new GetFinanceCashBalanceQuery(query.CompanyId, asOfUtc),
++            cancellationToken);
++        var averageMonthlyBurn = query.AverageMonthlyBurn ?? await CalculateAverageMonthlyBurnAsync(
++            query.CompanyId,
++            asOfUtc,
++            query.BurnLookbackDays,
++            cancellationToken);
++        var policy = await LoadPolicyAsync(query.CompanyId, cancellationToken);
++
++        var estimatedRunwayDays = averageMonthlyBurn <= 0m
++            ? (int?)null
++            : (int)Math.Floor(cashBalance.Amount / averageMonthlyBurn * 30m);
++        if (estimatedRunwayDays < 0)
++        {
++            estimatedRunwayDays = 0;
++        }
++
++        var warningCashAmount = averageMonthlyBurn > 0m
++            ? Math.Round(averageMonthlyBurn / 30m * policy.CashRunwayWarningThresholdDays, 2, MidpointRounding.AwayFromZero)
++            : (decimal?)null;
++        var criticalCashAmount = averageMonthlyBurn > 0m
++            ? Math.Round(averageMonthlyBurn / 30m * policy.CashRunwayCriticalThresholdDays, 2, MidpointRounding.AwayFromZero)
++            : (decimal?)null;
++
++        var riskLevel = ResolveCashRiskLevel(
++            cashBalance.Amount,
++            estimatedRunwayDays,
++            policy,
++            warningCashAmount,
++            criticalCashAmount);
++        var isLowCash = riskLevel is "critical" or "high" or "medium";
++        var existingAlert = await LoadExistingLowCashAlertAsync(query.CompanyId, cancellationToken);
++        var rationale = BuildCashPositionRationale(cashBalance, averageMonthlyBurn, estimatedRunwayDays, policy, warningCashAmount, criticalCashAmount, riskLevel);
++        var workflowOutput = new FinanceWorkflowOutputSchemaDto(
++            isLowCash ? "low_cash_position" : "cash_position_healthy",
++            riskLevel,
++            isLowCash ? "review_cash_plan" : "monitor",
++            rationale,
++            averageMonthlyBurn > 0m ? 0.86m : 0.72m,
++            "cash_position_monitoring");
++
++        return new FinanceCashPositionDto(
++            query.CompanyId,
++            asOfUtc,
++            cashBalance.Amount,
++            cashBalance.Currency,
++            Math.Round(averageMonthlyBurn, 2, MidpointRounding.AwayFromZero),
++            estimatedRunwayDays,
++            new FinanceCashPositionThresholdsDto(
++                policy.CashRunwayWarningThresholdDays,
++                policy.CashRunwayCriticalThresholdDays,
++                warningCashAmount,
++                criticalCashAmount,
++                cashBalance.Currency),
++            new FinanceCashPositionAlertStateDto(
++                isLowCash,
++                riskLevel,
++                false,
++                false,
++                existingAlert?.Id,
++                existingAlert?.Status.ToStorageValue(),
++                rationale),
++            workflowOutput);
++    }
++
++    private async Task<decimal> CalculateAverageMonthlyBurnAsync(
++        Guid companyId,
++        DateTime asOfUtc,
++        int burnLookbackDays,
++        CancellationToken cancellationToken)
++    {
++        var lookbackDays = Math.Max(1, burnLookbackDays <= 0 ? 90 : burnLookbackDays);
++        var startUtc = asOfUtc.AddDays(-lookbackDays);
++        var totalBurn = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.TransactionUtc >= startUtc && x.TransactionUtc <= asOfUtc && x.Amount < 0)
++            .SumAsync(x => (decimal?)Math.Abs(x.Amount), cancellationToken) ?? 0m;
++        var months = Math.Max(1m, lookbackDays / 30m);
++        return totalBurn / months;
++    }
++
+     public async Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(
+         GetFinanceMonthlyProfitAndLossQuery query,
+         CancellationToken cancellationToken)
+@@ -435,6 +528,86 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             _ => "MIXED"
+         };
+     }
++
++    private async Task<FinancePolicyConfigurationDto> LoadPolicyAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var configuration = await _dbContext.FinancePolicyConfigurations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
++
++        return configuration is null
++            ? new FinancePolicyConfigurationDto(companyId, "USD", 10000m, 5000m, true, -10000m, 10000m, 90, 30)
++            : new FinancePolicyConfigurationDto(
++                configuration.CompanyId,
++                configuration.ApprovalCurrency,
++                configuration.InvoiceApprovalThreshold,
++                configuration.BillApprovalThreshold,
++                configuration.RequireCounterpartyForTransactions,
++                configuration.AnomalyDetectionLowerBound,
++                configuration.AnomalyDetectionUpperBound,
++                configuration.CashRunwayWarningThresholdDays,
++                configuration.CashRunwayCriticalThresholdDays);
++    }
++
++    private async Task<AlertRow?> LoadExistingLowCashAlertAsync(Guid companyId, CancellationToken cancellationToken) =>
++        await _dbContext.Alerts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.Fingerprint == $"finance-cash-position:{companyId:N}:low-cash" &&
++                (x.Status == AlertStatus.Open || x.Status == AlertStatus.Acknowledged))
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Select(x => new AlertRow(x.Id, x.Status))
++            .FirstOrDefaultAsync(cancellationToken);
++
++    private static string ResolveCashRiskLevel(
++        decimal availableBalance,
++        int? estimatedRunwayDays,
++        FinancePolicyConfigurationDto policy,
++        decimal? warningCashAmount,
++        decimal? criticalCashAmount)
++    {
++        if (availableBalance <= 0m ||
++            estimatedRunwayDays <= policy.CashRunwayCriticalThresholdDays ||
++            criticalCashAmount.HasValue && availableBalance <= criticalCashAmount.Value)
++        {
++            return "critical";
++        }
++
++        if (estimatedRunwayDays <= policy.CashRunwayWarningThresholdDays ||
++            warningCashAmount.HasValue && availableBalance <= warningCashAmount.Value)
++        {
++            return "medium";
++        }
++
++        return "low";
++    }
++
++    private static string BuildCashPositionRationale(
++        FinanceCashBalanceDto cashBalance,
++        decimal averageMonthlyBurn,
++        int? estimatedRunwayDays,
++        FinancePolicyConfigurationDto policy,
++        decimal? warningCashAmount,
++        decimal? criticalCashAmount,
++        string riskLevel)
++    {
++        var runwayText = estimatedRunwayDays.HasValue
++            ? $"{estimatedRunwayDays.Value} day(s)"
++            : "unavailable because average burn is zero";
++        var thresholdText = warningCashAmount.HasValue && criticalCashAmount.HasValue
++            ? $"Warning cash threshold is {warningCashAmount.Value:0.##} {cashBalance.Currency}; critical cash threshold is {criticalCashAmount.Value:0.##} {cashBalance.Currency}."
++            : "Cash amount thresholds are unavailable because average burn is zero.";
++
++        return $"Available cash is {cashBalance.Amount:0.##} {cashBalance.Currency}; average monthly burn is {averageMonthlyBurn:0.##} {cashBalance.Currency}; runway is {runwayText}. Warning runway threshold is {policy.CashRunwayWarningThresholdDays} day(s); critical runway threshold is {policy.CashRunwayCriticalThresholdDays} day(s). {thresholdText} Risk level is {riskLevel}.";
++    }
++
++    private sealed record AlertRow(
++        Guid Id,
++        AlertStatus Status);
+ 
+     private sealed record AccountRow(
+         Guid Id,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs
+index f036777..31e6ce5 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs
+@@ -82,7 +82,15 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+                 task.Id,
+                 alert.Created,
+-                alert.Deduplicated));
++                alert.Deduplicated)
++            {
++                WorkflowOutput = new FinanceWorkflowOutputSchemaDto(
++                    decision.AnomalyType,
++                    decision.Severity.ToStorageValue(),
++                    decision.RecommendedAction,
++                    decision.Explanation,
++                    decision.Confidence,
++                    "transaction_anomaly_detection")
++            });
+         }
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
+index b7b81ad..4af80b0 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
+@@ -103,6 +103,14 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             invoice,
+             policy,
+-            CloneNodes(outputPayload));
++            CloneNodes(outputPayload))
++        {
++            WorkflowOutput = new FinanceWorkflowOutputSchemaDto(
++                review.InvoiceClassification,
++                review.RiskLevel,
++                review.RecommendedAction,
++                review.Rationale,
++                review.ConfidenceScore,
++                "invoice_review")
++        };
+@@ -159,7 +167,15 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             invoice,
+             policy,
+-            CloneNodes(task.OutputPayload));
++            CloneNodes(task.OutputPayload))
++        {
++            WorkflowOutput = new FinanceWorkflowOutputSchemaDto(
++                review.InvoiceClassification,
++                review.RiskLevel,
++                review.RecommendedAction,
++                review.Rationale,
++                review.ConfidenceScore,
++                "invoice_review")
++        };
+     }
+ 
+@@ -360,6 +376,12 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             ["taskId"] = JsonValue.Create(taskId),
+             ["approvalRequestId"] = approvalRequestId.HasValue ? JsonValue.Create(approvalRequestId.Value) : null,
++            ["classification"] = JsonValue.Create(review.InvoiceClassification),
+             ["invoiceClassification"] = JsonValue.Create(review.InvoiceClassification),
+             ["riskLevel"] = JsonValue.Create(review.RiskLevel),
+             ["recommendedAction"] = JsonValue.Create(review.RecommendedAction),
+             ["rationale"] = JsonValue.Create(review.Rationale),
++            ["confidence"] = JsonValue.Create(review.ConfidenceScore),
++            ["sourceWorkflow"] = JsonValue.Create("invoice_review"),
+             ["confidenceScore"] = JsonValue.Create(review.ConfidenceScore),
+             ["requiresHumanApproval"] = JsonValue.Create(review.RequiresHumanApproval),
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 40c3d0f..29e5f83 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -306,6 +306,7 @@ public static class DependencyInjection
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+         services.AddScoped<IInvoiceReviewWorkflowService, CompanyInvoiceReviewWorkflowService>();
+         services.AddScoped<IFinanceTransactionAnomalyDetectionService, CompanyFinanceTransactionAnomalyDetectionService>();
++        services.AddScoped<IFinanceCashPositionWorkflowService, CompanyFinanceCashPositionWorkflowService>();
+         services.AddScoped<IFinanceToolProvider>(provider =>
+         {
+             var options = provider.GetRequiredService<IOptions<FinanceToolProviderOptions>>().Value;
+END_OF_PATCH

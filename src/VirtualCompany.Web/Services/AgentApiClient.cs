@@ -361,6 +361,7 @@ public sealed class AgentApiClient
                     AvatarUrl = profile.AvatarUrl,
                     Personality = profile.RoleBrief ?? string.Empty,
                     RoleBrief = profile.RoleBrief,
+                    Configuration = new AgentConfigurationViewModel(),
                     Objectives = CloneNodes(profile.Objectives),
                     Kpis = CloneNodes(profile.Kpis),
                     ToolPermissions = CloneNodes(profile.ToolPermissions),
@@ -933,6 +934,7 @@ public sealed class AgentProfileViewModel
     public string Personality { get; set; } = string.Empty;
     public string? RoleBrief { get; set; }
     public string AutonomyLevel { get; set; } = string.Empty;
+    public AgentConfigurationViewModel Configuration { get; set; } = new();
     public Dictionary<string, JsonNode?> Objectives { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> Kpis { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> ToolPermissions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -947,6 +949,14 @@ public sealed class AgentProfileViewModel
     public List<AgentProfileSectionViewModel> Sections { get; set; } = [];
     public AgentProfileAnalyticsPreviewViewModel AnalyticsPreview { get; set; } = new();
     public DateTime UpdatedUtc { get; set; }
+}
+
+public sealed class AgentConfigurationViewModel
+{
+    public int PersonaVersion { get; set; }
+    public int WorkflowVersion { get; set; }
+    public Dictionary<string, JsonNode?> Persona { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, JsonNode?> WorkflowCapabilities { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 public sealed class AgentTemplateCatalogItemViewModel

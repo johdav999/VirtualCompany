@@ -444,6 +444,9 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             case CompanyOutboxTopics.TaskUpdated:
             case CompanyOutboxTopics.DocumentUploaded:
             case CompanyOutboxTopics.WorkflowStateChanged:
+            case CompanyOutboxTopics.FinanceTransactionCreated:
+            case CompanyOutboxTopics.FinanceInvoiceCreated:
+            case CompanyOutboxTopics.FinanceThresholdBreached:
             {
                 var payload = Deserialize<PlatformEventEnvelope>(message);
                 if (payload.CompanyId != message.CompanyId)

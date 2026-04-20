@@ -1,0 +1,309 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationDeterminism.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationDeterminism.cs
+new file mode 100644
+index 0000000..5dca582
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationDeterminism.cs
+@@ -0,0 +1,85 @@
++using System.Security.Cryptography;
++using System.Text;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed record CompanySimulationGenerationDecision(
++    DateTime SimulatedDateUtc,
++    int DayIndex,
++    bool GenerationEnabled,
++    bool ShouldGenerate);
++
++public interface ICompanySimulationGenerationDecisionPolicy
++{
++    CompanySimulationGenerationDecision GetDecision(
++        DateTime startSimulatedUtc,
++        DateTime simulatedDateUtc,
++        bool generationEnabled,
++        int seed,
++        string? deterministicConfigurationJson);
++
++    IReadOnlyList<CompanySimulationGenerationDecision> BuildDecisionSequence(
++        DateTime startSimulatedUtc,
++        bool generationEnabled,
++        int seed,
++        string? deterministicConfigurationJson,
++        int days);
++}
++
++public sealed class SeededCompanySimulationGenerationDecisionPolicy : ICompanySimulationGenerationDecisionPolicy
++{
++    public CompanySimulationGenerationDecision GetDecision(
++        DateTime startSimulatedUtc,
++        DateTime simulatedDateUtc,
++        bool generationEnabled,
++        int seed,
++        string? deterministicConfigurationJson)
++    {
++        var normalizedStartSimulatedUtc = NormalizeUtc(startSimulatedUtc).Date;
++        var normalizedSimulatedDateUtc = NormalizeUtc(simulatedDateUtc).Date;
++        var dayIndex = (int)(normalizedSimulatedDateUtc - normalizedStartSimulatedUtc).TotalDays;
++        if (dayIndex < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(simulatedDateUtc), "Simulated date cannot be before the simulation start date.");
++        }
++
++        return new CompanySimulationGenerationDecision(
++            normalizedSimulatedDateUtc,
++            dayIndex,
++            generationEnabled,
++            generationEnabled && ComputeShouldGenerate(normalizedStartSimulatedUtc, dayIndex, seed, deterministicConfigurationJson));
++    }
++
++    public IReadOnlyList<CompanySimulationGenerationDecision> BuildDecisionSequence(
++        DateTime startSimulatedUtc,
++        bool generationEnabled,
++        int seed,
++        string? deterministicConfigurationJson,
++        int days)
++    {
++        if (days < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(days), "Days must be zero or greater.");
++        }
++
++        var normalizedStartSimulatedUtc = NormalizeUtc(startSimulatedUtc).Date;
++        var decisions = new List<CompanySimulationGenerationDecision>(days + 1);
++        for (var dayIndex = 0; dayIndex <= days; dayIndex++)
++        {
++            decisions.Add(GetDecision(
++                normalizedStartSimulatedUtc,
++                normalizedStartSimulatedUtc.AddDays(dayIndex),
++                generationEnabled,
++                seed,
++                deterministicConfigurationJson));
++        }
++
++        return decisions;
++    }
++
++    private static bool ComputeShouldGenerate(DateTime startSimulatedUtc, int dayIndex, int seed, string? deterministicConfigurationJson)
++    {
++        // Hash the stable inputs so replayed schedules do not depend on Random implementation details.
++        var payload = FormattableString.Invariant($"{seed}|{startSimulatedUtc:O}|{dayIndex}|{NormalizeConfiguration(deterministicConfigurationJson)}");
++        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
++        return (hash[0] & 1) == 0;
++    }
++
++    private static string NormalizeConfiguration(string? deterministicConfigurationJson) => deterministicConfigurationJson?.Trim() ?? string.Empty;
++
++    private static DateTime NormalizeUtc(DateTime value) => value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationGenerationDecisionPolicyTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationGenerationDecisionPolicyTests.cs
+new file mode 100644
+index 0000000..a467ecd
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationGenerationDecisionPolicyTests.cs
+@@ -0,0 +1,72 @@
++using VirtualCompany.Infrastructure.Finance;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class CompanySimulationGenerationDecisionPolicyTests
++{
++    [Fact]
++    public void Same_seed_start_date_and_configuration_produce_the_same_generation_schedule()
++    {
++        var policy = new SeededCompanySimulationGenerationDecisionPolicy();
++        var startSimulatedUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
++        const string deterministicConfiguration = """{"profile":"baseline","speed":"1d/10s","schedule":"default"}""";
++
++        var first = policy.BuildDecisionSequence(startSimulatedUtc, true, 73, deterministicConfiguration, 20);
++        var second = policy.BuildDecisionSequence(startSimulatedUtc, true, 73, deterministicConfiguration, 20);
++
++        Assert.Equal(first.Count, second.Count);
++        for (var index = 0; index < first.Count; index++)
++        {
++            Assert.Equal(first[index].SimulatedDateUtc, second[index].SimulatedDateUtc);
++            Assert.Equal(first[index].DayIndex, second[index].DayIndex);
++            Assert.Equal(first[index].GenerationEnabled, second[index].GenerationEnabled);
++            Assert.Equal(first[index].ShouldGenerate, second[index].ShouldGenerate);
++        }
++    }
++
++    [Fact]
++    public void Different_seed_changes_the_generation_schedule()
++    {
++        var policy = new SeededCompanySimulationGenerationDecisionPolicy();
++        var startSimulatedUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
++        const string deterministicConfiguration = """{"profile":"baseline","speed":"1d/10s","schedule":"default"}""";
++
++        var first = policy.BuildDecisionSequence(startSimulatedUtc, true, 11, deterministicConfiguration, 40);
++        var second = policy.BuildDecisionSequence(startSimulatedUtc, true, 12, deterministicConfiguration, 40);
++
++        var diverged = false;
++        for (var index = 0; index < first.Count; index++)
++        {
++            if (first[index].ShouldGenerate != second[index].ShouldGenerate)
++            {
++                diverged = true;
++                break;
++            }
++        }
++
++        Assert.True(diverged);
++    }
++
++    [Fact]
++    public void Generation_disabled_forces_all_scheduled_decisions_off()
++    {
++        var policy = new SeededCompanySimulationGenerationDecisionPolicy();
++        var startSimulatedUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
++
++        var decisions = policy.BuildDecisionSequence(
++            startSimulatedUtc,
++            generationEnabled: false,
++            seed: 99,
++            deterministicConfigurationJson: """{"profile":"baseline"}""",
++            days: 10);
++
++        Assert.Equal(11, decisions.Count);
++        foreach (var decision in decisions)
++        {
++            Assert.False(decision.GenerationEnabled);
++            Assert.False(decision.ShouldGenerate);
++            Assert.True(decision.DayIndex >= 0);
++            Assert.True(decision.SimulatedDateUtc >= startSimulatedUtc);
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
+index 92cb031..aa82e3f 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
+@@ -8,6 +8,28 @@ using Xunit;
+ 
+ public sealed class CompanySimulationStateServiceTests
+ {
++    [Fact]
++    public async Task Get_state_returns_not_started_projection_with_empty_session_fields()
++    {
++        var companyId = Guid.NewGuid();
++        var timeProvider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero));
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(companyId, "Simulation Company"));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        var service = new CompanySimulationStateService(repository, timeProvider, NullLogger<CompanySimulationStateService>.Instance);
++
++        var state = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
++
++        Assert.Equal(CompanySimulationLifecycleStatusValues.NotStarted, state.Status);
++        Assert.Null(state.CurrentSimulatedDateTime);
++        Assert.Null(state.LastProgressionTimestamp);
++        Assert.Null(state.GenerationEnabled);
++        Assert.Null(state.Seed);
++        Assert.Null(state.ActiveSessionId);
++    }
++
+     [Fact]
+     public async Task Get_state_advances_only_complete_ten_second_buckets_and_resume_resets_the_baseline()
+     {
+@@ -39,12 +61,18 @@ public sealed class CompanySimulationStateServiceTests
+         Assert.Equal(CompanySimulationLifecycleStatusValues.Running, start.Status);
+         Assert.Equal(new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), beforeBucket.CurrentSimulatedDateTime);
+         Assert.Equal(new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc), afterTwentyFiveSeconds.CurrentSimulatedDateTime);
++        Assert.Equal(start.ActiveSessionId, afterTwentyFiveSeconds.ActiveSessionId);
++        Assert.Equal(start.StartSimulatedDateTime, afterTwentyFiveSeconds.StartSimulatedDateTime);
+         Assert.Equal(new DateTime(2026, 4, 19, 12, 0, 20, DateTimeKind.Utc), afterTwentyFiveSeconds.LastProgressionTimestamp);
+         Assert.Equal(CompanySimulationLifecycleStatusValues.Paused, paused.Status);
+         Assert.Equal(afterTwentyFiveSeconds.CurrentSimulatedDateTime, stillPaused.CurrentSimulatedDateTime);
++        Assert.Equal(afterTwentyFiveSeconds.LastProgressionTimestamp, stillPaused.LastProgressionTimestamp);
++        Assert.Equal(start.ActiveSessionId, resumed.ActiveSessionId);
+         Assert.Equal(CompanySimulationLifecycleStatusValues.Running, resumed.Status);
+         Assert.Equal(new DateTime(2026, 4, 4, 0, 0, 0, DateTimeKind.Utc), afterResume.CurrentSimulatedDateTime);
+         Assert.Equal(73, afterResume.Seed);
++        Assert.True(afterResume.GenerationEnabled);
++        Assert.Equal(start.StartSimulatedDateTime, afterResume.StartSimulatedDateTime);
+         Assert.Equal("""{"profile":"replayable"}""", afterResume.DeterministicConfigurationJson);
+         Assert.Equal(new DateTime(2026, 4, 19, 12, 1, 15, DateTimeKind.Utc), afterResume.LastProgressionTimestamp);
+     }
+@@ -75,13 +103,64 @@ public sealed class CompanySimulationStateServiceTests
+         timeProvider.Advance(TimeSpan.FromSeconds(30));
+         Assert.Equal(1, await runner.ProgressDueAsync(CancellationToken.None));
+         Assert.Equal(0, await runner.ProgressDueAsync(CancellationToken.None));
++        timeProvider.Advance(TimeSpan.FromSeconds(9));
++        Assert.Equal(0, await runner.ProgressDueAsync(CancellationToken.None));
+ 
+         var afterFirstRun = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
+         Assert.Equal(new DateTime(2026, 4, 4, 0, 0, 0, DateTimeKind.Utc), afterFirstRun.CurrentSimulatedDateTime);
+         Assert.Equal(CompanySimulationLifecycleStatusValues.Running, afterFirstRun.Status);
++        Assert.NotNull(afterFirstRun.ActiveSessionId);
++
++        timeProvider.Advance(TimeSpan.FromSeconds(1));
++        Assert.Equal(1, await runner.ProgressDueAsync(CancellationToken.None));
++
++        var afterFourthBucket = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
++        Assert.Equal(new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc), afterFourthBucket.CurrentSimulatedDateTime);
++        Assert.Equal(new DateTime(2026, 4, 19, 12, 0, 40, DateTimeKind.Utc), afterFourthBucket.LastProgressionTimestamp);
+ 
+         await service.StopAsync(new StopCompanySimulationCommand(companyId), CancellationToken.None);
+         timeProvider.Advance(TimeSpan.FromSeconds(30));
+         Assert.Equal(0, await runner.ProgressDueAsync(CancellationToken.None));
+ 
+         var afterStop = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
+         Assert.Equal(CompanySimulationLifecycleStatusValues.Stopped, afterStop.Status);
+-        Assert.Equal(new DateTime(2026, 4, 4, 0, 0, 0, DateTimeKind.Utc), afterStop.CurrentSimulatedDateTime);
++        Assert.Null(afterStop.ActiveSessionId);
++        Assert.Equal(new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc), afterStop.CurrentSimulatedDateTime);
++        Assert.Equal(new DateTime(2026, 4, 19, 12, 0, 40, DateTimeKind.Utc), afterStop.LastProgressionTimestamp);
++    }
++
++    [Fact]
++    public async Task Stop_and_restart_create_a_clean_session_without_carrying_elapsed_time_forward()
++    {
++        var companyId = Guid.NewGuid();
++        var timeProvider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero));
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(companyId, "Lifecycle Company"));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        var service = new CompanySimulationStateService(repository, timeProvider, NullLogger<CompanySimulationStateService>.Instance);
++
++        var started = await service.StartAsync(
++            new StartCompanySimulationCommand(companyId, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), true, 17, """{"profile":"baseline"}"""),
++            CancellationToken.None);
++
++        timeProvider.Advance(TimeSpan.FromSeconds(20));
++        var beforeStop = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
++        var stopped = await service.StopAsync(new StopCompanySimulationCommand(companyId), CancellationToken.None);
++
++        timeProvider.Advance(TimeSpan.FromSeconds(70));
++        var stillStopped = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
++        var restarted = await service.StartAsync(
++            new StartCompanySimulationCommand(companyId, new DateTime(2026, 5, 10, 0, 0, 0, DateTimeKind.Utc), false, 18, """{"profile":"restart"}"""),
++            CancellationToken.None);
++
++        timeProvider.Advance(TimeSpan.FromSeconds(10));
++        var afterRestart = await service.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
++
++        Assert.Equal(new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc), beforeStop.CurrentSimulatedDateTime);
++        Assert.Equal(CompanySimulationLifecycleStatusValues.Stopped, stopped.Status);
++        Assert.Null(stopped.ActiveSessionId);
++        Assert.Equal(beforeStop.CurrentSimulatedDateTime, stillStopped.CurrentSimulatedDateTime);
++        Assert.Equal(beforeStop.LastProgressionTimestamp, stillStopped.LastProgressionTimestamp);
++        Assert.Equal(CompanySimulationLifecycleStatusValues.Running, restarted.Status);
++        Assert.NotNull(restarted.ActiveSessionId);
++        Assert.NotEqual(started.ActiveSessionId, restarted.ActiveSessionId);
++        Assert.Equal(new DateTime(2026, 5, 10, 0, 0, 0, DateTimeKind.Utc), restarted.StartSimulatedDateTime);
++        Assert.Equal(new DateTime(2026, 5, 11, 0, 0, 0, DateTimeKind.Utc), afterRestart.CurrentSimulatedDateTime);
++        Assert.False(afterRestart.GenerationEnabled);
++        Assert.Equal(18, afterRestart.Seed);
++        Assert.Equal(new DateTime(2026, 4, 19, 12, 1, 40, DateTimeKind.Utc), afterRestart.LastProgressionTimestamp);
+     }
+ 
+     [Fact]
+END_OF_PATCH

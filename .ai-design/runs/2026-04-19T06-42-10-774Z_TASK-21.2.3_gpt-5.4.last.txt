@@ -1,0 +1,666 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -149,6 +149,53 @@ public sealed record CompanySimulationFinanceGenerationResultDto(
+     int ActivityEventsCreated,
+     int AlertsCreated);
+ 
++public sealed record FinanceDeterministicGenerationContext(
++    Guid CompanyId,
++    int Seed,
++    DateTime StartSimulatedUtc,
++    DateTime SimulatedDateUtc,
++    int DayIndex,
++    string? DeterministicConfigurationJson);
++
++public sealed record FinanceScenarioSelection(
++    int InvoiceScenarioIndex,
++    int ThresholdCaseIndex,
++    int CustomerIndex,
++    int SupplierIndex);
++
++public sealed record FinanceAnomalySchedule(
++    bool IsAnomalyDay,
++    int? AnomalyIndex,
++    int TargetTransactionIndex);
++
+ public interface IFinanceGenerationPolicy
+ {
+     Task<CompanySimulationFinanceGenerationResultDto> GenerateAsync(
+         GenerateCompanySimulationFinanceCommand command,
+         CancellationToken cancellationToken);
+ }
++
++public interface IFinanceDeterministicValueSource
++{
++    int GetCycleOffset(
++        Guid companyId,
++        int seed,
++        DateTime startSimulatedUtc,
++        string? deterministicConfigurationJson,
++        string scope,
++        int modulo);
++
++    int GetDayValue(
++        Guid companyId,
++        int seed,
++        DateTime startSimulatedUtc,
++        DateTime simulatedDateUtc,
++        int dayIndex,
++        string? deterministicConfigurationJson,
++        string scope,
++        int modulo);
++}
++
++public interface IFinanceScenarioFactory
++{
++    FinanceScenarioSelection Create(FinanceDeterministicGenerationContext context, int invoiceScenarioCount, int thresholdCaseCount, int customerCount, int supplierCount);
++}
++
++public interface IFinanceAnomalyScheduleFactory
++{
++    FinanceAnomalySchedule Create(FinanceDeterministicGenerationContext context, int anomalyCount, int transactionCount, int anomalyCadenceDays, int anomalyOffsetDays);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 3333333..4444444 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -309,6 +309,9 @@ public static class DependencyInjection
+         services.AddScoped<ICompanySimulationService, CompanySimulationService>();
+         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+         services.AddScoped<ICompanySimulationStateRepository, EfCompanySimulationStateRepository>();
++        services.AddSingleton<IFinanceDeterministicValueSource, Sha256FinanceDeterministicValueSource>();
++        services.AddSingleton<IFinanceScenarioFactory, DefaultFinanceScenarioFactory>();
++        services.AddSingleton<IFinanceAnomalyScheduleFactory, PeriodicFinanceAnomalyScheduleFactory>();
+         services.AddScoped<IFinanceGenerationPolicy, CompanySimulationFinanceGenerationService>();
+         services.AddScoped<IExecutionExceptionQueryService>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+         services.AddScoped<CompanyAlertService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+index 5555555..6666666 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+@@ -44,6 +44,8 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly TimeProvider _timeProvider;
+     private readonly ILogger<CompanySimulationFinanceGenerationService> _logger;
++    private readonly IFinanceScenarioFactory _scenarioFactory;
++    private readonly IFinanceAnomalyScheduleFactory _anomalyScheduleFactory;
+     private readonly ICompanyOutboxEnqueuer? _outboxEnqueuer;
+ 
+     public CompanySimulationFinanceGenerationService(
+@@ -51,7 +53,13 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         TimeProvider timeProvider,
+         ILogger<CompanySimulationFinanceGenerationService> logger)
+-        : this(dbContext, timeProvider, logger, null)
++        : this(
++            dbContext,
++            timeProvider,
++            logger,
++            new DefaultFinanceScenarioFactory(new Sha256FinanceDeterministicValueSource()),
++            new PeriodicFinanceAnomalyScheduleFactory(new Sha256FinanceDeterministicValueSource()),
++            null)
+     {
+     }
+ 
+@@ -60,10 +68,24 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         VirtualCompanyDbContext dbContext,
+         TimeProvider timeProvider,
+         ILogger<CompanySimulationFinanceGenerationService> logger,
++        ICompanyOutboxEnqueuer? outboxEnqueuer)
++        : this(
++            dbContext,
++            timeProvider,
++            logger,
++            new DefaultFinanceScenarioFactory(new Sha256FinanceDeterministicValueSource()),
++            new PeriodicFinanceAnomalyScheduleFactory(new Sha256FinanceDeterministicValueSource()),
++            outboxEnqueuer)
++    {
++    }
++
++    public CompanySimulationFinanceGenerationService(
++        VirtualCompanyDbContext dbContext,
++        TimeProvider timeProvider,
++        ILogger<CompanySimulationFinanceGenerationService> logger,
++        IFinanceScenarioFactory scenarioFactory,
++        IFinanceAnomalyScheduleFactory anomalyScheduleFactory,
+         ICompanyOutboxEnqueuer? outboxEnqueuer)
+     {
+         _dbContext = dbContext;
+         _timeProvider = timeProvider;
+         _logger = logger;
++        _scenarioFactory = scenarioFactory;
++        _anomalyScheduleFactory = anomalyScheduleFactory;
+         _outboxEnqueuer = outboxEnqueuer;
+     }
+@@ -116,7 +138,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             }
+ 
+             daysProcessed++;
+-            var plan = BuildDayPlan(company, simulatedDateUtc, dayIndex, policy, config, counterparties);
++            var plan = BuildDayPlan(company, simulatedDateUtc, dayIndex, command, policy, config, counterparties);
+             var applied = await ApplyDayPlanAsync(
+                 company,
+                 command,
+@@ -559,13 +581,25 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+     private FinanceDayPlan BuildDayPlan(
+         Company company,
+         DateTime simulatedDateUtc,
+         int dayIndex,
++        GenerateCompanySimulationFinanceCommand command,
+         FinancePolicyConfigurationDto policy,
+         FinanceGenerationConfiguration config,
+         CounterpartyCatalog counterparties)
+     {
+-        var invoiceScenario = InvoiceScenarioCatalog[dayIndex % InvoiceScenarioCatalog.Length];
+-        var thresholdCase = ThresholdCaseCatalog[dayIndex % ThresholdCaseCatalog.Length];
+-        var customer = counterparties.Customers[dayIndex % counterparties.Customers.Count];
+-        var supplier = counterparties.Suppliers[dayIndex % counterparties.Suppliers.Count];
++        var generationContext = new FinanceDeterministicGenerationContext(
++            company.Id,
++            command.Seed,
++            command.StartSimulatedUtc,
++            simulatedDateUtc.Date,
++            dayIndex,
++            command.DeterministicConfigurationJson);
++        var scenarioSelection = _scenarioFactory.Create(
++            generationContext,
++            InvoiceScenarioCatalog.Length,
++            ThresholdCaseCatalog.Length,
++            counterparties.Customers.Count,
++            counterparties.Suppliers.Count);
++        var invoiceScenario = InvoiceScenarioCatalog[scenarioSelection.InvoiceScenarioIndex];
++        var thresholdCase = ThresholdCaseCatalog[scenarioSelection.ThresholdCaseIndex];
++        var customer = counterparties.Customers[scenarioSelection.CustomerIndex];
++        var supplier = counterparties.Suppliers[scenarioSelection.SupplierIndex];
+ 
+         var invoiceAmount = ResolveInvoiceAmount(invoiceScenario, thresholdCase, policy.InvoiceApprovalThreshold);
+         var billAmount = ResolveBillAmount(thresholdCase, policy.BillApprovalThreshold);
+@@ -595,7 +629,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         var transactions = BuildTransactions(
+             company.Id,
+             simulatedDateUtc,
+-            dayIndex,
++            thresholdCase,
+             invoiceScenario,
+             invoiceId,
+             billId,
+@@ -608,10 +642,17 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             invoiceNumber,
+             billNumber);
+ 
+-        var anomalyType = ShouldInjectAnomaly(dayIndex, config)
+-            ? AnomalyCatalog[(dayIndex / Math.Max(1, config.AnomalyCadenceDays)) % AnomalyCatalog.Length]
++        var anomalySchedule = _anomalyScheduleFactory.Create(
++            generationContext,
++            AnomalyCatalog.Length,
++            transactions.Count,
++            config.AnomalyCadenceDays,
++            config.AnomalyOffsetDays);
++        var anomalyType = anomalySchedule.IsAnomalyDay && anomalySchedule.AnomalyIndex.HasValue
++            ? AnomalyCatalog[anomalySchedule.AnomalyIndex.Value]
+             : (FinanceAnomalyKind?)null;
+-        var anomalyTransaction = ResolveAnomalyTransaction(transactions, anomalyType);
++        var anomalyTransaction = ResolveAnomalyTransaction(
++            transactions,
++            anomalyType,
++            anomalySchedule.TargetTransactionIndex);
+ 
+         var invoicePayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+         {
+@@ -1212,7 +1253,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+     private static IReadOnlyList<PlannedTransaction> BuildTransactions(
+         Guid companyId,
+         DateTime simulatedDateUtc,
+-        int dayIndex,
++        ThresholdCase thresholdCase,
+         InvoiceScenario invoiceScenario,
+         Guid invoiceId,
+         Guid billId,
+@@ -1249,14 +1290,14 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             "recurring_expense",
+             -billAmount,
+             simulatedDateUtc.Date.AddHours(10),
+             billCurrency,
+-            $"SIM-TXN-BILL-{simulatedDateUtc:yyyyMMdd}-{ToToken((ThresholdCase)(dayIndex % ThresholdCaseCatalog.Length))}",
++            $"SIM-TXN-BILL-{simulatedDateUtc:yyyyMMdd}-{ToToken(thresholdCase)}",
+             $"Simulated recurring expense for {billNumber}",
+             supplier.Id,
+             null,
+             billId));
+ 
+         return results;
+     }
+ 
+     private static PlannedTransaction? ResolveAnomalyTransaction(
+         IReadOnlyList<PlannedTransaction> transactions,
+-        FinanceAnomalyKind? anomalyType)
++        FinanceAnomalyKind? anomalyType,
++        int targetTransactionIndex)
+     {
+         if (anomalyType is null || transactions.Count == 0)
+         {
+             return null;
+         }
+ 
++        var preferred = transactions[Math.Clamp(targetTransactionIndex, 0, transactions.Count - 1)];
++        var debitTransactions = transactions.Where(x => x.Amount < 0).ToArray();
++        var creditTransactions = transactions.Where(x => x.Amount > 0).ToArray();
++        var debit = debitTransactions.Length == 0
++            ? preferred
++            : debitTransactions[targetTransactionIndex % debitTransactions.Length];
++        var credit = creditTransactions.Length == 0
++            ? preferred
++            : creditTransactions[targetTransactionIndex % creditTransactions.Length];
++
+         return anomalyType switch
+         {
+-            FinanceAnomalyKind.DuplicateVendorCharge => transactions.LastOrDefault(x => x.Amount < 0) ?? transactions[0],
+-            FinanceAnomalyKind.UnusuallyHighAmount => transactions.LastOrDefault(x => x.Amount < 0) ?? transactions[0],
+-            FinanceAnomalyKind.CategoryMismatch => transactions.LastOrDefault(x => x.Amount < 0) ?? transactions[0],
+-            FinanceAnomalyKind.MissingDocument => transactions.LastOrDefault(x => x.Amount < 0) ?? transactions[0],
+-            FinanceAnomalyKind.SuspiciousPaymentTiming => transactions.FirstOrDefault(x => x.Amount > 0) ?? transactions[0],
+-            FinanceAnomalyKind.MultiplePayments => transactions.FirstOrDefault(x => x.Amount > 0) ?? transactions[0],
+-            FinanceAnomalyKind.PaymentBeforeExpectedStateTransition => transactions.FirstOrDefault(x => x.Amount > 0) ?? transactions[0],
+-            _ => transactions[0]
++            FinanceAnomalyKind.DuplicateVendorCharge => debit,
++            FinanceAnomalyKind.UnusuallyHighAmount => debit,
++            FinanceAnomalyKind.CategoryMismatch => debit,
++            FinanceAnomalyKind.MissingDocument => debit,
++            FinanceAnomalyKind.SuspiciousPaymentTiming => credit,
++            FinanceAnomalyKind.MultiplePayments => credit,
++            FinanceAnomalyKind.PaymentBeforeExpectedStateTransition => credit,
++            _ => preferred
+         };
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/DeterministicFinanceGenerationPrimitives.cs b/src/VirtualCompany.Infrastructure/Finance/DeterministicFinanceGenerationPrimitives.cs
+new file mode 100644
+index 0000000..7777777
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/DeterministicFinanceGenerationPrimitives.cs
+@@ -0,0 +1,172 @@
++using System.Security.Cryptography;
++using System.Text;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Finance;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++internal sealed class Sha256FinanceDeterministicValueSource : IFinanceDeterministicValueSource
++{
++    public int GetCycleOffset(
++        Guid companyId,
++        int seed,
++        DateTime startSimulatedUtc,
++        string? deterministicConfigurationJson,
++        string scope,
++        int modulo)
++    {
++        if (modulo <= 1)
++        {
++            return 0;
++        }
++
++        return GetBoundedInt(
++            FormattableString.Invariant(
++                $"{companyId:N}|{seed}|{NormalizeUtc(startSimulatedUtc):yyyyMMdd}|{Canonicalize(deterministicConfigurationJson)}|cycle|{scope}"),
++            modulo);
++    }
++
++    public int GetDayValue(
++        Guid companyId,
++        int seed,
++        DateTime startSimulatedUtc,
++        DateTime simulatedDateUtc,
++        int dayIndex,
++        string? deterministicConfigurationJson,
++        string scope,
++        int modulo)
++    {
++        if (modulo <= 1)
++        {
++            return 0;
++        }
++
++        return GetBoundedInt(
++            FormattableString.Invariant(
++                $"{companyId:N}|{seed}|{NormalizeUtc(startSimulatedUtc):yyyyMMdd}|{NormalizeUtc(simulatedDateUtc):yyyyMMdd}|{dayIndex}|{Canonicalize(deterministicConfigurationJson)}|day|{scope}"),
++            modulo);
++    }
++
++    private static int GetBoundedInt(string value, int modulo)
++    {
++        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
++        var numeric = BitConverter.ToUInt32(hash, 0);
++        return (int)(numeric % (uint)modulo);
++    }
++
++    private static string Canonicalize(string? json)
++    {
++        if (string.IsNullOrWhiteSpace(json))
++        {
++            return string.Empty;
++        }
++
++        try
++        {
++            return CanonicalizeNode(JsonNode.Parse(json));
++        }
++        catch (JsonException)
++        {
++            return json.Trim();
++        }
++    }
++
++    private static string CanonicalizeNode(JsonNode? node) =>
++        node switch
++        {
++            null => "null",
++            JsonValue value => value.ToJsonString(),
++            JsonArray array => $"[{string.Join(",", array.Select(CanonicalizeNode))}]",
++            JsonObject obj => $"{{{string.Join(",", obj.OrderBy(x => x.Key, StringComparer.Ordinal).Select(x => $"{JsonValue.Create(x.Key)!.ToJsonString()}:{CanonicalizeNode(x.Value)}"))}}}",
++            _ => node.ToJsonString()
++        };
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind switch
++        {
++            DateTimeKind.Utc => value,
++            DateTimeKind.Local => value.ToUniversalTime(),
++            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
++        };
++}
++
++internal sealed class DefaultFinanceScenarioFactory : IFinanceScenarioFactory
++{
++    private readonly IFinanceDeterministicValueSource _valueSource;
++
++    public DefaultFinanceScenarioFactory(IFinanceDeterministicValueSource valueSource)
++    {
++        _valueSource = valueSource;
++    }
++
++    public FinanceScenarioSelection Create(
++        FinanceDeterministicGenerationContext context,
++        int invoiceScenarioCount,
++        int thresholdCaseCount,
++        int customerCount,
++        int supplierCount)
++    {
++        var invoiceOffset = _valueSource.GetCycleOffset(
++            context.CompanyId,
++            context.Seed,
++            context.StartSimulatedUtc,
++            context.DeterministicConfigurationJson,
++            "invoice-scenario",
++            invoiceScenarioCount);
++        var thresholdOffset = _valueSource.GetCycleOffset(
++            context.CompanyId,
++            context.Seed,
++            context.StartSimulatedUtc,
++            context.DeterministicConfigurationJson,
++            "threshold-case",
++            thresholdCaseCount);
++        var customerOffset = _valueSource.GetCycleOffset(
++            context.CompanyId,
++            context.Seed,
++            context.StartSimulatedUtc,
++            context.DeterministicConfigurationJson,
++            "customer-rotation",
++            customerCount);
++        var supplierOffset = _valueSource.GetCycleOffset(
++            context.CompanyId,
++            context.Seed,
++            context.StartSimulatedUtc,
++            context.DeterministicConfigurationJson,
++            "supplier-rotation",
++            supplierCount);
++
++        // Seed-specific offsets keep full scenario coverage across a deterministic run while changing which rule starts the cycle.
++        return new FinanceScenarioSelection(
++            Wrap(context.DayIndex + invoiceOffset, invoiceScenarioCount),
++            Wrap(context.DayIndex + thresholdOffset, thresholdCaseCount),
++            Wrap(context.DayIndex + customerOffset, customerCount),
++            Wrap(context.DayIndex + supplierOffset, supplierCount));
++    }
++
++    private static int Wrap(int value, int modulo) =>
++        modulo <= 0 ? 0 : ((value % modulo) + modulo) % modulo;
++}
++
++internal sealed class PeriodicFinanceAnomalyScheduleFactory : IFinanceAnomalyScheduleFactory
++{
++    private readonly IFinanceDeterministicValueSource _valueSource;
++
++    public PeriodicFinanceAnomalyScheduleFactory(IFinanceDeterministicValueSource valueSource)
++    {
++        _valueSource = valueSource;
++    }
++
++    public FinanceAnomalySchedule Create(
++        FinanceDeterministicGenerationContext context,
++        int anomalyCount,
++        int transactionCount,
++        int anomalyCadenceDays,
++        int anomalyOffsetDays)
++    {
++        var cadence = Math.Max(1, anomalyCadenceDays);
++        var seedOffset = _valueSource.GetCycleOffset(
++            context.CompanyId,
++            context.Seed,
++            context.StartSimulatedUtc,
++            context.DeterministicConfigurationJson,
++            "anomaly-cadence-offset",
++            cadence);
++        var effectiveOffset = (Math.Max(0, anomalyOffsetDays) + seedOffset) % cadence;
++        var isAnomalyDay = ((context.DayIndex + effectiveOffset) % cadence) == 0;
++        if (!isAnomalyDay || anomalyCount <= 0 || transactionCount <= 0)
++        {
++            return new FinanceAnomalySchedule(false, null, 0);
++        }
++
++        var rotationOffset = _valueSource.GetCycleOffset(
++            context.CompanyId,
++            context.Seed,
++            context.StartSimulatedUtc,
++            context.DeterministicConfigurationJson,
++            "anomaly-rotation",
++            anomalyCount);
++        var anomalyOrdinal = (context.DayIndex + effectiveOffset) / cadence;
++        var targetTransactionIndex = _valueSource.GetDayValue(
++            context.CompanyId,
++            context.Seed,
++            context.StartSimulatedUtc,
++            context.SimulatedDateUtc,
++            context.DayIndex,
++            context.DeterministicConfigurationJson,
++            "anomaly-transaction-target",
++            transactionCount);
++
++        return new FinanceAnomalySchedule(true, (anomalyOrdinal + rotationOffset) % anomalyCount, targetTransactionIndex);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs
+new file mode 100644
+index 0000000..8888888
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs
+@@ -0,0 +1,151 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging.Abstractions;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class CompanySimulationFinanceDeterminismTests
++{
++    [Fact]
++    public async Task Different_seeds_shift_generated_finance_scenarios_and_periodic_anomalies()
++    {
++        var companyId = Guid.Parse("7b97f0a2-2e56-4ddb-bffa-3a1d0a65ef01");
++        var first = await RunSnapshotAsync(
++            companyId,
++            73,
++            """{"financeGeneration":{"anomalyCadenceDays":3,"anomalyOffsetDays":0}}""");
++        var second = await RunSnapshotAsync(
++            companyId,
++            991,
++            """{"financeGeneration":{"anomalyCadenceDays":3,"anomalyOffsetDays":0}}""");
++
++        Assert.NotEqual(first.InvoiceNumbers, second.InvoiceNumbers);
++        Assert.NotEqual(first.BillNumbers, second.BillNumbers);
++        Assert.NotEqual(first.TransactionReferences, second.TransactionReferences);
++        Assert.NotEqual(first.AnomalyTypes, second.AnomalyTypes);
++        Assert.True(first.AlertDates.Count < first.InvoiceNumbers.Count);
++        Assert.True(second.AlertDates.Count < second.InvoiceNumbers.Count);
++    }
++
++    [Fact]
++    public async Task Same_seed_keeps_periodic_anomaly_spacing_for_the_same_replay_window()
++    {
++        var snapshot = await RunSnapshotAsync(
++            Guid.Parse("6c89a653-28fa-4201-aa4a-f3b5d3d70b5a"),
++            73,
++            """{"financeGeneration":{"anomalyCadenceDays":3,"anomalyOffsetDays":1}}""");
++
++        Assert.True(snapshot.AlertDates.Count >= 2);
++
++        var gaps = snapshot.AlertDates
++            .Zip(snapshot.AlertDates.Skip(1), (left, right) => (right - left).Days)
++            .ToList();
++
++        Assert.All(gaps, gap => Assert.Equal(3, gap));
++    }
++
++    private static async Task<FinanceSnapshot> RunSnapshotAsync(Guid companyId, int seed, string configurationJson)
++    {
++        var provider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero));
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(companyId, "Deterministic Replay Company"));
++        dbContext.FinancePolicyConfigurations.Add(new FinancePolicyConfiguration(
++            Guid.NewGuid(),
++            companyId,
++            "USD",
++            1000m,
++            500m,
++            true,
++            -2000m,
++            2000m,
++            60,
++            20));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        var generationService = new CompanySimulationFinanceGenerationService(
++            dbContext,
++            provider,
++            NullLogger<CompanySimulationFinanceGenerationService>.Instance);
++        var stateService = new CompanySimulationStateService(
++            repository,
++            provider,
++            companyContextAccessor: null,
++            distributedLockProvider: null,
++            financeGenerationPolicy: generationService,
++            logger: NullLogger<CompanySimulationStateService>.Instance);
++
++        await stateService.StartAsync(
++            new StartCompanySimulationCommand(
++                companyId,
++                new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                true,
++                seed,
++                configurationJson),
++            CancellationToken.None);
++
++        provider.Advance(TimeSpan.FromSeconds(100));
++        _ = await stateService.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
++
++        var invoiceNumbers = await dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.InvoiceNumber)
++            .Select(x => x.InvoiceNumber)
++            .ToListAsync();
++        var billNumbers = await dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.BillNumber)
++            .Select(x => x.BillNumber)
++            .ToListAsync();
++        var transactionReferences = await dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.ExternalReference)
++            .Select(x => x.ExternalReference)
++            .ToListAsync();
++        var alerts = await dbContext.Alerts
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.Type == AlertType.Anomaly)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync();
++
++        return new FinanceSnapshot(
++            invoiceNumbers,
++            billNumbers,
++            transactionReferences,
++            alerts
++                .Select(x => x.Metadata["anomalyType"]?.GetValue<string>() ?? string.Empty)
++                .ToList(),
++            alerts
++                .Select(x => (x.LastDetectedUtc ?? x.CreatedUtc).Date)
++                .Distinct()
++                .OrderBy(x => x)
++                .ToList());
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static async Task<VirtualCompanyDbContext> CreateDbContextAsync(SqliteConnection connection)
++    {
++        var context = new VirtualCompanyDbContext(
++            new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++                .UseSqlite(connection)
++                .Options);
++        await context.Database.EnsureCreatedAsync();
++        return context;
++    }
++
++    private sealed record FinanceSnapshot(
++        IReadOnlyList<string> InvoiceNumbers,
++        IReadOnlyList<string> BillNumbers,
++        IReadOnlyList<string> TransactionReferences,
++        IReadOnlyList<string> AnomalyTypes,
++        IReadOnlyList<DateTime> AlertDates);
++
++    private sealed class MutableTimeProvider : TimeProvider
++    {
++        private DateTimeOffset _utcNow;
++
++        public MutableTimeProvider(DateTimeOffset utcNow)
++        {
++            _utcNow = utcNow;
++        }
++
++        public override DateTimeOffset GetUtcNow() => _utcNow;
++
++        public void Advance(TimeSpan duration)
++        {
++            _utcNow = _utcNow.Add(duration);
++        }
++    }
++}
+END_OF_PATCH

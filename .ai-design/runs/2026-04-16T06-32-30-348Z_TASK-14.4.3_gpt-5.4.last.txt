@@ -1,0 +1,219 @@
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs
+@@ -69,17 +69,17 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+         Assert.True(payload.ExecutionResult["data"].TryGetProperty(expectedDataProperty, out _));
+ 
+         var metadata = payload.ExecutionResult["metadata"];
+-        Assert.Equal("finance_read_service", metadata.GetProperty("contractName").GetString());
++        Assert.Equal("finance_tool_provider", metadata.GetProperty("contractName").GetString());
+         Assert.Equal("1.0.0", metadata.GetProperty("toolVersion").GetString());
+         Assert.Equal(InternalToolExecutionResponse.SchemaVersion, metadata.GetProperty("contractSchemaVersion").GetString());
+ 
+-        var trackingFinance = financeFactory.Services.GetRequiredService<TrackingFinanceReadService>();
++        var trackingFinance = financeFactory.Services.GetRequiredService<TrackingFinanceToolProvider>();
+         Assert.Equal(1, trackingFinance.TotalCallCount);
+         Assert.Equal(expectedProviderCall, Assert.Single(trackingFinance.CallNames));
+@@ -94,7 +94,7 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+         Assert.Equal("read", attempt.ResultPayload["actionType"]!.GetValue<string>());
+         Assert.True(attempt.ResultPayload["success"]!.GetValue<bool>());
+         Assert.NotNull(attempt.ResultPayload["data"]![expectedDataProperty]);
+-        Assert.Equal("finance_read_service", attempt.ResultPayload["metadata"]!["contractName"]!.GetValue<string>());
++        Assert.Equal("finance_tool_provider", attempt.ResultPayload["metadata"]!["contractName"]!.GetValue<string>());
+         Assert.Equal("1.0.0", attempt.ResultPayload["metadata"]!["toolVersion"]!.GetValue<string>());
+         Assert.Equal(InternalToolExecutionResponse.SchemaVersion, attempt.ResultPayload["metadata"]!["contractSchemaVersion"]!.GetValue<string>());
+         Assert.NotEqual(default, attempt.StartedUtc);
+@@ -137,7 +137,7 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+         Assert.Equal("policy_denied", payload.Denial!.Code);
+         Assert.Equal(payload.Message, payload.Denial.UserFacingMessage);
+ 
+-        var trackingFinance = financeFactory.Services.GetRequiredService<TrackingFinanceReadService>();
++        var trackingFinance = financeFactory.Services.GetRequiredService<TrackingFinanceToolProvider>();
+         Assert.Equal(0, trackingFinance.TotalCallCount);
+ 
+         using var scope = financeFactory.Services.CreateScope();
+@@ -203,7 +203,7 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+ 
+         Assert.Equal("uncategorized", transaction.TransactionType);
+         Assert.Equal(ToolExecutionStatus.Denied, attempt.Status);
+-        Assert.Equal(0, financeFactory.Services.GetRequiredService<TrackingFinanceCommandService>().TotalCallCount);
++        Assert.Equal(0, financeFactory.Services.GetRequiredService<TrackingFinanceToolProvider>().TotalCallCount);
+     }
+ 
+     [Fact]
+@@ -260,7 +260,7 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+         Assert.Equal(attempt.Id, approval.ThresholdContext["toolExecutionAttemptId"]!.GetValue<Guid>());
+         Assert.Equal(financeSeed.TaskId, approval.DecisionChain["originatingTaskId"]!.GetValue<Guid>());
+         Assert.Equal(attempt.Id, approval.DecisionChain["toolExecutionAttemptId"]!.GetValue<Guid>());
+-        Assert.Equal(0, financeFactory.Services.GetRequiredService<TrackingFinanceCommandService>().TotalCallCount);
++        Assert.Equal(0, financeFactory.Services.GetRequiredService<TrackingFinanceToolProvider>().TotalCallCount);
+     }
+ 
+     [Fact]
+@@ -313,7 +313,7 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+         Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);
+         Assert.NotNull(attempt.ExecutedUtc);
+         Assert.Equal("executed", attempt.ResultPayload["status"]!.GetValue<string>());
+-        Assert.Equal(1, financeFactory.Services.GetRequiredService<TrackingFinanceCommandService>().TotalCallCount);
++        Assert.Equal(1, financeFactory.Services.GetRequiredService<TrackingFinanceToolProvider>().TotalCallCount);
+     }
+ 
+     [Fact]
+@@ -368,7 +368,7 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+         Assert.Equal(executePayload.ApprovalRequestId, attempt.ApprovalRequestId);
+         Assert.Equal(PolicyDecisionReasonCodes.ApprovalRejected, attempt.DenialReason);
+         Assert.Equal("rejected", attempt.ResultPayload["status"]!.GetValue<string>());
+-        Assert.Equal(0, financeFactory.Services.GetRequiredService<TrackingFinanceCommandService>().TotalCallCount);
++        Assert.Equal(0, financeFactory.Services.GetRequiredService<TrackingFinanceToolProvider>().TotalCallCount);
+     }
+ 
+     public static IEnumerable<object[]> SuccessfulFinanceToolRequests()
+@@ -379,35 +379,35 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+             "get_cash_balance",
+             new { asOfUtc = "2026-04-16T00:00:00Z" },
+             "cashBalance",
+-            nameof(TrackingFinanceReadService.GetCashBalanceAsync)
++            nameof(TrackingFinanceToolProvider.GetCashBalanceAsync)
+         ];
+ 
+         yield return
+         [
+             "list_transactions",
+             new { startUtc = "2026-04-01T00:00:00Z", endUtc = "2026-04-16T00:00:00Z", limit = 25 },
+             "transactions",
+-            nameof(TrackingFinanceReadService.GetTransactionsAsync)
++            nameof(TrackingFinanceToolProvider.GetTransactionsAsync)
+         ];
+ 
+         yield return
+         [
+             "list_uncategorized_transactions",
+             new { limit = 10 },
+             "transactions",
+-            nameof(TrackingFinanceReadService.GetTransactionsAsync)
++            nameof(TrackingFinanceToolProvider.GetTransactionsAsync)
+         ];
+ 
+         yield return
+         [
+             "list_invoices_awaiting_approval",
+             new { limit = 10 },
+             "invoices",
+-            nameof(TrackingFinanceReadService.GetInvoicesAsync)
++            nameof(TrackingFinanceToolProvider.GetInvoicesAsync)
+         ];
+ 
+         yield return
+         [
+             "get_profit_and_loss_summary",
+             new { year = 2026, month = 4 },
+             "profitAndLossSummary",
+-            nameof(TrackingFinanceReadService.GetMonthlyProfitAndLossAsync)
++            nameof(TrackingFinanceToolProvider.GetMonthlyProfitAndLossAsync)
+         ];
+     }
+ 
+@@ -417,12 +417,10 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+         {
+             builder.ConfigureServices(services =>
+             {
+-                services.RemoveAll<IFinanceReadService>();
+-                services.RemoveAll<IFinanceCommandService>();
++                services.RemoveAll<IFinanceToolProvider>();
+                 services.RemoveAll<IInternalCompanyToolContract>();
+-                services.AddSingleton<TrackingFinanceReadService>();
+-                services.AddSingleton<TrackingFinanceCommandService>();
+-                services.AddSingleton<IFinanceReadService>(provider => provider.GetRequiredService<TrackingFinanceReadService>());
+-                services.AddScoped<IFinanceCommandService>(provider => provider.GetRequiredService<TrackingFinanceCommandService>());
++                services.AddSingleton<TrackingFinanceToolProvider>();
++                services.AddScoped<IFinanceToolProvider>(provider => provider.GetRequiredService<TrackingFinanceToolProvider>());
+                 services.AddScoped<IInternalCompanyToolContract, InternalCompanyToolContract>();
+             });
+         });
+@@ -606,12 +604,19 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+     private sealed record SeededFinanceRecord(
+         Guid TransactionId,
+         Guid TaskId);
+ 
+-    public sealed class TrackingFinanceReadService : IFinanceReadService
++    public sealed class TrackingFinanceToolProvider : IFinanceToolProvider
+     {
++        private readonly IServiceScopeFactory _scopeFactory;
+         private readonly ConcurrentQueue<string> _callNames = new();
+ 
++        public TrackingFinanceToolProvider(IServiceScopeFactory scopeFactory)
++        {
++            _scopeFactory = scopeFactory;
++        }
++
+         public IReadOnlyList<string> CallNames => _callNames.ToArray();
+         public int TotalCallCount => _callNames.Count;
+ 
+         public Task<FinanceCashBalanceDto> GetCashBalanceAsync(
+             GetFinanceCashBalanceQuery query,
+@@ -765,20 +770,16 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+             ];
+             return Task.FromResult(balances);
+         }
+-    }
+-
+-    public sealed class TrackingFinanceCommandService : IFinanceCommandService
+-    {
+-        private readonly IServiceScopeFactory _scopeFactory;
+-        private readonly ConcurrentQueue<string> _callNames = new();
+ 
+-        public TrackingFinanceCommandService(IServiceScopeFactory scopeFactory)
++        public Task<FinanceTransactionCategoryRecommendationDto> RecommendTransactionCategoryAsync(
++            InternalToolExecutionRequest request,
++            CancellationToken cancellationToken)
+         {
+-            _scopeFactory = scopeFactory;
++            _callNames.Enqueue(nameof(RecommendTransactionCategoryAsync));
++            var transactionId = request.Payload.TryGetValue("transactionId", out var node) && node is JsonValue value && value.TryGetValue<Guid>(out var guid)
++                ? guid
++                : Guid.Empty;
++            return Task.FromResult(new FinanceTransactionCategoryRecommendationDto(transactionId, "software", 0.8m));
+         }
+ 
+-        public int TotalCallCount => _callNames.Count;
+-
+-        public async Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
+-            UpdateFinanceInvoiceApprovalStatusCommand command,
++        public Task<FinanceInvoiceApprovalRecommendationDto> RecommendInvoiceApprovalDecisionAsync(
++            InternalToolExecutionRequest request,
+             CancellationToken cancellationToken)
+         {
+-            _callNames.Enqueue(nameof(UpdateInvoiceApprovalStatusAsync));
+-            using var scope = _scopeFactory.CreateScope();
+-            var service = ActivatorUtilities.CreateInstance<VirtualCompany.Infrastructure.Finance.CompanyFinanceCommandService>(
+-                scope.ServiceProvider,
+-                scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>());
+-            return await service.UpdateInvoiceApprovalStatusAsync(command, cancellationToken);
++            _callNames.Enqueue(nameof(RecommendInvoiceApprovalDecisionAsync));
++            var invoiceId = request.Payload.TryGetValue("invoiceId", out var node) && node is JsonValue value && value.TryGetValue<Guid>(out var guid)
++                ? guid
++                : Guid.Empty;
++            return Task.FromResult(new FinanceInvoiceApprovalRecommendationDto(invoiceId, "approved", 0.8m));
+         }
+ 
+         public async Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(
+@@ -804,5 +805,17 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+             await dbContext.SaveChangesAsync(cancellationToken);
+             return new FinanceTransactionDto(transaction.Id, transaction.AccountId, transaction.Account.Name, transaction.CounterpartyId, transaction.Counterparty?.Name, transaction.InvoiceId, transaction.BillId, transaction.TransactionUtc, transaction.TransactionType, transaction.Amount, transaction.Currency, transaction.Description, transaction.ExternalReference, null);
+         }
++
++        public async Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
++            UpdateFinanceInvoiceApprovalStatusCommand command,
++            CancellationToken cancellationToken)
++        {
++            _callNames.Enqueue(nameof(UpdateInvoiceApprovalStatusAsync));
++            using var scope = _scopeFactory.CreateScope();
++            var service = ActivatorUtilities.CreateInstance<VirtualCompany.Infrastructure.Finance.CompanyFinanceCommandService>(
++                scope.ServiceProvider,
++                scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>());
++            return await service.UpdateInvoiceApprovalStatusAsync(command, cancellationToken);
++        }
+     }
+ }
+END_OF_PATCH

@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Activity;
 using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.Alerts;
@@ -16,10 +17,12 @@ using VirtualCompany.Application.Briefings;
 using VirtualCompany.Application.Context;
 using VirtualCompany.Application.Chat;
 using StackExchange.Redis;
+using VirtualCompany.Application.Focus;
 using VirtualCompany.Application.ExecutionExceptions;
 using VirtualCompany.Application.Escalations;
 using VirtualCompany.Application.Orchestration;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Insights;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Tasks;
@@ -39,6 +42,7 @@ using VirtualCompany.Infrastructure.Authorization;
 using VirtualCompany.Infrastructure.Context;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Documents;
+using VirtualCompany.Infrastructure.Finance;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Memory;
 using VirtualCompany.Infrastructure.Observability;
@@ -71,6 +75,38 @@ public static class DependencyInjection
         services.AddOptions<CompanyOutboxDispatcherOptions>()
             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
 
+        services.AddOptions<FinanceToolProviderOptions>()
+            .Bind(configuration.GetSection(FinanceToolProviderOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.Provider = string.IsNullOrWhiteSpace(options.Provider) ? FinanceToolProviderOptions.InternalProvider : options.Provider.Trim();
+            });
+
+        services.AddOptions<FinanceAnomalyDetectionOptions>()
+            .Bind(configuration.GetSection(FinanceAnomalyDetectionOptions.SectionName));
+
+        services.AddOptions<CompanySimulationOptions>()
+            .Bind(configuration.GetSection(CompanySimulationOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.DefaultStepHours = Math.Clamp(options.DefaultStepHours, 1, 168);
+                options.DefaultAutoAdvanceIntervalSeconds = Math.Max(0, options.DefaultAutoAdvanceIntervalSeconds);
+            });
+        services.AddOptions<SimulationFeatureOptions>()
+            .Bind(configuration.GetSection(SimulationFeatureOptions.SectionName))
+            .Validate(options => !string.IsNullOrWhiteSpace(options.DisabledMessage), "SimulationFeatures:DisabledMessage is required.")
+            .PostConfigure(options =>
+            {
+                options.DisabledMessage = options.DisabledMessage.Trim();
+            });
+        services.AddOptions<CompanySimulationProgressionWorkerOptions>()
+            .Bind(configuration.GetSection(CompanySimulationProgressionWorkerOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.PollIntervalMilliseconds = Math.Max(100, options.PollIntervalMilliseconds);
+                options.BatchSize = Math.Max(1, options.BatchSize);
+            });
+
         services.AddOptions<RedisExecutionCoordinationOptions>()
             .Bind(configuration.GetSection(RedisExecutionCoordinationOptions.SectionName))
             .Validate(
@@ -84,6 +120,31 @@ public static class DependencyInjection
         services.AddOptions<BackgroundExecutionOptions>()
             .Bind(configuration.GetSection(BackgroundExecutionOptions.SectionName))
             .Configure(options => options.BaseRetryDelaySeconds = Math.Max(options.BaseRetryDelaySeconds, 0));
+        services.AddOptions<FinanceSeedWorkerOptions>()
+            .Bind(configuration.GetSection(FinanceSeedWorkerOptions.SectionName))
+            .PostConfigure(options => options.BatchSize = Math.Max(1, options.BatchSize));
+        services.AddOptions<FinanceInitializationOptions>()
+            .Bind(configuration.GetSection(FinanceInitializationOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.MissingDatasetBehavior = FinanceMissingDatasetBehaviorValues.Normalize(options.MissingDatasetBehavior);
+            });
+        services.AddOptions<FinanceTransactionCreationOptions>()
+            .Bind(configuration.GetSection(FinanceTransactionCreationOptions.SectionName));
+        services.AddOptions<FinanceSeedBackfillWorkerOptions>()
+            .Bind(configuration.GetSection(FinanceSeedBackfillWorkerOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.ScanPageSize = Math.Max(1, options.ScanPageSize);
+                options.EnqueueBatchSize = Math.Max(1, options.EnqueueBatchSize);
+                options.MaxConcurrentEnqueues = Math.Max(1, options.MaxConcurrentEnqueues);
+                options.RateLimitCount = Math.Max(0, options.RateLimitCount);
+                options.RateLimitWindowSeconds = Math.Max(0, options.RateLimitWindowSeconds);
+                options.MaxRetries = Math.Max(0, options.MaxRetries);
+                options.BaseRetryDelaySeconds = Math.Max(0, options.BaseRetryDelaySeconds);
+                options.RetryBackoffMultiplier = options.RetryBackoffMultiplier < 1d ? 1d : options.RetryBackoffMultiplier;
+                options.MaxRetryDelaySeconds = Math.Max(options.BaseRetryDelaySeconds, options.MaxRetryDelaySeconds);
+            });
 
         services.AddOptions<KnowledgeChunkingOptions>()
             .Bind(configuration.GetSection(KnowledgeChunkingOptions.SectionName));
@@ -114,6 +175,8 @@ public static class DependencyInjection
                     ? "v1"
                     : options.KeyVersion.Trim().ToLowerInvariant();
             });
+        services.AddOptions<CompanyDashboardBriefingSummaryService.DashboardBriefingSummaryOptions>()
+            .Bind(configuration.GetSection(CompanyDashboardBriefingSummaryService.DashboardBriefingSummaryOptions.SectionName));
 
         services.AddOptions<MultiAgentCollaborationOptions>()
             .Bind(configuration.GetSection(MultiAgentCollaborationOptions.SectionName))
@@ -158,6 +221,7 @@ public static class DependencyInjection
         services.AddSingleton<IGroundedContextRetrievalSectionCache, GroundedContextRetrievalSectionCache>();
         services.AddSingleton<ExecutiveCockpitCacheKeyBuilder>();
         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
+        services.AddHttpClient(CompanyDashboardBriefingSummaryService.ClientName);
         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
         services.AddVirtualCompanyObservability(configuration);
         services.AddOptions<WorkflowSchedulerOptions>()
@@ -179,6 +243,9 @@ public static class DependencyInjection
         services.AddHostedService<BriefingUpdateJobBackgroundService>();
         services.AddHostedService<WorkflowProgressionBackgroundService>();
         services.AddHostedService<TriggerEvaluationBackgroundService>();
+        services.AddHostedService<FinanceSeedBackfillBackgroundService>();
+        services.AddHostedService<CompanySimulationProgressionBackgroundService>();
+        services.AddHostedService<FinanceSeedBackgroundService>();
 
         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
         services.AddSingleton<IBackgroundJobExecutor, BackgroundJobExecutor>();
@@ -195,6 +262,8 @@ public static class DependencyInjection
         services.AddScoped<CompanyQueryService>();
         services.AddScoped<ICompanyOutboxEnqueuer, CompanyOutboxEnqueuer>();
         services.AddScoped<ICompanyOutboxProcessor, CompanyOutboxProcessor>();
+        services.AddScoped<ISignalEngine, CompanySignalEngine>();
+        services.AddScoped<IDashboardFinanceSnapshotService, CompanyDashboardFinanceSnapshotService>();
         services.AddScoped<ICompanyInvitationDeliveryDispatcher, CompanyInvitationDeliveryDispatcher>();
         services.AddScoped<ICompanyNotificationDispatcher, CompanyNotificationDispatcher>();
         services.AddScoped<ICompanyInvitationSender, LoggingCompanyInvitationSender>();
@@ -233,6 +302,11 @@ public static class DependencyInjection
         services.AddScoped<CompanyMemoryService>();
         services.AddScoped<CompanyTaskService>();
         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
+        services.AddScoped<IFocusEngine, CompanyFocusEngine>();
+        services.AddScoped<IFocusCandidateSource, ApprovalFocusCandidateSource>();
+        services.AddScoped<IFocusCandidateSource, TaskFocusCandidateSource>();
+        services.AddScoped<IFocusCandidateSource, AlertAnomalyFocusCandidateSource>();
+        services.AddScoped<IFocusCandidateSource, FinanceAlertFocusCandidateSource>();
         services.AddScoped<ITriggerToTaskMappingService, DefaultTriggerToTaskMappingService>();
         services.AddScoped<IProactiveTaskDuplicateDetector, EfProactiveTaskDuplicateDetector>();
         services.AddScoped<IProactiveTaskCreationService, ProactiveTaskCreationService>();
@@ -281,17 +355,52 @@ public static class DependencyInjection
         services.AddScoped<IBriefingGenerationPipeline, CompanyBriefingGenerationPipeline>();
         services.AddScoped<IBriefingUpdateJobRunner, CompanyBriefingUpdateJobRunner>();
         services.AddScoped<ICompanyBriefingService, CompanyBriefingService>();
+        services.AddScoped<IDashboardBriefingSummaryService, CompanyDashboardBriefingSummaryService>();
         services.AddScoped<CompanyWorkflowService>();
         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
         services.AddScoped<IMobileSummaryService, CompanyMobileSummaryService>();
         services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
         services.AddSingleton<IExecutiveCockpitDashboardCacheInvalidator>(provider => (IExecutiveCockpitDashboardCacheInvalidator)provider.GetRequiredService<IExecutiveCockpitDashboardCache>());
+        services.AddScoped<InternalFinanceToolProvider>();
+        services.AddScoped<MockFinanceToolProvider>();
+        services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
+        services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+        services.AddScoped<ISignalEngine, CompanySignalEngine>();
+        services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
+        services.AddScoped<IFinanceSeedBootstrapService, CompanyFinanceSeedBootstrapService>();
+        services.AddSingleton<IFinanceSeedTelemetry, FinanceSeedTelemetry>();
+        services.AddScoped<IDashboardFinanceSnapshotService, CompanyDashboardFinanceSnapshotService>();
+        services.AddScoped<IFinanceSeedingStateService, CompanyFinanceSeedingStateResolver>();
+        services.AddScoped<IFinanceSeedBackfillOrchestrator, FinanceSeedBackfillOrchestrator>();
+        services.AddScoped<IFinanceSeedBackfillQueryService, FinanceSeedBackfillQueryService>();
+        services.AddScoped<IFinanceEntryService, CompanyFinanceEntryService>();
+        services.AddScoped<IFinanceSeedJobRunner, CompanyFinanceSeedJobRunner>();
+        services.AddSingleton<IFinanceSeedBackfillExecutionScheduler, FinanceSeedBackfillExecutionScheduler>();
+        services.AddSingleton<IFinanceSeedBackfillDelayStrategy, SystemFinanceSeedBackfillDelayStrategy>();
+        services.AddScoped<IFinanceSeedingStateResolver, CompanyFinanceSeedingStateResolver>();
+        services.AddScoped<IInvoiceReviewWorkflowService, CompanyInvoiceReviewWorkflowService>();
+        services.AddScoped<IFinanceTransactionAnomalyDetectionService, CompanyFinanceTransactionAnomalyDetectionService>();
+        services.AddScoped<IFinanceCashPositionWorkflowService, CompanyFinanceCashPositionWorkflowService>();
+        services.AddScoped<IFinanceToolProvider>(provider =>
+        {
+            var options = provider.GetRequiredService<IOptions<FinanceToolProviderOptions>>().Value;
+            return options.Provider.Equals(FinanceToolProviderOptions.MockProvider, StringComparison.OrdinalIgnoreCase)
+                ? provider.GetRequiredService<MockFinanceToolProvider>()
+                : provider.GetRequiredService<InternalFinanceToolProvider>();
+        });
         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
+        services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
         services.AddScoped<ExecutionExceptionService>();
+        services.AddScoped<ICompanySimulationService, CompanySimulationService>();
         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+        services.AddScoped<ICompanySimulationStateRepository, EfCompanySimulationStateRepository>();
+        services.AddSingleton<IFinanceDeterministicValueSource, Sha256FinanceDeterministicValueSource>();
+        services.AddSingleton<IFinanceScenarioFactory, DefaultFinanceScenarioFactory>();
+        services.AddSingleton<IFinanceAnomalyScheduleFactory, PeriodicFinanceAnomalyScheduleFactory>();
+        services.AddScoped<IFinanceGenerationPolicy, CompanySimulationFinanceGenerationService>();
         services.AddScoped<IExecutionExceptionQueryService>(provider => provider.GetRequiredService<ExecutionExceptionService>());
         services.AddScoped<CompanyAlertService>();
         services.AddScoped<ICompanyAlertService>(provider => provider.GetRequiredService<CompanyAlertService>());
@@ -302,8 +411,12 @@ public static class DependencyInjection
         services.AddScoped<IWorkflowSchedulePollingService, WorkflowSchedulePollingService>();
         services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());
         services.AddScoped<ICompanyMemoryService>(provider => provider.GetRequiredService<CompanyMemoryService>());
+        services.AddSingleton<ISimulationFeatureGate, ConfigurationSimulationFeatureGate>();
+        services.AddScoped<CompanySimulationStateService>();
         services.AddScoped<IMemoryRetrievalService>(provider => provider.GetRequiredService<CompanyMemoryService>());
         services.AddScoped<IAgentAssignmentGuard, CompanyAgentAssignmentGuard>();
+        services.AddScoped<ICompanySimulationStateService>(provider => provider.GetRequiredService<CompanySimulationStateService>());
+        services.AddScoped<ICompanySimulationProgressionRunner, CompanySimulationProgressionRunner>();
         services.AddScoped<IAgentToolExecutionService, CompanyAgentToolExecutionService>();
         services.AddScoped<IPolicyGuardrailEngine, PolicyGuardrailEngine>();
         services.AddSingleton<ICompanyToolRegistry, StaticCompanyToolRegistry>();
@@ -319,6 +432,8 @@ public static class DependencyInjection
         services.AddScoped<ICompanyMembershipContextResolver, CompanyMembershipContextResolver>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipRoleAuthorizationHandler>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipRoleResourceAuthorizationHandler>();
+        services.AddScoped<IAuthorizationHandler, CompanyPermissionAuthorizationHandler>();
+        services.AddScoped<IAuthorizationHandler, CompanyPermissionResourceAuthorizationHandler>();
 
         services
             .AddAuthentication(options =>

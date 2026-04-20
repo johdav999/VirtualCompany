@@ -1,0 +1,340 @@
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 7b8f84d..03cffb8 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -169,7 +169,7 @@
+             <div class="cockpit-kpi-grid mt-3">
+                 @foreach (var section in VisibleDepartmentSections)
+                 {
+-                    var signals = DepartmentSignals(section).ToList();
++                    var signals = section.VisibleSignals;
+                     <section class="summary-pill department-section-card" aria-label="@section.DisplayName">
+                         <div class="department-section-card__header">
+                             <div>
+@@ -184,7 +184,7 @@
+                             <dl class="cockpit-kpi-list department-section-card__metrics mb-0 mt-3">
+                                 @foreach (var signal in signals)
+                                 {
+-                                    <div><dt>@FormatSummaryLabel(signal.Key)</dt><dd>@signal.Value</dd></div>
++                                    <div><dt>@signal.Label</dt><dd>@signal.Value</dd></div>
+                                 }
+                             </dl>
+                         }
+@@ -249,11 +249,6 @@
+             new("Active agents", dashboard.SetupState.AgentCount, "Agents configured for this company.", AgentsPath, "open-agents", "Open agents")
+         ];
+     }
+-
+-    private static IEnumerable<KeyValuePair<string, int>> DepartmentSignals(DepartmentDashboardSectionViewModel section) =>
+-        section.SummaryCounts
+-            .Where(item => item.Value > 0)
+-            .Take(3);
+ 
+     private static bool HasDrillRoute(string? route) =>
+         !string.IsNullOrWhiteSpace(route) && route.StartsWith("/", StringComparison.Ordinal);
+@@ -433,12 +428,6 @@
+         new("widget", NormalizeCssToken(widgetKey)),
+         new("status", status)
+     ];
+-
+-    private static string FormatSummaryLabel(string key) =>
+-        string.Join(
+-            " ",
+-            key.Split('_', StringSplitOptions.RemoveEmptyEntries)
+-                .Select(word => word.Length == 0 ? word : char.ToUpperInvariant(word[0]) + word[1..]));
+ 
+     private sealed record OperationSummaryItem(string Label, int Value, string Description, string Route, string ActionKey, string ActionLabel);
+ }
+diff --git a/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs b/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs
+index 0bad6b4..b454f63 100644
+--- a/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs
++++ b/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs
+@@ -28,10 +28,12 @@ public sealed class DashboardTelemetrySession
+     }
+ 
+     public string SessionId { get; }
++    public DateTime SessionStartedUtc => _sessionStartedUtc;
+     public string PageName { get; }
+     public Guid? CompanyId { get; }
+     public bool HasStarted { get; private set; }
+     public DateTime? FirstActionAtUtc { get; private set; }
++    public DateTime? LastActionAtUtc { get; private set; }
+     public double? TimeToFirstActionMilliseconds { get; private set; }
+     public bool HasRecordedFirstAction => FirstActionAtUtc.HasValue;
+     public double MaxScrollDepthPercentage => _maxScrollDepthPercentage;
+@@ -64,6 +66,7 @@ public sealed class DashboardTelemetrySession
+ 
+     public void RecordAction(DashboardActionTelemetryContext context)
+     {
++        LastActionAtUtc = DateTime.UtcNow;
+         LastActionContext = context;
+         Actions.Add(1, Tags("dashboard_action_clicked", context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label, context.Position, null));
+ 
+@@ -73,7 +76,7 @@ public sealed class DashboardTelemetrySession
+         }
+ 
+         FirstActionContext = context;
+-        FirstActionAtUtc = DateTime.UtcNow;
++        FirstActionAtUtc = LastActionAtUtc;
+         TimeToFirstActionMilliseconds = Math.Max(0, (FirstActionAtUtc.Value - _sessionStartedUtc).TotalMilliseconds);
+         TimeToFirstAction.Record(TimeToFirstActionMilliseconds.Value, Tags("dashboard_first_action_recorded", context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label, context.Position, null));
+         FirstActionRecorded.Add(1, Tags("dashboard_first_action_recorded", context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label, context.Position, null));
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+index 4b491f0..ef25c15 100644
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -652,6 +652,9 @@ public sealed class DepartmentDashboardSectionViewModel
+     public bool HasData { get; set; }
+     public Dictionary<string, int> SummaryCounts { get; set; } = [];
+     public bool IsEmpty { get; set; }
++    public IReadOnlyList<DepartmentSignalSummaryViewModel> VisibleSignals =>
++        DepartmentSignalSummaryViewModel.SelectTopSignals(DepartmentKey, SummaryCounts);
++
+     public DepartmentDashboardNavigationViewModel Navigation { get; set; } = new();
+     public DepartmentDashboardEmptyStateViewModel EmptyState { get; set; } = new();
+     public List<DepartmentDashboardWidgetViewModel> Widgets { get; set; } = [];
+@@ -680,3 +683,53 @@ public sealed class DepartmentDashboardEmptyStateViewModel
+     public string? ActionLabel { get; set; }
+     public string? ActionRoute { get; set; }
+ }
++
++public sealed class DepartmentSignalSummaryViewModel
++{
++    private static readonly IReadOnlyDictionary<string, int> SignalPriority = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
++    {
++        ["blocked_workflows"] = 0,
++        ["pending_approvals"] = 1,
++        ["blocked_tasks"] = 2,
++        ["overdue_tasks"] = 3,
++        ["open_tasks"] = 4,
++        ["workflow_exceptions"] = 5,
++        ["active_incidents"] = 6,
++        ["unresolved_alerts"] = 7,
++        ["recent_alerts"] = 8,
++        ["active_agents"] = 9,
++        ["backlog_items"] = 10
++    };
++
++    public string Key { get; init; } = string.Empty;
++    public string Label { get; init; } = string.Empty;
++    public int Value { get; init; }
++    public int Priority { get; init; }
++
++    public static IReadOnlyList<DepartmentSignalSummaryViewModel> SelectTopSignals(
++        string? departmentKey,
++        IReadOnlyDictionary<string, int>? summaryCounts)
++    {
++        if (summaryCounts is null || summaryCounts.Count == 0)
++        {
++            return [];
++        }
++
++        // Keep department cards scannable by suppressing zero-value rollups and surfacing the three most actionable signals first.
++        return summaryCounts
++            .Where(item => item.Value > 0)
++            .Select(item => new DepartmentSignalSummaryViewModel
++            {
++                Key = item.Key,
++                Label = ToLabel(item.Key),
++                Value = item.Value,
++                Priority = SignalPriority.TryGetValue(item.Key, out var priority) ? priority : int.MaxValue
++            })
++            .OrderBy(item => item.Priority)
++            .ThenByDescending(item => item.Value)
++            .ThenBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
++            .Take(3)
++            .ToArray();
++    }
++
++    private static string ToLabel(string key) =>
++        string.Join(" ",
++            key.Split('_', StringSplitOptions.RemoveEmptyEntries)
++                .Select(word => word.Length == 0 ? word : char.ToUpperInvariant(word[0]) + word[1..]));
++}
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardRoutesTests.cs b/tests/VirtualCompany.Api.Tests/DashboardRoutesTests.cs
+index 4701d5a..2cd333a 100644
+--- a/tests/VirtualCompany.Api.Tests/DashboardRoutesTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DashboardRoutesTests.cs
+@@ -39,6 +39,28 @@ public sealed class DashboardRoutesTests
+             $"/queue?companyId={companyId:D}&source=dashboard",
+             route);
+     }
++
++    [Fact]
++    public void Ensure_company_context_adds_default_task_context_to_department_links()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++
++        var route = DashboardRoutes.EnsureCompanyContext("/tasks?view=operations", companyId, "/tasks");
++
++        Assert.Equal(
++            $"/tasks?view=operations&companyId={companyId:D}&filter=today&status=pending&source=dashboard",
++            route);
++    }
++
++    [Fact]
++    public void Normalize_focus_target_maps_known_dashboard_routes_to_scoped_deep_links()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++
++        var route = DashboardRoutes.NormalizeFocusTarget("/dashboard/briefings", companyId);
++
++        Assert.Equal(
++            $"/briefing-preferences?companyId={companyId:D}&source=dashboard",
++            route);
++    }
+ 
+     [Fact]
+     public void Ensure_company_context_adds_finance_action_context()
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs b/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs
+index 5f6bdc7..54eaac5 100644
+--- a/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs
+@@ -15,10 +15,13 @@ public sealed class DashboardTelemetrySessionTests
+         session.RecordAction(new DashboardActionTelemetryContext("finance", "open-finance-home", "/finance"));
+ 
+         Assert.True(session.HasRecordedFirstAction);
++        Assert.True(session.SessionStartedUtc <= firstAction);
+         Assert.Equal(firstAction, session.FirstActionAtUtc);
++        Assert.Equal(firstAction, session.LastActionAtUtc);
+         Assert.Equal("open-queue", session.FirstActionContext?.ActionKey);
+     }
+ 
++
+     [Fact]
+     public void Focus_click_preserves_payload_and_records_time_to_first_action_metric()
+     {
+@@ -37,6 +40,18 @@ public sealed class DashboardTelemetrySessionTests
+         Assert.True(session.TimeToFirstActionMilliseconds >= 0);
+     }
+ 
++    [Fact]
++    public void First_action_timestamp_is_captured_from_the_same_action_event_that_sets_time_to_first_action()
++    {
++        var session = new DashboardTelemetrySession("dashboard", Guid.NewGuid());
++
++        session.RecordAction(new DashboardActionTelemetryContext("action-queue", "open-queue", "/queue"));
++
++        Assert.NotNull(session.FirstActionAtUtc);
++        Assert.NotNull(session.LastActionAtUtc);
++        Assert.Equal(session.FirstActionAtUtc, session.LastActionAtUtc);
++        Assert.True(session.FirstActionAtUtc >= session.SessionStartedUtc);
++    }
++
+     [Fact]
+     public void Scroll_depth_only_moves_forward()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/DepartmentDashboardSectionViewModelTests.cs b/tests/VirtualCompany.Api.Tests/DepartmentDashboardSectionViewModelTests.cs
+new file mode 100644
+index 0000000..d90cfca
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/DepartmentDashboardSectionViewModelTests.cs
+@@ -0,0 +1,79 @@
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class DepartmentDashboardSectionViewModelTests
++{
++    [Fact]
++    public void Visible_signals_hide_zero_values_and_limit_cards_to_three()
++    {
++        var section = new DepartmentDashboardSectionViewModel
++        {
++            DepartmentKey = "operations",
++            SummaryCounts = new Dictionary<string, int>
++            {
++                ["open_tasks"] = 12,
++                ["blocked_workflows"] = 3,
++                ["pending_approvals"] = 2,
++                ["zero_metric"] = 0,
++                ["overflow_metric"] = 99
++            }
++        };
++
++        var signals = section.VisibleSignals;
++
++        Assert.Collection(
++            signals,
++            signal =>
++            {
++                Assert.Equal("blocked_workflows", signal.Key);
++                Assert.Equal("Blocked Workflows", signal.Label);
++                Assert.Equal(3, signal.Value);
++            },
++            signal =>
++            {
++                Assert.Equal("pending_approvals", signal.Key);
++                Assert.Equal("Pending Approvals", signal.Label);
++                Assert.Equal(2, signal.Value);
++            },
++            signal =>
++            {
++                Assert.Equal("open_tasks", signal.Key);
++                Assert.Equal("Open Tasks", signal.Label);
++                Assert.Equal(12, signal.Value);
++            });
++    }
++
++    [Fact]
++    public void Visible_signals_returns_empty_when_all_metrics_are_zero()
++    {
++        var section = new DepartmentDashboardSectionViewModel
++        {
++            DepartmentKey = "operations",
++            SummaryCounts = new Dictionary<string, int>
++            {
++                ["open_tasks"] = 0,
++                ["pending_approvals"] = 0
++            }
++        };
++
++        Assert.Empty(section.VisibleSignals);
++    }
++
++    [Fact]
++    public void Visible_signals_are_deterministic_for_unknown_metrics()
++    {
++        var section = new DepartmentDashboardSectionViewModel
++        {
++            DepartmentKey = "custom",
++            SummaryCounts = new Dictionary<string, int>
++            {
++                ["custom_b"] = 4,
++                ["custom_a"] = 4,
++                ["custom_d"] = 1,
++                ["custom_c"] = 4
++            }
++        };
++
++        Assert.Equal(
++            new[] { "custom_a", "custom_b", "custom_c" },
++            section.VisibleSignals.Select(signal => signal.Key).ToArray());
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+index 9366f0c..d25ced0 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+@@ -180,8 +180,18 @@ public sealed class ExecutiveCockpitDashboardPageTests
+ 
+         using var harness = CreateDashboardHarness(companyId, dashboard);
+         var cut = RenderDashboard(harness, companyId, dashboard.CompanyName);
+-        cut.WaitForAssertion(() => Assert.Equal(3, cut.FindAll(".department-section-card__metrics div").Count));
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Equal(3, cut.FindAll(".department-section-card__metrics div").Count);
++            Assert.Equal(
++                new[] { "Blocked Workflows", "Pending Approvals", "Open Tasks" },
++                cut.FindAll(".department-section-card__metrics dt").Select(node => node.TextContent.Trim()).ToArray());
++            Assert.Equal(
++                DashboardRoutes.EnsureCompanyContext($"/tasks?companyId={companyId:D}&view=operations", companyId, "/agents"),
++                cut.Find(".department-section-card__link").GetAttribute("href"));
++        });
++
+         Assert.DoesNotContain("Zero Metric", cut.Markup);
+         Assert.DoesNotContain("Overflow Metric", cut.Markup);
+     }
+ }
+END_OF_PATCH

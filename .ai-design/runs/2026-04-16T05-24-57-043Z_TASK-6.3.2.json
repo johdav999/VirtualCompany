@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-6.3.2",
+  "promptPath": ".ai-design/prompts/TASK-6.3.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T05:24:57.043Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T05-24-57-043Z_TASK-6.3.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T05-24-57-043Z_TASK-6.3.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T05:27:07.311Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, \"approved\"),\n+                CancellationToken.None));\n+        Assert.Equal(\"open\", await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceId).Select(x => x.Status).SingleAsync());\n+    }\n+\n     [Fact]\n     public async Task Policy_configuration_is_persisted_and_retrieved_as_typed_configuration()\n     {\n@@ -139,6 +170,35 @@ public sealed class FinanceCommandServiceTests\n         Assert.Equal(1, await dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));\n     }\n \n+    [Fact]\n+    public async Task Policy_configuration_rejects_invalid_control_bounds()\n+    {\n+        var companyId = Guid.NewGuid();\n+        await using var connection = await OpenConnectionAsync();\n+        var accessor = new TestCompanyContextAccessor(companyId);\n+        await using var dbContext = CreateContext(connection, accessor);\n+        await dbContext.Database.EnsureCreatedAsync();\n+        dbContext.Companies.Add(new Company(companyId, \"Invalid Policy Company\"));\n+        await dbContext.SaveChangesAsync();\n+\n+        var service = new CompanyFinanceCommandService(dbContext, accessor);\n+\n+        await Assert.ThrowsAsync<ArgumentException>(() =>\n+            service.UpsertPolicyConfigurationAsync(\n+                new UpsertFinancePolicyConfigurationCommand(\n+                    companyId,\n+                    new FinancePolicyConfigurationDto(\n+                        companyId,\n+                        \"USD\",\n+                        12500m,\n+                        7500m,\n+                        true,\n+                        15000m,\n+                        -2500m,\n+                        120,\n+                        45)),\n+                CancellationToken.None));\n+    }\n+\n     private static async Task<SqliteConnection> OpenConnectionAsync()\n     {\n         var connection = new SqliteConnection(\"Data Source=:memory:\");\nEND_OF_PATCH\n",
+  "stderrTail": "voiceApprovalStatusCommand(companyId, seed.InvoiceId, \"approved\"),\n+                CancellationToken.None));\n+        Assert.Equal(\"open\", await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceId).Select(x => x.Status).SingleAsync());\n+    }\n+\n     [Fact]\n     public async Task Policy_configuration_is_persisted_and_retrieved_as_typed_configuration()\n     {\n@@ -139,6 +170,35 @@ public sealed class FinanceCommandServiceTests\n         Assert.Equal(1, await dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));\n     }\n \n+    [Fact]\n+    public async Task Policy_configuration_rejects_invalid_control_bounds()\n+    {\n+        var companyId = Guid.NewGuid();\n+        await using var connection = await OpenConnectionAsync();\n+        var accessor = new TestCompanyContextAccessor(companyId);\n+        await using var dbContext = CreateContext(connection, accessor);\n+        await dbContext.Database.EnsureCreatedAsync();\n+        dbContext.Companies.Add(new Company(companyId, \"Invalid Policy Company\"));\n+        await dbContext.SaveChangesAsync();\n+\n+        var service = new CompanyFinanceCommandService(dbContext, accessor);\n+\n+        await Assert.ThrowsAsync<ArgumentException>(() =>\n+            service.UpsertPolicyConfigurationAsync(\n+                new UpsertFinancePolicyConfigurationCommand(\n+                    companyId,\n+                    new FinancePolicyConfigurationDto(\n+                        companyId,\n+                        \"USD\",\n+                        12500m,\n+                        7500m,\n+                        true,\n+                        15000m,\n+                        -2500m,\n+                        120,\n+                        45)),\n+                CancellationToken.None));\n+    }\n+\n     private static async Task<SqliteConnection> OpenConnectionAsync()\n     {\n         var connection = new SqliteConnection(\"Data Source=:memory:\");\nEND_OF_PATCH\ntokens used\n59,420\n",
+  "verbosityMode": "summary"
+}

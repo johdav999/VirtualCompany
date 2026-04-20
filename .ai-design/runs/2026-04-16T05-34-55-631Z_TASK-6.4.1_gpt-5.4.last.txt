@@ -1,0 +1,952 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 2c7c8e2..3e5f1d8 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -22,6 +22,12 @@ public sealed record GetFinanceInvoicesQuery(
+     DateTime? EndUtc = null,
+     int Limit = 100);
+ 
++public sealed record GetFinanceBillsQuery(
++    Guid CompanyId,
++    DateTime? StartUtc = null,
++    DateTime? EndUtc = null,
++    int Limit = 100);
++
+ public sealed record GetFinanceBalancesQuery(
+     Guid CompanyId,
+     DateTime? AsOfUtc = null);
+@@ -74,7 +80,8 @@ public sealed record FinanceTransactionDto(
+     decimal Amount,
+     string Currency,
+     string Description,
+-    string ExternalReference);
++    string ExternalReference,
++    FinanceLinkedDocumentDto? LinkedDocument);
+ 
+ public sealed record FinanceInvoiceDto(
+     Guid Id,
+@@ -86,7 +93,23 @@ public sealed record FinanceInvoiceDto(
+     decimal Amount,
+     string Currency,
+-    string Status);
++    string Status,
++    FinanceLinkedDocumentDto? LinkedDocument);
++
++public sealed record FinanceBillDto(
++    Guid Id,
++    Guid CounterpartyId,
++    string CounterpartyName,
++    string BillNumber,
++    DateTime ReceivedUtc,
++    DateTime DueUtc,
++    decimal Amount,
++    string Currency,
++    string Status,
++    FinanceLinkedDocumentDto? LinkedDocument);
++
++public sealed record FinanceLinkedDocumentDto(
++    Guid Id,
++    string Title,
++    string OriginalFileName,
++    string ContentType);
+ 
+ public sealed record FinancePolicyConfigurationDto(
+     Guid CompanyId,
+@@ -128,6 +151,10 @@ public interface IFinanceReadService
+     Task<IReadOnlyList<FinanceInvoiceDto>> GetInvoicesAsync(
+         GetFinanceInvoicesQuery query,
+         CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<FinanceBillDto>> GetBillsAsync(
++        GetFinanceBillsQuery query,
++        CancellationToken cancellationToken);
+ 
+     Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(
+         GetFinanceBalancesQuery query,
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+index 05fbe31..99ffbd4 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+@@ -138,7 +138,8 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
+         decimal amount,
+         string currency,
+         string description,
+-        string externalReference)
++        string externalReference,
++        Guid? documentId = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -164,6 +165,11 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
+             throw new ArgumentException("BillId cannot be empty.", nameof(billId));
+         }
+ 
++        if (documentId == Guid.Empty)
++        {
++            throw new ArgumentException("DocumentId cannot be empty.", nameof(documentId));
++        }
++
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+         AccountId = accountId;
+@@ -171,6 +177,7 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
+         CounterpartyId = counterpartyId;
+         InvoiceId = invoiceId;
+         BillId = billId;
++        DocumentId = documentId;
+         TransactionUtc = transactionUtc;
+         TransactionType = NormalizeRequired(transactionType, nameof(transactionType), 64);
+         Amount = amount;
+@@ -187,6 +194,7 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
+     public Guid? CounterpartyId { get; private set; }
+     public Guid? InvoiceId { get; private set; }
+     public Guid? BillId { get; private set; }
++    public Guid? DocumentId { get; private set; }
+     public DateTime TransactionUtc { get; private set; }
+     public string TransactionType { get; private set; } = null!;
+     public decimal Amount { get; private set; }
+@@ -200,6 +208,7 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
+     public FinanceCounterparty? Counterparty { get; private set; }
+     public FinanceInvoice? Invoice { get; private set; }
+     public FinanceBill? Bill { get; private set; }
++    public CompanyKnowledgeDocument? Document { get; private set; }
+ 
+     public void ChangeCategory(string category)
+     {
+@@ -230,7 +239,18 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
+     private FinanceInvoice()
+     {
+     }
+ 
+-    public FinanceInvoice(Guid id, Guid companyId, Guid counterpartyId, string invoiceNumber, DateTime issuedUtc, DateTime dueUtc, decimal amount, string currency, string status)
++    public FinanceInvoice(
++        Guid id,
++        Guid companyId,
++        Guid counterpartyId,
++        string invoiceNumber,
++        DateTime issuedUtc,
++        DateTime dueUtc,
++        decimal amount,
++        string currency,
++        string status,
++        Guid? documentId = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -242,6 +262,11 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
+             throw new ArgumentException("CounterpartyId is required.", nameof(counterpartyId));
+         }
+ 
++        if (documentId == Guid.Empty)
++        {
++            throw new ArgumentException("DocumentId cannot be empty.", nameof(documentId));
++        }
++
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+         CounterpartyId = counterpartyId;
+@@ -251,6 +276,7 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
+         Amount = amount;
+         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
+         Status = NormalizeRequired(status, nameof(status), 32);
++        DocumentId = documentId;
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+     }
+@@ -264,6 +290,7 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
+     public decimal Amount { get; private set; }
+     public string Currency { get; private set; } = null!;
+     public string Status { get; private set; } = null!;
++    public Guid? DocumentId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+@@ -271,6 +298,7 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
+     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
++    public CompanyKnowledgeDocument? Document { get; private set; }
+ 
+     public void ChangeApprovalStatus(string status)
+     {
+@@ -315,7 +343,18 @@ public sealed class FinanceBill : ICompanyOwnedEntity
+     private FinanceBill()
+     {
+     }
+ 
+-    public FinanceBill(Guid id, Guid companyId, Guid counterpartyId, string billNumber, DateTime receivedUtc, DateTime dueUtc, decimal amount, string currency, string status)
++    public FinanceBill(
++        Guid id,
++        Guid companyId,
++        Guid counterpartyId,
++        string billNumber,
++        DateTime receivedUtc,
++        DateTime dueUtc,
++        decimal amount,
++        string currency,
++        string status,
++        Guid? documentId = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -327,6 +366,11 @@ public sealed class FinanceBill : ICompanyOwnedEntity
+             throw new ArgumentException("CounterpartyId is required.", nameof(counterpartyId));
+         }
+ 
++        if (documentId == Guid.Empty)
++        {
++            throw new ArgumentException("DocumentId cannot be empty.", nameof(documentId));
++        }
++
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+         CounterpartyId = counterpartyId;
+@@ -336,6 +380,7 @@ public sealed class FinanceBill : ICompanyOwnedEntity
+         Amount = amount;
+         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
+         Status = NormalizeRequired(status, nameof(status), 32);
++        DocumentId = documentId;
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+     }
+@@ -349,12 +394,14 @@ public sealed class FinanceBill : ICompanyOwnedEntity
+     public decimal Amount { get; private set; }
+     public string Currency { get; private set; } = null!;
+     public string Status { get; private set; } = null!;
++    public Guid? DocumentId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public FinanceCounterparty Counterparty { get; private set; } = null!;
+     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
++    public CompanyKnowledgeDocument? Document { get; private set; }
+ 
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+index 2412f1a..16790f7 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -194,7 +194,8 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFinan
+             invoice.Amount,
+             invoice.Currency,
+-            invoice.Status);
++            invoice.Status,
++            null);
+ 
+     private static FinanceTransactionDto MapTransaction(FinanceTransaction transaction) =>
+         new(
+@@ -212,7 +213,8 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFinan
+             transaction.Amount,
+             transaction.Currency,
+             transaction.Description,
+-            transaction.ExternalReference);
++            transaction.ExternalReference,
++            null);
+ 
+     private static FinancePolicyConfigurationDto MapPolicy(FinancePolicyConfiguration configuration) =>
+         new(
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 0dd5a0e..c31a4f9 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -150,7 +150,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             transactions = transactions.Where(x => x.TransactionUtc < endUtc.Value);
+         }
+ 
+-        return await transactions
++        var rows = await transactions
+             .OrderByDescending(x => x.TransactionUtc)
+             .ThenBy(x => x.ExternalReference)
+             .Take(limit)
+@@ -162,6 +162,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+                 x.Counterparty == null ? null : x.Counterparty.Name,
+                 x.InvoiceId,
+                 x.BillId,
++                x.DocumentId,
+                 x.TransactionUtc,
+                 x.TransactionType,
+                 x.Amount,
+@@ -170,7 +171,26 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+                 x.ExternalReference))
+             .ToListAsync(cancellationToken);
++
++        var linkedDocuments = await LoadLinkedDocumentsAsync(
++            query.CompanyId,
++            rows.Select(x => x.DocumentId),
++            cancellationToken);
++
++        return rows
++            .Select(x => new FinanceTransactionDto(
++                x.Id,
++                x.AccountId,
++                x.AccountName,
++                x.CounterpartyId,
++                x.CounterpartyName,
++                x.InvoiceId,
++                x.BillId,
++                x.TransactionUtc,
++                x.TransactionType,
++                x.Amount,
++                x.Currency,
++                x.Description,
++                x.ExternalReference,
++                MapLinkedDocument(x.DocumentId, linkedDocuments)))
++            .ToList();
+     }
+ 
+     public async Task<IReadOnlyList<FinanceInvoiceDto>> GetInvoicesAsync(
+@@ -196,7 +216,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             invoices = invoices.Where(x => x.IssuedUtc < endUtc.Value);
+         }
+ 
+-        return await invoices
++        var rows = await invoices
+             .OrderByDescending(x => x.IssuedUtc)
+             .ThenBy(x => x.InvoiceNumber)
+             .Take(limit)
+@@ -209,8 +229,91 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+                 x.DueUtc,
+                 x.Amount,
+                 x.Currency,
+-                x.Status))
++                x.Status,
++                x.DocumentId))
+             .ToListAsync(cancellationToken);
++
++        var linkedDocuments = await LoadLinkedDocumentsAsync(
++            query.CompanyId,
++            rows.Select(x => x.DocumentId),
++            cancellationToken);
++
++        return rows
++            .Select(x => new FinanceInvoiceDto(
++                x.Id,
++                x.CounterpartyId,
++                x.CounterpartyName,
++                x.InvoiceNumber,
++                x.IssuedUtc,
++                x.DueUtc,
++                x.Amount,
++                x.Currency,
++                x.Status,
++                MapLinkedDocument(x.DocumentId, linkedDocuments)))
++            .ToList();
++    }
++
++    public async Task<IReadOnlyList<FinanceBillDto>> GetBillsAsync(
++        GetFinanceBillsQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        var startUtc = NormalizeUtc(query.StartUtc);
++        var endUtc = NormalizeUtc(query.EndUtc);
++        var limit = NormalizeLimit(query.Limit);
++
++        var bills = _dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId);
++
++        if (startUtc is not null)
++        {
++            bills = bills.Where(x => x.ReceivedUtc >= startUtc.Value);
++        }
++
++        if (endUtc is not null)
++        {
++            bills = bills.Where(x => x.ReceivedUtc < endUtc.Value);
++        }
++
++        var rows = await bills
++            .OrderByDescending(x => x.ReceivedUtc)
++            .ThenBy(x => x.BillNumber)
++            .Take(limit)
++            .Select(x => new FinanceBillRow(
++                x.Id,
++                x.CounterpartyId,
++                x.Counterparty.Name,
++                x.BillNumber,
++                x.ReceivedUtc,
++                x.DueUtc,
++                x.Amount,
++                x.Currency,
++                x.Status,
++                x.DocumentId))
++            .ToListAsync(cancellationToken);
++
++        var linkedDocuments = await LoadLinkedDocumentsAsync(
++            query.CompanyId,
++            rows.Select(x => x.DocumentId),
++            cancellationToken);
++
++        return rows
++            .Select(x => new FinanceBillDto(
++                x.Id,
++                x.CounterpartyId,
++                x.CounterpartyName,
++                x.BillNumber,
++                x.ReceivedUtc,
++                x.DueUtc,
++                x.Amount,
++                x.Currency,
++                x.Status,
++                MapLinkedDocument(x.DocumentId, linkedDocuments)))
++            .ToList();
+     }
+ 
+     public async Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(
+@@ -273,6 +376,33 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
+             .ToList();
+     }
++
++    private async Task<Dictionary<Guid, FinanceLinkedDocumentRow>> LoadLinkedDocumentsAsync(
++        Guid companyId,
++        IEnumerable<Guid?> documentIds,
++        CancellationToken cancellationToken)
++    {
++        var ids = documentIds
++            .Where(x => x.HasValue)
++            .Select(x => x!.Value)
++            .Distinct()
++            .ToArray();
++
++        if (ids.Length == 0)
++        {
++            return [];
++        }
++
++        return await _dbContext.CompanyKnowledgeDocuments
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && ids.Contains(x.Id))
++            .Select(x => new FinanceLinkedDocumentRow(x.Id, x.Title, x.OriginalFileName, x.ContentType ?? string.Empty))
++            .ToDictionaryAsync(x => x.Id, cancellationToken);
++    }
++
++    private static FinanceLinkedDocumentDto? MapLinkedDocument(Guid? documentId, IReadOnlyDictionary<Guid, FinanceLinkedDocumentRow> linkedDocuments) =>
++        documentId is Guid id && linkedDocuments.TryGetValue(id, out var document)
++            ? new FinanceLinkedDocumentDto(document.Id, document.Title, document.OriginalFileName, document.ContentType)
++            : null;
+ 
+     private static void EnsureCompanyId(Guid companyId)
+     {
+@@ -344,6 +474,40 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     private sealed record TransactionBalanceRow(
+         Guid AccountId,
+         DateTime TransactionUtc,
+         decimal Amount);
++
++    private sealed record FinanceTransactionRow(
++        Guid Id,
++        Guid AccountId,
++        string AccountName,
++        Guid? CounterpartyId,
++        string? CounterpartyName,
++        Guid? InvoiceId,
++        Guid? BillId,
++        Guid? DocumentId,
++        DateTime TransactionUtc,
++        string TransactionType,
++        decimal Amount,
++        string Currency,
++        string Description,
++        string ExternalReference);
++
++    private sealed record FinanceInvoiceRow(
++        Guid Id,
++        Guid CounterpartyId,
++        string CounterpartyName,
++        string InvoiceNumber,
++        DateTime IssuedUtc,
++        DateTime DueUtc,
++        decimal Amount,
++        string Currency,
++        string Status,
++        Guid? DocumentId);
++
++    private sealed record FinanceBillRow(
++        Guid Id,
++        Guid CounterpartyId,
++        string CounterpartyName,
++        string BillNumber,
++        DateTime ReceivedUtc,
++        DateTime DueUtc,
++        decimal Amount,
++        string Currency,
++        string Status,
++        Guid? DocumentId);
++
++    private sealed record FinanceLinkedDocumentRow(
++        Guid Id,
++        string Title,
++        string OriginalFileName,
++        string ContentType);
+ 
+     private sealed record FinanceAmountRow(
+         decimal Amount,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceDocumentLinkConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceDocumentLinkConfigurations.cs
+new file mode 100644
+index 0000000..2ca60ac
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceDocumentLinkConfigurations.cs
+@@ -0,0 +1,52 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class FinanceTransactionDocumentLinkConfiguration : IEntityTypeConfiguration<FinanceTransaction>
++{
++    public void Configure(EntityTypeBuilder<FinanceTransaction> builder)
++    {
++        builder.Property(x => x.DocumentId).HasColumnName("document_id");
++        builder.HasIndex(x => new { x.CompanyId, x.DocumentId });
++        builder.HasOne(x => x.Document)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.DocumentId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class FinanceInvoiceDocumentLinkConfiguration : IEntityTypeConfiguration<FinanceInvoice>
++{
++    public void Configure(EntityTypeBuilder<FinanceInvoice> builder)
++    {
++        builder.Property(x => x.DocumentId).HasColumnName("document_id");
++        builder.HasIndex(x => new { x.CompanyId, x.DocumentId });
++        builder.HasOne(x => x.Document)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.DocumentId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class FinanceBillDocumentLinkConfiguration : IEntityTypeConfiguration<FinanceBill>
++{
++    public void Configure(EntityTypeBuilder<FinanceBill> builder)
++    {
++        builder.Property(x => x.DocumentId).HasColumnName("document_id");
++        builder.HasIndex(x => new { x.CompanyId, x.DocumentId });
++        builder.HasOne(x => x.Document)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.DocumentId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class CompanyKnowledgeDocumentFinanceLinkConfiguration : IEntityTypeConfiguration<CompanyKnowledgeDocument>
++{
++    public void Configure(EntityTypeBuilder<CompanyKnowledgeDocument> builder)
++    {
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+index 67db6db..03fe555 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+@@ -1,6 +1,7 @@
+ using System.Security.Cryptography;
+ using System.Text;
+ using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Infrastructure.Persistence;
+ 
+@@ -39,6 +40,27 @@ public static class FinanceSeedData
+             new FinanceCounterparty(StableId(companyId, "counterparty:tailspin-logistics"), companyId, "Tailspin Logistics", "vendor", "ar@tailspin.example")
+         };
+ 
++        var documents = Enumerable.Range(1, 5)
++            .Select(index => new CompanyKnowledgeDocument(
++                StableId(companyId, $"finance-document:{index:000}"),
++                companyId,
++                $"Finance supporting document {index:000}",
++                CompanyKnowledgeDocumentType.Report,
++                $"mock-finance/{companyId:N}/document-{index:000}.pdf",
++                null,
++                $"finance-document-{index:000}.pdf",
++                "application/pdf",
++                ".pdf",
++                1024 + index,
++                new Dictionary<string, System.Text.Json.Nodes.JsonNode?>
++                {
++                    ["department"] = System.Text.Json.Nodes.JsonValue.Create("finance"),
++                    ["seed"] = System.Text.Json.Nodes.JsonValue.Create(true)
++                },
++                new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility),
++                $"finance-seed:{index:000}"))
++            .ToArray();
++
+         var invoices = Enumerable.Range(1, 5)
+             .Select(index => new FinanceInvoice(
+                 StableId(companyId, $"invoice:{index:000}"),
+@@ -49,7 +71,8 @@ public static class FinanceSeedData
+                 anchorUtc.AddDays(-15 + index),
+                 2400m + (index * 325m),
+                 "USD",
+-                index % 3 == 0 ? "paid" : "open"))
++                index % 3 == 0 ? "paid" : "open",
++                index <= 2 ? documents[index - 1].Id : null))
+             .ToArray();
+ 
+         var bills = Enumerable.Range(1, 5)
+@@ -62,7 +85,8 @@ public static class FinanceSeedData
+                 anchorUtc.AddDays(-10 + index),
+                 900m + (index * 210m),
+                 "USD",
+-                index % 2 == 0 ? "paid" : "open"))
++                index % 2 == 0 ? "paid" : "open",
++                index == 1 ? documents[2].Id : null))
+             .ToArray();
+ 
+         var transactions = new List<FinanceTransaction>(capacity: 50);
+@@ -90,10 +114,12 @@ public static class FinanceSeedData
+                 "USD",
+                 isRevenue ? "Customer receipt" : "Vendor disbursement",
+-                $"FIN-{companyId:N}-{index:0000}"));
++                $"FIN-{companyId:N}-{index:0000}",
++                index < documents.Length ? documents[index].Id : null));
+         }
+ 
+         var balances = accounts
+@@ -114,6 +140,7 @@ public static class FinanceSeedData
+         dbContext.FinanceAccounts.AddRange(accounts);
+         dbContext.FinanceCounterparties.AddRange(counterparties);
++        dbContext.CompanyKnowledgeDocuments.AddRange(documents);
+         dbContext.FinanceInvoices.AddRange(invoices);
+         dbContext.FinanceBills.AddRange(bills);
+         dbContext.FinanceTransactions.AddRange(transactions);
+@@ -130,6 +157,7 @@ public static class FinanceSeedData
+             bills.Select(x => x.Id).ToArray(),
+             transactions.Select(x => x.Id).ToArray(),
+             balances.Select(x => x.Id).ToArray(),
++            documents.Select(x => x.Id).ToArray(),
+             policy.Id);
+     }
+ 
+@@ -151,4 +179,5 @@ public sealed record FinanceSeedResult(
+     IReadOnlyList<Guid> BillIds,
+     IReadOnlyList<Guid> TransactionIds,
+     IReadOnlyList<Guid> BalanceIds,
++    IReadOnlyList<Guid> DocumentIds,
+     Guid PolicyConfigurationId);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416130000_AddFinanceDocumentLinks.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416130000_AddFinanceDocumentLinks.cs
+new file mode 100644
+index 0000000..e4b604a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260416130000_AddFinanceDocumentLinks.cs
+@@ -0,0 +1,119 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddFinanceDocumentLinks : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<Guid>(
++                name: "document_id",
++                table: "finance_transactions",
++                type: "uniqueidentifier",
++                nullable: true);
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "document_id",
++                table: "finance_invoices",
++                type: "uniqueidentifier",
++                nullable: true);
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "document_id",
++                table: "finance_bills",
++                type: "uniqueidentifier",
++                nullable: true);
++
++            migrationBuilder.AddUniqueConstraint(
++                name: "AK_knowledge_documents_CompanyId_Id",
++                table: "knowledge_documents",
++                columns: new[] { "CompanyId", "Id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_transactions_company_id_document_id",
++                table: "finance_transactions",
++                columns: new[] { "company_id", "document_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_invoices_company_id_document_id",
++                table: "finance_invoices",
++                columns: new[] { "company_id", "document_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_bills_company_id_document_id",
++                table: "finance_bills",
++                columns: new[] { "company_id", "document_id" });
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_finance_transactions_knowledge_documents_company_id_document_id",
++                table: "finance_transactions",
++                columns: new[] { "company_id", "document_id" },
++                principalTable: "knowledge_documents",
++                principalColumns: new[] { "CompanyId", "Id" },
++                onDelete: ReferentialAction.Restrict);
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_finance_invoices_knowledge_documents_company_id_document_id",
++                table: "finance_invoices",
++                columns: new[] { "company_id", "document_id" },
++                principalTable: "knowledge_documents",
++                principalColumns: new[] { "CompanyId", "Id" },
++                onDelete: ReferentialAction.Restrict);
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_finance_bills_knowledge_documents_company_id_document_id",
++                table: "finance_bills",
++                columns: new[] { "company_id", "document_id" },
++                principalTable: "knowledge_documents",
++                principalColumns: new[] { "CompanyId", "Id" },
++                onDelete: ReferentialAction.Restrict);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropForeignKey(
++                name: "FK_finance_transactions_knowledge_documents_company_id_document_id",
++                table: "finance_transactions");
++
++            migrationBuilder.DropForeignKey(
++                name: "FK_finance_invoices_knowledge_documents_company_id_document_id",
++                table: "finance_invoices");
++
++            migrationBuilder.DropForeignKey(
++                name: "FK_finance_bills_knowledge_documents_company_id_document_id",
++                table: "finance_bills");
++
++            migrationBuilder.DropIndex(
++                name: "IX_finance_transactions_company_id_document_id",
++                table: "finance_transactions");
++
++            migrationBuilder.DropIndex(
++                name: "IX_finance_invoices_company_id_document_id",
++                table: "finance_invoices");
++
++            migrationBuilder.DropIndex(
++                name: "IX_finance_bills_company_id_document_id",
++                table: "finance_bills");
++
++            migrationBuilder.DropUniqueConstraint(
++                name: "AK_knowledge_documents_CompanyId_Id",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "document_id",
++                table: "finance_transactions");
++
++            migrationBuilder.DropColumn(
++                name: "document_id",
++                table: "finance_invoices");
++
++            migrationBuilder.DropColumn(
++                name: "document_id",
++                table: "finance_bills");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 8bb0352..b6fcf91 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -89,6 +89,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<FinanceTransaction> FinanceTransactions => Set<FinanceTransaction>();
+     public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();
+     public DbSet<FinanceCounterparty> FinanceCounterparties => Set<FinanceCounterparty>();
++    public DbSet<FinanceBill> FinanceBills => Set<FinanceBill>();
++    public DbSet<FinanceBalance> FinanceBalances => Set<FinanceBalance>();
+     public DbSet<FinancePolicyConfiguration> FinancePolicyConfigurations => Set<FinancePolicyConfiguration>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+@@ -138,6 +140,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is FinanceAccount ||
+                 entry.Entity is FinanceTransaction ||
+                 entry.Entity is FinanceInvoice ||
++                entry.Entity is FinanceBill ||
++                entry.Entity is FinanceBalance ||
+                 entry.Entity is FinanceCounterparty ||
+                 entry.Entity is FinancePolicyConfiguration)
+             .Select(entry =>
+@@ -259,6 +263,12 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FinanceInvoice>()
+             .HasQueryFilter(invoice =>
+                 CurrentCompanyId.HasValue && invoice.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceBill>()
++            .HasQueryFilter(bill =>
++                CurrentCompanyId.HasValue && bill.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceBalance>()
++            .HasQueryFilter(balance =>
++                CurrentCompanyId.HasValue && balance.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<FinanceCounterparty>()
+             .HasQueryFilter(counterparty =>
+                 CurrentCompanyId.HasValue && counterparty.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 683d1be..da6da66 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -73,6 +73,18 @@ public sealed class InternalFinanceController : ControllerBase
+                 new GetFinanceInvoicesQuery(companyId, startUtc, endUtc, limit),
+                 cancellationToken));
+ 
++    [HttpGet("bills")]
++    public async Task<ActionResult<IReadOnlyList<FinanceBillDto>>> GetBillsAsync(
++        Guid companyId,
++        [FromQuery] DateTime? startUtc,
++        [FromQuery] DateTime? endUtc,
++        [FromQuery] int limit,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetBillsAsync(
++                new GetFinanceBillsQuery(companyId, startUtc, endUtc, limit),
++                cancellationToken));
++
+     [HttpGet("balances")]
+     public async Task<ActionResult<IReadOnlyList<FinanceAccountBalanceDto>>> GetBalancesAsync(
+         Guid companyId,
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+index bfb5ff7..d54e06b 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -70,11 +70,26 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+         Assert.NotNull(transactions);
+         Assert.Equal(3, transactions!.Count);
+         Assert.All(transactions, transaction => Assert.NotEqual(Guid.Empty, transaction.Id));
++        Assert.Contains(transactions, transaction => transaction.LinkedDocument is not null);
+ 
+         var invoicesResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/invoices?limit=2");
+         Assert.Equal(HttpStatusCode.OK, invoicesResponse.StatusCode);
+         var invoices = await invoicesResponse.Content.ReadFromJsonAsync<List<InvoiceResponse>>();
+         Assert.NotNull(invoices);
+         Assert.Equal(2, invoices!.Count);
+         Assert.All(invoices, invoice => Assert.NotEqual(Guid.Empty, invoice.Id));
++        Assert.Contains(invoices, invoice => invoice.LinkedDocument is not null);
++
++        var billsResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/bills?limit=5");
++        Assert.Equal(HttpStatusCode.OK, billsResponse.StatusCode);
++        var bills = await billsResponse.Content.ReadFromJsonAsync<List<BillResponse>>();
++        Assert.NotNull(bills);
++        Assert.Equal(5, bills!.Count);
++        Assert.Contains(bills, bill => bill.LinkedDocument is not null);
++
++        var linkedDocuments = transactions.Select(x => x.LinkedDocument)
++            .Concat(invoices.Select(x => x.LinkedDocument))
++            .Concat(bills.Select(x => x.LinkedDocument))
++            .Where(x => x is not null)
++            .ToArray();
++        Assert.All(linkedDocuments, document => Assert.Contains(document!.Id, seed.DocumentIds));
+ 
+         var balancesResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/balances?asOfUtc={Uri.EscapeDataString(asOfUtc.ToString("O"))}");
+         Assert.Equal(HttpStatusCode.OK, balancesResponse.StatusCode);
+@@ -95,6 +110,24 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Linked_finance_documents_are_omitted_when_document_is_not_visible_to_the_active_tenant()
++    {
++        var seed = await SeedFinanceCompanyAsync();
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var transactionsResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/transactions?limit=5");
++
++        Assert.Equal(HttpStatusCode.OK, transactionsResponse.StatusCode);
++        var transactions = await transactionsResponse.Content.ReadFromJsonAsync<List<TransactionResponse>>();
++        Assert.NotNull(transactions);
++        Assert.Contains(transactions!, transaction => transaction.LinkedDocument is not null);
++
++        var crossTenantResponse = await client.GetAsync($"/internal/companies/{seed.OtherCompanyId}/finance/transactions?limit=5");
++
++        Assert.Equal(HttpStatusCode.Forbidden, crossTenantResponse.StatusCode);
++    }
++
+     private async Task<FinanceEndpointSeed> SeedFinanceCompanyAsync()
+     {
+         var userId = Guid.NewGuid();
+@@ -116,7 +149,7 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+             return Task.CompletedTask;
+         });
+ 
+-        return new FinanceEndpointSeed(companyId, otherCompanyId, subject, email, displayName);
++        return new FinanceEndpointSeed(companyId, otherCompanyId, subject, email, displayName, FinanceSeedData.AddMockFinanceData(new VirtualCompanyDbContext(new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite("Data Source=:memory:").Options), companyId).DocumentIds);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+@@ -132,7 +165,8 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+         Guid OtherCompanyId,
+         string Subject,
+         string Email,
+-        string DisplayName);
++        string DisplayName,
++        IReadOnlyList<Guid> DocumentIds);
+ 
+     private sealed class CashBalanceResponse
+     {
+@@ -185,6 +219,7 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+         public string Currency { get; set; } = string.Empty;
+         public string Description { get; set; } = string.Empty;
+         public string ExternalReference { get; set; } = string.Empty;
++        public LinkedDocumentResponse? LinkedDocument { get; set; }
+     }
+ 
+     private sealed class InvoiceResponse
+@@ -199,5 +234,26 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+         public decimal Amount { get; set; }
+         public string Currency { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
++        public LinkedDocumentResponse? LinkedDocument { get; set; }
++    }
++
++    private sealed class BillResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CounterpartyId { get; set; }
++        public string CounterpartyName { get; set; } = string.Empty;
++        public string BillNumber { get; set; } = string.Empty;
++        public DateTime ReceivedUtc { get; set; }
++        public DateTime DueUtc { get; set; }
++        public decimal Amount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++        public LinkedDocumentResponse? LinkedDocument { get; set; }
++    }
++
++    private sealed class LinkedDocumentResponse
++    {
++        public Guid Id { get; set; }
++        public string Title { get; set; } = string.Empty;
++        public string OriginalFileName { get; set; } = string.Empty;
++        public string ContentType { get; set; } = string.Empty;
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceTenantIsolationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceTenantIsolationTests.cs
+index 0ab549c..0b42730 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceTenantIsolationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceTenantIsolationTests.cs
+@@ -35,6 +35,7 @@ public sealed class FinanceTenantIsolationTests : IClassFixture<TestWebApplicatio
+         Assert.Equal(seed.CounterpartyIds.Count, await dbContext.FinanceCounterparties.CountAsync());
+         Assert.Equal(3, await dbContext.FinanceBalances.CountAsync());
+         Assert.Equal(1, await dbContext.FinancePolicyConfigurations.CountAsync());
++        Assert.Equal(5, await dbContext.CompanyKnowledgeDocuments.CountAsync());
+ 
+         var balances = await dbContext.FinanceBalances.AsNoTracking().ToListAsync();
+         foreach (var balance in balances)
+@@ -77,6 +78,7 @@ public sealed class FinanceTenantIsolationTests : IClassFixture<TestWebApplicatio
+         Assert.Equal(first.TransactionIds, second.TransactionIds);
+         Assert.Equal(first.BalanceIds, second.BalanceIds);
++        Assert.Equal(first.DocumentIds, second.DocumentIds);
+         Assert.Equal(first.PolicyConfigurationId, second.PolicyConfigurationId);
+ 
+         var firstTransactions = firstContext.ChangeTracker.Entries<FinanceTransaction>()
+END_OF_PATCH

@@ -42,7 +42,8 @@ public enum ToolExecutionStatus
     Denied = 2,
     AwaitingApproval = 3,
     Executed = 4,
-    Failed = 5
+    Failed = 5,
+    Rejected = 6
 }
 
 public static class AgentStatusValues
@@ -347,7 +348,8 @@ public static class ToolExecutionStatusValues
         [ToolExecutionStatus.Denied] = "denied",
         [ToolExecutionStatus.AwaitingApproval] = "awaiting_approval",
         [ToolExecutionStatus.Executed] = "executed",
-        [ToolExecutionStatus.Failed] = "failed"
+        [ToolExecutionStatus.Failed] = "failed",
+        [ToolExecutionStatus.Rejected] = "rejected"
     };
 
     private static readonly IReadOnlyDictionary<string, ToolExecutionStatus> ReverseValues =

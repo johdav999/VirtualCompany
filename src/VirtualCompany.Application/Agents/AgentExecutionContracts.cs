@@ -180,7 +180,8 @@ public sealed record ToolExecutionRequest(
     Guid? TaskId = null,
     Guid? WorkflowInstanceId = null,
     string? CorrelationId = null,
-    Guid ExecutionId = default);
+    Guid ExecutionId = default,
+    string? ToolVersion = null);
 
 public sealed record ToolExecutionResult(
     bool Success,
@@ -308,6 +309,7 @@ public static class PolicyDecisionReasonCodes
     public const string ToolNotConfigured = "tool_not_configured";
     public const string ToolExplicitlyDenied = "tool_explicitly_denied";
     public const string ToolNotPermitted = "tool_not_permitted";
+    public const string ToolActionTypeMismatch = "tool_action_type_mismatch";
     public const string ToolActionNotPermitted = "tool_action_not_permitted";
     public const string TenantScopeViolation = "tenant_scope_violation";
     public const string DataScopeViolation = "data_scope_violation";

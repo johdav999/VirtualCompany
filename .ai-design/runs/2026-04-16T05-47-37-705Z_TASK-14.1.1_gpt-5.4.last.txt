@@ -1,0 +1,1021 @@
+diff --git a/src/VirtualCompany.Application/Agents/InternalToolContracts.cs b/src/VirtualCompany.Application/Agents/InternalToolContracts.cs
+index 4c8fd51..c36bc1e 100644
+--- a/src/VirtualCompany.Application/Agents/InternalToolContracts.cs
++++ b/src/VirtualCompany.Application/Agents/InternalToolContracts.cs
+@@ -1,4 +1,5 @@
+ using System.Text.Json.Nodes;
++using System.Text.RegularExpressions;
+ using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Application.Agents;
+@@ -87,18 +88,32 @@ public sealed record InternalToolExecutionResponse(
+ public sealed record TrustedToolRegistration(
+     string ToolName,
+     IReadOnlySet<ToolActionType> SupportedActions,
+-    IReadOnlySet<string> Scopes)
++    IReadOnlySet<string> Scopes,
++    string Version = "1.0.0",
++    JsonObject? InputSchema = null,
++    JsonObject? OutputSchema = null)
+ {
++    private static readonly Regex SemanticVersionPattern = new(
++        @"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$",
++        RegexOptions.Compiled);
++
+     public bool Supports(ToolActionType actionType, string? scope)
+     {
+         if (!SupportedActions.Contains(actionType))
+         {
+             return false;
+         }
+ 
++        if (!SemanticVersionPattern.IsMatch(Version))
++        {
++            return false;
++        }
++
+         return Scopes.Count == 0 ||
+             (!string.IsNullOrWhiteSpace(scope) && Scopes.Contains(scope.Trim()));
+     }
+ }
+ 
++public sealed record ToolDefinitionManifest(
++    string ToolName,
++    string Version,
++    ToolActionType ActionType,
++    JsonObject InputSchema,
++    JsonObject OutputSchema);
++
+ public interface ICompanyToolRegistry
+ {
+     bool TryGetTool(string toolName, out TrustedToolRegistration registration);
+ 
+     IReadOnlyList<TrustedToolRegistration> ListTools();
++
++    bool TryGetToolDefinition(string toolName, out ToolDefinitionManifest definition);
++
++    IReadOnlyList<ToolDefinitionManifest> ListToolDefinitions();
+ }
+ 
+ public interface IInternalCompanyToolContract
+diff --git a/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs b/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
+index 3fd9f49..a3c5486 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
+@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Documents;
++using VirtualCompany.Application.Finance;
+ using VirtualCompany.Application.Tasks;
+ using VirtualCompany.Domain.Enums;
+ 
+@@ -15,14 +16,17 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+     private readonly ICompanyTaskCommandService _taskCommandService;
+     private readonly IApprovalRequestService _approvalRequestService;
+     private readonly ICompanyKnowledgeSearchService _knowledgeSearchService;
++    private readonly IFinanceReadService _financeReadService;
+ 
+     public InternalCompanyToolContract(
+         ICompanyTaskQueryService taskQueryService,
+         ICompanyTaskCommandService taskCommandService,
+         IApprovalRequestService approvalRequestService,
+-        ICompanyKnowledgeSearchService knowledgeSearchService)
++        ICompanyKnowledgeSearchService knowledgeSearchService,
++        IFinanceReadService financeReadService)
+     {
+         _taskQueryService = taskQueryService;
+         _taskCommandService = taskCommandService;
+         _approvalRequestService = approvalRequestService;
+         _knowledgeSearchService = knowledgeSearchService;
++        _financeReadService = financeReadService;
+     }
+ 
+@@ -51,6 +55,11 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+                 "tasks.update_status" => await ExecuteTaskStatusUpdateAsync(request, cancellationToken),
+                 "approvals.create_request" => await ExecuteApprovalCreateRequestAsync(request, cancellationToken),
+                 "knowledge.search" => await ExecuteKnowledgeSearchAsync(request, cancellationToken),
++                "get_cash_balance" => await ExecuteGetCashBalanceAsync(request, cancellationToken),
++                "list_transactions" => await ExecuteListTransactionsAsync(request, cancellationToken),
++                "list_uncategorized_transactions" => await ExecuteListUncategorizedTransactionsAsync(request, cancellationToken),
++                "list_invoices_awaiting_approval" => await ExecuteListInvoicesAwaitingApprovalAsync(request, cancellationToken),
++                "get_profit_and_loss_summary" => await ExecuteGetProfitAndLossSummaryAsync(request, cancellationToken),
+                 _ => Failed("unsupported_internal_tool", "The requested internal tool is not available.")
+             };
+         }
+@@ -70,6 +79,10 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+         {
+             return Failed("knowledge_search_validation_failed", "The knowledge search request was not valid.");
+         }
++        catch (ArgumentException)
++        {
++            return Failed("finance_tool_validation_failed", "The finance tool request was not valid.");
++        }
+         catch (KeyNotFoundException)
+         {
+             return Failed("tool_target_not_found", "The requested internal record was not found.");
+@@ -236,6 +249,132 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             Metadata(request, "knowledge_search_service"));
+     }
+ 
++    private async Task<InternalToolExecutionResponse> ExecuteGetCashBalanceAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure))
++        {
++            return actionFailure;
++        }
++
++        var balance = await _financeReadService.GetCashBalanceAsync(
++            new GetFinanceCashBalanceQuery(request.CompanyId, ReadDateTime(request.Payload, "asOfUtc")),
++            cancellationToken);
++
++        return InternalToolExecutionResponse.Succeeded(
++            "Cash balance was retrieved.",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["cashBalance"] = Serialize(balance),
++                ["amount"] = JsonValue.Create(balance.Amount),
++                ["currency"] = JsonValue.Create(balance.Currency),
++                ["asOfUtc"] = JsonValue.Create(balance.AsOfUtc)
++            },
++            Metadata(request, "finance_read_service"));
++    }
++
++    private async Task<InternalToolExecutionResponse> ExecuteListTransactionsAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure))
++        {
++            return actionFailure;
++        }
++
++        var transactions = await _financeReadService.GetTransactionsAsync(
++            new GetFinanceTransactionsQuery(
++                request.CompanyId,
++                ReadDateTime(request.Payload, "startUtc"),
++                ReadDateTime(request.Payload, "endUtc"),
++                ReadInt(request.Payload, "limit") ?? 100),
++            cancellationToken);
++
++        return InternalToolExecutionResponse.Succeeded(
++            "Finance transactions were retrieved.",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["transactions"] = Serialize(transactions),
++                ["count"] = JsonValue.Create(transactions.Count)
++            },
++            Metadata(request, "finance_read_service"));
++    }
++
++    private async Task<InternalToolExecutionResponse> ExecuteListUncategorizedTransactionsAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure))
++        {
++            return actionFailure;
++        }
++
++        var transactions = await _financeReadService.GetTransactionsAsync(
++            new GetFinanceTransactionsQuery(
++                request.CompanyId,
++                ReadDateTime(request.Payload, "startUtc"),
++                ReadDateTime(request.Payload, "endUtc"),
++                ReadInt(request.Payload, "limit") ?? 100),
++            cancellationToken);
++
++        var uncategorized = transactions
++            .Where(transaction =>
++                string.IsNullOrWhiteSpace(transaction.TransactionType) ||
++                string.Equals(transaction.TransactionType, "uncategorized", StringComparison.OrdinalIgnoreCase))
++            .ToList();
++
++        return InternalToolExecutionResponse.Succeeded(
++            "Uncategorized finance transactions were retrieved.",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["transactions"] = Serialize(uncategorized),
++                ["count"] = JsonValue.Create(uncategorized.Count)
++            },
++            Metadata(request, "finance_read_service"));
++    }
++
++    private async Task<InternalToolExecutionResponse> ExecuteListInvoicesAwaitingApprovalAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure))
++        {
++            return actionFailure;
++        }
++
++        var invoices = await _financeReadService.GetInvoicesAsync(
++            new GetFinanceInvoicesQuery(
++                request.CompanyId,
++                ReadDateTime(request.Payload, "startUtc"),
++                ReadDateTime(request.Payload, "endUtc"),
++                ReadInt(request.Payload, "limit") ?? 100),
++            cancellationToken);
++
++        var awaitingApproval = invoices
++            .Where(invoice =>
++                string.Equals(invoice.Status, "awaiting_approval", StringComparison.OrdinalIgnoreCase) ||
++                string.Equals(invoice.Status, "pending_approval", StringComparison.OrdinalIgnoreCase) ||
++                string.Equals(invoice.Status, "pending", StringComparison.OrdinalIgnoreCase))
++            .ToList();
++
++        return InternalToolExecutionResponse.Succeeded(
++            "Invoices awaiting approval were retrieved.",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["invoices"] = Serialize(awaitingApproval),
++                ["count"] = JsonValue.Create(awaitingApproval.Count)
++            },
++            Metadata(request, "finance_read_service"));
++    }
++
++    private async Task<InternalToolExecutionResponse> ExecuteGetProfitAndLossSummaryAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure))
++        {
++            return actionFailure;
++        }
++
++        var summary = await _financeReadService.GetMonthlyProfitAndLossAsync(
++            new GetFinanceMonthlyProfitAndLossQuery(
++                request.CompanyId,
++                ReadInt(request.Payload, "year") ?? DateTime.UtcNow.Year,
++                ReadInt(request.Payload, "month") ?? DateTime.UtcNow.Month),
++            cancellationToken);
++
++        return InternalToolExecutionResponse.Succeeded(
++            "Profit and loss summary was retrieved.",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["profitAndLossSummary"] = Serialize(summary),
++                ["revenue"] = JsonValue.Create(summary.Revenue),
++                ["expenses"] = JsonValue.Create(summary.Expenses),
++                ["netResult"] = JsonValue.Create(summary.NetResult),
++                ["currency"] = JsonValue.Create(summary.Currency)
++            },
++            Metadata(request, "finance_read_service"));
++    }
++
+     private static bool EnsureAction(
+         InternalToolExecutionRequest request,
+         ToolActionType expectedAction,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+index 4d778ce..5f2d109 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+@@ -28,6 +28,17 @@ public sealed class NoOpCompanyToolExecutor : ICompanyToolExecutor
+             return CreateRegistryDeniedResult(request, executionId, "unsupported_tool_action", "The requested tool action is not registered for trusted execution.");
+         }
+ 
++        if (registration.InputSchema is not null &&
++            !ToolJsonSchemaValidator.Validate(request.RequestPayload, registration.InputSchema, out var inputErrors))
++        {
++            return CreateSchemaDeniedResult(
++                request,
++                executionId,
++                "input_payload_schema_validation_failed",
++                "The requested tool payload did not match the registered input schema.",
++                inputErrors);
++        }
++
+         var context = new InternalToolExecutionContext(
+             request.CompanyId,
+             request.AgentId,
+@@ -44,6 +55,18 @@ public sealed class NoOpCompanyToolExecutor : ICompanyToolExecutor
+             cancellationToken);
+ 
+         var payload = response.ToSafePayload();
++        if (registration.OutputSchema is not null &&
++            !ToolJsonSchemaValidator.Validate(payload, registration.OutputSchema, out var outputErrors))
++        {
++            return CreateSchemaDeniedResult(
++                request,
++                executionId,
++                "output_payload_schema_validation_failed",
++                "The tool response did not match the registered output schema.",
++                outputErrors,
++                payload);
++        }
++
+         var metadata = CloneNodes(response.Metadata);
+         metadata["contractSchemaVersion"] = JsonValue.Create(InternalToolExecutionResponse.SchemaVersion);
+         metadata["executionId"] = JsonValue.Create(executionId);
+@@ -86,6 +109,43 @@ public sealed class NoOpCompanyToolExecutor : ICompanyToolExecutor
+         return ToolExecutionResult.Failed(request.ToolName, request.ActionType, ToolExecutionStatus.Denied.ToStorageValue(), errorCode, userSafeSummary, payload, metadata);
+     }
+ 
++    private static ToolExecutionResult CreateSchemaDeniedResult(
++        ToolExecutionRequest request,
++        Guid executionId,
++        string errorCode,
++        string userSafeSummary,
++        IReadOnlyList<string> schemaErrors,
++        Dictionary<string, JsonNode?>? responsePayload = null)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create(ToolExecutionResult.SchemaVersion),
++            ["status"] = JsonValue.Create(ToolExecutionStatus.Denied.ToStorageValue()),
++            ["success"] = JsonValue.Create(false),
++            ["toolName"] = JsonValue.Create(request.ToolName),
++            ["actionType"] = JsonValue.Create(request.ActionType.ToStorageValue()),
++            ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
++            ["userSafeSummary"] = JsonValue.Create(userSafeSummary),
++            ["executionId"] = JsonValue.Create(executionId),
++            ["schemaErrors"] = new JsonArray(schemaErrors.Select(JsonValue.Create).ToArray<JsonNode?>())
++        };
++
++        if (responsePayload is not null)
++        {
++            payload["responsePayload"] = new JsonObject(CloneNodes(responsePayload)
++                .Select(pair => KeyValuePair.Create(pair.Key, pair.Value))
++                .ToArray());
++        }
++
++        var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["executionBoundary"] = JsonValue.Create("policy_enforced_tool_executor"),
++            ["registryDecision"] = JsonValue.Create("deny"),
++            ["registryReason"] = JsonValue.Create(errorCode),
++            ["modelOutputTrusted"] = JsonValue.Create(false),
++            ["executionId"] = JsonValue.Create(executionId)
++        };
++
++        return ToolExecutionResult.Failed(request.ToolName, request.ActionType, ToolExecutionStatus.Denied.ToStorageValue(), errorCode, userSafeSummary, payload, metadata);
++    }
++
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
+         nodes is null || nodes.Count == 0
+             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
+index 9bdcfa9..931c89e 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
+@@ -1,3 +1,4 @@
++using System.Text.Json.Nodes;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Domain.Enums;
+ 
+@@ -14,6 +15,7 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+     };
+ 
+     private readonly IReadOnlyDictionary<string, TrustedToolRegistration> _tools;
++    private readonly IReadOnlyDictionary<string, ToolDefinitionManifest> _definitions;
+ 
+     public StaticCompanyToolRegistry()
+     {
+@@ -21,6 +23,7 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+         var approvalScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "approvals" };
+         var knowledgeScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "knowledge" };
+         var paymentsScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "payments" };
++        var financeScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "finance" };
+ 
+         var registrations = new[]
+         {
+@@ -30,10 +33,35 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+             Register("approvals.create_request", new HashSet<ToolActionType> { ToolActionType.Execute }, approvalScopes),
+             Register("knowledge.search", new HashSet<ToolActionType> { ToolActionType.Read, ToolActionType.Recommend }, knowledgeScopes),
+             Register("erp", new HashSet<ToolActionType> { ToolActionType.Execute }, paymentsScopes)
+-        };
++        }.Concat(FinanceToolDefinitions.Select(definition =>
++            Register(
++                definition.ToolName,
++                new HashSet<ToolActionType> { definition.ActionType },
++                financeScopes,
++                definition.Version,
++                definition.InputSchema,
++                definition.OutputSchema)));
+ 
+         _tools = registrations.ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
++        _definitions = FinanceToolDefinitions.ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
+     }
+ 
++    private static IReadOnlyList<ToolDefinitionManifest> FinanceToolDefinitions { get; } =
++    [
++        FinanceDefinition("get_cash_balance", FinanceInputSchemas.AsOfDate(), FinanceOutputSchemas.WithDataProperty("cashBalance")),
++        FinanceDefinition("list_transactions", FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("transactions")),
++        FinanceDefinition("list_uncategorized_transactions", FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("transactions")),
++        FinanceDefinition("list_invoices_awaiting_approval", FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("invoices")),
++        FinanceDefinition("get_profit_and_loss_summary", FinanceInputSchemas.ProfitAndLoss(), FinanceOutputSchemas.WithDataProperty("profitAndLossSummary"))
++    ];
++
++    public bool TryGetToolDefinition(string toolName, out ToolDefinitionManifest definition)
++    {
++        if (string.IsNullOrWhiteSpace(toolName))
++        {
++            definition = default!;
++            return false;
++        }
++
++        return _definitions.TryGetValue(toolName.Trim(), out definition!);
++    }
++
+     public bool TryGetTool(string toolName, out TrustedToolRegistration registration)
+     {
+         if (string.IsNullOrWhiteSpace(toolName))
+@@ -47,6 +75,9 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+     public IReadOnlyList<TrustedToolRegistration> ListTools() =>
+         _tools.Values.OrderBy(x => x.ToolName, StringComparer.OrdinalIgnoreCase).ToArray();
+ 
++    public IReadOnlyList<ToolDefinitionManifest> ListToolDefinitions() =>
++        _definitions.Values.OrderBy(x => x.ToolName, StringComparer.OrdinalIgnoreCase).ToArray();
++
+     private static TrustedToolRegistration Register(
+         string toolName,
+         IReadOnlySet<ToolActionType>? supportedActions = null,
+@@ -54,5 +85,119 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+         new(
+             toolName,
+             supportedActions ?? StandardActions,
+-            scopes ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase));
++            scopes ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase),
++            version,
++            inputSchema?.DeepClone().AsObject(),
++            outputSchema?.DeepClone().AsObject());
++
++    private static ToolDefinitionManifest FinanceDefinition(
++        string toolName,
++        JsonObject inputSchema,
++        JsonObject outputSchema) =>
++        new(toolName, "1.0.0", ToolActionType.Read, inputSchema, outputSchema);
++
++    private static class FinanceInputSchemas
++    {
++        public static JsonObject AsOfDate() =>
++            ParseSchema(
++                """
++                {
++                  "type": "object",
++                  "additionalProperties": false,
++                  "properties": {
++                    "asOfUtc": { "type": "string", "format": "date-time" }
++                  }
++                }
++                """);
++
++        public static JsonObject ListRange() =>
++            ParseSchema(
++                """
++                {
++                  "type": "object",
++                  "additionalProperties": false,
++                  "properties": {
++                    "startUtc": { "type": "string", "format": "date-time" },
++                    "endUtc": { "type": "string", "format": "date-time" },
++                    "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
++                  }
++                }
++                """);
++
++        public static JsonObject ProfitAndLoss() =>
++            ParseSchema(
++                """
++                {
++                  "type": "object",
++                  "additionalProperties": false,
++                  "required": [ "year", "month" ],
++                  "properties": {
++                    "year": { "type": "integer", "minimum": 2000, "maximum": 2100 },
++                    "month": { "type": "integer", "minimum": 1, "maximum": 12 }
++                  }
++                }
++                """);
++    }
++
++    private static class FinanceOutputSchemas
++    {
++        public static JsonObject WithDataProperty(string dataProperty) =>
++            ParseSchema(
++                $$"""
++                {
++                  "type": "object",
++                  "required": [ "schemaVersion", "status", "success", "userSafeSummary", "data" ],
++                  "properties": {
++                    "schemaVersion": { "type": "string" },
++                    "status": { "type": "string" },
++                    "success": { "type": "boolean" },
++                    "userSafeSummary": { "type": "string" },
++                    "data": {
++                      "type": "object",
++                      "required": [ "{{dataProperty}}" ],
++                      "properties": {
++                        "{{dataProperty}}": { "type": [ "object", "array" ] }
++                      }
++                    }
++                  }
++                }
++                """);
++    }
++
++    private static JsonObject ParseSchema(string schema) =>
++        JsonNode.Parse(schema)!.AsObject();
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ToolJsonSchemaValidator.cs b/src/VirtualCompany.Infrastructure/Companies/ToolJsonSchemaValidator.cs
+new file mode 100644
+index 0000000..bbd3ff1
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/ToolJsonSchemaValidator.cs
+@@ -0,0 +1,201 @@
++using System.Globalization;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++internal static class ToolJsonSchemaValidator
++{
++    public static bool Validate(
++        IReadOnlyDictionary<string, JsonNode?> payload,
++        JsonObject schema,
++        out IReadOnlyList<string> errors)
++    {
++        var root = new JsonObject(payload
++            .Select(pair => KeyValuePair.Create(pair.Key, pair.Value?.DeepClone()))
++            .ToArray());
++
++        return Validate(root, schema, out errors);
++    }
++
++    public static bool Validate(
++        JsonNode? payload,
++        JsonObject schema,
++        out IReadOnlyList<string> errors)
++    {
++        var collected = new List<string>();
++        ValidateNode(payload, schema, "$", collected);
++        errors = collected;
++        return collected.Count == 0;
++    }
++
++    private static void ValidateNode(JsonNode? node, JsonObject schema, string path, List<string> errors)
++    {
++        var allowedTypes = ReadAllowedTypes(schema);
++        if (allowedTypes.Count > 0 && !allowedTypes.Any(type => MatchesType(node, type)))
++        {
++            errors.Add($"{path} must be {string.Join(" or ", allowedTypes)}.");
++            return;
++        }
++
++        if (node is JsonObject jsonObject)
++        {
++            ValidateObject(jsonObject, schema, path, errors);
++        }
++        else if (node is JsonArray jsonArray)
++        {
++            ValidateArray(jsonArray, schema, path, errors);
++        }
++        else if (node is JsonValue jsonValue)
++        {
++            ValidateValue(jsonValue, schema, path, errors);
++        }
++    }
++
++    private static void ValidateObject(JsonObject jsonObject, JsonObject schema, string path, List<string> errors)
++    {
++        var properties = schema["properties"] as JsonObject;
++        var required = ReadRequired(schema);
++
++        foreach (var propertyName in required)
++        {
++            if (!jsonObject.ContainsKey(propertyName) || jsonObject[propertyName] is null)
++            {
++                errors.Add($"{path}.{propertyName} is required.");
++            }
++        }
++
++        if (properties is not null)
++        {
++            foreach (var (propertyName, propertySchemaNode) in properties)
++            {
++                if (propertySchemaNode is JsonObject propertySchema &&
++                    jsonObject.TryGetPropertyValue(propertyName, out var value) &&
++                    value is not null)
++                {
++                    ValidateNode(value, propertySchema, $"{path}.{propertyName}", errors);
++                }
++            }
++        }
++
++        if (IsAdditionalPropertiesDisabled(schema) && properties is not null)
++        {
++            var knownProperties = properties.Select(pair => pair.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
++            foreach (var propertyName in jsonObject.Select(pair => pair.Key))
++            {
++                if (!knownProperties.Contains(propertyName))
++                {
++                    errors.Add($"{path}.{propertyName} is not allowed.");
++                }
++            }
++        }
++    }
++
++    private static void ValidateArray(JsonArray jsonArray, JsonObject schema, string path, List<string> errors)
++    {
++        if (TryReadDecimal(schema, "minItems", out var minItems) && jsonArray.Count < minItems)
++        {
++            errors.Add($"{path} must contain at least {minItems.ToString(CultureInfo.InvariantCulture)} items.");
++        }
++
++        if (TryReadDecimal(schema, "maxItems", out var maxItems) && jsonArray.Count > maxItems)
++        {
++            errors.Add($"{path} must contain at most {maxItems.ToString(CultureInfo.InvariantCulture)} items.");
++        }
++
++        if (schema["items"] is not JsonObject itemSchema)
++        {
++            return;
++        }
++
++        for (var i = 0; i < jsonArray.Count; i++)
++        {
++            ValidateNode(jsonArray[i], itemSchema, $"{path}[{i}]", errors);
++        }
++    }
++
++    private static void ValidateValue(JsonValue value, JsonObject schema, string path, List<string> errors)
++    {
++        if (schema["enum"] is JsonArray enumValues && !enumValues.Any(enumValue => JsonNode.DeepEquals(enumValue, value)))
++        {
++            errors.Add($"{path} must be one of the declared enum values.");
++        }
++
++        if (TryReadDecimal(schema, "minimum", out var minimum) && TryReadDecimal(value, out var number) && number < minimum)
++        {
++            errors.Add($"{path} must be greater than or equal to {minimum.ToString(CultureInfo.InvariantCulture)}.");
++        }
++
++        if (TryReadDecimal(schema, "maximum", out var maximum) && TryReadDecimal(value, out number) && number > maximum)
++        {
++            errors.Add($"{path} must be less than or equal to {maximum.ToString(CultureInfo.InvariantCulture)}.");
++        }
++
++        if (TryReadString(schema, "format", out var format) && value.TryGetValue<string>(out var text))
++        {
++            if (string.Equals(format, "date-time", StringComparison.OrdinalIgnoreCase) &&
++                !DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _))
++            {
++                errors.Add($"{path} must be a valid date-time.");
++            }
++
++            if (string.Equals(format, "uuid", StringComparison.OrdinalIgnoreCase) &&
++                !Guid.TryParse(text, out _))
++            {
++                errors.Add($"{path} must be a valid uuid.");
++            }
++        }
++    }
++
++    private static IReadOnlyList<string> ReadAllowedTypes(JsonObject schema)
++    {
++        if (schema["type"] is JsonValue value && value.TryGetValue<string>(out var type))
++        {
++            return [type];
++        }
++
++        if (schema["type"] is JsonArray array)
++        {
++            return array
++                .OfType<JsonValue>()
++                .Select(x => x.TryGetValue<string>(out var item) ? item : null)
++                .Where(x => !string.IsNullOrWhiteSpace(x))
++                .Cast<string>()
++                .ToArray();
++        }
++
++        return [];
++    }
++
++    private static bool MatchesType(JsonNode? node, string type) =>
++        type.ToLowerInvariant() switch
++        {
++            "object" => node is JsonObject,
++            "array" => node is JsonArray,
++            "string" => node is JsonValue value && value.TryGetValue<string>(out _),
++            "boolean" => node is JsonValue value && value.TryGetValue<bool>(out _),
++            "number" => node is JsonValue value && TryReadDecimal(value, out _),
++            "integer" => node is JsonValue value && value.TryGetValue<int>(out _),
++            "null" => node is null,
++            _ => true
++        };
++
++    private static IReadOnlyList<string> ReadRequired(JsonObject schema) =>
++        schema["required"] is JsonArray required
++            ? required
++                .OfType<JsonValue>()
++                .Select(x => x.TryGetValue<string>(out var item) ? item : null)
++                .Where(x => !string.IsNullOrWhiteSpace(x))
++                .Cast<string>()
++                .ToArray()
++            : [];
++
++    private static bool IsAdditionalPropertiesDisabled(JsonObject schema) =>
++        schema["additionalProperties"] is JsonValue value &&
++        value.TryGetValue<bool>(out var additionalProperties) &&
++        !additionalProperties;
++
++    private static bool TryReadString(JsonObject schema, string key, out string value)
++    {
++        value = string.Empty;
++        return schema[key] is JsonValue jsonValue && jsonValue.TryGetValue(out value);
++    }
++
++    private static bool TryReadDecimal(JsonObject schema, string key, out decimal value)
++    {
++        value = 0;
++        return schema[key] is JsonValue jsonValue && TryReadDecimal(jsonValue, out value);
++    }
++
++    private static bool TryReadDecimal(JsonValue jsonValue, out decimal value) =>
++        jsonValue.TryGetValue(out value) ||
++        jsonValue.TryGetValue<double>(out var doubleValue) && decimal.TryParse(
++            doubleValue.ToString(CultureInfo.InvariantCulture),
++            NumberStyles.Number,
++            CultureInfo.InvariantCulture,
++            out value);
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs b/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs
+new file mode 100644
+index 0000000..2e84617
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs
+@@ -0,0 +1,205 @@
++using System.Text.Json.Nodes;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Companies;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebApplicationFactory>
++{
++    private static readonly string[] FinanceToolNames =
++    [
++        "get_cash_balance",
++        "list_transactions",
++        "list_uncategorized_transactions",
++        "list_invoices_awaiting_approval",
++        "get_profit_and_loss_summary"
++    ];
++
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinanceToolDefinitionManifestTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public void Registry_exposes_finance_tool_definitions_with_versioned_schemas()
++    {
++        using var scope = _factory.Services.CreateScope();
++        var registry = scope.ServiceProvider.GetRequiredService<ICompanyToolRegistry>();
++
++        var definitions = registry.ListToolDefinitions();
++
++        foreach (var toolName in FinanceToolNames)
++        {
++            var definition = Assert.Single(definitions.Where(x => x.ToolName == toolName));
++            Assert.Equal("1.0.0", definition.Version);
++            Assert.Equal(ToolActionType.Read, definition.ActionType);
++            Assert.Equal("object", definition.InputSchema["type"]!.GetValue<string>());
++            Assert.Equal("object", definition.OutputSchema["type"]!.GetValue<string>());
++
++            Assert.True(registry.TryGetTool(toolName, out var registration));
++            Assert.Equal(definition.Version, registration.Version);
++            Assert.True(registration.Supports(ToolActionType.Read, "finance"));
++        }
++    }
++
++    [Theory]
++    [MemberData(nameof(ValidFinanceRequests))]
++    public async Task Finance_tool_executor_accepts_payloads_matching_declared_input_schema(
++        string toolName,
++        Dictionary<string, JsonNode?> payload)
++    {
++        var contract = new StubInternalToolContract(validOutput: true);
++        var executor = new NoOpCompanyToolExecutor(new StaticCompanyToolRegistry(), contract);
++
++        var result = await executor.ExecuteAsync(CreateRequest(toolName, payload), CancellationToken.None);
++
++        Assert.True(result.Success);
++        Assert.Equal("executed", result.Status);
++        Assert.Equal(1, contract.ExecutionCount);
++    }
++
++    [Theory]
++    [MemberData(nameof(InvalidFinanceRequests))]
++    public async Task Finance_tool_executor_rejects_payloads_that_do_not_match_declared_input_schema(
++        string toolName,
++        Dictionary<string, JsonNode?> payload)
++    {
++        var contract = new StubInternalToolContract(validOutput: true);
++        var executor = new NoOpCompanyToolExecutor(new StaticCompanyToolRegistry(), contract);
++
++        var result = await executor.ExecuteAsync(CreateRequest(toolName, payload), CancellationToken.None);
++
++        Assert.False(result.Success);
++        Assert.Equal("input_payload_schema_validation_failed", result.ErrorCode);
++        Assert.Equal(0, contract.ExecutionCount);
++    }
++
++    [Theory]
++    [MemberData(nameof(ValidFinanceRequests))]
++    public async Task Finance_tool_executor_rejects_responses_that_do_not_match_declared_output_schema(
++        string toolName,
++        Dictionary<string, JsonNode?> payload)
++    {
++        var contract = new StubInternalToolContract(validOutput: false);
++        var executor = new NoOpCompanyToolExecutor(new StaticCompanyToolRegistry(), contract);
++
++        var result = await executor.ExecuteAsync(CreateRequest(toolName, payload), CancellationToken.None);
++
++        Assert.False(result.Success);
++        Assert.Equal("output_payload_schema_validation_failed", result.ErrorCode);
++        Assert.Equal(1, contract.ExecutionCount);
++    }
++
++    public static IEnumerable<object[]> ValidFinanceRequests()
++    {
++        yield return
++        [
++            "get_cash_balance",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["asOfUtc"] = JsonValue.Create("2026-04-16T00:00:00Z")
++            }
++        ];
++
++        yield return
++        [
++            "list_transactions",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["startUtc"] = JsonValue.Create("2026-04-01T00:00:00Z"),
++                ["endUtc"] = JsonValue.Create("2026-04-16T00:00:00Z"),
++                ["limit"] = JsonValue.Create(25)
++            }
++        ];
++
++        yield return
++        [
++            "list_uncategorized_transactions",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["limit"] = JsonValue.Create(10)
++            }
++        ];
++
++        yield return
++        [
++            "list_invoices_awaiting_approval",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["limit"] = JsonValue.Create(10)
++            }
++        ];
++
++        yield return
++        [
++            "get_profit_and_loss_summary",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["year"] = JsonValue.Create(2026),
++                ["month"] = JsonValue.Create(4)
++            }
++        ];
++    }
++
++    public static IEnumerable<object[]> InvalidFinanceRequests()
++    {
++        yield return
++        [
++            "get_cash_balance",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["asOfUtc"] = JsonValue.Create("not-a-date")
++            }
++        ];
++
++        yield return
++        [
++            "list_transactions",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["limit"] = JsonValue.Create(0)
++            }
++        ];
++
++        yield return
++        [
++            "list_uncategorized_transactions",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["unexpected"] = JsonValue.Create(true)
++            }
++        ];
++
++        yield return
++        [
++            "list_invoices_awaiting_approval",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["limit"] = JsonValue.Create(501)
++            }
++        ];
++
++        yield return
++        [
++            "get_profit_and_loss_summary",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["year"] = JsonValue.Create(2026),
++                ["month"] = JsonValue.Create(13)
++            }
++        ];
++    }
++
++    private static ToolExecutionRequest CreateRequest(string toolName, Dictionary<string, JsonNode?> payload) =>
++        new(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            toolName,
++            ToolActionType.Read,
++            "finance",
++            payload,
++            ExecutionId: Guid.NewGuid());
++
++    private sealed class StubInternalToolContract : IInternalCompanyToolContract
++    {
++        private readonly bool _validOutput;
++
++        public StubInternalToolContract(bool validOutput)
++        {
++            _validOutput = validOutput;
++        }
++
++        public int ExecutionCount { get; private set; }
++
++        public Task<InternalToolExecutionResponse> ExecuteAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken)
++        {
++            ExecutionCount++;
++            var data = _validOutput
++                ? ValidData(request.ToolName)
++                : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["unexpected"] = JsonValue.Create(true)
++                };
++
++            return Task.FromResult(InternalToolExecutionResponse.Succeeded("Finance tool completed.", data));
++        }
++
++        private static Dictionary<string, JsonNode?> ValidData(string toolName) =>
++            toolName switch
++            {
++                "get_cash_balance" => new(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["cashBalance"] = new JsonObject { ["amount"] = JsonValue.Create(123.45m), ["currency"] = JsonValue.Create("USD") }
++                },
++                "list_transactions" or "list_uncategorized_transactions" => new(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["transactions"] = new JsonArray()
++                },
++                "list_invoices_awaiting_approval" => new(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["invoices"] = new JsonArray()
++                },
++                "get_profit_and_loss_summary" => new(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["profitAndLossSummary"] = new JsonObject { ["netResult"] = JsonValue.Create(42m) }
++                },
++                _ => []
++            };
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs b/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs
+index 1f2b016..bbebd57 100644
+--- a/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs
++++ b/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs
+@@ -27,6 +27,11 @@ public sealed class InternalCompanyToolRegistryTests : IClassFixture<TestWebAppl
+         Assert.Contains(tools, tool => tool.ToolName == "approvals.create_request" && tool.Supports(ToolActionType.Execute, "approvals"));
+         Assert.Contains(tools, tool => tool.ToolName == "knowledge.search" && tool.Supports(ToolActionType.Read, "knowledge"));
+         Assert.Contains(tools, tool => tool.ToolName == "knowledge.search" && tool.Supports(ToolActionType.Recommend, "knowledge"));
++        Assert.Contains(tools, tool => tool.ToolName == "get_cash_balance" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
++        Assert.Contains(tools, tool => tool.ToolName == "list_transactions" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
++        Assert.Contains(tools, tool => tool.ToolName == "list_uncategorized_transactions" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
++        Assert.Contains(tools, tool => tool.ToolName == "list_invoices_awaiting_approval" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
++        Assert.Contains(tools, tool => tool.ToolName == "get_profit_and_loss_summary" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+     }
+ 
+     [Fact]
+END_OF_PATCH

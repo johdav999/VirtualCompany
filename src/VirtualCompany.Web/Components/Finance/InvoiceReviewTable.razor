@@ -1,0 +1,160 @@
+@using System.Globalization
+
+<div class="invoice-review-table-shell">
+    <div class="table-responsive">
+        <table class="table align-middle invoice-review-table-workbench">
+            <thead>
+                <tr>
+                    <th scope="col">
+                        <button class="invoice-review-table__sort" type="button" @onclick="() => OnSort.InvokeAsync(nameof(FinanceInvoiceReviewListItemResponse.InvoiceNumber))">
+                            Invoice number
+                            @RenderSortGlyph(nameof(FinanceInvoiceReviewListItemResponse.InvoiceNumber))
+                        </button>
+                    </th>
+                    <th scope="col">
+                        <button class="invoice-review-table__sort" type="button" @onclick="() => OnSort.InvokeAsync(nameof(FinanceInvoiceReviewListItemResponse.SupplierName))">
+                            Supplier
+                            @RenderSortGlyph(nameof(FinanceInvoiceReviewListItemResponse.SupplierName))
+                        </button>
+                    </th>
+                    <th scope="col" class="finance-table__number">
+                        <button class="invoice-review-table__sort invoice-review-table__sort--number" type="button" @onclick="() => OnSort.InvokeAsync(nameof(FinanceInvoiceReviewListItemResponse.Amount))">
+                            Amount
+                            @RenderSortGlyph(nameof(FinanceInvoiceReviewListItemResponse.Amount))
+                        </button>
+                    </th>
+                    <th scope="col">Currency</th>
+                    <th scope="col">
+                        <button class="invoice-review-table__sort" type="button" @onclick="() => OnSort.InvokeAsync(nameof(FinanceInvoiceReviewListItemResponse.RiskLevel))">
+                            Risk
+                            @RenderSortGlyph(nameof(FinanceInvoiceReviewListItemResponse.RiskLevel))
+                        </button>
+                    </th>
+                    <th scope="col">Recommendation</th>
+                    <th scope="col">
+                        <button class="invoice-review-table__sort" type="button" @onclick="() => OnSort.InvokeAsync(nameof(FinanceInvoiceReviewListItemResponse.Confidence))">
+                            Confidence
+                            @RenderSortGlyph(nameof(FinanceInvoiceReviewListItemResponse.Confidence))
+                        </button>
+                    </th>
+                    <th scope="col">
+                        <button class="invoice-review-table__sort" type="button" @onclick="() => OnSort.InvokeAsync(nameof(FinanceInvoiceReviewListItemResponse.LastUpdatedUtc))">
+                            Last updated
+                            @RenderSortGlyph(nameof(FinanceInvoiceReviewListItemResponse.LastUpdatedUtc))
+                        </button>
+                    </th>
+                    <th scope="col">Review status</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in Items)
+                {
+                    var isSelected = item.Id == SelectedInvoiceId;
+                    <tr class="@BuildRowClass(item, isSelected)" @onclick="() => OnSelect.InvokeAsync(item)">
+                        <td>
+                            <button class="invoice-review-row__primary" type="button" @onclick:stopPropagation="true" @onclick="() => OnSelect.InvokeAsync(item)">
+                                <span class="invoice-review-row__invoice">@item.InvoiceNumber</span>
+                                <span class="invoice-review-row__supplier-mobile">@item.SupplierName</span>
+                            </button>
+                        </td>
+                        <td>@item.SupplierName</td>
+                        <td class="finance-table__number">@item.Amount.ToString("N2", CultureInfo.InvariantCulture)</td>
+                        <td>@item.Currency</td>
+                        <td>
+                            <span class="@BuildRiskBadgeClass(item.RiskLevel)">@FormatLabel(item.RiskLevel)</span>
+                        </td>
+                        <td>
+                            <div class="invoice-review-row__recommendation">
+                                <span class="invoice-review-status-badge">@FormatLabel(item.RecommendationStatus)</span>
+                                <span class="invoice-review-row__outcome">@FormatLabel(item.RecommendationOutcome)</span>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="invoice-review-confidence" aria-label="Confidence @FormatConfidence(item.Confidence)">
+                                <div class="invoice-review-confidence__track">
+                                    <span class="invoice-review-confidence__fill" style="@BuildConfidenceWidth(item.Confidence)"></span>
+                                </div>
+                                <span class="invoice-review-confidence__value">@FormatConfidence(item.Confidence)</span>
+                            </div>
+                        </td>
+                        <td>@FormatDateTime(item.LastUpdatedUtc)</td>
+                        <td>
+                            <span class="invoice-review-status-badge invoice-review-status-badge--review">@FormatLabel(item.Status)</span>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<FinanceInvoiceReviewListItemResponse> Items { get; set; } = [];
+    [Parameter] public Guid? SelectedInvoiceId { get; set; }
+    [Parameter] public string SortColumn { get; set; } = string.Empty;
+    [Parameter] public bool SortDescending { get; set; }
+    [Parameter] public EventCallback<FinanceInvoiceReviewListItemResponse> OnSelect { get; set; }
+    [Parameter] public EventCallback<string> OnSort { get; set; }
+
+    private RenderFragment RenderSortGlyph(string column) => builder =>
+    {
+        if (!string.Equals(SortColumn, column, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        builder.OpenElement(0, "span");
+        builder.AddAttribute(1, "class", "invoice-review-table__sort-glyph");
+        builder.AddContent(2, SortDescending ? "↓" : "↑");
+        builder.CloseElement();
+    };
+
+    private static string FormatLabel(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "n/a"
+            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+    private static string FormatDateTime(DateTime value) =>
+        value == default
+            ? "Unknown"
+            : value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+
+    private static string FormatConfidence(decimal confidence) =>
+        $"{Math.Clamp(confidence, 0m, 1m):P0}";
+
+    private static string BuildConfidenceWidth(decimal confidence) =>
+        $"width: {(Math.Clamp(confidence, 0m, 1m) * 100m).ToString("0", CultureInfo.InvariantCulture)}%;";
+
+    private static string BuildRiskBadgeClass(string? riskLevel) =>
+        $"finance-risk-pill {ResolveRiskClass(riskLevel)}";
+
+    private static string BuildRowClass(FinanceInvoiceReviewListItemResponse item, bool isSelected)
+    {
+        var classes = new List<string> { "invoice-review-table__row" };
+        if (isSelected)
+        {
+            classes.Add("is-selected");
+        }
+
+        if (IsHighRisk(item))
+        {
+            classes.Add("is-high-risk");
+        }
+
+        return string.Join(" ", classes);
+    }
+
+    private static bool IsHighRisk(FinanceInvoiceReviewListItemResponse item) =>
+        string.Equals(item.RiskLevel, "high", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(item.RiskLevel, "critical", StringComparison.OrdinalIgnoreCase);
+
+    private static string ResolveRiskClass(string? riskLevel) =>
+        riskLevel?.Trim().ToLowerInvariant() switch
+        {
+            "critical" => "finance-risk-pill--critical",
+            "high" => "finance-risk-pill--high",
+            "medium" => "finance-risk-pill--medium",
+            "low" => "finance-risk-pill--low",
+            _ => "finance-risk-pill--neutral"
+        };
+}

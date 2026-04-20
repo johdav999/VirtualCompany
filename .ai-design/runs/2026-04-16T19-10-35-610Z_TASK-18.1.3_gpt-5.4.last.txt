@@ -1,0 +1,385 @@
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 6a75c71..4dc6c32 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -434,11 +434,11 @@ public sealed class InternalFinanceController : ControllerBase
+     private static FinanceInvoiceReviewActionAvailabilityResponse BuildReviewActionAvailability(
+         FinanceInvoiceDetailDto invoice,
+         FinanceInvoiceReviewWorkflowResultDto? review)
+     {
+-        var normalizedStatus = NormalizeReviewToken(invoice.Status);
+-        var hasPermission = invoice.Permissions.CanChangeInvoiceApprovalStatus;
+-        var isActionable = hasPermission && normalizedStatus is "open" or "pending" or "pending_approval";
++        // Default deny when the workflow state is unknown or no longer actionable.
++        var isActionable = FinanceInvoiceReviewActionPolicy.CanPerformReviewAction(
++            invoice.Permissions.CanChangeInvoiceApprovalStatus,
++            review?.ReviewTaskStatus);
+ 
+         return new FinanceInvoiceReviewActionAvailabilityResponse(
+             isActionable,
+             isActionable,
+diff --git a/src/VirtualCompany.Shared/FinanceInvoiceReviewActionPolicy.cs b/src/VirtualCompany.Shared/FinanceInvoiceReviewActionPolicy.cs
+new file mode 100644
+index 0000000..3f3e3aa
+--- /dev/null
++++ b/src/VirtualCompany.Shared/FinanceInvoiceReviewActionPolicy.cs
+@@ -0,0 +1,36 @@
++namespace VirtualCompany.Shared;
++
++public static class FinanceInvoiceReviewActionPolicy
++{
++    public static bool IsActionableReviewState(string? reviewTaskStatus) =>
++        string.Equals(NormalizeReviewToken(reviewTaskStatus), "awaiting_approval", StringComparison.Ordinal);
++
++    public static bool CanPerformReviewAction(bool hasInvoiceApprovalPermission, string? reviewTaskStatus) =>
++        hasInvoiceApprovalPermission && IsActionableReviewState(reviewTaskStatus);
++
++    public static FinanceInvoiceReviewActionAvailabilityResponse ApplyUserPermission(
++        FinanceInvoiceReviewActionAvailabilityResponse? actions,
++        string? membershipRole)
++    {
++        var serverActions = actions ?? new FinanceInvoiceReviewActionAvailabilityResponse();
++        var hasApprovalPermission = FinanceAccess.CanApproveInvoices(membershipRole);
++        var isActionable = hasApprovalPermission && serverActions.IsActionable;
++
++        return new FinanceInvoiceReviewActionAvailabilityResponse
++        {
++            IsActionable = isActionable,
++            CanApprove = isActionable && serverActions.CanApprove,
++            CanReject = isActionable && serverActions.CanReject,
++            CanSendForFollowUp = isActionable && serverActions.CanSendForFollowUp
++        };
++    }
++
++    private static string? NormalizeReviewToken(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        return value.Trim().Replace(" ", "_", StringComparison.Ordinal).Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor.cs
+index 8f8fcbf..2a4835d 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor.cs
+@@ -119,14 +119,7 @@ public partial class InvoiceReviewDetailPage : FinancePageBase
+         {
+             return null;
+         }
+ 
+-        var serverActions = detail.Actions ?? new FinanceInvoiceReviewActionAvailabilityResponse();
+-        var hasApprovalPermission = FinanceAccess.CanApproveInvoices(AccessState.MembershipRole);
+-        detail.Actions = new FinanceInvoiceReviewActionAvailabilityResponse
+-        {
+-            IsActionable = hasApprovalPermission && serverActions.IsActionable,
+-            CanApprove = hasApprovalPermission && serverActions.IsActionable && serverActions.CanApprove,
+-            CanReject = hasApprovalPermission && serverActions.IsActionable && serverActions.CanReject,
+-            CanSendForFollowUp = hasApprovalPermission && serverActions.IsActionable && serverActions.CanSendForFollowUp
+-        };
++        detail.Actions = FinanceInvoiceReviewActionPolicy.ApplyUserPermission(detail.Actions, AccessState.MembershipRole);
+         return detail;
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInvoiceReviewActionPolicyTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInvoiceReviewActionPolicyTests.cs
+new file mode 100644
+index 0000000..d6d7ff3
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceInvoiceReviewActionPolicyTests.cs
+@@ -0,0 +1,65 @@
++using VirtualCompany.Shared;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceInvoiceReviewActionPolicyTests
++{
++    [Fact]
++    public void Is_actionable_review_state_only_allows_awaiting_approval()
++    {
++        Assert.True(FinanceInvoiceReviewActionPolicy.IsActionableReviewState("awaiting_approval"));
++        Assert.True(FinanceInvoiceReviewActionPolicy.IsActionableReviewState("awaiting-approval"));
++        Assert.False(FinanceInvoiceReviewActionPolicy.IsActionableReviewState("completed"));
++        Assert.False(FinanceInvoiceReviewActionPolicy.IsActionableReviewState("not_started"));
++        Assert.False(FinanceInvoiceReviewActionPolicy.IsActionableReviewState(null));
++    }
++
++    [Fact]
++    public void Can_perform_review_action_requires_permission_and_actionable_state()
++    {
++        Assert.True(FinanceInvoiceReviewActionPolicy.CanPerformReviewAction(true, "awaiting_approval"));
++        Assert.False(FinanceInvoiceReviewActionPolicy.CanPerformReviewAction(true, "completed"));
++        Assert.False(FinanceInvoiceReviewActionPolicy.CanPerformReviewAction(false, "awaiting_approval"));
++    }
++
++    [Fact]
++    public void Apply_user_permission_preserves_backend_actions_for_approvers()
++    {
++        var availability = FinanceInvoiceReviewActionPolicy.ApplyUserPermission(
++            new FinanceInvoiceReviewActionAvailabilityResponse
++            {
++                IsActionable = true,
++                CanApprove = true,
++                CanReject = true,
++                CanSendForFollowUp = true
++            },
++            "owner");
++
++        Assert.True(availability.IsActionable);
++        Assert.True(availability.CanApprove);
++        Assert.True(availability.CanReject);
++        Assert.True(availability.CanSendForFollowUp);
++    }
++
++    [Fact]
++    public void Apply_user_permission_hides_actions_for_non_approvers()
++    {
++        var availability = FinanceInvoiceReviewActionPolicy.ApplyUserPermission(
++            new FinanceInvoiceReviewActionAvailabilityResponse
++            {
++                IsActionable = true,
++                CanApprove = true,
++                CanReject = true,
++                CanSendForFollowUp = true
++            },
++            "employee");
++
++        Assert.False(availability.IsActionable);
++        Assert.False(availability.CanApprove);
++        Assert.False(availability.CanReject);
++        Assert.False(availability.CanSendForFollowUp);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+index ce80a34..f6b2766 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -4,6 +4,7 @@ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Web.Services;
+ using Xunit;
+ 
+ namespace VirtualCompany.Api.Tests;
+@@ -170,6 +171,44 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         Assert.False(restrictedInvoiceDetail.LinkedDocument.CanNavigate);
+         Assert.Null(restrictedInvoiceDetail.LinkedDocument.Document);
+     }
++
++    [Fact]
++    public async Task Invoice_review_detail_actions_follow_workflow_actionable_state()
++    {
++        var seed = await FinanceDetailTestScenarioFactory.CreateAsync(_factory);
++        using var client = FinanceDetailTestScenarioFactory.CreateAuthenticatedClient(
++            _factory,
++            seed.OwnerSubject,
++            seed.OwnerEmail,
++            seed.OwnerDisplayName);
++
++        var reviewResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.MissingInvoiceId}/review-workflow",
++            new { });
++        Assert.Equal(HttpStatusCode.OK, reviewResponse.StatusCode);
++
++        var actionableDetailResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/reviews/{seed.MissingInvoiceId}");
++        Assert.Equal(HttpStatusCode.OK, actionableDetailResponse.StatusCode);
++        var actionableDetail = await actionableDetailResponse.Content.ReadFromJsonAsync<FinanceInvoiceReviewDetailResponse>();
++        Assert.NotNull(actionableDetail);
++        Assert.Equal("awaiting_approval", actionableDetail!.RecommendationStatus);
++        Assert.True(actionableDetail.Actions.IsActionable);
++        Assert.True(actionableDetail.Actions.CanApprove);
++        Assert.True(actionableDetail.Actions.CanReject);
++        Assert.True(actionableDetail.Actions.CanSendForFollowUp);
++
++        var followUpResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/reviews/{seed.MissingInvoiceId}/follow-up",
++            new { });
++        Assert.Equal(HttpStatusCode.OK, followUpResponse.StatusCode);
++        var followUpDetail = await followUpResponse.Content.ReadFromJsonAsync<FinanceInvoiceReviewDetailResponse>();
++        Assert.NotNull(followUpDetail);
++        Assert.Equal("open", followUpDetail!.Status);
++        Assert.Equal("completed", followUpDetail.RecommendationStatus);
++        Assert.False(followUpDetail.Actions.IsActionable);
++        Assert.False(followUpDetail.Actions.CanApprove);
++        Assert.False(followUpDetail.Actions.CanReject);
++        Assert.False(followUpDetail.Actions.CanSendForFollowUp);
++    }
+ 
+     private async Task<FinanceEndpointSeed> SeedFinanceCompanyAsync()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs b/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs
+index 13dc1ef..e0ad1bb 100644
+--- a/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs
++++ b/tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs
+@@ -136,6 +136,43 @@ public sealed class InvoiceReviewComponentTests
+         Assert.True(approved);
+     }
+ 
++    [Fact]
++    public void Invoice_review_detail_page_gates_actions_by_permission_and_actionable_state()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
++
++        using var actionableHarness = CreateInvoiceReviewDetailPageHarness(companyId, "owner", CreateReviewDetail(invoiceId, isActionable: true));
++        actionableHarness.Navigation.NavigateTo($"http://localhost/finance/reviews/{invoiceId:D}?companyId={companyId:D}");
++        var actionableCut = actionableHarness.Context.RenderComponent<InvoiceReviewDetailPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId)
++            .Add(x => x.InvoiceId, invoiceId));
++        actionableCut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Approve", actionableCut.Markup);
++            Assert.Contains("Reject", actionableCut.Markup);
++            Assert.Contains("Send for follow-up", actionableCut.Markup);
++        });
++
++        using var nonActionableHarness = CreateInvoiceReviewDetailPageHarness(companyId, "owner", CreateReviewDetail(invoiceId, isActionable: false));
++        nonActionableHarness.Navigation.NavigateTo($"http://localhost/finance/reviews/{invoiceId:D}?companyId={companyId:D}");
++        var nonActionableCut = nonActionableHarness.Context.RenderComponent<InvoiceReviewDetailPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId)
++            .Add(x => x.InvoiceId, invoiceId));
++        nonActionableCut.WaitForAssertion(() => Assert.DoesNotContain("Approve", nonActionableCut.Markup));
++
++        using var forbiddenHarness = CreateInvoiceReviewDetailPageHarness(companyId, "employee", CreateReviewDetail(invoiceId, isActionable: true));
++        forbiddenHarness.Navigation.NavigateTo($"http://localhost/finance/reviews/{invoiceId:D}?companyId={companyId:D}");
++        var forbiddenCut = forbiddenHarness.Context.RenderComponent<InvoiceReviewDetailPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId)
++            .Add(x => x.InvoiceId, invoiceId));
++        forbiddenCut.WaitForAssertion(() =>
++        {
++            Assert.DoesNotContain("Approve", forbiddenCut.Markup);
++            Assert.Contains("Finance access requires the finance.view permission for the selected company.", forbiddenCut.Markup);
++        });
++    }
++
+     [Fact]
+     public void Invoice_review_detail_component_omits_optional_navigation_links_when_related_records_are_unavailable()
+     {
+@@ -276,7 +313,7 @@ public sealed class InvoiceReviewComponentTests
+         return new InvoiceReviewsPageHarness(
+             context,
+             context.Services.GetRequiredService<FakeNavigationManager>(),
+-            financeRequests);
++            financeRequests);
+     }
+ 
+     private static CurrentUserContextViewModel CreateCurrentUserContext(Guid companyId) =>
+@@ -301,6 +338,55 @@ public sealed class InvoiceReviewComponentTests
+             }
+         };
+ 
++    private static InvoiceReviewDetailPageHarness CreateInvoiceReviewDetailPageHarness(
++        Guid companyId,
++        string membershipRole,
++        FinanceInvoiceReviewDetailResponse detail)
++    {
++        var context = new TestContext();
++
++        context.Services.AddSingleton(new FinanceAccessResolver());
++        context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new StubHttpMessageHandler(request =>
++        {
++            return request.RequestUri?.AbsolutePath switch
++            {
++                "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
++                _ => CreateNotFoundResponse()
++            };
++        })) { BaseAddress = new Uri("http://localhost/") });
++        context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new StubHttpMessageHandler(request =>
++        {
++            if (request.Method == HttpMethod.Get &&
++                request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/reviews/{detail.Id:D}")
++            {
++                return CreateJsonResponse(detail);
++            }
++
++            return CreateNotFoundResponse();
++        })) { BaseAddress = new Uri("http://localhost/") });
++
++        return new InvoiceReviewDetailPageHarness(
++            context,
++            context.Services.GetRequiredService<FakeNavigationManager>());
++    }
++
++    private static FinanceInvoiceReviewDetailResponse CreateReviewDetail(Guid invoiceId, bool isActionable) =>
++        new()
++        {
++            Id = invoiceId,
++            InvoiceNumber = "INV-24051",
++            SupplierName = "Contoso Supplies",
++            Amount = 15420.50m,
++            Currency = "USD",
++            Status = isActionable ? "pending_approval" : "open",
++            RiskLevel = "high",
++            RecommendationStatus = isActionable ? "awaiting_approval" : "completed",
++            RecommendationSummary = "Finance review summary.",
++            RecommendedAction = isActionable ? "request_human_approval" : "no_action",
++            Confidence = 0.91m,
++            LastUpdatedUtc = new DateTime(2026, 4, 16, 8, 30, 0, DateTimeKind.Utc),
++            SourceInvoiceId = invoiceId,
++            Actions = new FinanceInvoiceReviewActionAvailabilityResponse { IsActionable = isActionable, CanApprove = isActionable, CanReject = isActionable, CanSendForFollowUp = isActionable }
++        };
++
+     private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>
+         new(HttpStatusCode.OK)
+         {
+@@ -327,6 +413,23 @@ public sealed class InvoiceReviewComponentTests
+             Context.Dispose();
+         }
+     }
++
++    private sealed class InvoiceReviewDetailPageHarness : IDisposable
++    {
++        public InvoiceReviewDetailPageHarness(TestContext context, FakeNavigationManager navigation)
++        {
++            Context = context;
++            Navigation = navigation;
++        }
++
++        public TestContext Context { get; }
++        public FakeNavigationManager Navigation { get; }
++
++        public void Dispose()
++        {
++            Context.Dispose();
++        }
++    }
+ 
+     private sealed class StubHttpMessageHandler : HttpMessageHandler
+     {
+@@ -341,4 +444,33 @@ public sealed class InvoiceReviewComponentTests
+         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+             Task.FromResult(_handler(request));
+     }
++
++    private static CurrentUserContextViewModel CreateCurrentUserContext(Guid companyId, string membershipRole) =>
++        new()
++        {
++            Memberships =
++            [
++                new CompanyMembershipViewModel
++                {
++                    MembershipId = Guid.NewGuid(),
++                    CompanyId = companyId,
++                    CompanyName = "Contoso Finance",
++                    MembershipRole = membershipRole,
++                    Status = "active"
++                }
++            ],
++            ActiveCompany = new ResolvedCompanyContextViewModel
++            {
++                MembershipId = Guid.NewGuid(),
++                CompanyId = companyId,
++                CompanyName = "Contoso Finance",
++                MembershipRole = membershipRole,
++                Status = "active"
++            }
++        };
++
++    private static CurrentUserContextViewModel CreateCurrentUserContext(Guid companyId) =>
++        CreateCurrentUserContext(companyId, "owner");
+ }
++
++
++END_OF_PATCH

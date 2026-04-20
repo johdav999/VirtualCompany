@@ -1,0 +1,112 @@
+@typeparam TSection where TSection : class
+@implements IDisposable
+
+<article class="wizard-card">
+    <div class="mb-3">
+        <span class="dashboard-kicker">@Kicker</span>
+        <h2 class="h5 mb-2">@Title</h2>
+        <p class="text-body-secondary mb-0">@Description</p>
+    </div>
+
+    <FinanceDataState
+        IsLoading="@_state.IsLoading"
+        IsEmpty="@_state.IsEmpty"
+        ErrorMessage="@_state.ErrorMessage"
+        LoadingTitle="@LoadingTitle"
+        LoadingMessage="@LoadingMessage"
+        EmptyTitle="@EmptyTitle"
+        EmptyMessage="@EmptyMessage"
+        ErrorTitle="@ErrorTitle"
+        RetryText="Retry section"
+        OnRetry="@ReloadAsync">
+        @if (_state.Value is not null && ChildContent is not null)
+        {
+            @ChildContent(_state.Value)
+        }
+    </FinanceDataState>
+</article>
+
+@code {
+    private CancellationTokenSource? _loadCts;
+    private FinanceSandboxSectionState<TSection> _state = FinanceSandboxSectionState<TSection>.Loading();
+
+    [Parameter, EditorRequired]
+    public Guid CompanyId { get; set; }
+
+    [Parameter, EditorRequired]
+    public string Kicker { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public string Title { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public string Description { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public string LoadingTitle { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public string LoadingMessage { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public string EmptyTitle { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public string EmptyMessage { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public string ErrorTitle { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public Func<Guid, CancellationToken, Task<TSection?>> Loader { get; set; } = default!;
+
+    [Parameter]
+    public RenderFragment<TSection>? ChildContent { get; set; }
+
+    protected override Task OnParametersSetAsync()
+    {
+        BeginLoad();
+        return Task.CompletedTask;
+    }
+
+    private Task ReloadAsync()
+    {
+        BeginLoad();
+        return Task.CompletedTask;
+    }
+
+    private void BeginLoad()
+    {
+        CancelLoad();
+        _state = FinanceSandboxSectionState<TSection>.Loading();
+        _loadCts = new CancellationTokenSource();
+        _ = LoadAsync(_loadCts.Token);
+    }
+
+    private async Task LoadAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var value = await Loader(CompanyId, cancellationToken);
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                _state = FinanceSandboxSectionState<TSection>.Success(value);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (FinanceApiException ex)
+        {
+            _state = FinanceSandboxSectionState<TSection>.Failure(ex.Message);
+        }
+        finally
+        {
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void CancelLoad() => Interlocked.Exchange(ref _loadCts, null)?.Cancel();
+
+    public void Dispose() => CancelLoad();
+}

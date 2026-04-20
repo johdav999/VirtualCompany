@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-22.3.1",
+  "promptPath": ".ai-design/prompts/TASK-22.3.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-19T15:44:22.369Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-19T15-44-22-369Z_TASK-22.3.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-19T15-44-22-369Z_TASK-22.3.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-19T15:54:33.424Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "eneratedAtUtc = DashboardGeneratedUtc,\n+            BusinessSignals =\n+            [\n+                new BusinessSignalViewModel\n+                {\n+                    Type = \"operationalLoad\",\n+                    Severity = \"warning\",\n+                    Title = \"Operational load is building\",\n+                    Summary = \"Open work is rising faster than available capacity.\",\n+                    ActionLabel = \"Open tasks\",\n+                    ActionUrl = $\"/tasks?companyId={companyId:D}\",\n+                    DetectedAtUtc = DashboardGeneratedUtc\n+                }\n+            ],\n             Finance = finance,\n-            SummaryKpis = [],\n+            SummaryKpis = [],\n             PendingApprovals = new ExecutiveCockpitPendingApprovalsViewModel\n             {\n                 TotalCount = 0,\n@@ -193,6 +224,27 @@ public sealed class ExecutiveCockpitDashboardPageTests\n                 NoAlerts = finance?.LowCashAlert is null\n             }\n         };\n+\n+    private static DashboardFinanceSnapshotViewModel CreateFinanceSnapshot(Guid companyId, string runwayStatus) =>\n+        runwayStatus == \"missing\"\n+            ? new DashboardFinanceSnapshotViewModel\n+            {\n+                CompanyId = companyId,\n+                Cash = 0m,\n+                BurnRate = 0m,\n+                RunwayDays = null,\n+                RiskLevel = \"missing\",\n+                HasFinanceData = false,\n+                Currency = \"USD\",\n+                AsOfUtc = CashLastRefreshedUtc\n+            }\n+            : new DashboardFinanceSnapshotViewModel\n+            {\n+                CompanyId = companyId,\n+                Cash = 125400.25m,\n+                BurnRate = 18500m / 30m,\n+                RunwayDays = runwayStatus == \"healthy\" ? 180 : runwayStatus == \"warning\" ? 65 : 22,\n+                RiskLevel = runwayStatus,\n+                HasFinanceData = true,\n+                Currency = \"USD\",\n+                AsOfUtc = CashLastRefreshedUtc\n+            };\n }\n END_OF_PATCH\n",
+  "stderrTail": "boardGeneratedUtc,\n+            BusinessSignals =\n+            [\n+                new BusinessSignalViewModel\n+                {\n+                    Type = \"operationalLoad\",\n+                    Severity = \"warning\",\n+                    Title = \"Operational load is building\",\n+                    Summary = \"Open work is rising faster than available capacity.\",\n+                    ActionLabel = \"Open tasks\",\n+                    ActionUrl = $\"/tasks?companyId={companyId:D}\",\n+                    DetectedAtUtc = DashboardGeneratedUtc\n+                }\n+            ],\n             Finance = finance,\n-            SummaryKpis = [],\n+            SummaryKpis = [],\n             PendingApprovals = new ExecutiveCockpitPendingApprovalsViewModel\n             {\n                 TotalCount = 0,\n@@ -193,6 +224,27 @@ public sealed class ExecutiveCockpitDashboardPageTests\n                 NoAlerts = finance?.LowCashAlert is null\n             }\n         };\n+\n+    private static DashboardFinanceSnapshotViewModel CreateFinanceSnapshot(Guid companyId, string runwayStatus) =>\n+        runwayStatus == \"missing\"\n+            ? new DashboardFinanceSnapshotViewModel\n+            {\n+                CompanyId = companyId,\n+                Cash = 0m,\n+                BurnRate = 0m,\n+                RunwayDays = null,\n+                RiskLevel = \"missing\",\n+                HasFinanceData = false,\n+                Currency = \"USD\",\n+                AsOfUtc = CashLastRefreshedUtc\n+            }\n+            : new DashboardFinanceSnapshotViewModel\n+            {\n+                CompanyId = companyId,\n+                Cash = 125400.25m,\n+                BurnRate = 18500m / 30m,\n+                RunwayDays = runwayStatus == \"healthy\" ? 180 : runwayStatus == \"warning\" ? 65 : 22,\n+                RiskLevel = runwayStatus,\n+                HasFinanceData = true,\n+                Currency = \"USD\",\n+                AsOfUtc = CashLastRefreshedUtc\n+            };\n }\n END_OF_PATCH\ntokens used\n164,210\n",
+  "verbosityMode": "verbose"
+}

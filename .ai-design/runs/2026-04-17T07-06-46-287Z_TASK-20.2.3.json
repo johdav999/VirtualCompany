@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-20.2.3",
+  "promptPath": ".ai-design/prompts/TASK-20.2.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-17T07:06:46.287Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-17T07-06-46-287Z_TASK-20.2.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-17T07-06-46-287Z_TASK-20.2.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-17T07:20:06.752Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": " 'seeded'\n+                    ELSE finance_seed_status\n+                END\n+                WHERE finance_seed_status IN ('partially_seeded', 'fully_seeded');\n+                \"\"\");\n+\n+            migrationBuilder.AddCheckConstraint(\n+                name: \"CK_companies_finance_seed_status\",\n+                table: \"companies\",\n+                sql: \"finance_seed_status IN ('not_seeded', 'seeding', 'seeded', 'failed')\");\n+        }\n+\n+        protected override void Down(MigrationBuilder migrationBuilder)\n+        {\n+            migrationBuilder.DropCheckConstraint(\n+                name: \"CK_companies_finance_seed_status\",\n+                table: \"companies\");\n+\n+            migrationBuilder.AddCheckConstraint(\n+                name: \"CK_companies_finance_seed_status\",\n+                table: \"companies\",\n+                sql: \"finance_seed_status IN ('not_seeded', 'partially_seeded', 'fully_seeded')\");\n+        }\n+    }\n+}\ndiff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs\nindex 2424242..2525252 100644\n--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs\n+++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs\n@@ -654,7 +654,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations\n                         });\n \n                     b.ToTable(\"companies\", (string)null);\n \n                     b.HasKey(\"Id\");\n \n-                    b.ToTable(\"companies\", t => t.HasCheckConstraint(\"CK_companies_finance_seed_status\", \"finance_seed_status IN ('not_seeded', 'partially_seeded', 'fully_seeded')\"));\n+                    b.ToTable(\"companies\", t => t.HasCheckConstraint(\"CK_companies_finance_seed_status\", \"finance_seed_status IN ('not_seeded', 'seeding', 'seeded', 'failed')\"));\n                 });\n END_OF_PATCH\n",
+  "stderrTail": "           ELSE finance_seed_status\n+                END\n+                WHERE finance_seed_status IN ('partially_seeded', 'fully_seeded');\n+                \"\"\");\n+\n+            migrationBuilder.AddCheckConstraint(\n+                name: \"CK_companies_finance_seed_status\",\n+                table: \"companies\",\n+                sql: \"finance_seed_status IN ('not_seeded', 'seeding', 'seeded', 'failed')\");\n+        }\n+\n+        protected override void Down(MigrationBuilder migrationBuilder)\n+        {\n+            migrationBuilder.DropCheckConstraint(\n+                name: \"CK_companies_finance_seed_status\",\n+                table: \"companies\");\n+\n+            migrationBuilder.AddCheckConstraint(\n+                name: \"CK_companies_finance_seed_status\",\n+                table: \"companies\",\n+                sql: \"finance_seed_status IN ('not_seeded', 'partially_seeded', 'fully_seeded')\");\n+        }\n+    }\n+}\ndiff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs\nindex 2424242..2525252 100644\n--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs\n+++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs\n@@ -654,7 +654,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations\n                         });\n \n                     b.ToTable(\"companies\", (string)null);\n \n                     b.HasKey(\"Id\");\n \n-                    b.ToTable(\"companies\", t => t.HasCheckConstraint(\"CK_companies_finance_seed_status\", \"finance_seed_status IN ('not_seeded', 'partially_seeded', 'fully_seeded')\"));\n+                    b.ToTable(\"companies\", t => t.HasCheckConstraint(\"CK_companies_finance_seed_status\", \"finance_seed_status IN ('not_seeded', 'seeding', 'seeded', 'failed')\"));\n                 });\n END_OF_PATCH\ntokens used\n149,795\n",
+  "verbosityMode": "summary"
+}

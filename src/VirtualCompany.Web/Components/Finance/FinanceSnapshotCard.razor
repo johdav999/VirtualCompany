@@ -1,0 +1,101 @@
+@using System.Globalization
+@using VirtualCompany.Web.Services
+@inject NavigationManager Navigation
+
+<article class="wizard-card finance-snapshot-card" data-testid="finance-snapshot-card">
+    <div class="cockpit-card__header">
+        <div>
+            <span class="dashboard-kicker">Finance snapshot</span>
+            <h4 class="h6 mt-2 mb-1">Decision-ready cash view</h4>
+            <p class="text-body-secondary mb-0">Cash, daily burn, and runway for the active company.</p>
+        </div>
+    </div>
+
+    @if (Snapshot is null || !Snapshot.HasFinanceData)
+    {
+        <div class="finance-snapshot-card__empty mt-3" data-testid="finance-snapshot-empty">
+            <p class="text-body-secondary mb-3">Finance data is missing or incomplete for this workspace.</p>
+            <a class="btn btn-primary"
+               data-testid="connect-accounting-cta"
+               href="@DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.Home, "open-workspace", "this-month")"
+               @onclick="NavigateToFinanceHomeAsync"
+               @onclick:preventDefault="true">Connect accounting</a>
+        </div>
+    }
+    else
+    {
+        <div class="finance-snapshot-card__grid mt-3">
+            <section>
+                <div class="dashboard-kicker">Cash</div>
+                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-cash-position">@FormatCurrency(Snapshot.Cash, Snapshot.Currency)</strong>
+            </section>
+            <section>
+                <div class="dashboard-kicker">Runway</div>
+                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-runway">@(Snapshot.RunwayDays.HasValue ? $"{Snapshot.RunwayDays.Value} days" : "Unavailable")</strong>
+            </section>
+            <section>
+                <div class="dashboard-kicker">Risk</div>
+                <span class="finance-risk-pill finance-risk-pill--@CssToken(Snapshot.RiskLevel)" data-testid="executive-cockpit-runway-status">@DisplayRisk(Snapshot.RiskLevel)</span>
+            </section>
+        </div>
+        <p class="text-body-secondary mt-3 mb-0">Burn rate: @FormatCurrency(Snapshot.BurnRate, Snapshot.Currency) per day. Snapshot time: @Snapshot.AsOfUtc.ToLocalTime():g</p>
+        <div class="dashboard-actions mt-3">
+            <a class="btn btn-sm btn-outline-primary"
+               href="@DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.CashPosition, "view-cash-position", "this-month")"
+               @onclick="NavigateToCashPositionAsync"
+               @onclick:preventDefault="true">Open cash position</a>
+            <a class="btn btn-sm btn-outline-secondary"
+               href="@DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.Home, "open-workspace", "this-month")"
+               @onclick="NavigateToFinanceHomeAsync"
+               @onclick:preventDefault="true">Open finance workspace</a>
+        </div>
+    }
+</article>
+
+@code {
+    [Parameter]
+    public Guid? CompanyId { get; set; }
+
+    [Parameter]
+    public DashboardFinanceSnapshotViewModel? Snapshot { get; set; }
+    [Parameter] public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
+
+    private static string CssToken(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "neutral"
+            : value.Trim().ToLowerInvariant().Replace("_", "-");
+
+    private static string DisplayRisk(string? riskLevel) =>
+        CssToken(riskLevel) switch
+        {
+            "critical" => "Critical",
+            "warning" => "Warning",
+            "healthy" => "Healthy",
+            _ => "Missing"
+        };
+
+    private static string FormatCurrency(decimal amount, string currency) =>
+        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+
+    private async Task NavigateToFinanceHomeAsync()
+    {
+        var route = DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.Home, "open-workspace", "this-month");
+        if (OnActionClick.HasDelegate)
+        {
+            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext("finance-snapshot", "open-finance-home", route, Label: "Finance workspace"));
+        }
+
+        Navigation.NavigateTo(route);
+    }
+
+    private async Task NavigateToCashPositionAsync()
+    {
+        var route = DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.CashPosition, "view-cash-position", "this-month");
+        if (OnActionClick.HasDelegate)
+        {
+            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext("finance-snapshot", "open-cash-position", route, Label: "Cash position"));
+        }
+
+        Navigation.NavigateTo(route);
+    }
+}

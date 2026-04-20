@@ -108,6 +108,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             userId,
             CompanyMembershipRole.Owner,
             CompanyMembershipStatus.Active));
+        await EnsureLauraFinanceAgentSeededAsync(company.Id, cancellationToken);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         return new CreateCompanyResultDto(company.Id, company.Name, BuildDashboardPath(company.Id, includeStarterGuidance: true), guidance);
@@ -405,6 +406,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             CompletedWizardStep,
             selectedTemplateId,
             SerializeState(merged, selectedTemplateId, CompletedWizardStep, true, guidance));
+        await EnsureLauraFinanceAgentSeededAsync(company.Id, cancellationToken);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
 
@@ -413,6 +415,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             company.Name,
             BuildDashboardPath(company.Id, includeStarterGuidance: true),
             guidance);
+    }
+
+    private async Task EnsureLauraFinanceAgentSeededAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        var alreadySeeded = await _dbContext.Agents
+            .IgnoreQueryFilters()
+            .AnyAsync(x => x.CompanyId == companyId && x.TemplateId == LauraFinanceAgentSeedData.TemplateId, cancellationToken);
+
+        if (!alreadySeeded)
+        {
+            _dbContext.Agents.Add(LauraFinanceAgentSeedData.CreateCompanyAgent(companyId));
+        }
     }
 
     private async Task<Company?> GetLatestOwnedOnboardingAsync(Guid userId, CancellationToken cancellationToken)

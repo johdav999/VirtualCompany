@@ -1,0 +1,200 @@
+@implements IDisposable
+@inject TodayFocusApiClient TodayFocusApiClient
+@inject NavigationManager Navigation
+@inject ILogger<TodayFocusPanel> Logger
+@using VirtualCompany.Web.Services
+
+@if (CompanyId == Guid.Empty)
+{
+    <section class="wizard-card dashboard-summary">
+        <span class="dashboard-kicker">Today's focus</span>
+        <p class="text-body-secondary mb-0">Select a company context to load focus items.</p>
+    </section>
+}
+else if (isLoading)
+{
+    <section class="wizard-card dashboard-summary" aria-busy="true" data-testid="today-focus-loading">
+        <div class="d-flex justify-content-between align-items-start gap-3 mb-4">
+            <div>
+                <span class="dashboard-kicker">Today's focus</span>
+                <h2 class="h4 mb-1">@DisplayTitle</h2>
+                <p class="text-body-secondary mb-0">Loading prioritized work for the current workspace.</p>
+            </div>
+            <span class="badge text-bg-light">Loading</span>
+        </div>
+
+        <div class="row g-3">
+            @for (var index = 0; index < 3; index++)
+            {
+                <div class="col-12 col-lg-6" data-testid="today-focus-loading-card">
+                    <article class="border rounded-3 p-3 h-100">
+                        <p class="placeholder-glow mb-2">
+                            <span class="placeholder col-7"></span>
+                        </p>
+                        <p class="placeholder-glow mb-3">
+                            <span class="placeholder col-12"></span>
+                            <span class="placeholder col-9"></span>
+                        </p>
+                        <span class="placeholder col-4 btn btn-outline-primary btn-sm disabled"></span>
+                    </article>
+                </div>
+            }
+        </div>
+    </section>
+}
+else if (!string.IsNullOrWhiteSpace(errorMessage))
+{
+    <section class="wizard-card dashboard-summary">
+        <span class="dashboard-kicker">Today's focus</span>
+        <div class="alert alert-danger mb-0">@errorMessage</div>
+    </section>
+}
+else if (items.Count == 0)
+{
+    <section class="wizard-card dashboard-summary" data-testid="today-focus-empty">
+        <span class="dashboard-kicker">Today's focus</span>
+        <p class="text-body-secondary mb-0">No focus items are ready for this workspace yet.</p>
+    </section>
+}
+else
+{
+    <section class="wizard-card dashboard-summary" data-testid="today-focus-panel">
+        <div class="d-flex justify-content-between align-items-start gap-3 mb-4">
+            <div>
+                <span class="dashboard-kicker">Today's focus</span>
+                <h2 class="h4 mb-1">@DisplayTitle</h2>
+                <p class="text-body-secondary mb-0">Cross-domain work ranked into one queue for the current tenant.</p>
+            </div>
+            <span class="badge text-bg-light" data-testid="today-focus-count">@items.Count item@(items.Count == 1 ? string.Empty : "s")</span>
+        </div>
+        <div class="row g-3">
+            @for (var index = 0; index < items.Count; index++)
+            {
+                var item = items[index];
+                <div class="col-12 col-lg-6" data-testid="today-focus-card">
+                    <article class="border rounded-3 p-3 h-100 d-flex flex-column justify-content-between">
+                        <div>
+                            <div class="d-flex justify-content-between align-items-start gap-2">
+                                <strong data-testid="today-focus-title">@item.Title</strong>
+                                <span class="badge text-bg-primary">@item.PriorityScore</span>
+                            </div>
+                            <p class="text-body-secondary mt-2 mb-0" data-testid="today-focus-description">@item.Description</p>
+                        </div>
+                        <div class="mt-3">
+                            <button class="btn btn-outline-primary btn-sm"
+                                    type="button"
+                                    data-testid="today-focus-cta"
+                                    @onclick="() => NavigateToAsync(item, index)">
+                                @ToCallToAction(item.ActionType)
+                            </button>
+                        </div>
+                    </article>
+                </div>
+            }
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public Guid UserId { get; set; }
+    [Parameter] public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
+    [Parameter] public string Title { get; set; } = "Today's focus";
+
+    private const int MaxVisibleItems = 5;
+    private CancellationTokenSource? loadCancellationTokenSource;
+    private bool isLoading = true;
+    private string? errorMessage;
+    private IReadOnlyList<FocusItemViewModel> items = Array.Empty<FocusItemViewModel>();
+    private string DisplayTitle =>
+        Title.Contains("focus", StringComparison.OrdinalIgnoreCase) || Title.Contains('\u00e2')
+            ? "Top operational priorities"
+            : Title;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        loadCancellationTokenSource?.Cancel();
+        loadCancellationTokenSource?.Dispose();
+        loadCancellationTokenSource = new CancellationTokenSource();
+
+        isLoading = true;
+        errorMessage = null;
+        items = Array.Empty<FocusItemViewModel>();
+
+        if (CompanyId == Guid.Empty)
+        {
+            isLoading = false;
+            return;
+        }
+
+        try
+        {
+            var results = await TodayFocusApiClient.GetAsync(CompanyId, loadCancellationTokenSource.Token);
+            items = results
+                .OrderByDescending(item => item.PriorityScore)
+                .Take(MaxVisibleItems)
+                .ToArray();
+        }
+        catch (OperationCanceledException) when (loadCancellationTokenSource.IsCancellationRequested)
+        {
+        }
+        catch (OnboardingApiException ex)
+        {
+            Logger.LogWarning(ex, "Unable to load today's focus items for company {CompanyId}.", CompanyId);
+            errorMessage = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error while loading today's focus items for company {CompanyId}.", CompanyId);
+            errorMessage = "Today's focus is temporarily unavailable.";
+        }
+        finally
+        {
+            if (loadCancellationTokenSource is { IsCancellationRequested: false })
+            {
+                isLoading = false;
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        loadCancellationTokenSource?.Cancel();
+        loadCancellationTokenSource?.Dispose();
+    }
+
+    private async Task NavigateToAsync(FocusItemViewModel item, int position)
+    {
+        var navigationTarget = DashboardRoutes.NormalizeFocusTarget(item.NavigationTarget, CompanyId);
+        if (string.IsNullOrWhiteSpace(navigationTarget))
+        {
+            return;
+        }
+
+        if (OnActionClick.HasDelegate)
+        {
+            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext(
+                "today-focus",
+                string.IsNullOrWhiteSpace(item.ActionType) ? "open" : item.ActionType,
+                navigationTarget,
+                item.Id,
+                item.SourceType,
+                item.Title,
+                position + 1));
+        }
+        Navigation.NavigateTo(navigationTarget);
+    }
+
+    private static string ToCallToAction(string? actionType) =>
+        actionType?.Trim().ToLowerInvariant() switch
+        {
+            "review" => "Review",
+            "resolve" => "Resolve",
+            "investigate" => "Investigate",
+            "approve" => "Approve",
+            "open" => "Open",
+            "view" => "View",
+            null or "" => "Open",
+            _ => "Open"
+        };
+}

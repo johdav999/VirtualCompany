@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-19.1.2",
+  "promptPath": ".ai-design/prompts/TASK-19.1.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T20:55:06.994Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T20-55-06-994Z_TASK-19.1.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T20-55-06-994Z_TASK-19.1.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T21:08:07.173Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "     var client = _factory.CreateClient();\n+        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);\n+        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);\n+        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);\n+        return client;\n+    }\n+\n+    private sealed record SandboxAdminEndpointSeed(\n+        Guid CompanyId,\n+        TestIdentity Owner,\n+        TestIdentity Admin,\n+        TestIdentity Manager,\n+        TestIdentity Approver,\n+        TestIdentity Employee)\n+    {\n+        public TestIdentity GetIdentity(string role) =>\n+            role switch\n+            {\n+                \"owner\" => Owner,\n+                \"admin\" => Admin,\n+                \"manager\" => Manager,\n+                \"finance_approver\" => Approver,\n+                \"employee\" => Employee,\n+                _ => throw new ArgumentOutOfRangeException(nameof(role), role, \"Unsupported sandbox admin test role.\")\n+            };\n+    }\n+\n+    private sealed record TestIdentity(\n+        Guid UserId,\n+        string Subject,\n+        string Email,\n+        string DisplayName)\n+    {\n+        public static TestIdentity Create(string displayName)\n+        {\n+            var userId = Guid.NewGuid();\n+            var subject = $\"sandbox-{displayName.Replace(\" \", \"-\", StringComparison.OrdinalIgnoreCase).ToLowerInvariant()}-{Guid.NewGuid():N}\";\n+            return new TestIdentity(\n+                userId,\n+                subject,\n+                $\"{subject}@example.com\",\n+                displayName);\n+        }\n+    }\n+\n+    private sealed class FinanceSandboxDatasetGenerationResponse\n+    {\n+        public string ProfileName { get; set; } = string.Empty;\n+        public DateTime LastGeneratedUtc { get; set; }\n+        public string CoverageSummary { get; set; } = string.Empty;\n+        public List<string> AvailableProfiles { get; set; } = [];\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "actory.CreateClient();\n+        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);\n+        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);\n+        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);\n+        return client;\n+    }\n+\n+    private sealed record SandboxAdminEndpointSeed(\n+        Guid CompanyId,\n+        TestIdentity Owner,\n+        TestIdentity Admin,\n+        TestIdentity Manager,\n+        TestIdentity Approver,\n+        TestIdentity Employee)\n+    {\n+        public TestIdentity GetIdentity(string role) =>\n+            role switch\n+            {\n+                \"owner\" => Owner,\n+                \"admin\" => Admin,\n+                \"manager\" => Manager,\n+                \"finance_approver\" => Approver,\n+                \"employee\" => Employee,\n+                _ => throw new ArgumentOutOfRangeException(nameof(role), role, \"Unsupported sandbox admin test role.\")\n+            };\n+    }\n+\n+    private sealed record TestIdentity(\n+        Guid UserId,\n+        string Subject,\n+        string Email,\n+        string DisplayName)\n+    {\n+        public static TestIdentity Create(string displayName)\n+        {\n+            var userId = Guid.NewGuid();\n+            var subject = $\"sandbox-{displayName.Replace(\" \", \"-\", StringComparison.OrdinalIgnoreCase).ToLowerInvariant()}-{Guid.NewGuid():N}\";\n+            return new TestIdentity(\n+                userId,\n+                subject,\n+                $\"{subject}@example.com\",\n+                displayName);\n+        }\n+    }\n+\n+    private sealed class FinanceSandboxDatasetGenerationResponse\n+    {\n+        public string ProfileName { get; set; } = string.Empty;\n+        public DateTime LastGeneratedUtc { get; set; }\n+        public string CoverageSummary { get; set; } = string.Empty;\n+        public List<string> AvailableProfiles { get; set; } = [];\n+    }\n+}\nEND_OF_PATCH\ntokens used\n154,221\n",
+  "verbosityMode": "summary"
+}

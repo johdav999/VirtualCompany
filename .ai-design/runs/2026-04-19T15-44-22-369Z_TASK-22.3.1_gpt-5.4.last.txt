@@ -1,0 +1,1475 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 2d55d7a..f4e26a4 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -1,6 +1,7 @@
+ namespace VirtualCompany.Application.Cockpit;
+ 
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Signals;
+ using VirtualCompany.Application.Finance;
+ 
+ public sealed record GetExecutiveCockpitDashboardQuery(Guid CompanyId);
+@@ -20,6 +21,7 @@ public sealed record ExecutiveCockpitDashboardDto(
+     string CompanyName,
+     DateTime GeneratedAtUtc,
+     DateTime? CacheTimestampUtc,
++    IReadOnlyList<BusinessSignal> BusinessSignals,
+     IReadOnlyList<ExecutiveCockpitSummaryKpiDto> SummaryKpis,
+     ExecutiveCockpitDailyBriefingDto? DailyBriefing,
+     FinanceCashPositionDto? CashPosition,
+@@ -47,6 +49,7 @@ public sealed record ExecutiveCockpitSummaryKpiDto(
+ 
+ public static class ExecutiveCockpitWidgetKeys
+ {
++    public const string BusinessSignals = "business-signals";
+     public const string SummaryKpis = "summary-kpis";
+     public const string DailyBriefing = "daily-briefing";
+     public const string PendingApprovals = "pending-approvals";
+@@ -60,7 +63,7 @@ public static class ExecutiveCockpitWidgetKeys
+ 
+     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+     {
+-        SummaryKpis, DailyBriefing, PendingApprovals, Alerts, DepartmentKpis, DepartmentSections, CashPosition, RecentActivity, Finance, Kpis
++        BusinessSignals, SummaryKpis, DailyBriefing, PendingApprovals, Alerts, DepartmentKpis, DepartmentSections, CashPosition, RecentActivity, Finance, Kpis
+     };
+ }
+diff --git a/src/VirtualCompany.Application/Cockpit/BusinessSignalsContracts.cs b/src/VirtualCompany.Application/Cockpit/BusinessSignalsContracts.cs
+new file mode 100644
+index 0000000..64f8e65
+--- /dev/null
++++ b/src/VirtualCompany.Application/Cockpit/BusinessSignalsContracts.cs
+@@ -0,0 +1,23 @@
++using VirtualCompany.Domain.Signals;
++
++namespace VirtualCompany.Application.Cockpit;
++
++public interface ISignalEngine
++{
++    Task<IReadOnlyList<BusinessSignal>> GenerateSignals(
++        Guid companyId,
++        CancellationToken cancellationToken = default);
++}
++
++public sealed record DashboardFinanceSnapshotDto(
++    Guid CompanyId,
++    decimal Cash,
++    decimal BurnRate,
++    int? RunwayDays,
++    string RiskLevel,
++    bool HasFinanceData,
++    string Currency,
++    DateTime AsOfUtc);
++
++public interface IDashboardFinanceSnapshotService
++{
++    Task<DashboardFinanceSnapshotDto> GetAsync(Guid companyId, CancellationToken cancellationToken = default);
++}
+diff --git a/src/VirtualCompany.Domain/Signals/BusinessSignalSeverity.cs b/src/VirtualCompany.Domain/Signals/BusinessSignalSeverity.cs
+new file mode 100644
+index 0000000..afd0b11
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Signals/BusinessSignalSeverity.cs
+@@ -0,0 +1,9 @@
++namespace VirtualCompany.Domain.Signals;
++
++public enum BusinessSignalSeverity
++{
++    Info = 0,
++    Warning = 1,
++    Critical = 2
++}
++
+diff --git a/src/VirtualCompany.Domain/Signals/BusinessSignalType.cs b/src/VirtualCompany.Domain/Signals/BusinessSignalType.cs
+new file mode 100644
+index 0000000..0c55e79
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Signals/BusinessSignalType.cs
+@@ -0,0 +1,8 @@
++namespace VirtualCompany.Domain.Signals;
++
++public enum BusinessSignalType
++{
++    OperationalLoad = 0,
++    ApprovalBottleneck = 1
++}
++
+diff --git a/src/VirtualCompany.Domain/Signals/BusinessSignal.cs b/src/VirtualCompany.Domain/Signals/BusinessSignal.cs
+new file mode 100644
+index 0000000..339c277
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Signals/BusinessSignal.cs
+@@ -0,0 +1,14 @@
++namespace VirtualCompany.Domain.Signals;
++
++public sealed record BusinessSignal(
++    BusinessSignalType Type,
++    BusinessSignalSeverity Severity,
++    string Title,
++    string Summary,
++    decimal? MetricValue,
++    string? MetricLabel,
++    string? ActionLabel,
++    string? ActionUrl,
++    DateTime DetectedAtUtc);
++
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanySignalEngine.cs b/src/VirtualCompany.Infrastructure/Companies/CompanySignalEngine.cs
+new file mode 100644
+index 0000000..ac67f94
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanySignalEngine.cs
+@@ -0,0 +1,155 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Signals;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanySignalEngine : ISignalEngine
++{
++    private const decimal WarningLoadPerAgent = 2m;
++    private const decimal CriticalLoadPerAgent = 4m;
++    private const decimal CriticalBlockedRatio = 0.50m;
++    private const int WarningPendingApprovals = 3;
++    private const int CriticalPendingApprovals = 5;
++    private static readonly TimeSpan WarningApprovalAge = TimeSpan.FromHours(24);
++    private static readonly TimeSpan CriticalApprovalAge = TimeSpan.FromHours(72);
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly TimeProvider _timeProvider;
++
++    public CompanySignalEngine(VirtualCompanyDbContext dbContext, TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<IReadOnlyList<BusinessSignal>> GenerateSignals(
++        Guid companyId,
++        CancellationToken cancellationToken = default)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++
++        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var signals = new List<BusinessSignal>(2);
++
++        var openTaskStatuses = new[]
++        {
++            WorkTaskStatus.New,
++            WorkTaskStatus.InProgress,
++            WorkTaskStatus.Blocked,
++            WorkTaskStatus.AwaitingApproval
++        };
++
++        var openTaskCount = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(x => x.CompanyId == companyId && openTaskStatuses.Contains(x.Status), cancellationToken);
++
++        var blockedTaskCount = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(x => x.CompanyId == companyId && x.Status == WorkTaskStatus.Blocked, cancellationToken);
++
++        var activeAgentCount = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(x => x.CompanyId == companyId && x.Status == AgentStatus.Active, cancellationToken);
++
++        if (openTaskCount > 0)
++        {
++            var loadPerAgent = openTaskCount / (decimal)Math.Max(1, activeAgentCount);
++            var blockedRatio = blockedTaskCount == 0 ? 0m : blockedTaskCount / (decimal)openTaskCount;
++            var severity = loadPerAgent >= CriticalLoadPerAgent || blockedRatio >= CriticalBlockedRatio
++                ? BusinessSignalSeverity.Critical
++                : loadPerAgent >= WarningLoadPerAgent
++                    ? BusinessSignalSeverity.Warning
++                    : BusinessSignalSeverity.Info;
++
++            signals.Add(new BusinessSignal(
++                BusinessSignalType.OperationalLoad,
++                severity,
++                "Operational load is building",
++                activeAgentCount == 0
++                    ? $"{openTaskCount} open work item(s) are active with no active agents assigned."
++                    : $"{openTaskCount} open work item(s) are spread across {activeAgentCount} active agent(s); {blockedTaskCount} are blocked.",
++                decimal.Round(loadPerAgent, 2, MidpointRounding.AwayFromZero),
++                "open_tasks_per_agent",
++                "Open tasks",
++                $"/tasks?companyId={companyId:D}",
++                nowUtc));
++        }
++
++        var pendingApprovals = await _dbContext.ApprovalRequests
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending)
++            .Select(x => x.CreatedUtc)
++            .ToListAsync(cancellationToken);
++
++        if (pendingApprovals.Count > 0)
++        {
++            var oldestPendingUtc = pendingApprovals.Min();
++            var oldestAge = nowUtc - oldestPendingUtc;
++            var severity = pendingApprovals.Count >= CriticalPendingApprovals || oldestAge >= CriticalApprovalAge
++                ? BusinessSignalSeverity.Critical
++                : pendingApprovals.Count >= WarningPendingApprovals || oldestAge >= WarningApprovalAge
++                    ? BusinessSignalSeverity.Warning
++                    : BusinessSignalSeverity.Info;
++
++            signals.Add(new BusinessSignal(
++                BusinessSignalType.ApprovalBottleneck,
++                severity,
++                "Approvals are waiting on decisions",
++                $"{pendingApprovals.Count} approval(s) are pending. Oldest request age is {Math.Max(1, (int)Math.Floor(oldestAge.TotalHours))} hour(s).",
++                pendingApprovals.Count,
++                "pending_approvals",
++                "Review approvals",
++                $"/approvals?companyId={companyId:D}&status=pending",
++                nowUtc));
++        }
++
++        return signals;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyDashboardFinanceSnapshotService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyDashboardFinanceSnapshotService.cs
+new file mode 100644
+index 0000000..1f26ccd
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyDashboardFinanceSnapshotService.cs
+@@ -0,0 +1,95 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSnapshotService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly TimeProvider _timeProvider;
++
++    public CompanyDashboardFinanceSnapshotService(
++        VirtualCompanyDbContext dbContext,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<DashboardFinanceSnapshotDto> GetAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++
++        var asOfUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var expenseWindowStartUtc = asOfUtc.Date.AddDays(-29);
++
++        var accounts = await _dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => new
++            {
++                x.Id,
++                x.Code,
++                x.Name,
++                x.AccountType,
++                x.Currency,
++                x.OpeningBalance
++            })
++            .ToListAsync(cancellationToken);
++
++        if (accounts.Count == 0)
++        {
++            return Missing(companyId, asOfUtc);
++        }
++
++        var transactionSums = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.TransactionUtc <= asOfUtc)
++            .GroupBy(x => x.AccountId)
++            .Select(group => new { AccountId = group.Key, Amount = group.Sum(x => x.Amount) })
++            .ToDictionaryAsync(x => x.AccountId, x => x.Amount, cancellationToken);
++
++        var cashAccounts = accounts
++            .Where(x =>
++                x.AccountType.Equals("cash", StringComparison.OrdinalIgnoreCase) ||
++                x.Name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
++                x.Code.StartsWith("10", StringComparison.OrdinalIgnoreCase))
++            .ToList();
++
++        if (cashAccounts.Count == 0)
++        {
++            cashAccounts = accounts.Where(x => x.AccountType.Equals("asset", StringComparison.OrdinalIgnoreCase)).ToList();
++        }
++
++        var cash = cashAccounts.Sum(x => x.OpeningBalance + transactionSums.GetValueOrDefault(x.Id));
++        var currency = cashAccounts.Select(x => x.Currency).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1
++            ? cashAccounts[0].Currency
++            : "USD";
++
++        var totalExpenses = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.TransactionUtc >= expenseWindowStartUtc && x.TransactionUtc <= asOfUtc && x.Amount < 0)
++            .SumAsync(x => (decimal?)Math.Abs(x.Amount), cancellationToken) ?? 0m;
++
++        var hasExpenseData = totalExpenses > 0m;
++        var burnRate = Math.Round(totalExpenses / 30m, 2, MidpointRounding.AwayFromZero);
++        var runwayDays = burnRate > 0m ? (int?)Math.Max(0, (int)Math.Floor(cash / burnRate)) : null;
++        var hasFinanceData = cashAccounts.Count > 0 && hasExpenseData;
++        var riskLevel = !hasFinanceData
++            ? "missing"
++            : runwayDays <= 30 ? "critical"
++            : runwayDays <= 90 ? "warning"
++            : "healthy";
++
++        return new DashboardFinanceSnapshotDto(companyId, Math.Round(cash, 2, MidpointRounding.AwayFromZero), burnRate, runwayDays, riskLevel, hasFinanceData, currency, asOfUtc);
++    }
++
++    private static DashboardFinanceSnapshotDto Missing(Guid companyId, DateTime asOfUtc) =>
++        new(companyId, 0m, 0m, null, "missing", false, "USD", asOfUtc);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 269dc6c..94a4c36 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -24,6 +24,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+     private readonly IExecutiveCockpitDashboardCache _cache;
+     private readonly IFinanceCashPositionWorkflowService _financeCashPositionWorkflowService;
+     private readonly IExecutiveCockpitFinanceAdapter _financeAdapter;
++    private readonly ISignalEngine _signalEngine;
+     private readonly IAuthorizationService _authorizationService;
+     private readonly IHttpContextAccessor _httpContextAccessor;
+     private readonly TimeProvider _timeProvider;
+@@ -37,6 +38,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         IDepartmentDashboardConfigurationService departmentDashboardConfigurationService,
+         IExecutiveCockpitDashboardCache cache,
+         IExecutiveCockpitFinanceAdapter financeAdapter,
++        ISignalEngine signalEngine,
+         IAuthorizationService authorizationService,
+         IHttpContextAccessor httpContextAccessor,
+         IFinanceCashPositionWorkflowService financeCashPositionWorkflowService,
+@@ -49,6 +51,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         _departmentDashboardConfigurationService = departmentDashboardConfigurationService;
+         _cache = cache;
+         _financeAdapter = financeAdapter;
++        _signalEngine = signalEngine;
+         _authorizationService = authorizationService;
+         _httpContextAccessor = httpContextAccessor;
+         _financeCashPositionWorkflowService = financeCashPositionWorkflowService;
+@@ -147,6 +150,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         object payload = query.WidgetKey.Trim().ToLowerInvariant() switch
+         {
++            ExecutiveCockpitWidgetKeys.BusinessSignals => dashboard.BusinessSignals,
+             ExecutiveCockpitWidgetKeys.SummaryKpis => dashboard.SummaryKpis,
+             ExecutiveCockpitWidgetKeys.DailyBriefing => dashboard.DailyBriefing,
+             ExecutiveCockpitWidgetKeys.PendingApprovals => dashboard.PendingApprovals,
+@@ -228,6 +232,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+ 
+         var pendingApprovalCount = await _dbContext.ApprovalRequests
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .CountAsync(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending, cancellationToken);
+ 
++        var businessSignals = await _signalEngine.GenerateSignals(companyId, cancellationToken);
+         var summaryKpis = await BuildSummaryKpisAsync(companyId, nowUtc, pendingApprovalCount, cancellationToken);
+         var canViewFinance = await CanViewFinanceAsync(companyId, await RequireMembershipAsync(companyId, cancellationToken), cancellationToken);
+         FinanceCashPositionDto? cashPosition = null;
+@@ -438,6 +443,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+             company.Name,
+             nowUtc,
+             null,
++            businessSignals,
+             summaryKpis,
+             dailyBriefing,
+             cashPosition,
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 6668453..4b38309 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -365,9 +365,11 @@ public static class DependencyInjection
+         services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
+         services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
++        services.AddScoped<ISignalEngine, CompanySignalEngine>();
+         services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
+         services.AddScoped<IFinanceSeedBootstrapService, CompanyFinanceSeedBootstrapService>();
+         services.AddSingleton<IFinanceSeedTelemetry, FinanceSeedTelemetry>();
++        services.AddScoped<IDashboardFinanceSnapshotService, CompanyDashboardFinanceSnapshotService>();
+         services.AddScoped<IFinanceSeedingStateService, CompanyFinanceSeedingStateResolver>();
+         services.AddScoped<IFinanceSeedBackfillOrchestrator, FinanceSeedBackfillOrchestrator>();
+         services.AddScoped<IFinanceSeedBackfillQueryService, FinanceSeedBackfillQueryService>();
+diff --git a/src/VirtualCompany.Api/Controllers/DashboardFocusController.cs b/src/VirtualCompany.Api/Controllers/DashboardFocusController.cs
+index 453b2a8..71e1e98 100644
+--- a/src/VirtualCompany.Api/Controllers/DashboardFocusController.cs
++++ b/src/VirtualCompany.Api/Controllers/DashboardFocusController.cs
+@@ -12,16 +12,19 @@ namespace VirtualCompany.Api.Controllers;
+ [Authorize(Policy = CompanyPolicies.CompanyMember)]
+ [RequireCompanyContext]
+ public sealed class DashboardFocusController : ControllerBase
+ {
+     private readonly IFocusEngine _focusEngine;
++    private readonly IDashboardFinanceSnapshotService _financeSnapshotService;
+     private readonly ICompanyContextAccessor _companyContextAccessor;
+     private readonly ICurrentUserAccessor _currentUserAccessor;
+ 
+     public DashboardFocusController(
+         IFocusEngine focusEngine,
++        IDashboardFinanceSnapshotService financeSnapshotService,
+         ICompanyContextAccessor companyContextAccessor,
+         ICurrentUserAccessor currentUserAccessor)
+     {
+         _focusEngine = focusEngine;
++        _financeSnapshotService = financeSnapshotService;
+         _companyContextAccessor = companyContextAccessor;
+         _currentUserAccessor = currentUserAccessor;
+     }
+@@ -56,4 +59,26 @@ public sealed class DashboardFocusController : ControllerBase
+         var items = await _focusEngine.GetFocusAsync(new GetDashboardFocusQuery(effectiveCompanyId, currentUserId), cancellationToken);
+         return Ok(items);
+     }
++
++    [HttpGet("finance-snapshot")]
++    public async Task<ActionResult<DashboardFinanceSnapshotDto>> GetFinanceSnapshotAsync(
++        [FromQuery] Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var resolvedCompanyId = companyId != Guid.Empty ? companyId : _companyContextAccessor.CompanyId;
++        if (resolvedCompanyId is not Guid effectiveCompanyId)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
++            {
++                ["companyId"] = ["companyId is required."]
++            })
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++
++        var snapshot = await _financeSnapshotService.GetAsync(effectiveCompanyId, cancellationToken);
++        return Ok(snapshot);
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+index 2e71f1a..e6b4d6c 100644
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -31,6 +31,18 @@ public sealed class ExecutiveCockpitApiClient
+         return GetKpisCoreAsync(companyId, department, startUtc, endUtc, cancellationToken);
+     }
+ 
++    public async Task<DashboardFinanceSnapshotViewModel?> GetFinanceSnapshotAsync(
++        Guid companyId,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return OfflineFinanceSnapshot(companyId);
++        }
++
++        using var response = await _httpClient.GetAsync($"api/dashboard/finance-snapshot?companyId={companyId:D}", cancellationToken);
++        return response.IsSuccessStatusCode ? await response.Content.ReadFromJsonAsync<DashboardFinanceSnapshotViewModel>(SerializerOptions, cancellationToken) : throw await CreateExceptionAsync(response, cancellationToken);
++    }
++
+     public async Task<ExecutiveCockpitFinanceAlertDetailViewModel?> GetFinanceAlertDetailAsync(
+         Guid companyId,
+         Guid alertId,
+@@ -176,6 +188,20 @@ public sealed class ExecutiveCockpitApiClient
+             CompanyName = "Offline workspace",
+             GeneratedAtUtc = DateTime.UtcNow,
+             SummaryKpis =
++            [
++            ],
++            BusinessSignals =
++            [
++                new BusinessSignalViewModel
++                {
++                    Type = "operationalLoad",
++                    Severity = "info",
++                    Title = "Workspace activity is still bootstrapping",
++                    Summary = "Signals appear here as tasks and approvals accumulate.",
++                    ActionLabel = "Open tasks",
++                    ActionUrl = $"/tasks?companyId={companyId:D}",
++                    DetectedAtUtc = DateTime.UtcNow
++                }
++            ],
++            SummaryKpis =
+             [
+                 new ExecutiveCockpitSummaryKpiViewModel
+                 {
+@@ -356,6 +382,9 @@ public sealed class ExecutiveCockpitApiClient
+             {
+                 CompanyId = companyId,
+                 CompanyName = "Offline workspace",
++                BusinessSignals = [],
++                SummaryKpis = [],
++                Finance = null,
+                 GeneratedAtUtc = DateTime.UtcNow,
+                 Sections =
+                 [
+@@ -388,6 +417,18 @@ public sealed class ExecutiveCockpitApiClient
+                     }
+                 }
+             ]
+         };
++
++    private static DashboardFinanceSnapshotViewModel OfflineFinanceSnapshot(Guid companyId) =>
++        new()
++        {
++            CompanyId = companyId,
++            Cash = 0m,
++            BurnRate = 0m,
++            RunwayDays = null,
++            RiskLevel = "missing",
++            HasFinanceData = false,
++            Currency = "USD",
++            AsOfUtc = DateTime.UtcNow
++        };
+ }
+ 
+ public sealed class ApiProblemResponse
+@@ -441,6 +482,7 @@ public sealed class ExecutiveCockpitDashboardViewModel
+     public string CompanyName { get; set; } = string.Empty;
+     public DateTime GeneratedAtUtc { get; set; }
+     public DateTime? CacheTimestampUtc { get; set; }
++    public List<BusinessSignalViewModel> BusinessSignals { get; set; } = [];
+     public ExecutiveCockpitDailyBriefingViewModel? DailyBriefing { get; set; }
+     public List<ExecutiveCockpitSummaryKpiViewModel> SummaryKpis { get; set; } = [];
+     public ExecutiveCockpitFinanceViewModel? Finance { get; set; }
+@@ -448,6 +490,30 @@ public sealed class ExecutiveCockpitDashboardViewModel
+     public List<ExecutiveCockpitDepartmentKpiViewModel> DepartmentKpis { get; set; } = [];
+     public List<DepartmentDashboardSectionViewModel> DepartmentSections { get; set; } = [];
+     public List<ExecutiveCockpitActivityItemViewModel> RecentActivity { get; set; } = [];
++    public DashboardFinanceSnapshotViewModel? FinanceSnapshot { get; set; }
++    public ExecutiveCockpitSetupStateViewModel SetupState { get; set; } = new();
++    public ExecutiveCockpitEmptyStateFlagsViewModel EmptyStateFlags { get; set; } = new();
++}
++
++public sealed class BusinessSignalViewModel
++{
++    public string Type { get; set; } = string.Empty;
++    public string Severity { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Summary { get; set; } = string.Empty;
++    public decimal? MetricValue { get; set; }
++    public string? MetricLabel { get; set; }
++    public string? ActionLabel { get; set; }
++    public string? ActionUrl { get; set; }
++    public DateTime DetectedAtUtc { get; set; }
++}
++
++public sealed class DashboardFinanceSnapshotViewModel
++{
++    public Guid CompanyId { get; set; }
++    public decimal Cash { get; set; }
++    public decimal BurnRate { get; set; }
++    public int? RunwayDays { get; set; }
++    public string RiskLevel { get; set; } = string.Empty;
++    public bool HasFinanceData { get; set; }
++    public string Currency { get; set; } = "USD";
++    public DateTime AsOfUtc { get; set; }
+     public ExecutiveCockpitSetupStateViewModel SetupState { get; set; } = new();
+     public ExecutiveCockpitEmptyStateFlagsViewModel EmptyStateFlags { get; set; } = new();
+ }
+diff --git a/src/VirtualCompany.Web/Components/BusinessSignalsPanel.razor b/src/VirtualCompany.Web/Components/BusinessSignalsPanel.razor
+new file mode 100644
+index 0000000..0f0c0e1
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/BusinessSignalsPanel.razor
+@@ -0,0 +1,75 @@
++@using VirtualCompany.Web.Services
++
++@if (Signals is null || Signals.Count == 0)
++{
++    <section class="business-signals-empty" data-testid="business-signals-empty">
++        <strong>No decision signals yet</strong>
++        <p class="text-body-secondary mb-0">Operational load and approval bottlenecks will appear here when the workspace starts producing enough activity.</p>
++    </section>
++}
++else
++{
++    <div class="business-signals-grid" data-testid="business-signals-panel">
++        @foreach (var signal in Signals)
++        {
++            <article class="business-signal business-signal--@CssToken(signal.Severity)" data-testid="@($"business-signal-{CssToken(signal.Type)}")">
++                <div class="business-signal__header">
++                    <span class="business-signal__icon" aria-hidden="true">@Icon(signal.Severity)</span>
++                    <div>
++                        <div class="business-signal__eyebrow">@DisplayType(signal.Type)</div>
++                        <strong>@signal.Title</strong>
++                    </div>
++                </div>
++                <p class="mb-0 text-body-secondary">@signal.Summary</p>
++                @if (signal.MetricValue is decimal metricValue && !string.IsNullOrWhiteSpace(signal.MetricLabel))
++                {
++                    <div class="business-signal__metric">@signal.MetricLabel: @metricValue</div>
++                }
++                @if (!string.IsNullOrWhiteSpace(signal.ActionLabel) && !string.IsNullOrWhiteSpace(signal.ActionUrl))
++                {
++                    <a class="btn btn-sm btn-outline-secondary align-self-start" href="@signal.ActionUrl">@signal.ActionLabel</a>
++                }
++            </article>
++        }
++    </div>
++}
++
++@code {
++    [Parameter]
++    public IReadOnlyList<BusinessSignalViewModel> Signals { get; set; } = [];
++
++    private static string CssToken(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "neutral"
++            : value.Trim().ToLowerInvariant().Replace("_", "-");
++
++    private static string Icon(string? severity) =>
++        CssToken(severity) switch
++        {
++            "critical" => "!",
++            "warning" => "~",
++            _ => "i"
++        };
++
++    private static string DisplayType(string? type) =>
++        CssToken(type) switch
++        {
++            "operationalload" => "Operational load",
++            "approvalbottleneck" => "Approval bottleneck",
++            "operational-load" => "Operational load",
++            "approval-bottleneck" => "Approval bottleneck",
++            _ => "Business signal"
++        };
++}
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor b/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor
+new file mode 100644
+index 0000000..390ad84
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor
+@@ -0,0 +1,68 @@
++@using System.Globalization
++@using VirtualCompany.Web.Services
++
++<article class="wizard-card finance-snapshot-card" data-testid="finance-snapshot-card">
++    <div class="cockpit-card__header">
++        <div>
++            <span class="dashboard-kicker">Finance snapshot</span>
++            <h4 class="h6 mt-2 mb-1">Decision-ready cash view</h4>
++            <p class="text-body-secondary mb-0">Cash, daily burn, and runway for the active company.</p>
++        </div>
++    </div>
++
++    @if (Snapshot is null || !Snapshot.HasFinanceData)
++    {
++        <div class="finance-snapshot-card__empty mt-3" data-testid="finance-snapshot-empty">
++            <p class="text-body-secondary mb-3">Finance data is missing or incomplete for this workspace.</p>
++            <a class="btn btn-primary" data-testid="connect-accounting-cta" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)">Connect accounting</a>
++        </div>
++    }
++    else
++    {
++        <div class="finance-snapshot-card__grid mt-3">
++            <section>
++                <div class="dashboard-kicker">Cash</div>
++                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-cash-position">@FormatCurrency(Snapshot.Cash, Snapshot.Currency)</strong>
++            </section>
++            <section>
++                <div class="dashboard-kicker">Runway</div>
++                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-runway">@(Snapshot.RunwayDays.HasValue ? $"{Snapshot.RunwayDays.Value} days" : "Unavailable")</strong>
++            </section>
++            <section>
++                <div class="dashboard-kicker">Risk</div>
++                <span class="finance-risk-pill finance-risk-pill--@CssToken(Snapshot.RiskLevel)" data-testid="executive-cockpit-runway-status">@DisplayRisk(Snapshot.RiskLevel)</span>
++            </section>
++        </div>
++        <p class="text-body-secondary mt-3 mb-0">Burn rate: @FormatCurrency(Snapshot.BurnRate, Snapshot.Currency) per day. Snapshot time: @Snapshot.AsOfUtc.ToLocalTime():g</p>
++    }
++</article>
++
++@code {
++    [Parameter]
++    public Guid? CompanyId { get; set; }
++
++    [Parameter]
++    public DashboardFinanceSnapshotViewModel? Snapshot { get; set; }
++
++    private static string CssToken(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "neutral"
++            : value.Trim().ToLowerInvariant().Replace("_", "-");
++
++    private static string DisplayRisk(string? riskLevel) =>
++        CssToken(riskLevel) switch
++        {
++            "critical" => "Critical",
++            "warning" => "Warning",
++            "healthy" => "Healthy",
++            _ => "Missing"
++        };
++
++    private static string FormatCurrency(decimal amount, string currency) =>
++        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
++}
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 4dfa6f6..6f013dc 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -49,33 +49,20 @@
+             </div>
+         </div>
+ 
+-        @if (dashboard.SummaryKpis.Count > 0)
++        <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++            <div class="cockpit-card__header">
++                <div>
++                    <h3 class="h5 mb-1">Business signals</h3>
++                    <p class="text-body-secondary mb-0">Threshold-based operating signals for the current company.</p>
++                </div>
++                <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<List<BusinessSignalViewModel>>("business-signals")' disabled="@IsWidgetLoading("business-signals")">Refresh</button>
++            </div>
++            @WidgetStatus("business-signals")
++            <div class="mt-3">
++                <BusinessSignalsPanel Signals="dashboard.BusinessSignals" />
++            </div>
++        </article>
++
++        @if (IsInitialSetupEmpty)
+         {
+-            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+-                <div class="cockpit-card__header">
+-                    <div>
+-                        <h3 class="h5 mb-1">Summary KPIs</h3>
+-                        <p class="text-body-secondary mb-0">Current operating signals for this company.</p>
+-                    </div>
+-                    <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<List<ExecutiveCockpitSummaryKpiViewModel>>("summary-kpis")' disabled="@IsWidgetLoading("summary-kpis")">Refresh</button>
+-                </div>
+-                @WidgetStatus("summary-kpis")
+-                <div class="cockpit-summary-kpi-grid mt-3">
+-                    @foreach (var kpi in dashboard.SummaryKpis)
+-                    {
+-                        <section class="@SummaryKpiCardClass(kpi)" aria-label="@kpi.Label">
+-                            <div class="cockpit-summary-kpi__label">@kpi.Label</div>
+-                            <strong class="cockpit-summary-kpi__value">@kpi.CurrentValue</strong>
+-                            <div class="@SummaryKpiTrendClass(kpi)">
+-                                <span aria-hidden="true">@TrendGlyph(kpi.TrendDirection)</span>
+-                                <span>@kpi.DeltaText</span>
+-                            </div>
+-                            @if (kpi.PreviousValue is not null)
+-                            {
+-                                <small class="text-body-secondary">Previous: @kpi.PreviousValue</small>
+-                            }
+-                        </section>
+-                    }
+-                </div>
+-            </article>
+-        }
+-        
+-        @if (IsInitialSetupEmpty)
+-        {
+             <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide cockpit-empty-hero">
+                 <span class="dashboard-kicker">Initial setup</span>
+                 <h3 class="h4 mt-2 mb-2">Build the first operating layer</h3>
+@@ -103,7 +90,7 @@
+                 </div>
+             </article>
+         }
+ 
+-        @if (dashboard.Finance is not null)
++        @if (dashboard.Finance is not null || financeSnapshot is not null)
+         {
+             <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide" data-testid="executive-cockpit-finance-widget">
+                 <div class="cockpit-card__header">
+@@ -113,42 +100,13 @@
+                         <p class="text-body-secondary mb-0">Cash coverage, runway status, and finance workflow entry points for the current company.</p>
+                     </div>
+                     <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<ExecutiveCockpitFinanceViewModel>("finance")' disabled="@IsWidgetLoading("finance")">Refresh</button>
+                 </div>
+                 @WidgetStatus("finance")
+ 
+-                <div class="finance-summary-grid mt-3">
+-                    <article class="wizard-card finance-metric-card finance-metric-card--hero" data-testid="executive-cockpit-cash-position">
+-                        <span class="dashboard-kicker">Cash position</span>
+-                        <div class="finance-metric-card__value">@dashboard.Finance.CashPosition.DisplayValue</div>
+-                        <div class="@SummaryKpiTrendClass(dashboard.Finance.CashPosition.TrendDirection)" data-testid="executive-cockpit-cash-position-trend">
+-                            <span aria-hidden="true">@TrendGlyph(dashboard.Finance.CashPosition.TrendDirection)</span>
+-                            <span>@dashboard.Finance.CashPosition.TrendDisplay</span>
+-                        </div>
+-                        <p class="text-body-secondary mb-0" data-testid="executive-cockpit-cash-position-last-refreshed">Last refreshed @dashboard.Finance.CashPosition.LastRefreshedUtc.ToLocalTime():g</p>
+-                        <a class="mt-3" href="@dashboard.Finance.CashPosition.Route">Open cash detail</a>
+-                        @if (FinanceActions("view_cash_position").Any())
+-                        {
+-                            <div class="dashboard-actions mt-3">
+-                                @foreach (var action in FinanceActions("view_cash_position"))
+-                                {
+-                                    @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && HasDrillRoute(action.Route))
+-                                    {
+-                                        <a class="btn btn-outline-primary" href="@action.Route">@action.Label</a>
+-                                        
+-                                    }
+-                                    else
+-                                    {
+-                                        <button class="btn btn-outline-primary"
+-                                                type="button"
+-                                                @onclick="() => ExecuteFinanceActionAsync(action)"
+-                                                disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
+-                                        
+-                                    }
+-                                }
+-                            </div>
+-                        }
+-                    </article>
+-
+-                    <article class="wizard-card finance-metric-card" data-testid="executive-cockpit-runway">
+-                        <span class="dashboard-kicker">Runway</span>
+-                        <div class="finance-metric-card__value finance-metric-card__value--compact">@dashboard.Finance.Runway.DisplayValue</div>
+-                        <div class="finance-risk-pill finance-risk-pill--@NormalizeCssToken(dashboard.Finance.Runway.StatusLabel)" data-testid="executive-cockpit-runway-status">@dashboard.Finance.Runway.StatusLabel</div>
+-                        <a class="mt-3" href="@dashboard.Finance.Runway.Route" data-testid="executive-cockpit-runway-detail-link">Review runway detail</a>
++                <div class="mt-3">
++                    <FinanceSnapshotCard Snapshot="financeSnapshot" CompanyId="CompanyId" />
++                    @WidgetStatus("finance-snapshot")
++                </div>
++
++                @if (dashboard.Finance is not null && FinanceActions("inspect_anomaly", "open_finance_summary", "view_cash_position").Any())
++                {
++                    <div class="dashboard-actions mt-3">
+                         @if (FinanceActions("inspect_anomaly", "open_finance_summary").Any())
+                         {
+-                            <div class="dashboard-actions mt-3">
+-                                @foreach (var action in FinanceActions("inspect_anomaly", "open_finance_summary"))
++                                @foreach (var action in FinanceActions("inspect_anomaly", "open_finance_summary", "view_cash_position"))
+                                 {
+                                     @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && HasDrillRoute(action.Route))
+                                     {
+@@ -171,10 +129,7 @@
+-                    </article>
+-                </div>
++                    </div>
++                }
+ 
+-                @if (dashboard.Finance.LowCashAlert is not null)
++                @if (dashboard.Finance?.LowCashAlert is not null)
+                 {
+                     <section class="wizard-card mt-3" data-testid="executive-cockpit-low-cash-alert">
+                         <div class="cockpit-card__header">
+@@ -183,23 +138,23 @@
+                                 <h4 class="h6 mt-2 mb-1">Low-cash alert</h4>
+-                                <p class="mb-0">@dashboard.Finance.LowCashAlert.Summary</p>
++                                <p class="mb-0">@dashboard.Finance!.LowCashAlert!.Summary</p>
+                             </div>
+-                            <a class="btn btn-outline-secondary btn-sm" href="@dashboard.Finance.LowCashAlert.Route" data-testid="executive-cockpit-low-cash-alert-open-detail">Open detail</a>
++                            <a class="btn btn-outline-secondary btn-sm" href="@dashboard.Finance!.LowCashAlert!.Route" data-testid="executive-cockpit-low-cash-alert-open-detail">Open detail</a>
+                         </div>
+-                        @if (dashboard.Finance.LowCashAlert.ContributingFactors.Count > 0)
++                        @if (dashboard.Finance!.LowCashAlert!.ContributingFactors.Count > 0)
+                         {
+                             <ul class="mt-3 mb-0">
+-                                @foreach (var factor in dashboard.Finance.LowCashAlert.ContributingFactors)
++                                @foreach (var factor in dashboard.Finance!.LowCashAlert!.ContributingFactors)
+                                 {
+                                     <li>@factor</li>
+                                 }
+                             </ul>
+                         }
+-                        @if (dashboard.Finance.LowCashAlert.AvailableActions.Count > 0)
++                        @if (dashboard.Finance!.LowCashAlert!.AvailableActions.Count > 0)
+                         {
+                             <div class="dashboard-actions mt-3">
+-                                @foreach (var action in dashboard.Finance.LowCashAlert.AvailableActions)
++                                @foreach (var action in dashboard.Finance!.LowCashAlert!.AvailableActions)
+                                 {
+@@ -226,11 +181,11 @@
+                     <div class="alert alert-warning mt-3 mb-0">@financeActionErrorMessage</div>
+                 }
+ 
+-                @if (dashboard.Finance.DeepLinks.Count > 0)
++                @if (dashboard.Finance?.DeepLinks.Count > 0)
+                 {
+                     <div class="dashboard-actions mt-3">
+-                        @foreach (var link in dashboard.Finance.DeepLinks)
++                        @foreach (var link in dashboard.Finance!.DeepLinks)
+                         {
+                             <a class="btn btn-outline-secondary" href="@link.Route" data-testid="@($"finance-deep-link-{NormalizeCssToken(link.Key)}")">@link.Label</a>
+                         }
+@@ -338,6 +293,7 @@
+     private string? errorMessage;
+     private ExecutiveCockpitDashboardViewModel? dashboard;
+     private ExecutiveCockpitKpiDashboardViewModel? kpiDashboard;
++    private DashboardFinanceSnapshotViewModel? financeSnapshot;
+     private bool isKpiLoading;
+     private string? kpiErrorMessage;
+     private string? selectedKpiDepartment;
+@@ -373,6 +329,7 @@
+         errorMessage = null;
+         dashboard = null;
+         kpiDashboard = null;
++        financeSnapshot = null;
+         widgetErrors.Clear();
+         financeActionStatusMessage = null;
+         financeActionErrorMessage = null;
+@@ -380,7 +337,9 @@
+ 
+         try
+         {
+-            dashboard = await ApiClient.GetAsync(CompanyId);
++            var dashboardTask = ApiClient.GetAsync(CompanyId);
++            var snapshotTask = ApiClient.GetFinanceSnapshotAsync(CompanyId);
++            (dashboard, financeSnapshot) = (await dashboardTask, await snapshotTask);
+             await ReloadKpisAsync();
+         }
+         catch (OnboardingApiException ex)
+@@ -533,10 +492,11 @@
+ 
+         await Task.WhenAll(
+-            RefreshWidgetAsync<List<ExecutiveCockpitSummaryKpiViewModel>>("summary-kpis"),
++            RefreshWidgetAsync<List<BusinessSignalViewModel>>("business-signals"),
+             RefreshWidgetAsync<ExecutiveCockpitDailyBriefingViewModel?>("daily-briefing"),
+             RefreshWidgetAsync<ExecutiveCockpitPendingApprovalsViewModel>("pending-approvals"),
+             RefreshWidgetAsync<List<ExecutiveCockpitAlertViewModel>>("alerts"),
+             RefreshWidgetAsync<ExecutiveCockpitFinanceViewModel>("finance"),
++            RefreshFinanceSnapshotAsync(),
+             ReloadKpisCoreAsync());
+     }
+ 
+@@ -578,10 +538,37 @@
+         }
+     }
+ 
++    private async Task RefreshFinanceSnapshotAsync()
++    {
++        const string widgetKey = "finance-snapshot";
++        loadingWidgets.Add(widgetKey);
++        widgetErrors.Remove(widgetKey);
++        widgetSuccessUtc.Remove(widgetKey);
++        var stopwatch = Stopwatch.StartNew();
++
++        try
++        {
++            financeSnapshot = await ApiClient.GetFinanceSnapshotAsync(CompanyId);
++            WidgetFetchTiming.Record(stopwatch.Elapsed.TotalMilliseconds, WidgetTags(widgetKey, "success"));
++            pendingWidgetRenderStartUtc[widgetKey] = DateTime.UtcNow;
++            widgetSuccessUtc[widgetKey] = financeSnapshot?.AsOfUtc ?? DateTime.UtcNow;
++        }
++        catch (OnboardingApiException ex)
++        {
++            widgetErrors[widgetKey] = ex.Message;
++            WidgetFetchTiming.Record(stopwatch.Elapsed.TotalMilliseconds, WidgetTags(widgetKey, "failure"));
++            Logger.LogWarning(ex, "Executive cockpit widget {WidgetKey} refresh failed.", widgetKey);
++        }
++        finally
++        {
++            loadingWidgets.Remove(widgetKey);
++        }
++    }
++
+     private void ApplyWidgetPayload(string widgetKey, object? payload)
+     {
+         if (dashboard is null || payload is null)
+         {
+             return;
+         }
+ 
+         switch (widgetKey)
+         {
++            case "business-signals" when payload is List<BusinessSignalViewModel> businessSignals:
++                dashboard.BusinessSignals = businessSignals;
++                break;
+             case "summary-kpis" when payload is List<ExecutiveCockpitSummaryKpiViewModel> summaryKpis:
+                 dashboard.SummaryKpis = summaryKpis;
+                 break;
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 4912d0c..8969de5 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -1,3 +1,78 @@
++.business-signals-grid {
++    display: grid;
++    gap: 1rem;
++    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
++}
++
++.business-signal,
++.business-signals-empty {
++    background: #f8fafc;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 1rem;
++    display: grid;
++    gap: 0.75rem;
++    min-width: 0;
++    padding: 1rem;
++}
++
++.business-signal__header {
++    align-items: center;
++    display: flex;
++    gap: 0.75rem;
++}
++
++.business-signal__icon {
++    align-items: center;
++    border-radius: 999px;
++    display: inline-flex;
++    font-weight: 700;
++    height: 2rem;
++    justify-content: center;
++    width: 2rem;
++}
++
++.business-signal__eyebrow {
++    color: #64748b;
++    font-size: 0.8rem;
++    font-weight: 700;
++    letter-spacing: 0.04em;
++    text-transform: uppercase;
++}
++
++.business-signal__metric {
++    color: #0f172a;
++    font-weight: 700;
++}
++
++.business-signal--info {
++    border-color: rgba(29, 78, 216, 0.18);
++}
++
++.business-signal--info .business-signal__icon {
++    background: #dbeafe;
++    color: #1d4ed8;
++}
++
++.business-signal--warning {
++    border-color: rgba(180, 83, 9, 0.28);
++}
++
++.business-signal--warning .business-signal__icon {
++    background: #fef3c7;
++    color: #b45309;
++}
++
++.business-signal--critical {
++    border-color: rgba(185, 28, 28, 0.28);
++}
++
++.business-signal--critical .business-signal__icon {
++    background: #fee2e2;
++    color: #b91c1c;
++}
++
++.finance-snapshot-card__grid {
++    display: grid;
++    gap: 1rem;
++    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
++}
++
++.finance-snapshot-card__value {
++    color: #0f172a;
++    font-size: 1.6rem;
++    line-height: 1.1;
++}
++
+ }
+ 
+ .cockpit-card {
+diff --git a/tests/VirtualCompany.Api.Tests/BusinessSignalEngineTests.cs b/tests/VirtualCompany.Api.Tests/BusinessSignalEngineTests.cs
+new file mode 100644
+index 0000000..49533d5
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/BusinessSignalEngineTests.cs
+@@ -0,0 +1,100 @@
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Signals;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class BusinessSignalEngineTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public BusinessSignalEngineTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task GenerateSignals_emits_operational_load_and_approval_bottleneck_signals()
++    {
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++        var approvalId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "signals@example.com", "Signals", "dev-header", "signals-user"));
++            dbContext.Companies.Add(new Company(companyId, "Signals Co"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(agentId, companyId, "ops", "Avery Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
++
++            var task = new WorkTask(taskId, companyId, "ops", "Resolve blocked queue", null, WorkTaskPriority.High, agentId, null, "user", userId);
++            task.UpdateStatus(WorkTaskStatus.InProgress);
++            dbContext.WorkTasks.Add(task);
++
++            dbContext.ApprovalRequests.Add(
++                ApprovalRequest.CreateForTarget(
++                    approvalId,
++                    companyId,
++                    ApprovalTargetEntityType.Task,
++                    taskId,
++                    "user",
++                    userId,
++                    "threshold",
++                    [],
++                    null,
++                    userId,
++                    []));
++
++            return Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        var engine = scope.ServiceProvider.GetRequiredService<ISignalEngine>();
++
++        var signals = await engine.GenerateSignals(companyId);
++
++        Assert.Contains(signals, x => x.Type == BusinessSignalType.OperationalLoad);
++        Assert.Contains(signals, x => x.Type == BusinessSignalType.ApprovalBottleneck);
++    }
++
++    [Fact]
++    public async Task Seeded_operational_data_generates_at_least_one_business_signal()
++    {
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "seed-signals@example.com", "Seed Signals", "dev-header", "seed-signals-user"));
++            dbContext.Companies.Add(new Company(companyId, "Seed Signals Co"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(agentId, companyId, "ops", "Avery Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
++
++            var task = new WorkTask(Guid.NewGuid(), companyId, "ops", "Publish founder update", null, WorkTaskPriority.Normal, agentId, null, "user", userId);
++            task.UpdateStatus(WorkTaskStatus.InProgress);
++            dbContext.WorkTasks.Add(task);
++            return Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        var engine = scope.ServiceProvider.GetRequiredService<ISignalEngine>();
++
++        var signals = await engine.GenerateSignals(companyId);
++
++        Assert.NotEmpty(signals);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs
+new file mode 100644
+index 0000000..674a938
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs
+@@ -0,0 +1,128 @@
++using System.Net;
++using System.Net.Http.Json;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public DashboardFinanceSnapshotIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Finance_snapshot_returns_cash_burn_rate_runway_and_risk_level()
++    {
++        var seed = await SeedFinanceCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/dashboard/finance-snapshot?companyId={seed.CompanyId:D}");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var snapshot = await response.Content.ReadFromJsonAsync<FinanceSnapshotResponse>();
++
++        Assert.NotNull(snapshot);
++        Assert.Equal(seed.CompanyId, snapshot!.CompanyId);
++        Assert.Equal(60000m, snapshot.Cash);
++        Assert.Equal(1000m, snapshot.BurnRate);
++        Assert.Equal(60, snapshot.RunwayDays);
++        Assert.Equal("warning", snapshot.RiskLevel);
++        Assert.True(snapshot.HasFinanceData);
++    }
++
++    [Fact]
++    public async Task Finance_snapshot_returns_missing_state_when_finance_data_is_incomplete()
++    {
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "dashboard-finance-missing@example.com", "Dashboard Finance Missing", "dev-header", "dashboard-finance-missing"));
++            dbContext.Companies.Add(new Company(companyId, "Dashboard Finance Missing"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/dashboard/finance-snapshot?companyId={companyId:D}");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var snapshot = await response.Content.ReadFromJsonAsync<FinanceSnapshotResponse>();
++
++        Assert.NotNull(snapshot);
++        Assert.False(snapshot!.HasFinanceData);
++        Assert.Equal("missing", snapshot.RiskLevel);
++        Assert.Equal(0m, snapshot.Cash);
++        Assert.Equal(0m, snapshot.BurnRate);
++        Assert.Null(snapshot.RunwayDays);
++    }
++
++    private HttpClient CreateAuthenticatedClient()
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "dashboard-finance-user");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "dashboard-finance@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Dashboard Finance");
++        return client;
++    }
++
++    private async Task<(Guid CompanyId)> SeedFinanceCompanyAsync()
++    {
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var accountId = Guid.NewGuid();
++        var nowUtc = DateTime.UtcNow;
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "dashboard-finance@example.com", "Dashboard Finance", "dev-header", "dashboard-finance-user"));
++            dbContext.Companies.Add(new Company(companyId, "Dashboard Finance Co"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++
++            dbContext.FinanceAccounts.Add(new FinanceAccount(
++                accountId,
++                companyId,
++                "1000",
++                "Operating Cash",
++                "cash",
++                "USD",
++                90000m,
++                nowUtc.AddMonths(-2)));
++
++            dbContext.FinanceTransactions.AddRange(
++                new FinanceTransaction(Guid.NewGuid(), companyId, accountId, null, null, null, nowUtc.AddDays(-10), "operating_expense", -15000m, "USD", "Payroll", "exp-1"),
++                new FinanceTransaction(Guid.NewGuid(), companyId, accountId, null, null, null, nowUtc.AddDays(-20), "operating_expense", -15000m, "USD", "Infrastructure", "exp-2"));
++
++            return Task.CompletedTask;
++        });
++
++        return (companyId);
++    }
++
++    private sealed class FinanceSnapshotResponse
++    {
++        public Guid CompanyId { get; set; }
++        public decimal Cash { get; set; }
++        public decimal BurnRate { get; set; }
++        public int? RunwayDays { get; set; }
++        public string RiskLevel { get; set; } = string.Empty;
++        public bool HasFinanceData { get; set; }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+index 14ab3e2..84bba01 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+@@ -17,7 +17,7 @@ public sealed class ExecutiveCockpitDashboardPageTests
+     [Fact]
+-    public void Executive_cockpit_finance_widget_renders_cash_runway_alert_links_and_actions()
++    public void Executive_cockpit_finance_widget_renders_snapshot_alert_links_and_actions()
+     {
+         var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+         var alertId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
+@@ -32,13 +32,12 @@ public sealed class ExecutiveCockpitDashboardPageTests
+ 
+         cut.WaitForAssertion(() =>
+         {
+-            Assert.Contains("USD 125,400.25", cut.Find("[data-testid='executive-cockpit-cash-position']").TextContent);
+-            Assert.Contains("USD 18,500.00 vs previous 30 days", cut.Find("[data-testid='executive-cockpit-cash-position-trend']").TextContent);
+-            Assert.Contains($"Last refreshed {CashLastRefreshedUtc.ToLocalTime():g}", cut.Find("[data-testid='executive-cockpit-cash-position-last-refreshed']").TextContent);
++            Assert.Contains("USD 125,400.25", cut.Find("[data-testid='executive-cockpit-cash-position']").TextContent);
++            Assert.Contains("22 days", cut.Find("[data-testid='executive-cockpit-runway']").TextContent);
+ 
+             var runwayStatus = cut.Find("[data-testid='executive-cockpit-runway-status']");
+-            Assert.Contains("22 days", cut.Find("[data-testid='executive-cockpit-runway']").TextContent);
+             Assert.Contains("Critical", runwayStatus.TextContent);
+             Assert.Contains("finance-risk-pill--critical", runwayStatus.ClassName);
++            Assert.DoesNotContain("Connect accounting", cut.Markup);
+ 
+             Assert.Contains("Cash runway dropped below the critical threshold.", cut.Find("[data-testid='executive-cockpit-low-cash-alert']").TextContent);
+             Assert.Contains("Average monthly burn is USD 18,500.00.", cut.Find("[data-testid='executive-cockpit-low-cash-alert']").TextContent);
+@@ -74,20 +73,20 @@ public sealed class ExecutiveCockpitDashboardPageTests
+     }
+ 
+     [Theory]
+-    [InlineData("healthy", "Healthy", "180 days", "finance-risk-pill--healthy")]
+-    [InlineData("warning", "Warning", "65 days", "finance-risk-pill--warning")]
+-    [InlineData("critical", "Critical", "22 days", "finance-risk-pill--critical")]
+-    public void Executive_cockpit_runway_widget_applies_threshold_status_styling(
++    [InlineData("healthy", "Healthy", "180 days", "finance-risk-pill--healthy", true)]
++    [InlineData("warning", "Warning", "65 days", "finance-risk-pill--warning", true)]
++    [InlineData("critical", "Critical", "22 days", "finance-risk-pill--critical", true)]
++    [InlineData("missing", "Missing", "Unavailable", "finance-risk-pill--missing", false)]
++    public void Executive_cockpit_finance_snapshot_applies_risk_styling_and_empty_state(
+         string runwayStatus,
+         string runwayLabel,
+         string runwayDisplay,
+-        string expectedClass)
++        string expectedClass,
++        bool hasFinanceData)
+     {
+         var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+-        var dashboard = CreateDashboard(
+-            companyId,
+-            CreateFinanceSection(
+-                companyId,
+-                Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e"),
++        var dashboard = CreateDashboard(companyId, CreateFinanceSection(companyId,
++                Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e"),
+                 Guid.Parse("7edb1408-42d4-4a79-9aa2-3a2d2c84da3f"),
+                 Guid.Parse("f749fce1-6277-4ca3-b4ee-fae9016f2cc8"),
+                 runwayStatus,
+@@ -95,15 +94,28 @@ public sealed class ExecutiveCockpitDashboardPageTests
+                 runwayDisplay));
+ 
+         using var harness = CreateDashboardHarness(companyId, dashboard);
+         var cut = RenderDashboard(harness, companyId, dashboard.CompanyName);
+ 
+         cut.WaitForAssertion(() =>
+         {
+-            var statusPill = cut.Find("[data-testid='executive-cockpit-runway-status']");
+-            Assert.Contains(runwayLabel, statusPill.TextContent);
+-            Assert.Contains(expectedClass, statusPill.ClassName);
+-            Assert.Contains(runwayDisplay, cut.Find("[data-testid='executive-cockpit-runway']").TextContent);
++            if (hasFinanceData)
++            {
++                var statusPill = cut.Find("[data-testid='executive-cockpit-runway-status']");
++                Assert.Contains(runwayLabel, statusPill.TextContent);
++                Assert.Contains(expectedClass, statusPill.ClassName);
++                Assert.Contains(runwayDisplay, cut.Find("[data-testid='executive-cockpit-runway']").TextContent);
++            }
++            else
++            {
++                Assert.NotNull(cut.Find("[data-testid='connect-accounting-cta']"));
++            }
+         });
+     }
++
++    [Fact]
++    public void Executive_cockpit_renders_business_signals_panel_instead_of_legacy_summary_kpis()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        var dashboard = CreateDashboard(companyId, CreateFinanceSection(companyId, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "warning", "Warning", "65 days"));
++        using var harness = CreateDashboardHarness(companyId, dashboard);
++        var cut = RenderDashboard(harness, companyId, dashboard.CompanyName);
++        cut.WaitForAssertion(() => Assert.NotNull(cut.Find("[data-testid='business-signals-panel']")));
++    }
+@@ -128,6 +140,14 @@ public sealed class ExecutiveCockpitDashboardPageTests
+                     CreateJsonResponse(new ExecutiveCockpitWidgetPayloadViewModel<ExecutiveCockpitFinanceViewModel>
+                     {
+                         CompanyId = companyId,
+                         WidgetKey = "finance",
+                         GeneratedAtUtc = DashboardGeneratedUtc,
+                         Payload = dashboard.Finance
+                     }),
++                var path when request.Method == HttpMethod.Get &&
++                               path == "/api/dashboard/finance-snapshot" =>
++                    CreateJsonResponse(CreateFinanceSnapshot(companyId, dashboard.Finance?.Runway.Status ?? "critical")),
++                var path when request.Method == HttpMethod.Get &&
++                               path == $"/api/companies/{companyId:D}/executive-cockpit/widgets/business-signals" =>
++                    CreateJsonResponse(new ExecutiveCockpitWidgetPayloadViewModel<List<BusinessSignalViewModel>>
++                    {
++                        CompanyId = companyId,
++                        WidgetKey = "business-signals",
++                        GeneratedAtUtc = DashboardGeneratedUtc,
++                        Payload = dashboard.BusinessSignals
++                    }),
+                 _ => CreateNotFoundResponse()
+             });
+         })) { BaseAddress = new Uri("http://localhost/") }));
+@@ -169,7 +189,18 @@ public sealed class ExecutiveCockpitDashboardPageTests
+             CompanyId = companyId,
+             CompanyName = "Contoso Labs",
+             GeneratedAtUtc = DashboardGeneratedUtc,
++            BusinessSignals =
++            [
++                new BusinessSignalViewModel
++                {
++                    Type = "operationalLoad",
++                    Severity = "warning",
++                    Title = "Operational load is building",
++                    Summary = "Open work is rising faster than available capacity.",
++                    ActionLabel = "Open tasks",
++                    ActionUrl = $"/tasks?companyId={companyId:D}",
++                    DetectedAtUtc = DashboardGeneratedUtc
++                }
++            ],
+             Finance = finance,
+-            SummaryKpis = [],
++            SummaryKpis = [],
+             PendingApprovals = new ExecutiveCockpitPendingApprovalsViewModel
+             {
+                 TotalCount = 0,
+@@ -193,6 +224,27 @@ public sealed class ExecutiveCockpitDashboardPageTests
+                 NoAlerts = finance?.LowCashAlert is null
+             }
+         };
++
++    private static DashboardFinanceSnapshotViewModel CreateFinanceSnapshot(Guid companyId, string runwayStatus) =>
++        runwayStatus == "missing"
++            ? new DashboardFinanceSnapshotViewModel
++            {
++                CompanyId = companyId,
++                Cash = 0m,
++                BurnRate = 0m,
++                RunwayDays = null,
++                RiskLevel = "missing",
++                HasFinanceData = false,
++                Currency = "USD",
++                AsOfUtc = CashLastRefreshedUtc
++            }
++            : new DashboardFinanceSnapshotViewModel
++            {
++                CompanyId = companyId,
++                Cash = 125400.25m,
++                BurnRate = 18500m / 30m,
++                RunwayDays = runwayStatus == "healthy" ? 180 : runwayStatus == "warning" ? 65 : 22,
++                RiskLevel = runwayStatus,
++                HasFinanceData = true,
++                Currency = "USD",
++                AsOfUtc = CashLastRefreshedUtc
++            };
+ }
+ END_OF_PATCH

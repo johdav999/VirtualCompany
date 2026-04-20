@@ -1,0 +1,589 @@
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor b/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor
+index 4c59fb0..5ef9441 100644
+--- a/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceModuleShell.razor
+@@ -12,8 +12,8 @@
+ 
+         <div class="wizard-card wizard-card--compact">
+             <div class="dashboard-actions">
+-                <a class="btn btn-outline-primary" href="@FinanceHomeHref">Finance home</a>
+-                <a class="btn btn-outline-secondary" href="@DashboardHref">Company dashboard</a>
++                <NavLink class="btn btn-outline-primary" href="@FinanceHomeHref" Match="NavLinkMatch.Prefix">Finance home</NavLink>
++                <NavLink class="btn btn-outline-secondary" href="@DashboardHref" Match="NavLinkMatch.All">Company dashboard</NavLink>
+             </div>
+ 
+             <FinanceSectionNav CompanyId="@CompanyId" />
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
+index b3219b7..7a1f0b2 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
+@@ -11,10 +11,10 @@
+     <div class="template-grid">
+         @foreach (var route in FinanceRoutes.SectionPages)
+         {
+-            <a class="template-card text-decoration-none text-reset" href="@route.BuildPath(AccessState.CompanyId)">
++            <NavLink class="template-card text-decoration-none text-reset" href="@route.BuildPath(AccessState.CompanyId)" Match="NavLinkMatch.All">
+                 <strong>@route.Title</strong>
+                 <div class="text-body-secondary mt-2">@route.Description</div>
+-            </a>
++            </NavLink>
+         }
+     </div>
+ </FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinanceSummaryPageBase.cs b/src/VirtualCompany.Web/Pages/Finance/FinanceSummaryPageBase.cs
+index 67fc8af..c566763 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/FinanceSummaryPageBase.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/FinanceSummaryPageBase.cs
+@@ -3,11 +3,14 @@ using VirtualCompany.Web.Services;
+ 
+ namespace VirtualCompany.Web.Pages.Finance;
+ 
+-public abstract class FinanceSummaryPageBase<TViewModel> : FinancePageBase
++public abstract class FinanceSummaryPageBase<TViewModel> : FinancePageBase, IDisposable
+     where TViewModel : class
+ {
+     [Inject] protected FinanceApiClient FinanceApiClient { get; set; } = default!;
+ 
++    private CancellationTokenSource? _summaryLoadCts;
++    private int _summaryLoadVersion;
++
+     protected TViewModel? ViewModel { get; private set; }
+     protected bool IsSummaryLoading { get; private set; }
+     protected bool IsSummaryEmpty { get; private set; }
+@@ -19,6 +22,7 @@ public abstract class FinanceSummaryPageBase<TViewModel> : FinancePageBase
+     {
+         await base.OnParametersSetAsync();
+ 
++        CancelSummaryLoad();
+         if (IsLoading || !AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
+         {
+             ResetSummary();
+@@ -33,25 +37,65 @@ public abstract class FinanceSummaryPageBase<TViewModel> : FinancePageBase
+     private async Task LoadSummaryAsync(Guid companyId)
+     {
+         IsSummaryLoading = true;
+-        IsSummaryEmpty = false;
+-        SummaryErrorMessage = null;
+-        ViewModel = null;
++        ResetSummaryState();
++        await InvokeAsync(StateHasChanged);
++
++        var loadVersion = Interlocked.Increment(ref _summaryLoadVersion);
++        var cancellationTokenSource = new CancellationTokenSource();
++        var previousCancellation = Interlocked.Exchange(ref _summaryLoadCts, cancellationTokenSource);
++        previousCancellation?.Cancel();
++        previousCancellation?.Dispose();
+ 
+         try
+         {
+-            var viewModel = await LoadSummaryViewModelAsync(companyId, CancellationToken.None);
++            var viewModel = await LoadSummaryViewModelAsync(companyId, cancellationTokenSource.Token);
++            if (loadVersion != _summaryLoadVersion || cancellationTokenSource.IsCancellationRequested)
++            {
++                return;
++            }
++
+             IsSummaryEmpty = viewModel is null;
+             ViewModel = viewModel;
+         }
++        catch (OperationCanceledException) when (cancellationTokenSource.IsCancellationRequested)
++        {
++        }
+         catch (FinanceApiException ex)
+         {
++            if (loadVersion != _summaryLoadVersion || cancellationTokenSource.IsCancellationRequested)
++            {
++                return;
++            }
++
+             SummaryErrorMessage = ex.Message;
+         }
+         finally
+         {
+-            IsSummaryLoading = false;
++            if (loadVersion == _summaryLoadVersion)
++            {
++                IsSummaryLoading = false;
++                await InvokeAsync(StateHasChanged);
++            }
++
++            if (ReferenceEquals(_summaryLoadCts, cancellationTokenSource))
++            {
++                _summaryLoadCts = null;
++            }
++
++            cancellationTokenSource.Dispose();
+         }
+     }
+ 
+-    private void ResetSummary() =>
+-        (ViewModel, IsSummaryLoading, IsSummaryEmpty, SummaryErrorMessage) = (null, false, false, null);
++    private void ResetSummary()
++    {
++        ResetSummaryState();
++        IsSummaryLoading = false;
++    }
++
++    private void ResetSummaryState() =>
++        (ViewModel, IsSummaryEmpty, SummaryErrorMessage) = (null, false, null);
++
++    private void CancelSummaryLoad()
++    {
++        var cancellationTokenSource = Interlocked.Exchange(ref _summaryLoadCts, null);
++        cancellationTokenSource?.Cancel();
++        cancellationTokenSource?.Dispose();
++    }
++
++    public void Dispose() => CancelSummaryLoad();
+ }
+diff --git a/src/VirtualCompany.Web/Services/FinanceAccessResolver.cs b/src/VirtualCompany.Web/Services/FinanceAccessResolver.cs
+index 505f8a0..0a8c00a 100644
+--- a/src/VirtualCompany.Web/Services/FinanceAccessResolver.cs
++++ b/src/VirtualCompany.Web/Services/FinanceAccessResolver.cs
+@@ -45,14 +45,10 @@ public sealed class FinanceAccessResolver
+                 return FinanceAccessState.Forbidden("Finance pages are only available inside a company you can access.");
+             }
+ 
+-            return HasFinanceViewAccess(requestedMembership.MembershipRole)
+-                : FinanceAccessState.Allowed(
++            return HasFinanceViewAccess(requestedMembership.MembershipRole)
++                ? FinanceAccessState.Allowed(
+                     requestedMembership.CompanyId,
+                     requestedMembership.CompanyName,
+-                    requestedMembership.MembershipRole)
+-                ? FinanceAccessState.Allowed(
+-                    requestedMembership.CompanyId,
+-                    requestedMembership.CompanyName,
+                     requestedMembership.MembershipRole)
+                 : FinanceAccessState.Forbidden("Finance access requires the finance.view permission for the selected company.");
+         }
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 1a5d73c..5153439 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -6,6 +6,7 @@ namespace VirtualCompany.Web.Services;
+ public sealed class FinanceApiClient
+ {
+     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private const string CompanyContextHeaderName = "X-Company-Id";
+     private readonly HttpClient _httpClient;
+     private readonly bool _useOfflineMode;
+ 
+@@ -23,7 +24,7 @@ public sealed class FinanceApiClient
+                 CompanyId = companyId,
+                 SimulatedUtc = DateTime.UtcNow,
+                 Enabled = false
+-            })
++            });
+             : GetAsync<FinanceSimulationClockResponse>($"internal/companies/{companyId}/finance/simulation/clock", allowNotFound: true, cancellationToken);
+ 
+     public Task<FinanceCashPositionResponse?> GetCashPositionAsync(Guid companyId, DateTime? asOfUtc = null, CancellationToken cancellationToken = default)
+@@ -35,7 +36,7 @@ public sealed class FinanceApiClient
+         }
+ 
+         var uri = $"internal/companies/{companyId}/finance/cash-position{BuildQuery(("asOfUtc", asOfUtc?.ToString("O")))}";
+-        return GetAsync<FinanceCashPositionResponse>(uri, allowNotFound: true, cancellationToken);
++        return GetAsync<FinanceCashPositionResponse>(companyId, uri, allowNotFound: true, cancellationToken);
+     }
+ 
+     public Task<IReadOnlyList<FinanceAccountBalanceResponse>> GetBalancesAsync(Guid companyId, DateTime? asOfUtc = null, CancellationToken cancellationToken = default)
+@@ -46,7 +47,7 @@ public sealed class FinanceApiClient
+         }
+ 
+         var uri = $"internal/companies/{companyId}/finance/balances{BuildQuery(("asOfUtc", asOfUtc?.ToString("O")))}";
+-        return GetListAsync<FinanceAccountBalanceResponse>(uri, cancellationToken);
++        return GetListAsync<FinanceAccountBalanceResponse>(companyId, uri, cancellationToken);
+     }
+ 
+     public Task<IReadOnlyList<FinanceSeedAnomalyResponse>> GetAnomaliesAsync(Guid companyId, int limit = 25, CancellationToken cancellationToken = default)
+@@ -56,7 +57,7 @@ public sealed class FinanceApiClient
+             return Task.FromResult<IReadOnlyList<FinanceSeedAnomalyResponse>>([]);
+         }
+ 
+-        return GetListAsync<FinanceSeedAnomalyResponse>($"internal/companies/{companyId}/finance/anomalies?limit={limit}", cancellationToken);
++        return GetListAsync<FinanceSeedAnomalyResponse>(companyId, $"internal/companies/{companyId}/finance/anomalies?limit={limit}", cancellationToken);
+     }
+ 
+     public async Task<FinanceMonthlySummaryResponse?> GetMonthlySummaryAsync(Guid companyId, DateTime? referenceUtc = null, CancellationToken cancellationToken = default)
+@@ -92,12 +93,14 @@ public sealed class FinanceApiClient
+ 
+         var profitAndLoss = await GetAsync<FinanceMonthlyProfitAndLossResponse>(
++            companyId,
+             $"internal/companies/{companyId}/finance/profit-and-loss/monthly?year={monthStartUtc.Year}&month={monthStartUtc.Month}",
+             allowNotFound: true,
+             cancellationToken);
+ 
+         if (profitAndLoss is null)
+         {
++            return null;
+             return null;
+         }
+ 
+         var expenseBreakdown = await GetAsync<FinanceExpenseBreakdownResponse>(
++            companyId,
+             $"internal/companies/{companyId}/finance/expense-breakdown?startUtc={Uri.EscapeDataString(monthStartUtc.ToString("O"))}&endUtc={Uri.EscapeDataString(monthEndUtc.ToString("O"))}",
+             allowNotFound: true,
+             cancellationToken);
+@@ -113,13 +116,13 @@ public sealed class FinanceApiClient
+         };
+     }
+ 
+-    private async Task<IReadOnlyList<T>> GetListAsync<T>(string uri, CancellationToken cancellationToken)
++    private async Task<IReadOnlyList<T>> GetListAsync<T>(Guid companyId, string uri, CancellationToken cancellationToken)
+     {
+-        var items = await GetAsync<List<T>>(uri, allowNotFound: false, cancellationToken);
++        var items = await GetAsync<List<T>>(companyId, uri, allowNotFound: false, cancellationToken);
+         return items ?? [];
+     }
+ 
+-    private async Task<T?> GetAsync<T>(string uri, bool allowNotFound, CancellationToken cancellationToken)
++    private async Task<T?> GetAsync<T>(Guid companyId, string uri, bool allowNotFound, CancellationToken cancellationToken)
+     {
+         try
+         {
+@@ -136,11 +139,29 @@ public sealed class FinanceApiClient
+                     return default;
+                 }
+ 
+-                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
+             }
+ 
+             throw await CreateExceptionAsync(response, cancellationToken);
+         }
++        catch (OperationCanceledException)
++        {
++            throw;
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<T?> SendCompanyScopedGetAsync<T>(Guid companyId, string uri, bool allowNotFound, CancellationToken cancellationToken)
++    {
++        using var request = CreateCompanyScopedRequest(companyId, uri);
++        using var response = await _httpClient.SendAsync(request, cancellationToken);
++
++        if (allowNotFound && response.StatusCode == HttpStatusCode.NotFound)
++        {
++            return default;
++        }
+         catch (HttpRequestException ex)
+         {
+             throw CreateNetworkException(ex);
+@@ -148,6 +169,31 @@ public sealed class FinanceApiClient
+     }
+ 
++    private HttpRequestMessage CreateCompanyScopedRequest(Guid companyId, string uri)
++    {
++        var request = new HttpRequestMessage(HttpMethod.Get, uri);
++        request.Headers.TryAddWithoutValidation(CompanyContextHeaderName, companyId.ToString());
++        return request;
++    }
++
++    private async Task<T?> GetAsync<T>(Guid companyId, string uri, bool allowNotFound, CancellationToken cancellationToken)
++    {
++        try
++        {
++            return await SendCompanyScopedGetAsync<T>(companyId, uri, allowNotFound, cancellationToken);
++        }
++        catch (OperationCanceledException)
++        {
++            throw;
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
+     private async Task<FinanceApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+     {
+         var contentType = response.Content.Headers.ContentType?.MediaType;
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 5153439..31fc0b9 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -21,10 +21,10 @@ public sealed class FinanceApiClient
+     public Task<FinanceSimulationClockResponse?> GetSimulationClockAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+             ? Task.FromResult<FinanceSimulationClockResponse?>(new FinanceSimulationClockResponse
+-            {
+-                CompanyId = companyId,
+-                SimulatedUtc = DateTime.UtcNow,
+-                Enabled = false
+-            });
+-            : GetAsync<FinanceSimulationClockResponse>($"internal/companies/{companyId}/finance/simulation/clock", allowNotFound: true, cancellationToken);
++              {
++                  CompanyId = companyId,
++                  SimulatedUtc = DateTime.UtcNow,
++                  Enabled = false
++              })
++            : GetAsync<FinanceSimulationClockResponse>(companyId, $"internal/companies/{companyId}/finance/simulation/clock", allowNotFound: true, cancellationToken);
+@@ -97,7 +97,6 @@ public sealed class FinanceApiClient
+         if (profitAndLoss is null)
+         {
+             return null;
+-            return null;
+         }
+ 
+         var expenseBreakdown = await GetAsync<FinanceExpenseBreakdownResponse>(
+@@ -122,25 +121,6 @@ public sealed class FinanceApiClient
+         return items ?? [];
+     }
+ 
+-    private async Task<T?> GetAsync<T>(Guid companyId, string uri, bool allowNotFound, CancellationToken cancellationToken)
+-    {
+-        try
+-        {
+-            using var response = await _httpClient.GetAsync(uri, cancellationToken);
+-
+-            if (allowNotFound && response.StatusCode == HttpStatusCode.NotFound)
+-            {
+-                return default;
+-            }
+-
+-            if (response.IsSuccessStatusCode)
+-            {
+-                if (response.Content.Headers.ContentLength is 0)
+-                {
+-                    return default;
+-                }
+-
+-                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
+-            }
+-
+-            throw await CreateExceptionAsync(response, cancellationToken);
+-        }
+-        catch (OperationCanceledException)
+-        {
+-            throw;
+-        }
+-        catch (HttpRequestException ex)
+-        {
+-            throw CreateNetworkException(ex);
+-        }
+-    }
+-
+     private async Task<T?> SendCompanyScopedGetAsync<T>(Guid companyId, string uri, bool allowNotFound, CancellationToken cancellationToken)
+     {
+         using var request = CreateCompanyScopedRequest(companyId, uri);
+         using var response = await _httpClient.SendAsync(request, cancellationToken);
+@@ -149,8 +129,18 @@ public sealed class FinanceApiClient
+         {
+             return default;
+         }
+-        catch (HttpRequestException ex)
++
++        if (response.IsSuccessStatusCode)
+         {
+-            throw CreateNetworkException(ex);
++            if (response.Content.Headers.ContentLength is 0)
++            {
++                return default;
++            }
++
++            return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
+         }
++
++        throw await CreateExceptionAsync(response, cancellationToken);
+     }
+ 
+     private HttpRequestMessage CreateCompanyScopedRequest(Guid companyId, string uri)
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs b/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs
+index e3af94d..b9b47aa 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceAccessResolverTests.cs
+@@ -48,6 +48,21 @@ public sealed class FinanceAccessResolverTests
+         Assert.True(state.IsForbidden);
+     }
+ 
++    [Fact]
++    public void Resolve_allows_requested_company_when_user_has_finance_view_access()
++    {
++        var companyId = Guid.NewGuid();
++        var currentUser = CreateCurrentUser(
++            memberships:
++            [
++                CreateMembership(companyId, "Company A", "manager", "active"),
++                CreateMembership(Guid.NewGuid(), "Company B", "employee", "active")
++            ],
++            activeCompany: null);
++
++        var state = _resolver.Resolve(currentUser, companyId);
++        Assert.True(state.IsAllowed);
++        Assert.Equal(companyId, state.CompanyId);
++    }
++
+     [Fact]
+     public void Resolve_requires_company_selection_when_multiple_active_memberships_exist()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs b/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs
+new file mode 100644
+index 0000000..bd59701
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs
+@@ -0,0 +1,163 @@
++using System.Net;
++using System.Net.Http.Json;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceApiClientTenantContextTests
++{
++    [Fact]
++    public async Task Finance_summary_requests_include_the_active_company_header()
++    {
++        var companyId = Guid.NewGuid();
++        var referenceUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
++        var handler = new RecordingFinanceHttpMessageHandler(companyId, referenceUtc);
++        using var httpClient = new HttpClient(handler)
++        {
++            BaseAddress = new Uri("http://localhost/")
++        };
++
++        var financeClient = new FinanceApiClient(httpClient);
++
++        await financeClient.GetCashPositionAsync(companyId, referenceUtc);
++        await financeClient.GetBalancesAsync(companyId, referenceUtc);
++        await financeClient.GetMonthlySummaryAsync(companyId, referenceUtc);
++        await financeClient.GetAnomaliesAsync(companyId);
++
++        Assert.Equal(5, handler.Requests.Count);
++        Assert.All(handler.Requests, request =>
++        {
++            Assert.Equal($"/internal/companies/{companyId}/finance", request.PathPrefix);
++            Assert.Equal(companyId.ToString(), request.CompanyHeaderValue);
++        });
++    }
++
++    private sealed class RecordingFinanceHttpMessageHandler : HttpMessageHandler
++    {
++        private readonly Guid _companyId;
++        private readonly DateTime _referenceUtc;
++
++        public RecordingFinanceHttpMessageHandler(Guid companyId, DateTime referenceUtc)
++        {
++            _companyId = companyId;
++            _referenceUtc = referenceUtc;
++        }
++
++        public List<CapturedRequest> Requests { get; } = [];
++
++        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
++        {
++            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
++            Requests.Add(new CapturedRequest(
++                path,
++                $"/internal/companies/{_companyId}/finance",
++                request.Headers.TryGetValues("X-Company-Id", out var values) ? values.Single() : null));
++
++            return Task.FromResult(path switch
++            {
++                var value when value.EndsWith("/cash-position", StringComparison.Ordinal) => Json(new
++                {
++                    companyId = _companyId,
++                    asOfUtc = _referenceUtc,
++                    availableBalance = 150000.25m,
++                    currency = "USD",
++                    averageMonthlyBurn = 25000m,
++                    estimatedRunwayDays = 180,
++                    thresholds = new
++                    {
++                        warningRunwayDays = 90,
++                        criticalRunwayDays = 45,
++                        warningCashAmount = 50000m,
++                        criticalCashAmount = 25000m,
++                        currency = "USD"
++                    },
++                    alertState = new
++                    {
++                        isLowCash = false,
++                        riskLevel = "healthy",
++                        alertCreated = false,
++                        alertDeduplicated = false,
++                        alertId = (Guid?)null,
++                        alertStatus = "no_active_alert",
++                        rationale = "Runway is stable."
++                    },
++                    classification = "stable",
++                    riskLevel = "healthy",
++                    recommendedAction = "Continue monitoring.",
++                    rationale = "Runway is stable.",
++                    confidence = 0.85m,
++                    sourceWorkflow = "cash_position_monitor"
++                }),
++                var value when value.EndsWith("/balances", StringComparison.Ordinal) => Json(new[]
++                {
++                    new
++                    {
++                        accountId = Guid.NewGuid(),
++                        accountCode = "1000",
++                        accountName = "Operating",
++                        accountType = "asset",
++                        amount = 150000.25m,
++                        currency = "USD",
++                        asOfUtc = _referenceUtc
++                    }
++                }),
++                var value when value.EndsWith("/profit-and-loss/monthly", StringComparison.Ordinal) => Json(new
++                {
++                    companyId = _companyId,
++                    year = _referenceUtc.Year,
++                    month = _referenceUtc.Month,
++                    startUtc = new DateTime(_referenceUtc.Year, _referenceUtc.Month, 1, 0, 0, 0, DateTimeKind.Utc),
++                    endUtc = new DateTime(_referenceUtc.Year, _referenceUtc.Month, 1, 0, 0, 0, DateTimeKind.Utc).AddMonths(1),
++                    revenue = 80000m,
++                    expenses = 45000m,
++                    netResult = 35000m,
++                    currency = "USD"
++                }),
++                var value when value.EndsWith("/expense-breakdown", StringComparison.Ordinal) => Json(new
++                {
++                    companyId = _companyId,
++                    startUtc = new DateTime(_referenceUtc.Year, _referenceUtc.Month, 1, 0, 0, 0, DateTimeKind.Utc),
++                    endUtc = new DateTime(_referenceUtc.Year, _referenceUtc.Month, 1, 0, 0, 0, DateTimeKind.Utc).AddMonths(1),
++                    totalExpenses = 45000m,
++                    currency = "USD",
++                    categories = new[]
++                    {
++                        new
++                        {
++                            category = "software",
++                            amount = 15000m,
++                            currency = "USD"
++                        }
++                    }
++                }),
++                var value when value.EndsWith("/anomalies", StringComparison.Ordinal) => Json(new[]
++                {
++                    new
++                    {
++                        id = Guid.NewGuid(),
++                        anomalyType = "missing_receipt",
++                        scenarioProfile = "integration",
++                        affectedRecordIds = new[] { Guid.NewGuid() },
++                        expectedDetectionMetadataJson = """{"expectedDetector":"receipt_completeness"}"""
++                    }
++                }),
++                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
++            });
++        }
++
++        private static HttpResponseMessage Json<T>(T payload) =>
++            new(HttpStatusCode.OK)
++            {
++                Content = JsonContent.Create(payload)
++            };
++    }
++
++    private sealed record CapturedRequest(
++        string Path,
++        string PathPrefix,
++        string? CompanyHeaderValue);
++}
+END_OF_PATCH

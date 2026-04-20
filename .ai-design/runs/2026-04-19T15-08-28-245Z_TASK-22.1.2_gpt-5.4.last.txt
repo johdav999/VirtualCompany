@@ -1,0 +1,238 @@
+diff --git a/src/VirtualCompany.Api/Controllers/DashboardFocusController.cs b/src/VirtualCompany.Api/Controllers/DashboardFocusController.cs
+--- a/src/VirtualCompany.Api/Controllers/DashboardFocusController.cs
++++ b/src/VirtualCompany.Api/Controllers/DashboardFocusController.cs
+@@ -10,6 +10,7 @@ namespace VirtualCompany.Api.Controllers;
+ public sealed class DashboardFocusController : ControllerBase
+ {
+     private readonly IFocusEngine _focusEngine;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
+     private readonly ICurrentUserAccessor _currentUserAccessor;
+ 
+     public DashboardFocusController(
+@@ -17,25 +18,31 @@ public sealed class DashboardFocusController : ControllerBase
+         ICurrentUserAccessor currentUserAccessor)
+     {
+         _focusEngine = focusEngine;
++        _companyContextAccessor = companyContextAccessor;
+         _currentUserAccessor = currentUserAccessor;
+     }
+ 
+     [HttpGet("focus")]
+     public async Task<ActionResult<IReadOnlyList<FocusItemDto>>> GetAsync(
+         [FromQuery] Guid companyId,
+-        [FromQuery] Guid userId,
++        [FromQuery] Guid? userId,
+         CancellationToken cancellationToken)
+     {
+-        if (companyId == Guid.Empty || userId == Guid.Empty)
++        var resolvedCompanyId = companyId != Guid.Empty ? companyId : _companyContextAccessor.CompanyId;
++        if (resolvedCompanyId is not Guid effectiveCompanyId)
+         {
+             return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
+             {
+-                ["companyId"] = companyId == Guid.Empty ? ["companyId is required."] : [],
+-                ["userId"] = userId == Guid.Empty ? ["userId is required."] : []
++                ["companyId"] = ["companyId is required."]
+             })
+             {
+                 Title = "Validation failed",
+                 Status = StatusCodes.Status400BadRequest
+             });
+         }
+ 
+-        if (_currentUserAccessor.UserId is Guid currentUserId && currentUserId != userId)
++        if (_currentUserAccessor.UserId is not Guid currentUserId)
++        {
++            return Unauthorized();
++        }
++
++        if (userId.HasValue && currentUserId != userId.Value)
+         {
+             return Forbid();
+         }
+ 
+-        var items = await _focusEngine.GetFocusAsync(new GetDashboardFocusQuery(companyId, userId), cancellationToken);
++        var items = await _focusEngine.GetFocusAsync(new GetDashboardFocusQuery(effectiveCompanyId, currentUserId), cancellationToken);
+         return Ok(items);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyFocusEngine.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyFocusEngine.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyFocusEngine.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyFocusEngine.cs
+@@ -241,7 +241,11 @@ public sealed class TaskFocusCandidateSource : IFocusCandidateSource
+             .AsNoTracking()
+             .Where(task => task.CompanyId == query.CompanyId &&
+                 task.Status != WorkTaskStatus.Completed &&
+-                task.Status != WorkTaskStatus.Failed)
++                task.Status != WorkTaskStatus.Failed &&
++                // Work tasks do not yet model direct human assignees, so focus items stay
++                // user-scoped by the originating human actor to avoid leaking peer work.
++                task.CreatedByActorType == WorkTaskSourceTypes.User &&
++                task.CreatedByActorId == query.UserId)
+             .OrderByDescending(task => task.UpdatedUtc)
+             .Take(15)
+             .ToListAsync(cancellationToken);
+diff --git a/src/VirtualCompany.Web/Components/TodayFocusPanel.razor b/src/VirtualCompany.Web/Components/TodayFocusPanel.razor
+--- a/src/VirtualCompany.Web/Components/TodayFocusPanel.razor
++++ b/src/VirtualCompany.Web/Components/TodayFocusPanel.razor
+@@ -82,7 +82,7 @@ else
+         try
+         {
+-            items = (await TodayFocusApiClient.GetAsync(CompanyId, UserId)).ToList();
++            items = (await TodayFocusApiClient.GetAsync(CompanyId)).ToList();
+         }
+         catch (OnboardingApiException ex)
+         {
+diff --git a/src/VirtualCompany.Web/Services/TodayFocusApiClient.cs b/src/VirtualCompany.Web/Services/TodayFocusApiClient.cs
+--- a/src/VirtualCompany.Web/Services/TodayFocusApiClient.cs
++++ b/src/VirtualCompany.Web/Services/TodayFocusApiClient.cs
+@@ -13,14 +13,14 @@ public sealed class TodayFocusApiClient
+         _useOfflineMode = useOfflineMode;
+     }
+ 
+-    public Task<IReadOnlyList<FocusItemViewModel>> GetAsync(Guid companyId, Guid userId, CancellationToken cancellationToken = default)
++    public Task<IReadOnlyList<FocusItemViewModel>> GetAsync(Guid companyId, CancellationToken cancellationToken = default)
+     {
+         if (_useOfflineMode)
+         {
+             return Task.FromResult<IReadOnlyList<FocusItemViewModel>>(OfflineItems(companyId));
+         }
+ 
+-        return GetCoreAsync(companyId, userId, cancellationToken);
++        return GetCoreAsync(companyId, cancellationToken);
+     }
+ 
+-    private async Task<IReadOnlyList<FocusItemViewModel>> GetCoreAsync(Guid companyId, Guid userId, CancellationToken cancellationToken)
++    private async Task<IReadOnlyList<FocusItemViewModel>> GetCoreAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         try
+         {
+             using var response = await _httpClient.GetAsync(
+-                $"api/dashboard/focus?companyId={companyId:D}&userId={userId:D}",
++                $"api/dashboard/focus?companyId={companyId:D}",
+                 cancellationToken);
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardFocusEndpointIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DashboardFocusEndpointIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/DashboardFocusEndpointIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DashboardFocusEndpointIntegrationTests.cs
+@@ -39,6 +39,8 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW
+         {
+             Assert.False(string.IsNullOrWhiteSpace(item.Id));
+             Assert.False(string.IsNullOrWhiteSpace(item.Title));
++            Assert.DoesNotContain(seed.HiddenPeerTaskTitle, item.Title, StringComparison.Ordinal);
++            Assert.DoesNotContain(seed.HiddenOtherTenantAlertTitle, item.Title, StringComparison.Ordinal);
+             Assert.False(string.IsNullOrWhiteSpace(item.Description));
+             Assert.False(string.IsNullOrWhiteSpace(item.ActionType));
+             Assert.False(string.IsNullOrWhiteSpace(item.NavigationTarget));
+@@ -64,12 +66,25 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW
+         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Get_focus_uses_authenticated_user_context_when_user_query_is_omitted()
++    {
++        var seed = await SeedCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/dashboard/focus?companyId={seed.CompanyId:D}");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var items = await response.Content.ReadFromJsonAsync<List<FocusItemResponse>>();
++        Assert.NotNull(items);
++        Assert.NotEmpty(items!);
++    }
++
+     private HttpClient CreateAuthenticatedClient()
+     {
+         var client = _factory.CreateClient();
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "founder");
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "founder@example.com");
+-        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Founder");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Founder");
+         return client;
+     }
+ 
+@@ -78,6 +93,11 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW
+         var companyId = Guid.NewGuid();
+         var userId = Guid.NewGuid();
+         var agentId = Guid.NewGuid();
++        var peerUserId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var otherCompanyAlertId = Guid.NewGuid();
++        const string hiddenPeerTaskTitle = "Peer-only blocked task";
++        const string hiddenOtherTenantAlertTitle = "Other tenant cash alert";
+         var taskId = Guid.NewGuid();
+ 
+         await _factory.SeedAsync(async dbContext =>
+@@ -85,8 +105,11 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW
+             dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Users.Add(new User(peerUserId, "peer@example.com", "Peer", "dev-header", "peer"));
+             dbContext.Companies.Add(new Company(companyId, "Focus Company"));
++            dbContext.Companies.Add(new Company(otherCompanyId, "Other Focus Company"));
+             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, peerUserId, CompanyMembershipRole.Member, CompanyMembershipStatus.Active));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+             dbContext.Agents.Add(new Agent(agentId, companyId, "operations", "Ops Lead", "Operations", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
+ 
+             var task = new WorkTask(
+@@ -101,6 +124,19 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW
+             task.UpdateStatus(WorkTaskStatus.Blocked, rationaleSummary: "Vendor payout is waiting on a release decision.");
+             dbContext.WorkTasks.Add(task);
+ 
++            var peerTask = new WorkTask(
++                Guid.NewGuid(),
++                companyId,
++                "orchestration",
++                hiddenPeerTaskTitle,
++                "This task belongs to another user in the same tenant.",
++                WorkTaskPriority.Critical,
++                agentId,
++                null,
++                "user",
++                peerUserId);
++            peerTask.UpdateStatus(WorkTaskStatus.Blocked, rationaleSummary: "This task should stay hidden from the founder focus feed.");
++            dbContext.WorkTasks.Add(peerTask);
++
+             var approval = ApprovalRequest.CreateForTarget(
+                 Guid.NewGuid(),
+                 companyId,
+@@ -135,13 +171,26 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW
+                 "corr-risk",
+                 "fingerprint-risk"));
+ 
++            dbContext.Alerts.Add(new Alert(
++                otherCompanyAlertId,
++                otherCompanyId,
++                AlertType.Risk,
++                AlertSeverity.Critical,
++                hiddenOtherTenantAlertTitle,
++                "This alert belongs to a different tenant and must not leak into the requested feed.",
++                new Dictionary<string, System.Text.Json.Nodes.JsonNode?>
++                {
++                    ["policy"] = System.Text.Json.Nodes.JsonValue.Create("cash_runway")
++                },
++                "corr-risk-other",
++                "fingerprint-risk-other"));
++
+             await dbContext.SaveChangesAsync();
+ 
+             var approvalEntry = await dbContext.ApprovalRequests.Include(request => request.Steps).SingleAsync(request => request.CompanyId == companyId);
+             var step = Assert.Single(approvalEntry.Steps);
+             Assert.Equal(ApprovalStepApproverType.User, step.ApproverType);
+         });
+ 
+-        return new SeedResult(companyId, userId);
++        return new SeedResult(companyId, userId, hiddenPeerTaskTitle, hiddenOtherTenantAlertTitle);
+     }
+ 
+-    private sealed record SeedResult(Guid CompanyId, Guid UserId);
++    private sealed record SeedResult(Guid CompanyId, Guid UserId, string HiddenPeerTaskTitle, string HiddenOtherTenantAlertTitle);
+ 
+     private sealed class FocusItemResponse
+     {
+@@ -155,4 +204,4 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW
+         public string NavigationTarget { get; set; } = string.Empty;
+         public string? SourceType { get; set; }
+     }
+-}
++}
+END_OF_PATCH

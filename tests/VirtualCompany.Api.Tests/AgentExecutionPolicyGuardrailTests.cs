@@ -69,6 +69,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
         Assert.Equal(ToolExecutionStatus.Denied, attempt.Status);
         Assert.Equal("wire_transfer", attempt.ToolName);
+        Assert.Equal("unknown", attempt.ToolVersion);
+        Assert.Equal(payload.Message, attempt.DenialReason);
         Assert.Equal("deny", attempt.PolicyDecision["outcome"]!.GetValue<string>());
         Assert.Equal(PolicyDecisionSchemaVersions.V1, attempt.PolicyDecision["schemaVersion"]!.GetValue<string>());
         Assert.Equal(seed.CompanyId, attempt.PolicyDecision["tenant"]!["companyId"]!.GetValue<Guid>());
@@ -669,6 +671,58 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
         Assert.NotNull(problem);
         Assert.Contains("RequestPayload.endpointUrl", problem!.Errors.Keys);
         Assert.Contains("RequestPayload.headers", problem.Errors.Keys);
+    }
+
+    [Fact]
+    public async Task Finance_read_tool_executes_through_policy_executor_contract_and_persists_versioned_record()
+    {
+        _factory.ToolExecutor.Reset();
+        var seed = await SeedAgentAsync(
+            autonomyLevel: AgentAutonomyLevel.Level2,
+            tools: Payload(
+                ("allowed", new JsonArray(JsonValue.Create("get_cash_balance"))),
+                ("actions", new JsonArray(JsonValue.Create("read")))),
+            scopes: Payload(("read", new JsonArray(JsonValue.Create("finance")))),
+            thresholds: Payload(("approval", new JsonObject { ["cashReadUsd"] = 100000 })),
+            escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))));
+
+        using var client = CreateAuthenticatedClient();
+        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
+        {
+            toolName = "get_cash_balance",
+            actionType = "read",
+            scope = "finance",
+            requestPayload = new { asOfUtc = "2026-04-16T00:00:00Z" }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
+        Assert.NotNull(payload);
+        Assert.Equal("executed", payload!.Status);
+        Assert.Equal("allow", payload.PolicyDecision.Outcome);
+        Assert.Equal(1, _factory.ToolExecutor.ExecutionCount);
+
+        var dispatchedRequest = Assert.Single(_factory.ToolExecutor.Requests);
+        Assert.Equal("get_cash_balance", dispatchedRequest.ToolName);
+        Assert.Equal("finance", dispatchedRequest.Scope);
+        Assert.Equal(ToolActionType.Read, dispatchedRequest.Context.ActionType);
+        Assert.Equal("1.0.0", dispatchedRequest.ToolVersion);
+
+        using var scope = _factory.Services.CreateScope();
+        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+        companyContextAccessor.SetCompanyId(seed.CompanyId);
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
+
+        Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);
+        Assert.Equal("get_cash_balance", attempt.ToolName);
+        Assert.Equal("1.0.0", attempt.ToolVersion);
+        Assert.Equal("2026-04-16T00:00:00Z", attempt.RequestPayload["asOfUtc"]!.GetValue<string>());
+        Assert.Equal("allow", attempt.PolicyDecision["outcome"]!.GetValue<string>());
+        Assert.NotNull(attempt.ResultPayload["data"]!["cashBalance"]);
+        Assert.NotNull(attempt.CompletedUtc);
+        Assert.NotNull(attempt.ExecutedUtc);
+        Assert.Null(attempt.DenialReason);
     }
 
     private HttpClient CreateAuthenticatedClient()

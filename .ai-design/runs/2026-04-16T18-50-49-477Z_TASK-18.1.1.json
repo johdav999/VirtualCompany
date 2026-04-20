@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-18.1.1",
+  "promptPath": ".ai-design/prompts/TASK-18.1.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T18:50:49.477Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T18-50-49-477Z_TASK-18.1.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T18-50-49-477Z_TASK-18.1.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T19:02:24.398Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "iewFilterState\n+        {\n+            Status = \" \",\n+            Supplier = \"\",\n+            RiskLevel = null,\n+            RecommendationOutcome = \" \"\n+        };\n+\n+        var parameters = state.ToQueryParameters(Guid.Parse(\"df0ff3c3-1f38-40cf-a56e-557379b2b298\"));\n+\n+        Assert.Null(parameters[\"status\"]);\n+        Assert.Null(parameters[\"supplier\"]);\n+        Assert.Null(parameters[\"riskLevel\"]);\n+        Assert.Null(parameters[\"outcome\"]);\n+    }\n+\n+    [Fact]\n+    public void Query_string_serialization_is_shareable_and_company_scoped()\n+    {\n+        var companyId = Guid.Parse(\"df0ff3c3-1f38-40cf-a56e-557379b2b298\");\n+        var state = new InvoiceReviewFilterState\n+        {\n+            Status = \"pending_approval\",\n+            Supplier = \"Northwind\",\n+            RiskLevel = \"high\",\n+            RecommendationOutcome = \"request_human_approval\"\n+        };\n+\n+        var query = state.ToQueryString(companyId);\n+\n+        Assert.Contains($\"companyId={companyId:D}\", query);\n+        Assert.Contains(\"status=pending_approval\", query);\n+        Assert.Contains(\"supplier=Northwind\", query);\n+        Assert.Contains(\"riskLevel=high\", query);\n+        Assert.Contains(\"outcome=request_human_approval\", query);\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj\nindex 085d2b0..1ecb8d5 100644\n--- a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj\n+++ b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj\n@@ -8,6 +8,7 @@\n \n   <ItemGroup>\n     <PackageReference Include=\"Microsoft.AspNetCore.Mvc.Testing\" Version=\"9.0.1\" />\n+    <PackageReference Include=\"bunit\" Version=\"1.29.61\" />\n     <PackageReference Include=\"Microsoft.EntityFrameworkCore.Sqlite\" Version=\"9.0.14\" />\n     <PackageReference Include=\"Microsoft.AspNetCore.SignalR.Client\" Version=\"9.0.1\" />\n     <PackageReference Include=\"Microsoft.NET.Test.Sdk\" Version=\"17.12.0\" />\nEND_OF_PATCH\n",
+  "stderrTail": "    {\n+            Status = \" \",\n+            Supplier = \"\",\n+            RiskLevel = null,\n+            RecommendationOutcome = \" \"\n+        };\n+\n+        var parameters = state.ToQueryParameters(Guid.Parse(\"df0ff3c3-1f38-40cf-a56e-557379b2b298\"));\n+\n+        Assert.Null(parameters[\"status\"]);\n+        Assert.Null(parameters[\"supplier\"]);\n+        Assert.Null(parameters[\"riskLevel\"]);\n+        Assert.Null(parameters[\"outcome\"]);\n+    }\n+\n+    [Fact]\n+    public void Query_string_serialization_is_shareable_and_company_scoped()\n+    {\n+        var companyId = Guid.Parse(\"df0ff3c3-1f38-40cf-a56e-557379b2b298\");\n+        var state = new InvoiceReviewFilterState\n+        {\n+            Status = \"pending_approval\",\n+            Supplier = \"Northwind\",\n+            RiskLevel = \"high\",\n+            RecommendationOutcome = \"request_human_approval\"\n+        };\n+\n+        var query = state.ToQueryString(companyId);\n+\n+        Assert.Contains($\"companyId={companyId:D}\", query);\n+        Assert.Contains(\"status=pending_approval\", query);\n+        Assert.Contains(\"supplier=Northwind\", query);\n+        Assert.Contains(\"riskLevel=high\", query);\n+        Assert.Contains(\"outcome=request_human_approval\", query);\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj\nindex 085d2b0..1ecb8d5 100644\n--- a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj\n+++ b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj\n@@ -8,6 +8,7 @@\n \n   <ItemGroup>\n     <PackageReference Include=\"Microsoft.AspNetCore.Mvc.Testing\" Version=\"9.0.1\" />\n+    <PackageReference Include=\"bunit\" Version=\"1.29.61\" />\n     <PackageReference Include=\"Microsoft.EntityFrameworkCore.Sqlite\" Version=\"9.0.14\" />\n     <PackageReference Include=\"Microsoft.AspNetCore.SignalR.Client\" Version=\"9.0.1\" />\n     <PackageReference Include=\"Microsoft.NET.Test.Sdk\" Version=\"17.12.0\" />\nEND_OF_PATCH\ntokens used\n165,122\n",
+  "verbosityMode": "summary"
+}

@@ -1,0 +1,82 @@
+@page "/finance/monthly-summary"
+@inherits FinanceSummaryPageBase<MonthlySummaryViewModel>
+
+<PageTitle>Monthly summary</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Monthly summary"
+    Description="Summarize the current month's finance posture inside the active tenant workspace."
+    LoadingMessage="Loading monthly summary shell...">
+    <FinanceDataState
+        IsLoading="@IsSummaryLoading"
+        IsEmpty="@IsSummaryEmpty"
+        ErrorMessage="@SummaryErrorMessage"
+        LoadingTitle="Loading monthly summary"
+        LoadingMessage="Building the monthly finance summary for the active tenant."
+        EmptyTitle="No monthly summary yet"
+        EmptyMessage="No monthly finance summary is available for the active tenant."
+        RetryText="Reload monthly summary"
+        OnRetry="@RetryAsync">
+        @if (ViewModel is not null)
+        {
+            <section class="finance-summary-stack" aria-labelledby="monthly-summary-heading">
+                <div class="finance-summary-grid">
+                    <article class="wizard-card finance-metric-card finance-metric-card--hero">
+                        <span class="dashboard-kicker">Reporting period</span>
+                        <h2 id="monthly-summary-heading" class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.Period</h2>
+                        <p class="text-body-secondary mb-0">Tenant-scoped monthly performance snapshot.</p>
+                    </article>
+                    <article class="wizard-card finance-metric-card">
+                        <span class="dashboard-kicker">Revenue</span>
+                        <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.Revenue</div>
+                    </article>
+                    <article class="wizard-card finance-metric-card">
+                        <span class="dashboard-kicker">Expenses</span>
+                        <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.Expenses</div>
+                    </article>
+                    <article class="wizard-card finance-metric-card">
+                        <span class="dashboard-kicker">Net result</span>
+                        <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.NetResult</div>
+                    </article>
+                </div>
+                @if (ViewModel.ExpenseCategories.Count > 0)
+                {
+                    <article class="wizard-card">
+                        <h2 class="h5">Expense breakdown by category</h2>
+                        <div class="table-responsive">
+                            <table class="table finance-table mb-0">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Category</th>
+                                        <th scope="col" class="finance-table__number">Amount</th>
+                                        <th scope="col" class="finance-table__number">Share</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var category in ViewModel.ExpenseCategories)
+                                    {
+                                        <tr>
+                                            <td>@category.Category</td>
+                                            <td class="finance-table__number">@category.Amount</td>
+                                            <td class="finance-table__number">@category.Share</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </article>
+                }
+                else
+                {
+                    <article class="wizard-card">
+                        <h2 class="h5">Expense breakdown by category</h2>
+                        <p class="text-body-secondary mb-0">The finance backend returned no category aggregates for this reporting period.</p>
+                    </article>
+                }
+            </section>
+        }
+    </FinanceDataState>
+</FinancePageLayout>

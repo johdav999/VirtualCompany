@@ -400,7 +400,10 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
             ["businessResponsibility"] = BuildSourceLabel(tenant?.BusinessResponsibility, agentBusinessResponsibility, task.BusinessResponsibility),
             ["collaborationNorms"] = BuildSourceLabel(tenant?.CollaborationNorms, agentCollaborationNorms, task.CollaborationNorms),
             ["personalityTraits"] = BuildSourceLabel(tenant?.PersonalityTraits, agentPersonalityTraits, task.PersonalityTraits),
-            ["additionalNotes"] = BuildSourceLabel(SplitIdentityText(tenant?.AdditionalNotes), null, SplitIdentityText(task.AdditionalNotes))
+            ["additionalNotes"] = BuildSourceLabel(
+                SplitIdentityText(tenant?.AdditionalNotes),
+                Array.Empty<string>(),
+                SplitIdentityText(task.AdditionalNotes))
         };
 
         return new PromptIdentitySectionDto(
@@ -665,7 +668,7 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
 
     private static string JoinIdentityParts(string? tenant, string? agent, string? task, string fallback)
     {
-        var parts = NormalizeIdentityList([tenant, agent, task]);
+        var parts = NormalizeIdentityList(new[] { tenant, agent, task }.OfType<string>());
         return parts.Count == 0 ? fallback : string.Join(" ", parts);
     }
 

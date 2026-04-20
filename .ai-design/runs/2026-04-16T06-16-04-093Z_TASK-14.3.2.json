@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-14.3.2",
+  "promptPath": ".ai-design/prompts/TASK-14.3.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T06:16:04.093Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T06-16-04-093Z_TASK-14.3.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T06-16-04-093Z_TASK-14.3.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T06:18:27.510Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "\"taskId\"] = attempt.TaskId.HasValue ? JsonValue.Create(attempt.TaskId.Value) : null\n-        };\n-    }\n-\n-\n+                }\n \n                 return new ApprovalSummaryContext(\n                     null,\n@@ -800,6 +777,29 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService\n             });\n     }\n \n+    private static Dictionary<string, JsonNode?> BuildBlockedApprovalResultPayload(ApprovalRequest approval, ToolExecutionAttempt attempt)\n+    {\n+        var reasonCode = approval.ExecutionBlockReasonCode ?? PolicyDecisionReasonCodes.ApprovalCancelled;\n+        var status = approval.Status == ApprovalRequestStatus.Rejected\n+            ? ToolExecutionStatus.Rejected.ToStorageValue()\n+            : ToolExecutionStatus.Denied.ToStorageValue();\n+\n+        return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+        {\n+            [\"schemaVersion\"] = JsonValue.Create(ToolExecutionResult.SchemaVersion),\n+            [\"success\"] = JsonValue.Create(false),\n+            [\"status\"] = JsonValue.Create(status),\n+            [\"toolName\"] = JsonValue.Create(attempt.ToolName),\n+            [\"actionType\"] = JsonValue.Create(attempt.ActionType.ToStorageValue()),\n+            [\"errorCode\"] = JsonValue.Create(reasonCode),\n+            [\"errorMessage\"] = JsonValue.Create(approval.DecisionSummary ?? \"The approval request did not authorize execution.\"),\n+            [\"approvalRequestId\"] = JsonValue.Create(approval.Id),\n+            [\"executionId\"] = JsonValue.Create(attempt.Id),\n+            [\"taskId\"] = attempt.TaskId.HasValue ? JsonValue.Create(attempt.TaskId.Value) : null,\n+            [\"workflowInstanceId\"] = attempt.WorkflowInstanceId.HasValue ? JsonValue.Create(attempt.WorkflowInstanceId.Value) : null\n+        };\n+    }\n+\n     private static ApprovalRequestDto ToDto(ApprovalRequest approval, ApprovalSummaryContext? summaryContext)\n     {\n         var thresholdSummary = BuildThresholdSummary(approval.ThresholdContext);\nEND_OF_PATCH\n",
+  "stderrTail": ".TaskId.HasValue ? JsonValue.Create(attempt.TaskId.Value) : null\n-        };\n-    }\n-\n-\n+                }\n \n                 return new ApprovalSummaryContext(\n                     null,\n@@ -800,6 +777,29 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService\n             });\n     }\n \n+    private static Dictionary<string, JsonNode?> BuildBlockedApprovalResultPayload(ApprovalRequest approval, ToolExecutionAttempt attempt)\n+    {\n+        var reasonCode = approval.ExecutionBlockReasonCode ?? PolicyDecisionReasonCodes.ApprovalCancelled;\n+        var status = approval.Status == ApprovalRequestStatus.Rejected\n+            ? ToolExecutionStatus.Rejected.ToStorageValue()\n+            : ToolExecutionStatus.Denied.ToStorageValue();\n+\n+        return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+        {\n+            [\"schemaVersion\"] = JsonValue.Create(ToolExecutionResult.SchemaVersion),\n+            [\"success\"] = JsonValue.Create(false),\n+            [\"status\"] = JsonValue.Create(status),\n+            [\"toolName\"] = JsonValue.Create(attempt.ToolName),\n+            [\"actionType\"] = JsonValue.Create(attempt.ActionType.ToStorageValue()),\n+            [\"errorCode\"] = JsonValue.Create(reasonCode),\n+            [\"errorMessage\"] = JsonValue.Create(approval.DecisionSummary ?? \"The approval request did not authorize execution.\"),\n+            [\"approvalRequestId\"] = JsonValue.Create(approval.Id),\n+            [\"executionId\"] = JsonValue.Create(attempt.Id),\n+            [\"taskId\"] = attempt.TaskId.HasValue ? JsonValue.Create(attempt.TaskId.Value) : null,\n+            [\"workflowInstanceId\"] = attempt.WorkflowInstanceId.HasValue ? JsonValue.Create(attempt.WorkflowInstanceId.Value) : null\n+        };\n+    }\n+\n     private static ApprovalRequestDto ToDto(ApprovalRequest approval, ApprovalSummaryContext? summaryContext)\n     {\n         var thresholdSummary = BuildThresholdSummary(approval.ThresholdContext);\nEND_OF_PATCH\ntokens used\n94,778\n",
+  "verbosityMode": "summary"
+}

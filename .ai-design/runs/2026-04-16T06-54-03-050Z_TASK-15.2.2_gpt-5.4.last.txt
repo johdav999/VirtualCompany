@@ -1,0 +1,420 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyInvoiceReviewWorkflowService.cs
+@@ -13,6 +13,7 @@ namespace VirtualCompany.Infrastructure.Finance;
+ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflowService
+ {
+     private const string ReviewTaskType = "invoice_approval_review";
++    private const string ReviewCorrelationPrefix = "invoice-review";
+     private const string FinanceApproverRole = "finance_approver";
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+@@ -43,7 +44,10 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+         var policy = await _policyConfigurationService.GetPolicyConfigurationAsync(
+             new GetFinancePolicyConfigurationQuery(command.CompanyId),
+             cancellationToken);
+-        var review = BuildReview(invoice, policy);
++        var paymentContext = await LoadRelatedPaymentContextAsync(command.CompanyId, command.InvoiceId, cancellationToken);
++        var review = BuildReview(invoice, policy, paymentContext);
++        var reviewAgentId = command.AgentId ?? await ResolveLauraAgentIdAsync(command.CompanyId, cancellationToken);
++        var correlationId = BuildInvoiceReviewCorrelationId(command.CompanyId, invoice.Id);
+ 
+         var task = await FindExistingReviewTaskAsync(command.CompanyId, command.InvoiceId, command.WorkflowInstanceId, cancellationToken);
+         if (task is null)
+@@ -56,15 +60,15 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+                 $"Review invoice {invoice.InvoiceNumber} from {invoice.CounterpartyName} for {invoice.Amount:0.##} {invoice.Currency}.",
+                 review.RequiresHumanApproval ? WorkTaskPriority.High : WorkTaskPriority.Normal,
+                 command.AgentId ?? await ResolveLauraAgentIdAsync(command.CompanyId, cancellationToken),
+                 null,
+                 "agent",
+-                command.AgentId,
+-                BuildTaskInput(command, invoice, policy),
++                reviewAgentId,
++                BuildTaskInput(command, invoice, policy, paymentContext),
+                 command.WorkflowInstanceId,
+                 null,
+                 null,
+                 null,
+-                ResolveCorrelationId(command.Payload),
++                correlationId,
+                 WorkTaskSourceTypes.Agent,
+-                command.AgentId,
++                reviewAgentId,
+                 "workflow",
+                 "Invoice entered awaiting approval and needs a finance review.",
+                 command.WorkflowInstanceId?.ToString("N"),
+@@ -74,7 +78,7 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             _dbContext.WorkTasks.Add(task);
+         }
+ 
+-        var outputPayload = BuildOutputPayload(command.CompanyId, invoice, policy, review, task.Id, null, command.WorkflowInstanceId);
++        var outputPayload = BuildOutputPayload(command.CompanyId, invoice, policy, paymentContext, review, task.Id, null, command.WorkflowInstanceId);
+         ApprovalRequestDto? approval = null;
+         var existingApprovalId = TryGetGuid(task.OutputPayload, "approvalRequestId");
+ 
+@@ -82,7 +86,7 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+         {
+             approval = existingApprovalId.HasValue
+                 ? await TryLoadApprovalAsync(command.CompanyId, existingApprovalId.Value, cancellationToken)
+-                : await CreateApprovalRequestAsync(command, invoice, policy, review, task.Id, cancellationToken);
++                : await CreateApprovalRequestAsync(command, invoice, policy, paymentContext, review, task.Id, reviewAgentId, cancellationToken);
+             if (approval is not null)
+             {
+                 outputPayload["approvalRequestId"] = JsonValue.Create(approval.Id);
+@@ -93,6 +97,7 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             ? WorkTaskStatus.AwaitingApproval
+             : WorkTaskStatus.Completed;
+         task.UpdateStatus(targetStatus, outputPayload, review.Rationale, review.ConfidenceScore);
++        await PersistWorkflowOutputAsync(command.CompanyId, command.WorkflowInstanceId, outputPayload, cancellationToken);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         return new FinanceInvoiceReviewWorkflowResultDto(
+@@ -121,15 +126,26 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+     {
+         Validate(companyId, invoiceId);
+ 
+-        var tasks = await _dbContext.WorkTasks
++        var correlationId = BuildInvoiceReviewCorrelationId(companyId, invoiceId);
++        var task = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.Type == ReviewTaskType)
++            .Where(x => x.CompanyId == companyId && x.Type == ReviewTaskType && x.CorrelationId == correlationId)
+             .OrderByDescending(x => x.UpdatedUtc)
+-            .Take(250)
+-            .ToListAsync(cancellationToken);
++            .FirstOrDefaultAsync(cancellationToken);
+ 
+-        var task = tasks.FirstOrDefault(x =>
+-            TryGetGuid(x.InputPayload, "invoiceId") == invoiceId ||
+-            TryGetGuid(x.OutputPayload, "invoiceId") == invoiceId);
++        if (task is null)
++        {
++            var tasks = await _dbContext.WorkTasks
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && x.Type == ReviewTaskType)
++                .OrderByDescending(x => x.UpdatedUtc)
++                .Take(250)
++                .ToListAsync(cancellationToken);
++
++            task = tasks.FirstOrDefault(x =>
++                TryGetGuid(x.InputPayload, "invoiceId") == invoiceId ||
++                TryGetGuid(x.OutputPayload, "invoiceId") == invoiceId);
++        }
+         if (task is null)
+         {
+             return null;
+@@ -139,8 +155,9 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+         var policy = await _policyConfigurationService.GetPolicyConfigurationAsync(
+             new GetFinancePolicyConfigurationQuery(companyId),
+             cancellationToken);
+-        var review = BuildReviewFromTask(task) ?? BuildReview(invoice, policy);
++        var paymentContext = BuildPaymentContextFromTask(task) ?? await LoadRelatedPaymentContextAsync(companyId, invoiceId, cancellationToken);
++        var review = BuildReviewFromTask(task) ?? BuildReview(invoice, policy, paymentContext);
+ 
+         return new FinanceInvoiceReviewWorkflowResultDto(
+             companyId,
+@@ -172,7 +189,8 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+ 
+     private static InvoiceReviewDecision BuildReview(
+         FinanceInvoiceDto invoice,
+-        FinancePolicyConfigurationDto policy)
++        FinancePolicyConfigurationDto policy,
++        InvoicePaymentContext paymentContext)
+     {
+         var statusIsAwaitingApproval =
+             string.Equals(invoice.Status, "awaiting_approval", StringComparison.OrdinalIgnoreCase) ||
+@@ -182,11 +200,12 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+         var exceedsThreshold = invoice.Amount > policy.InvoiceApprovalThreshold;
+         var overdue = invoice.DueUtc.Date < DateTime.UtcNow.Date;
+         var dueSoon = !overdue && invoice.DueUtc.Date <= DateTime.UtcNow.Date.AddDays(7);
++        var hasPaymentActivity = paymentContext.TransactionCount > 0;
+ 
+-        var riskLevel = currencyMismatch || exceedsThreshold
++        var riskLevel = currencyMismatch || exceedsThreshold || paymentContext.TotalPaidAmount >= invoice.Amount
+             ? "high"
+-            : overdue || dueSoon
++            : overdue || dueSoon || hasPaymentActivity
+                 ? "medium"
+                 : "low";
+         var classification = currencyMismatch
+@@ -195,6 +214,8 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+                 ? "over_threshold_invoice"
+                 : overdue
+                     ? "overdue_invoice"
++                    : hasPaymentActivity
++                        ? "invoice_with_payment_activity"
+                     : dueSoon
+                         ? "due_soon_invoice"
+                         : "standard_invoice";
+@@ -231,6 +252,10 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+         {
+             rationaleParts.Add("Invoice is due within seven days.");
+         }
++        if (hasPaymentActivity)
++        {
++            rationaleParts.Add($"Related payment context contains {paymentContext.TransactionCount} transaction(s) totaling {paymentContext.TotalPaidAmount:0.##} {paymentContext.Currency}.");
++        }
+         if (!statusIsAwaitingApproval)
+         {
+             rationaleParts.Add("Invoice is not currently awaiting approval, so no approval action is recommended.");
+@@ -247,16 +272,18 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+         ReviewFinanceInvoiceWorkflowCommand command,
+         FinanceInvoiceDto invoice,
+         FinancePolicyConfigurationDto policy,
++        InvoicePaymentContext paymentContext,
+         InvoiceReviewDecision review,
+         Guid taskId,
++        Guid? reviewAgentId,
+         CancellationToken cancellationToken)
+     {
+-        var thresholdContext = BuildOutputPayload(command.CompanyId, invoice, policy, review, taskId, null, command.WorkflowInstanceId);
++        var thresholdContext = BuildOutputPayload(command.CompanyId, invoice, policy, paymentContext, review, taskId, null, command.WorkflowInstanceId);
+         thresholdContext["workflowRunId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null;
+         thresholdContext["approvalLinkReason"] = JsonValue.Create("invoice_review_requires_human_approval");
+ 
+         return await _approvalRequestService.CreateAsync(
+             command.CompanyId,
+             new CreateApprovalRequestCommand(
+                 "task",
+                 taskId,
+                 "agent",
+-                command.AgentId ?? Guid.NewGuid(),
++                reviewAgentId ?? Guid.NewGuid(),
+                 "invoice_review",
+                 thresholdContext,
+                 FinanceApproverRole,
+@@ -287,7 +314,9 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+     {
+         var query = _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+-            .Where(x => x.CompanyId == companyId && x.Type == ReviewTaskType);
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.Type == ReviewTaskType);
+ 
+         if (workflowInstanceId.HasValue)
+         {
+@@ -295,6 +324,13 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+         }
+ 
+         var candidates = await query
++            .Where(x => x.CorrelationId == BuildInvoiceReviewCorrelationId(companyId, invoiceId))
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Take(1)
++            .ToListAsync(cancellationToken);
++
++        candidates.AddRange(await query
++            .Where(x => x.CorrelationId != BuildInvoiceReviewCorrelationId(companyId, invoiceId))
+             .OrderByDescending(x => x.UpdatedUtc)
+             .Take(100)
+-            .ToListAsync(cancellationToken);
++            .ToListAsync(cancellationToken));
+ 
+         return candidates.FirstOrDefault(x =>
+             TryGetGuid(x.InputPayload, "invoiceId") == invoiceId ||
+@@ -318,7 +354,8 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+     private static Dictionary<string, JsonNode?> BuildTaskInput(
+         ReviewFinanceInvoiceWorkflowCommand command,
+         FinanceInvoiceDto invoice,
+-        FinancePolicyConfigurationDto policy) =>
++        FinancePolicyConfigurationDto policy,
++        InvoicePaymentContext paymentContext) =>
+         new(StringComparer.OrdinalIgnoreCase)
+         {
+             ["companyId"] = JsonValue.Create(command.CompanyId),
+@@ -334,13 +371,20 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             ["status"] = JsonValue.Create(invoice.Status),
+             ["approvalThreshold"] = JsonValue.Create(policy.InvoiceApprovalThreshold),
+-            ["approvalCurrency"] = JsonValue.Create(policy.ApprovalCurrency)
++            ["approvalCurrency"] = JsonValue.Create(policy.ApprovalCurrency),
++            ["linkedDocumentId"] = invoice.LinkedDocument is null ? null : JsonValue.Create(invoice.LinkedDocument.Id),
++            ["linkedDocumentTitle"] = invoice.LinkedDocument is null ? null : JsonValue.Create(invoice.LinkedDocument.Title),
++            ["relatedPaymentContext"] = BuildRelatedPaymentNode(paymentContext)
+         };
+ 
+     private static Dictionary<string, JsonNode?> BuildOutputPayload(
+         Guid companyId,
+         FinanceInvoiceDto invoice,
+         FinancePolicyConfigurationDto policy,
++        InvoicePaymentContext paymentContext,
+         InvoiceReviewDecision review,
+         Guid taskId,
+         Guid? approvalRequestId,
+@@ -351,6 +395,7 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             ["companyId"] = JsonValue.Create(companyId),
+             ["invoiceId"] = JsonValue.Create(invoice.Id),
+             ["workflowInstanceId"] = workflowInstanceId.HasValue ? JsonValue.Create(workflowInstanceId.Value) : null,
++            ["workflowRunId"] = workflowInstanceId.HasValue ? JsonValue.Create(workflowInstanceId.Value) : null,
+             ["taskId"] = JsonValue.Create(taskId),
+             ["approvalRequestId"] = approvalRequestId.HasValue ? JsonValue.Create(approvalRequestId.Value) : null,
+             ["invoiceClassification"] = JsonValue.Create(review.InvoiceClassification),
+@@ -367,8 +412,64 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             ["vendorId"] = JsonValue.Create(invoice.CounterpartyId),
+             ["vendorName"] = JsonValue.Create(invoice.CounterpartyName),
+             ["policyInvoiceApprovalThreshold"] = JsonValue.Create(policy.InvoiceApprovalThreshold),
+-            ["policyApprovalCurrency"] = JsonValue.Create(policy.ApprovalCurrency)
++            ["policyApprovalCurrency"] = JsonValue.Create(policy.ApprovalCurrency),
++            ["relatedPaymentContext"] = BuildRelatedPaymentNode(paymentContext)
+         };
+ 
++    private async Task<InvoicePaymentContext> LoadRelatedPaymentContextAsync(
++        Guid companyId,
++        Guid invoiceId,
++        CancellationToken cancellationToken)
++    {
++        var transactions = await _financeReadService.GetTransactionsAsync(
++            new GetFinanceTransactionsQuery(companyId, null, null, 500),
++            cancellationToken);
++
++        var relatedTransactions = transactions
++            .Where(x => x.InvoiceId == invoiceId)
++            .ToList();
++
++        if (relatedTransactions.Count == 0)
++        {
++            return new InvoicePaymentContext(0, 0m, "UNKNOWN", null);
++        }
++
++        var currencies = relatedTransactions
++            .Select(x => x.Currency)
++            .Where(x => !string.IsNullOrWhiteSpace(x))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++        return new InvoicePaymentContext(
++            relatedTransactions.Count,
++            relatedTransactions.Sum(x => Math.Abs(x.Amount)),
++            currencies.Count == 1 ? currencies[0] : "MIXED",
++            relatedTransactions.Max(x => x.TransactionUtc));
++    }
++
++    private async Task PersistWorkflowOutputAsync(
++        Guid companyId,
++        Guid? workflowInstanceId,
++        IReadOnlyDictionary<string, JsonNode?> outputPayload,
++        CancellationToken cancellationToken)
++    {
++        if (!workflowInstanceId.HasValue)
++        {
++            return;
++        }
++
++        var workflow = await _dbContext.WorkflowInstances
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == workflowInstanceId.Value, cancellationToken);
++        if (workflow is null)
++        {
++            return;
++        }
++
++        workflow.UpdateState(workflow.State, workflow.CurrentStep, CloneNodes(outputPayload));
++    }
++
++    private static JsonObject BuildRelatedPaymentNode(InvoicePaymentContext paymentContext) =>
++        new()
++        {
++            ["transactionCount"] = JsonValue.Create(paymentContext.TransactionCount),
++            ["totalPaidAmount"] = JsonValue.Create(paymentContext.TotalPaidAmount),
++            ["currency"] = JsonValue.Create(paymentContext.Currency),
++            ["latestPaymentUtc"] = paymentContext.LatestPaymentUtc.HasValue ? JsonValue.Create(paymentContext.LatestPaymentUtc.Value) : null
++        };
++
+     private static InvoiceReviewDecision? BuildReviewFromTask(WorkTask task)
+     {
+         var classification = TryGetString(task.OutputPayload, "invoiceClassification");
+@@ -389,6 +490,27 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+                 : new InvoiceReviewDecision(classification, riskLevel, recommendedAction, rationale, confidenceScore.Value, requiresHumanApproval.Value);
+     }
+ 
++    private static InvoicePaymentContext? BuildPaymentContextFromTask(WorkTask task)
++    {
++        if (!task.OutputPayload.TryGetValue("relatedPaymentContext", out var paymentNode) ||
++            paymentNode is not JsonObject paymentObject)
++        {
++            return null;
++        }
++
++        var transactionCount = TryGetInt(paymentObject, "transactionCount");
++        var totalPaidAmount = TryGetDecimal(paymentObject, "totalPaidAmount");
++        var currency = TryGetString(paymentObject, "currency");
++        var latestPaymentUtc = TryGetDateTime(paymentObject, "latestPaymentUtc");
++
++        return transactionCount.HasValue && totalPaidAmount.HasValue && !string.IsNullOrWhiteSpace(currency)
++            ? new InvoicePaymentContext(transactionCount.Value, totalPaidAmount.Value, currency, latestPaymentUtc)
++            : null;
++    }
++
++    private static string BuildInvoiceReviewCorrelationId(Guid companyId, Guid invoiceId) =>
++        $"{ReviewCorrelationPrefix}:{companyId:N}:{invoiceId:N}";
++
+     private static void Validate(Guid companyId, Guid invoiceId)
+     {
+         if (companyId == Guid.Empty)
+@@ -407,9 +529,6 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+         }
+     }
+ 
+-    private static string? ResolveCorrelationId(IReadOnlyDictionary<string, JsonNode?>? payload) =>
+-        TryGetString(payload, "correlationId");
+-
+     private static string? TryGetString(IReadOnlyDictionary<string, JsonNode?>? payload, string key)
+     {
+         if (payload is null ||
+@@ -465,6 +584,37 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             : null;
+     }
+ 
++    private static int? TryGetInt(IReadOnlyDictionary<string, JsonNode?>? payload, string key)
++    {
++        if (payload is null ||
++            !payload.TryGetValue(key, out var node) ||
++            node is not JsonValue value)
++        {
++            return null;
++        }
++
++        if (value.TryGetValue<int>(out var number))
++        {
++            return number;
++        }
++
++        return value.TryGetValue<string>(out var text) && int.TryParse(text, out number)
++            ? number
++            : null;
++    }
++
++    private static DateTime? TryGetDateTime(IReadOnlyDictionary<string, JsonNode?>? payload, string key)
++    {
++        if (payload is null ||
++            !payload.TryGetValue(key, out var node) ||
++            node is not JsonValue value)
++        {
++            return null;
++        }
++
++        return value.TryGetValue<DateTime>(out var dateTime)
++            ? dateTime
++            : value.TryGetValue<string>(out var text) && DateTime.TryParse(text, out dateTime)
++                ? dateTime
++                : null;
++    }
++
+     private static bool? TryGetBoolean(IReadOnlyDictionary<string, JsonNode?>? payload, string key)
+     {
+         if (payload is null ||
+@@ -492,6 +642,11 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
+             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+ 
++    private sealed record InvoicePaymentContext(
++        int TransactionCount,
++        decimal TotalPaidAmount,
++        string Currency,
++        DateTime? LatestPaymentUtc);
++
+     private sealed record InvoiceReviewDecision(
+         string InvoiceClassification,
+         string RiskLevel,
+END_OF_PATCH

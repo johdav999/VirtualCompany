@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-22.2.2",
+  "promptPath": ".ai-design/prompts/TASK-22.2.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-19T15:29:30.983Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-19T15-29-30-983Z_TASK-22.2.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-19T15-29-30-983Z_TASK-22.2.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-19T15:35:24.051Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "             new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc)),\n+            impactScore,\n+            impactScore,\n+            priority);\n+\n     private static InsightCandidate Candidate(\n         Guid companyId,\n         ActionInsightType type,\ndiff --git a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs\n--- a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs\n@@ -35,7 +35,28 @@ public sealed class TopActionsListTests\n             Assert.DoesNotContain(\"Deferred follow-up\", cut.Markup);\n         });\n \n-        Assert.Equal($\"/queue?companyId={companyId:D}\", cut.Find(\"[data-testid='view-full-queue-link']\").GetAttribute(\"href\"));\n+        Assert.Equal(QueueRoutes.BuildPath(companyId), cut.Find(\"[data-testid='view-full-queue-link']\").GetAttribute(\"href\"));\n+    }\n+\n+    [Fact]\n+    public void Component_caps_requested_top_actions_at_five()\n+    {\n+        var companyId = Guid.Parse(\"4c5cfd22-87fd-4214-b579-fc9e7554ab72\");\n+        Uri? requestUri = null;\n+        var items = Enumerable.Range(1, 6)\n+            .Select(index => Item(companyId, $\"task-{index}\", \"high\", 100 - index, DateTime.UtcNow.AddHours(index), $\"Action {index}\"))\n+            .ToArray();\n+\n+        using var context = CreateContext(request =>\n+        {\n+            requestUri = request.RequestUri;\n+            return CreateJsonResponse(items);\n+        });\n+\n+        var cut = context.RenderComponent<TopActionsList>(parameters => parameters\n+            .Add(component => component.CompanyId, companyId)\n+            .Add(component => component.Count, 10));\n+\n+        cut.WaitForAssertion(() => Assert.Equal(5, cut.FindAll(\"[data-testid='top-action-item']\").Count));\n+        Assert.NotNull(requestUri);\n+        Assert.Contains(\"count=5\", requestUri!.Query, StringComparison.Ordinal);\n+        Assert.DoesNotContain(\"Action 6\", cut.Markup);\n     }\n \n     [Fact]\nEND_OF_PATCH\n",
+  "stderrTail": "teTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc)),\n+            impactScore,\n+            impactScore,\n+            priority);\n+\n     private static InsightCandidate Candidate(\n         Guid companyId,\n         ActionInsightType type,\ndiff --git a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs\n--- a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs\n@@ -35,7 +35,28 @@ public sealed class TopActionsListTests\n             Assert.DoesNotContain(\"Deferred follow-up\", cut.Markup);\n         });\n \n-        Assert.Equal($\"/queue?companyId={companyId:D}\", cut.Find(\"[data-testid='view-full-queue-link']\").GetAttribute(\"href\"));\n+        Assert.Equal(QueueRoutes.BuildPath(companyId), cut.Find(\"[data-testid='view-full-queue-link']\").GetAttribute(\"href\"));\n+    }\n+\n+    [Fact]\n+    public void Component_caps_requested_top_actions_at_five()\n+    {\n+        var companyId = Guid.Parse(\"4c5cfd22-87fd-4214-b579-fc9e7554ab72\");\n+        Uri? requestUri = null;\n+        var items = Enumerable.Range(1, 6)\n+            .Select(index => Item(companyId, $\"task-{index}\", \"high\", 100 - index, DateTime.UtcNow.AddHours(index), $\"Action {index}\"))\n+            .ToArray();\n+\n+        using var context = CreateContext(request =>\n+        {\n+            requestUri = request.RequestUri;\n+            return CreateJsonResponse(items);\n+        });\n+\n+        var cut = context.RenderComponent<TopActionsList>(parameters => parameters\n+            .Add(component => component.CompanyId, companyId)\n+            .Add(component => component.Count, 10));\n+\n+        cut.WaitForAssertion(() => Assert.Equal(5, cut.FindAll(\"[data-testid='top-action-item']\").Count));\n+        Assert.NotNull(requestUri);\n+        Assert.Contains(\"count=5\", requestUri!.Query, StringComparison.Ordinal);\n+        Assert.DoesNotContain(\"Action 6\", cut.Markup);\n     }\n \n     [Fact]\nEND_OF_PATCH\ntokens used\n87,080\n",
+  "verbosityMode": "verbose"
+}

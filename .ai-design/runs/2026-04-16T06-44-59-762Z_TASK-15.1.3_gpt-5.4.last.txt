@@ -1,0 +1,98 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+index 3f1b7a2..9a6d5c4 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -66,6 +66,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             toolVersion: toolVersion);
+ 
+         var runtimeProfile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, agentId, cancellationToken);
++        var (toolPermissions, dataScopes) = ResolvePolicyBoundaries(runtimeProfile);
+         var policyRequest = new PolicyEvaluationRequest(
+             companyId,
+             agentId,
+@@ -75,8 +76,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             runtimeProfile.AutonomyLevel,
+             runtimeProfile.CanReceiveAssignments,
+-            CloneNodes(runtimeProfile.ToolPermissions),
+-            CloneNodes(runtimeProfile.DataScopes),
++            toolPermissions,
++            dataScopes,
+             CloneNodes(runtimeProfile.ApprovalThresholds),
+             CloneNodes(runtimeProfile.EscalationRules),
+             command.ToolName,
+@@ -283,6 +284,59 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         return membership;
+     }
+ 
++    private (Dictionary<string, JsonNode?> ToolPermissions, Dictionary<string, JsonNode?> DataScopes) ResolvePolicyBoundaries(
++        AgentRuntimeProfileDto runtimeProfile)
++    {
++        var toolPermissions = CloneNodes(runtimeProfile.ToolPermissions);
++        var dataScopes = CloneNodes(runtimeProfile.DataScopes);
++
++        if (!IsLauraFinanceAgent(runtimeProfile))
++        {
++            return (toolPermissions, dataScopes);
++        }
++
++        var financeDefinitions = _companyToolRegistry
++            .ListToolDefinitions()
++            .OrderBy(definition => definition.ToolName, StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++
++        var allowedTools = financeDefinitions
++            .Select(definition => definition.ToolName)
++            .ToArray();
++
++        var allowedActions = financeDefinitions
++            .Select(definition => definition.ActionType.ToStorageValue())
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .OrderBy(action => action, StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++
++        var deniedTools = _companyToolRegistry
++            .ListTools()
++            .Select(tool => tool.ToolName)
++            .Except(allowedTools, StringComparer.OrdinalIgnoreCase)
++            .OrderBy(tool => tool, StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++
++        return (
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["allowed"] = ToJsonArray(allowedTools),
++                ["actions"] = ToJsonArray(allowedActions),
++                ["denied"] = ToJsonArray(deniedTools),
++                ["deniedActions"] = new JsonArray()
++            },
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["read"] = new JsonArray(JsonValue.Create("finance")),
++                ["recommend"] = new JsonArray(JsonValue.Create("finance")),
++                ["execute"] = new JsonArray(JsonValue.Create("finance")),
++                ["write"] = new JsonArray()
++            });
++    }
++
++    private static bool IsLauraFinanceAgent(AgentRuntimeProfileDto runtimeProfile) =>
++        string.Equals(runtimeProfile.TemplateId, LauraFinanceAgentSeedData.TemplateId, StringComparison.OrdinalIgnoreCase) ||
++        (string.Equals(runtimeProfile.DisplayName, "Laura", StringComparison.OrdinalIgnoreCase) &&
++         string.Equals(runtimeProfile.Department, "Finance", StringComparison.OrdinalIgnoreCase));
++
+     private Task WriteBoundaryEnforcementAuditAsync(
+         Guid companyId,
+         Guid agentId,
+@@ -635,6 +689,12 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         return jsonObject;
+     }
+ 
++    private static JsonArray ToJsonArray(IEnumerable<string> values) =>
++        new(values
++            .Where(value => !string.IsNullOrWhiteSpace(value))
++            .Select(value => (JsonNode?)JsonValue.Create(value.Trim()))
++            .ToArray());
++
+     private static string BuildAuditRationaleSummary(ToolExecutionDecisionDto decision)
+     {
+         var primaryReasonCode = GetPrimaryReasonCode(decision);
+END_OF_PATCH

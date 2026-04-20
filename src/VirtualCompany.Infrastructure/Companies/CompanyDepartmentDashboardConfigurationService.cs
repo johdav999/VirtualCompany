@@ -86,6 +86,10 @@ public sealed class CompanyDepartmentDashboardConfigurationService : IDepartment
             query.CompanyId,
             visibleConfigs.Select(x => x.Department),
             cancellationToken);
+        var representatives = await LoadRepresentativesAsync(
+            query.CompanyId,
+            visibleConfigs.Select(x => x.Department),
+            cancellationToken);
 
         var sections = visibleConfigs
             .Select(config =>
@@ -124,6 +128,7 @@ public sealed class CompanyDepartmentDashboardConfigurationService : IDepartment
                     departmentMetrics.HasData,
                     departmentMetrics.ToSummaryCounts(),
                     !departmentMetrics.HasData,
+                    representatives.GetValueOrDefault(config.Department),
                     ReadNavigation(config.Navigation, config.DisplayName, $"/dashboard?companyId={query.CompanyId}&department={Uri.EscapeDataString(config.Department)}"),
                     ReadEmptyState(config.EmptyState, config.DisplayName, config.DisplayName, query.CompanyId, config.Department),
                     widgets);
@@ -282,6 +287,53 @@ public sealed class CompanyDepartmentDashboardConfigurationService : IDepartment
             x => x.Key,
             x => x.Value.ToImmutable(),
             StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task<IReadOnlyDictionary<string, DepartmentDashboardRepresentativeDto>> LoadRepresentativesAsync(
+        Guid companyId,
+        IEnumerable<string> departments,
+        CancellationToken cancellationToken)
+    {
+        var departmentSet = departments
+            .Select(NormalizeDepartmentKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var agentRows = await _dbContext.Agents
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId)
+            .Select(x => new
+            {
+                x.Id,
+                x.DisplayName,
+                x.RoleName,
+                x.AvatarUrl,
+                x.Department,
+                x.Status
+            })
+            .ToListAsync(cancellationToken);
+
+        return agentRows
+            .Select(x => new
+            {
+                Department = NormalizeDepartmentKey(x.Department),
+                Representative = new DepartmentDashboardRepresentativeDto(
+                    x.Id,
+                    x.DisplayName,
+                    x.RoleName,
+                    x.AvatarUrl),
+                x.Status
+            })
+            .Where(x => departmentSet.Contains(x.Department))
+            .GroupBy(x => x.Department, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(x => x.Status == AgentStatus.Active ? 0 : 1)
+                    .ThenBy(x => x.Representative.DisplayName, StringComparer.OrdinalIgnoreCase)
+                    .Select(x => x.Representative)
+                    .First(),
+                StringComparer.OrdinalIgnoreCase);
     }
 
     private static int ResolveSummaryValue(DepartmentDashboardMetrics metrics, string summaryBinding) =>

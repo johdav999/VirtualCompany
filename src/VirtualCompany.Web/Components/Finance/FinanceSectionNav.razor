@@ -1,0 +1,16 @@
+<nav class="finance-section-nav" aria-label="Finance pages">
+    @foreach (var route in FinanceRoutes.SectionPages)
+    {
+        <NavLink class="@($"finance-section-nav__link {(route.IsVisibleTo(MembershipRole) ? string.Empty : "d-none")}")" ActiveClass="active" Match="NavLinkMatch.Prefix" href="@route.BuildPath(CompanyId)">
+            @route.Title
+        </NavLink>
+    }
+</nav>
+
+@code {
+    [Parameter]
+    public Guid CompanyId { get; set; }
+
+    [Parameter]
+    public string? MembershipRole { get; set; }
+}

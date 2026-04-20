@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-17.2.3",
+  "promptPath": ".ai-design/prompts/TASK-17.2.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T17:45:24.603Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T17-45-24-603Z_TASK-17.2.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T17-45-24-603Z_TASK-17.2.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T17:49:49.670Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "nceClient.GetAnomaliesAsync(seed.CompanyAId);\n         var anomaliesViewModel = FinanceSummaryPresenter.ToAnomaliesViewModel(seed.CompanyAId, anomalies);\n@@ -48,6 +66,10 @@ public sealed class FinanceSummaryUiContractIntegrationTests : IClassFixture<Tes\n         Assert.Equal(seed.CompanyAId, anomaliesViewModel!.CompanyId);\n         Assert.Contains(anomaliesViewModel.Items, item => item.Id == seed.CompanyAAnomalyId);\n         Assert.DoesNotContain(anomaliesViewModel.Items, item => item.Id == seed.CompanyBAnomalyId);\n+        var anomaly = Assert.Single(anomalies, item => item.Id == seed.CompanyAAnomalyId);\n+        var anomalyViewModel = Assert.Single(anomaliesViewModel.Items, item => item.Id == seed.CompanyAAnomalyId);\n+        Assert.Equal(anomaly.AffectedRecordIds.Count == 1 ? \"1 record\" : $\"{anomaly.AffectedRecordIds.Count} records\", anomalyViewModel.AffectedRecords);\n+        Assert.Contains(\"expectedDetector\", anomalyViewModel.DetectorSummary, StringComparison.OrdinalIgnoreCase);\n \n         var companyBCashPosition = await financeClient.GetCashPositionAsync(seed.CompanyBId, seed.CompanyBReferenceUtc);\n         var companyBCashViewModel = FinanceSummaryPresenter.ToCashPositionViewModel(companyBCashPosition);\n@@ -144,4 +166,13 @@ public sealed class FinanceSummaryUiContractIntegrationTests : IClassFixture<Tes\n         DateTime EmptyCompanyReferenceUtc,\n         DateTime CompanyAMonthReferenceUtc,\n         IReadOnlyList<Guid> CompanyAAccountIds,\n         Guid CompanyAAnomalyId,\n         Guid CompanyBAnomalyId);\n+\n+    private static string FormatCurrency(decimal amount, string currency) =>\n+        $\"{currency} {amount.ToString(\"N2\", CultureInfo.InvariantCulture)}\";\n+\n+    private static string FormatDate(DateTime utcDateTime) =>\n+        utcDateTime.ToString(\"yyyy-MM-dd HH:mm 'UTC'\", CultureInfo.InvariantCulture);\n+\n+    private static string FormatPercentage(decimal percentage) =>\n+        percentage.ToString(\"P0\", CultureInfo.InvariantCulture);\n }\nEND_OF_PATCH\n",
+  "stderrTail": "iesAsync(seed.CompanyAId);\n         var anomaliesViewModel = FinanceSummaryPresenter.ToAnomaliesViewModel(seed.CompanyAId, anomalies);\n@@ -48,6 +66,10 @@ public sealed class FinanceSummaryUiContractIntegrationTests : IClassFixture<Tes\n         Assert.Equal(seed.CompanyAId, anomaliesViewModel!.CompanyId);\n         Assert.Contains(anomaliesViewModel.Items, item => item.Id == seed.CompanyAAnomalyId);\n         Assert.DoesNotContain(anomaliesViewModel.Items, item => item.Id == seed.CompanyBAnomalyId);\n+        var anomaly = Assert.Single(anomalies, item => item.Id == seed.CompanyAAnomalyId);\n+        var anomalyViewModel = Assert.Single(anomaliesViewModel.Items, item => item.Id == seed.CompanyAAnomalyId);\n+        Assert.Equal(anomaly.AffectedRecordIds.Count == 1 ? \"1 record\" : $\"{anomaly.AffectedRecordIds.Count} records\", anomalyViewModel.AffectedRecords);\n+        Assert.Contains(\"expectedDetector\", anomalyViewModel.DetectorSummary, StringComparison.OrdinalIgnoreCase);\n \n         var companyBCashPosition = await financeClient.GetCashPositionAsync(seed.CompanyBId, seed.CompanyBReferenceUtc);\n         var companyBCashViewModel = FinanceSummaryPresenter.ToCashPositionViewModel(companyBCashPosition);\n@@ -144,4 +166,13 @@ public sealed class FinanceSummaryUiContractIntegrationTests : IClassFixture<Tes\n         DateTime EmptyCompanyReferenceUtc,\n         DateTime CompanyAMonthReferenceUtc,\n         IReadOnlyList<Guid> CompanyAAccountIds,\n         Guid CompanyAAnomalyId,\n         Guid CompanyBAnomalyId);\n+\n+    private static string FormatCurrency(decimal amount, string currency) =>\n+        $\"{currency} {amount.ToString(\"N2\", CultureInfo.InvariantCulture)}\";\n+\n+    private static string FormatDate(DateTime utcDateTime) =>\n+        utcDateTime.ToString(\"yyyy-MM-dd HH:mm 'UTC'\", CultureInfo.InvariantCulture);\n+\n+    private static string FormatPercentage(decimal percentage) =>\n+        percentage.ToString(\"P0\", CultureInfo.InvariantCulture);\n }\nEND_OF_PATCH\ntokens used\n83,628\n",
+  "verbosityMode": "summary"
+}

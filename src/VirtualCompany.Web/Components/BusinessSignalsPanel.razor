@@ -1,0 +1,84 @@
+@using VirtualCompany.Web.Services
+@inject NavigationManager Navigation
+
+@if (Signals is null || Signals.Count == 0)
+{
+    <section class="business-signals-empty" data-testid="business-signals-empty">
+        <strong>No decision signals yet</strong>
+        <p class="text-body-secondary mb-0">Operational load and approval bottlenecks will appear here when the workspace starts producing enough activity.</p>
+    </section>
+}
+else
+{
+    <div class="business-signals-grid" data-testid="business-signals-panel">
+        @foreach (var signal in Signals)
+        {
+            <article class="business-signal business-signal--@CssToken(signal.Severity)" data-testid="@($"business-signal-{CssToken(signal.Type)}")">
+                <div class="business-signal__header">
+                    <span class="business-signal__icon" aria-hidden="true">@Icon(signal.Severity)</span>
+                    <div>
+                        <div class="business-signal__eyebrow">@DisplayType(signal.Type)</div>
+                        <strong>@signal.Title</strong>
+                    </div>
+                </div>
+                <p class="mb-0 text-body-secondary">@signal.Summary</p>
+                @if (signal.MetricValue is decimal metricValue && !string.IsNullOrWhiteSpace(signal.MetricLabel))
+                {
+                    <div class="business-signal__metric">@signal.MetricLabel: @metricValue</div>
+                }
+                @if (!string.IsNullOrWhiteSpace(signal.ActionLabel) && !string.IsNullOrWhiteSpace(signal.ActionUrl))
+                {
+                    <a class="btn btn-sm btn-outline-secondary align-self-start"
+                       href="@DashboardRoutes.EnsureCompanyContext(signal.ActionUrl, CompanyId, "/dashboard")"
+                       @onclick="() => NavigateToAsync(signal)"
+                       @onclick:preventDefault="true">@signal.ActionLabel</a>
+                }
+            </article>
+        }
+    </div>
+}
+
+@code {
+    [Parameter]
+    public IReadOnlyList<BusinessSignalViewModel> Signals { get; set; } = [];
+    [Parameter] public Guid? CompanyId { get; set; }
+    [Parameter] public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
+
+    private static string CssToken(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "neutral"
+            : value.Trim().ToLowerInvariant().Replace("_", "-");
+
+    private static string Icon(string? severity) =>
+        CssToken(severity) switch
+        {
+            "critical" => "!",
+            "warning" => "~",
+            _ => "i"
+        };
+
+    private static string DisplayType(string? type) =>
+        CssToken(type) switch
+        {
+            "operationalload" => "Operational load",
+            "approvalbottleneck" => "Approval bottleneck",
+            "operational-load" => "Operational load",
+            "approval-bottleneck" => "Approval bottleneck",
+            _ => "Business signal"
+        };
+
+    private async Task NavigateToAsync(BusinessSignalViewModel signal)
+    {
+        var route = DashboardRoutes.EnsureCompanyContext(signal.ActionUrl, CompanyId, "/dashboard");
+        if (OnActionClick.HasDelegate)
+        {
+            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext(
+                "operations-snapshot",
+                CssToken(signal.Type),
+                route,
+                Label: signal.Title));
+        }
+
+        Navigation.NavigateTo(route);
+    }
+}

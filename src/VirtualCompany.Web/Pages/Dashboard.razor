@@ -1,9 +1,15 @@
 @page "/dashboard"
 @rendermode InteractiveServer
+@implements IAsyncDisposable
 @inject OnboardingApiClient ApiClient
-@inject ActionInsightApiClient ActionInsightApiClient
+@inject FinanceApiClient FinanceApiClient
+@inject DashboardSummaryApiClient DashboardSummaryApiClient
 @inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject IDashboardInteractionService DashboardInteractionService
 @using Microsoft.AspNetCore.Components
+@using Microsoft.JSInterop
+@using VirtualCompany.Web.Services
 
 <PageTitle>Dashboard</PageTitle>
 
@@ -63,154 +69,86 @@ else if (CompanyId is null)
 else
 {
     <section class="py-4 dashboard-hero">
-        <div class="dashboard-shell">
-            <div class="wizard-card dashboard-summary">
-                <h1>@(companyAccess?.CompanyName ?? "Workspace dashboard")</h1>
-                <p class="lead mb-2">
-                    @(showStarterGuidance
-                        ? "Your company workspace is live. Start with the next recommended actions below."
-                        : "Your company workspace is ready for the next setup actions.")
-                </p>
-                <p class="text-body-secondary mb-0">
-                    @(companyAccess is null
-                        ? "Use onboarding to create or resume a workspace."
-                        : $"Role: {companyAccess.MembershipRole} | Access: {companyAccess.Status}")
-                </p>
-
-                @if (showStarterGuidance)
-                {
-                    <div class="dashboard-welcome mt-4">
-                        <span class="dashboard-kicker">Onboarding complete</span>
-                        <h2 class="h4 mt-2">Starter guidance for the first dashboard visit</h2>
-                        <p class="text-body-secondary mb-0">
-                            @(dashboardEntry?.OnboardingCompletedUtc is DateTime completedUtc
-                                ? $"Workspace setup finished on {completedUtc.ToLocalTime():g}. These actions keep the new company context moving."
-                                : "Workspace setup finished successfully. These actions keep the new company context moving.")
-                        </p>
-                        <ul class="dashboard-checklist mt-4 mb-0">
-                            @foreach (var item in StarterGuidance)
-                            {
-                                <li>@item</li>
-                            }
-                        </ul>
-                        <div class="dashboard-actions mt-4">
-                            <a class="btn btn-primary" href="@DashboardPath">Continue in dashboard</a>
-                            <a class="btn btn-outline-primary" href="@AgentRosterPath">Open agent roster</a>
-                            <a class="btn btn-outline-secondary" href="onboarding">Review setup defaults</a>
-                        </div>
+        <div class="company-dashboard-layout company-dashboard-layout--single">
+            <div class="company-dashboard-main dashboard-home">
+                <section class="wizard-card dashboard-finance-strip" data-testid="dashboard-finance-strip">
+                    <div class="dashboard-finance-strip__grid">
+                        <article class="dashboard-finance-strip__item">
+                            <span class="dashboard-finance-strip__label">Revenue</span>
+                            <strong class="dashboard-finance-strip__value">@RevenueDisplay</strong>
+                        </article>
+                        <article class="dashboard-finance-strip__item">
+                            <span class="dashboard-finance-strip__label">Costs</span>
+                            <strong class="dashboard-finance-strip__value">@CostsDisplay</strong>
+                        </article>
+                        <article class="dashboard-finance-strip__item">
+                            <span class="dashboard-finance-strip__label">Profit</span>
+                            <strong class="dashboard-finance-strip__value">@ProfitDisplay</strong>
+                        </article>
+                        <article class="dashboard-finance-strip__item">
+                            <span class="dashboard-finance-strip__label">Available cash</span>
+                            <strong class="dashboard-finance-strip__value">@AvailableCashDisplay</strong>
+                        </article>
                     </div>
-                }
+                </section>
+
+                <div class="dashboard-home-grid">
+                    <section class="wizard-card dashboard-section-card dashboard-briefing-card" data-testid="latest-briefing-panel">
+                        <div class="dashboard-section-card__heading">
+                            <h2 class="h3 mb-0">Latest Briefing</h2>
+                        </div>
+
+                        <div class="dashboard-briefing-agent">
+                            <img class="agent-avatar dashboard-briefing-agent__avatar"
+                                 src="@LatestBriefingAvatarUrl"
+                                 alt="@($"{LatestBriefingAgentName} avatar")" />
+                            <div class="dashboard-briefing-agent__copy">
+                                <strong class="dashboard-briefing-agent__name">@LatestBriefingAgentName</strong>
+                                <span class="dashboard-briefing-agent__role">@LatestBriefingAgentRole</span>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="wizard-card dashboard-section-card dashboard-briefing-summary-card" data-testid="latest-briefing-summary-panel">
+                        <div class="dashboard-section-card__heading">
+                            <h2 class="h3 mb-0">Summary</h2>
+                        </div>
+
+                        @if (isSummaryLoading)
+                        {
+                            <p class="text-body-secondary mb-0">Generating dashboard summary...</p>
+                        }
+                        else if (!string.IsNullOrWhiteSpace(summaryErrorMessage))
+                        {
+                            <p class="text-body-secondary mb-0">@summaryErrorMessage</p>
+                        }
+                        else if (briefingSummary is null || string.IsNullOrWhiteSpace(briefingSummary.Summary))
+                        {
+                            <p class="text-body-secondary mb-0">No briefing summary is available yet.</p>
+                        }
+                        else
+                        {
+                            <p class="mb-0">@briefingSummary.Summary</p>
+                        }
+                    </section>
+
+                    @if (CompanyId is Guid actionCompanyId)
+                    {
+                        <div class="dashboard-home-grid__full">
+                            <TopActionsList CompanyId="actionCompanyId"
+                                            Count="5"
+                                            Kicker=""
+                                            Title="What to do next"
+                                            Subtitle=""
+                                            QueueLinkLabel="Open work"
+                                            OnActionClick="HandleDashboardActionAsync" />
+                        </div>
+                    }
+                </div>
 
                 @if (!string.IsNullOrWhiteSpace(errorMessage))
                 {
-                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
-                }
-            </div>
-
-            @if (CompanyId is Guid selectedCompanyId)
-            {
-                <ExecutiveCockpitDashboard CompanyId="selectedCompanyId" CompanyName="companyAccess?.CompanyName" />
-            }
-
-            <div class="wizard-card wizard-card--compact action-queue">
-                <div class="action-queue__header">
-                    <div>
-                        <span class="dashboard-kicker">Action queue</span>
-                        <h2 class="h5 mb-0">Prioritized operational work</h2>
-                    </div>
-                    <span class="text-body-secondary">@actionQueue.Count item@(actionQueue.Count == 1 ? string.Empty : "s")</span>
-                </div>
-
-                @if (actionQueue.Count == 0)
-                {
-                    <p class="text-body-secondary mb-0">No actionable insights need attention right now.</p>
-                }
-                else
-                {
-                    <div class="action-queue__list">
-                        @foreach (var item in actionQueue)
-                        {
-                            <article class="action-queue__item @(item.IsAcknowledged ? "action-queue__item--acknowledged" : string.Empty)">
-                                <div class="action-queue__topline">
-                                    <span class="action-queue__priority action-queue__priority--@item.Priority">@FormatPriority(item.Priority)</span>
-                                    <span class="text-body-secondary">@FormatInsightType(item.Type)</span>
-                                </div>
-                                <h3 class="h6 mb-1">@item.Title</h3>
-                                <p class="mb-2">@item.Reason</p>
-                                <div class="action-queue__meta">
-                                    <span>Owner: @item.Owner</span>
-                                    <span>@FormatDueState(item)</span>
-                                    <span>Score: @item.PriorityScore</span>
-                                </div>
-                                <div class="action-queue__actions">
-                                    <a class="btn btn-sm btn-outline-primary" href="@item.DeepLink">Open work</a>
-                                    <button class="btn btn-sm btn-outline-secondary" disabled="@item.IsAcknowledged" @onclick="() => AcknowledgeAsync(item)">
-                                        @(item.IsAcknowledged ? "Acknowledged" : "Acknowledge")
-                                    </button>
-                                </div>
-                            </article>
-                        }
-                    </div>
-                }
-            </div>
-
-            <div class="wizard-card wizard-card--compact">
-                <h2 class="h5">Executive briefings</h2>
-                @if (briefings?.Daily is null && briefings?.Weekly is null)
-                {
-                    <p class="text-body-secondary mb-0">No briefing has been generated for this workspace yet.</p>
-                }
-                else
-                {
-                    @if (briefings?.Daily is not null)
-                    {
-                        <article class="mb-4">
-                            <strong>@briefings.Daily.Title</strong>
-                            <div class="text-body-secondary">@briefings.Daily.GeneratedUtc.ToLocalTime():g</div>
-                            <p class="mt-2 mb-2">@FirstParagraph(briefings.Daily.SummaryBody)</p>
-                            @if (briefings.Daily.SourceReferences.Count > 0)
-                            {
-                                <div class="text-body-secondary">@FormatBriefingReferences(briefings.Daily.SourceReferences)</div>
-                            }
-                        </article>
-                    }
-
-                    @if (briefings?.Weekly is not null)
-                    {
-                        <article>
-                            <strong>@briefings.Weekly.Title</strong>
-                            <div class="text-body-secondary">@briefings.Weekly.GeneratedUtc.ToLocalTime():g</div>
-                            <p class="mt-2 mb-2">@FirstParagraph(briefings.Weekly.SummaryBody)</p>
-                            @if (briefings.Weekly.SourceReferences.Count > 0)
-                            {
-                                <div class="text-body-secondary">@FormatBriefingReferences(briefings.Weekly.SourceReferences)</div>
-                            }
-                        </article>
-                    }
-                }
-            </div>
-
-            <div class="wizard-card wizard-card--compact">
-                <h2 class="h5">@((showStarterGuidance ? "Next recommended steps" : "Workspace context"))</h2>
-                @if (showStarterGuidance)
-                {
-                    <ul class="mb-0">
-                        <li>Invite teammates who need access to the new workspace.</li>
-                        <li>Upload the first company notes or documents to move beyond the starter state.</li>
-                        <li>Reopen onboarding only if workspace defaults need to change.</li>
-                    </ul>
-                }
-                else
-                {
-                    <ul class="mb-0">
-                        <li>Use onboarding to create or resume a workspace if no company is selected.</li>
-                        <li>Open the company-specific dashboard route to keep the tenant context explicit.</li>
-                        @if (CompanyId is Guid)
-                        {
-                            <li><a href="@AgentRosterPath">Open the agent roster to start a direct chat.</a></li>
-                        }
-                        <li>Starter guidance appears on redirected dashboard entry for newly completed onboarding.</li>
-                    </ul>
+                    <div class="alert alert-danger mb-0">@errorMessage</div>
                 }
             </div>
         </div>
@@ -218,8 +156,11 @@ else
 }
 
 @code {
+    [Parameter]
     [SupplyParameterFromQuery(Name = "companyId")]
     public Guid? CompanyId { get; set; }
+
+    [Parameter]
     [SupplyParameterFromQuery(Name = "welcome")]
     public string? Welcome { get; set; }
 
@@ -229,22 +170,29 @@ else
     private CompanyAccessViewModel? companyAccess;
     private CompanyDashboardEntryViewModel? dashboardEntry;
     private DashboardBriefingCardViewModel? briefings;
-    private List<ActionQueueItemViewModel> actionQueue = [];
+    private MonthlySummaryViewModel? financeMonthlySummary;
+    private CashPositionSummaryViewModel? financeCashPosition;
+    private DashboardBriefingSummaryViewModel? briefingSummary;
+    private bool isSummaryLoading;
+    private string? summaryErrorMessage;
     private string? errorMessage;
-    private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
-    private string AgentRosterPath => CompanyId is Guid companyId ? $"/agents?companyId={companyId}" : "/agents";
+    private IJSObjectReference? telemetryModule;
+    private DotNetObjectReference<Dashboard>? dotNetReference;
+    private string? scrollTrackerId;
+    private Guid? trackedInteractionCompanyId;
+    private string RevenueDisplay => financeMonthlySummary?.Revenue ?? "USD --";
+    private string CostsDisplay => financeMonthlySummary?.Expenses ?? "USD --";
+    private string ProfitDisplay => financeMonthlySummary?.NetResult ?? "USD --";
+    private string AvailableCashDisplay => financeCashPosition?.AvailableBalance ?? "USD --";
+    private static string LatestBriefingAgentName => "LAURA";
+    private static string LatestBriefingAgentRole => "Finance Manager";
+    private static string LatestBriefingAvatarUrl => "/images/laura.png";
     private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
         currentUser?.Memberships
             .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
             .ToList()
         ?? [];
-    private IReadOnlyList<string> StarterGuidance => dashboardEntry?.StarterGuidance?.Count > 0
-        ? dashboardEntry.StarterGuidance
-        : Array.Empty<string>();
-    private bool showStarterGuidance =>
-        companyAccess is not null &&
-        dashboardEntry?.ShowStarterGuidance == true &&
-        IsWelcomeEntry();
+
     protected override async Task OnParametersSetAsync()
     {
         isLoading = true;
@@ -257,7 +205,10 @@ else
             companyAccess = null;
             dashboardEntry = null;
             briefings = null;
-            actionQueue = [];
+            financeMonthlySummary = null;
+            briefingSummary = null;
+            summaryErrorMessage = null;
+            isSummaryLoading = false;
 
             if (CompanyId is not Guid companyId)
             {
@@ -279,7 +230,41 @@ else
             companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
             dashboardEntry = companyAccess is null ? null : await ApiClient.GetDashboardEntryAsync(companyId);
             briefings = companyAccess is null ? null : await ApiClient.GetLatestBriefingsAsync(companyId);
-            actionQueue = companyAccess is null ? [] : (await ActionInsightApiClient.GetQueueAsync(companyId)).ToList();
+            financeCashPosition = null;
+            if (companyAccess is not null)
+            {
+                try
+                {
+                    var monthlySummary = await FinanceApiClient.GetMonthlySummaryAsync(companyId);
+                    financeMonthlySummary = FinanceSummaryPresenter.ToMonthlySummaryViewModel(monthlySummary);
+
+                    var referenceUtc = await FinanceApiClient.GetFinanceReferenceUtcAsync(companyId);
+                    var cashPosition = await FinanceApiClient.GetCashPositionAsync(companyId, referenceUtc);
+                    financeCashPosition = FinanceSummaryPresenter.ToCashPositionViewModel(cashPosition);
+                }
+                catch (FinanceApiException)
+                {
+                    financeMonthlySummary = null;
+                    financeCashPosition = null;
+                }
+            }
+
+            if (companyAccess is not null)
+            {
+                isSummaryLoading = true;
+                try
+                {
+                    briefingSummary = await DashboardSummaryApiClient.GetBriefingSummaryAsync(companyId);
+                }
+                catch (OnboardingApiException ex)
+                {
+                    summaryErrorMessage = ex.Message;
+                }
+                finally
+                {
+                    isSummaryLoading = false;
+                }
+            }
 
             if (dashboardEntry?.RequiresOnboarding == true)
             {
@@ -292,7 +277,6 @@ else
             errorMessage = ex.Message;
             companyAccess = null;
             briefings = null;
-            actionQueue = [];
             dashboardEntry = null;
         }
         finally
@@ -301,72 +285,91 @@ else
         }
     }
 
-    private async Task AcknowledgeAsync(ActionQueueItemViewModel item)
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (CompanyId is not Guid companyId)
+        if (CompanyId is not Guid selectedCompanyId)
         {
+            if (!string.IsNullOrWhiteSpace(scrollTrackerId))
+            {
+                await DisposeScrollTrackerAsync();
+            }
+
+            trackedInteractionCompanyId = null;
+            DashboardInteractionService.EndSession();
             return;
         }
 
-        var acknowledged = await ActionInsightApiClient.AcknowledgeAsync(companyId, item.InsightKey);
-        if (acknowledged is not null)
+        if (trackedInteractionCompanyId != selectedCompanyId)
         {
-            item.IsAcknowledged = acknowledged.IsAcknowledged;
-            item.AcknowledgedAt = acknowledged.AcknowledgedAt;
+            await DisposeScrollTrackerAsync();
+            trackedInteractionCompanyId = selectedCompanyId;
+            DashboardInteractionService.StartSession("dashboard", selectedCompanyId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(scrollTrackerId)) return;
+
+        try
+        {
+            telemetryModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/dashboardTelemetry.js");
+            dotNetReference ??= DotNetObjectReference.Create(this);
+            scrollTrackerId = await telemetryModule.InvokeAsync<string>("registerDashboardScrollTracker", dotNetReference);
+        }
+        catch
+        {
+            // Ignore telemetry bootstrapping failures in prerender and tests.
         }
     }
 
-    private bool IsWelcomeEntry() => string.Equals(Welcome, "onboarding", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "true", StringComparison.OrdinalIgnoreCase);
-
-    private static string FirstParagraph(string value)
+    [JSInvokable]
+    public Task OnDashboardScrollDepthChanged(double depthPercentage)
     {
-        var paragraph = value.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;
-        return paragraph.Length <= 320 ? paragraph : paragraph[..320].TrimEnd() + "...";
+        DashboardInteractionService.RecordScrollDepth(depthPercentage);
+        return Task.CompletedTask;
     }
 
-    private static string FormatBriefingReferences(IReadOnlyList<BriefingSourceReferenceViewModel> references)
+    private Task HandleDashboardActionAsync(DashboardActionTelemetryContext context)
     {
-        var groups = references
-            .Where(reference => !string.IsNullOrWhiteSpace(reference.Label))
-            .GroupBy(reference => ReferenceGroupLabel(reference.EntityType))
-            .OrderBy(group => group.Key)
-            .Select(group =>
+        DashboardInteractionService.RecordAction(context);
+        return Task.CompletedTask;
+    }
+
+    private async Task DisposeScrollTrackerAsync()
+    {
+        if (telemetryModule is null || string.IsNullOrWhiteSpace(scrollTrackerId))
+        {
+            scrollTrackerId = null;
+            return;
+        }
+
+        try
+        {
+            await telemetryModule.InvokeVoidAsync("disposeDashboardScrollTracker", scrollTrackerId);
+        }
+        catch
+        {
+        }
+        finally
+        {
+            scrollTrackerId = null;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await DisposeScrollTrackerAsync();
+        DashboardInteractionService.EndSession();
+
+        if (telemetryModule is not null)
+        {
+            try
             {
-                var labels = group
-                    .Take(3)
-                    .Select(ReferenceLabel);
-                return $"Related {group.Key}: {string.Join(", ", labels)}";
-            })
-            .ToList();
-
-        return groups.Count == 0 ? "Related items available." : string.Join(" | ", groups);
-    }
-
-    private static string ReferenceGroupLabel(string entityType) =>
-        entityType.Equals("task", StringComparison.OrdinalIgnoreCase) ? "tasks" :
-        entityType.Equals("approval", StringComparison.OrdinalIgnoreCase) ? "approvals" :
-        "items";
-
-    private static string ReferenceLabel(BriefingSourceReferenceViewModel reference) =>
-        string.IsNullOrWhiteSpace(reference.Status)
-            ? reference.Label
-            : $"{reference.Label} ({reference.Status})";
-
-    private static string FormatPriority(string priority) =>
-        priority.Replace("_", " ", StringComparison.Ordinal).ToUpperInvariant();
-
-    private static string FormatInsightType(string type) =>
-        type.Replace("_", " ", StringComparison.Ordinal);
-
-    private static string FormatDueState(ActionQueueItemViewModel item)
-    {
-        var sla = item.SlaState.Replace("_", " ", StringComparison.Ordinal);
-        if (item.DueUtc is not DateTime dueUtc)
-        {
-            return $"SLA: {sla}";
+                await telemetryModule.DisposeAsync();
+            }
+            catch
+            {
+            }
         }
 
-        return $"{sla}: {dueUtc.ToLocalTime():g}";
+        dotNetReference?.Dispose();
     }
-
 }

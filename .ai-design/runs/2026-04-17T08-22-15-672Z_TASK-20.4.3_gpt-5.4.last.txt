@@ -1,0 +1,784 @@
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 8e4a2d1..9a6c4f7 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -1,6 +1,8 @@
+ using System.Globalization;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Auditing;
+@@ -11,6 +13,7 @@ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Shared;
+ using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Infrastructure.Finance;
+ using VirtualCompany.Infrastructure.Persistence;
+ using System.Text.Json.Nodes;
+ using System.Text.Json;
+@@ -24,6 +27,7 @@ public sealed class InternalFinanceController : ControllerBase
+ {
+     private const string FinanceSimulationCurrentRunKey = "financeSimulationLatestRun";
+     private const string FinanceSimulationRunHistoryKey = "financeSimulationRunHistory";
++    private const string FinanceRequestNotInitializedAction = "finance.request.not_initialized";
+     private static readonly JsonSerializerOptions SandboxSerializerOptions = new(JsonSerializerDefaults.Web);
+ 
+     private readonly IFinanceReadService _financeReadService;
+@@ -40,6 +44,9 @@ public sealed class InternalFinanceController : ControllerBase
+     private readonly ICompanyToolRegistry _toolRegistry;
+     private readonly IFinanceToolProvider _financeToolProvider;
+     private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IAuditEventWriter _auditEventWriter;
++    private readonly IOptions<FinanceInitializationOptions> _financeInitializationOptions;
++    private readonly ILogger<InternalFinanceController> _logger;
+ 
+     public InternalFinanceController(
+         IFinanceReadService financeReadService,
+@@ -55,7 +62,10 @@ public sealed class InternalFinanceController : ControllerBase
+         ICompanyToolRegistry toolRegistry,
+         IFinanceToolProvider financeToolProvider,
+         VirtualCompanyDbContext dbContext,
+-        ICompanySimulationService companySimulationService)
++        ICompanySimulationService companySimulationService,
++        IAuditEventWriter auditEventWriter,
++        IOptions<FinanceInitializationOptions> financeInitializationOptions,
++        ILogger<InternalFinanceController> logger)
+     {
+         _financeReadService = financeReadService;
+         _toolRegistry = toolRegistry;
+@@ -70,6 +80,9 @@ public sealed class InternalFinanceController : ControllerBase
+         _dbContext = dbContext;
+         _cashPositionWorkflowService = cashPositionWorkflowService;
+         _companySimulationService = companySimulationService;
++        _auditEventWriter = auditEventWriter;
++        _financeInitializationOptions = financeInitializationOptions;
++        _logger = logger;
+     }
+@@ -322,6 +335,10 @@ public sealed class InternalFinanceController : ControllerBase
+         {
+             return Forbid();
+         }
++        catch (FinanceNotInitializedException ex)
++        {
++            return await CreateFinanceNotInitializedResultAsync<FinanceInvoiceReviewListItemResponse>(ex);
++        }
+         catch (ArgumentOutOfRangeException ex)
+         {
+             return BadRequest(CreateProblemDetails(ex.Message));
+@@ -349,6 +366,10 @@ public sealed class InternalFinanceController : ControllerBase
+         {
+             return Forbid();
+         }
++        catch (FinanceNotInitializedException ex)
++        {
++            return await CreateFinanceNotInitializedResultAsync<FinanceInvoiceReviewDetailResponse>(ex);
++        }
+         catch (ArgumentOutOfRangeException ex)
+         {
+             return BadRequest(CreateProblemDetails(ex.Message));
+@@ -426,6 +447,10 @@ public sealed class InternalFinanceController : ControllerBase
+         {
+             return Forbid();
+         }
++        catch (FinanceNotInitializedException ex)
++        {
++            return await CreateFinanceNotInitializedResultAsync<FinanceInvoiceDetailResponse>(ex);
++        }
+         catch (ArgumentOutOfRangeException ex)
+         {
+             return BadRequest(CreateProblemDetails(ex.Message));
+@@ -2531,6 +2556,10 @@ public sealed class InternalFinanceController : ControllerBase
+         {
+             return Forbid();
+         }
++        catch (FinanceNotInitializedException ex)
++        {
++            return await CreateFinanceNotInitializedResultAsync<T>(ex);
++        }
+         catch (FinanceValidationException ex)
+         {
+             return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
+@@ -2581,25 +2610,88 @@ public sealed class InternalFinanceController : ControllerBase
+ 
+     private async Task<ActionResult<T>> CreateFinanceNotInitializedResultAsync<T>(FinanceNotInitializedException exception)
+     {
+-        FinanceEntryStateDto? fallbackState = null;
+-        if (exception.CanTriggerSeed)
++        var shouldTriggerFallback = exception.CanTriggerSeed && _financeInitializationOptions.Value.ShouldTriggerSeedFallback();
++        var entryState = shouldTriggerFallback
++            ? await _financeEntryService.RequestEntryStateAsync(
++                new GetFinanceEntryStateQuery(
++                    exception.CompanyId,
++                    Source: FinanceEntrySources.FallbackRead,
++                    SeedMode: FinanceSeedRequestModes.Replace),
++                HttpContext.RequestAborted)
++            : await _financeEntryService.GetEntryStateAsync(
++                new GetFinanceEntryStateQuery(exception.CompanyId, Source: FinanceEntrySources.FallbackRead),
++                HttpContext.RequestAborted);
++
++        var response = new FinanceInitializationProblemResponse
+         {
+-            fallbackState = await _financeEntryService.RequestEntryStateAsync(
+-                new GetFinanceEntryStateQuery(
+-                    exception.CompanyId,
+-                    Source: FinanceEntrySources.FallbackRead,
+-                    SeedMode: FinanceSeedRequestModes.Replace),
+-                HttpContext.RequestAborted);
+-        }
++            Title = "Finance data is not initialized.",
++            Detail = exception.Message,
++            Status = StatusCodes.Status409Conflict,
++            Code = FinanceInitializationProblemCodeValues.NotInitialized,
++            Message = entryState.Message,
++            Domain = exception.Domain,
++            Module = FinanceInitializationDomainValues.Finance,
++            CompanyId = exception.CompanyId,
++            CanTriggerSeed = exception.CanTriggerSeed,
++            CanGenerate = entryState.CanGenerate,
++            RecommendedAction = entryState.RecommendedAction,
++            SupportedModes = entryState.SupportedModes,
++            FallbackTriggered = shouldTriggerFallback,
++            SeedRequested = entryState.SeedJobEnqueued,
++            SeedJobActive = entryState.SeedJobActive,
++            ProgressState = entryState.ProgressState,
++            SeedingState = entryState.SeedingState.ToStorageValue(),
++            InitializationStatus = entryState.InitializationStatus,
++            JobStatus = entryState.JobStatus,
++            CorrelationId = entryState.CorrelationId ?? ResolveCorrelationId(),
++            StatusEndpoint = entryState.StatusEndpoint,
++            SeedEndpoint = entryState.SeedEndpoint,
++            ConfirmationRequired = entryState.ConfirmationRequired,
++            ConfirmationMessage = entryState.ConfirmationMessage
++        };
++
++        _logger.LogInformation(
++            "Finance request for company {CompanyId} returned not_initialized on {RequestPath}. FallbackTriggered={FallbackTriggered}, SeedRequested={SeedRequested}, ProgressState={ProgressState}.",
++            exception.CompanyId,
++            HttpContext.Request.Path,
++            response.FallbackTriggered,
++            response.SeedRequested,
++            response.ProgressState);
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                exception.CompanyId,
++                AuditActorTypes.System,
++                null,
++                FinanceRequestNotInitializedAction,
++                BackgroundExecutionRelatedEntityTypes.FinanceSeed,
++                exception.CompanyId.ToString("D"),
++                AuditEventOutcomes.Failed,
++                "A finance API request returned a structured not_initialized response because the finance dataset is unavailable.",
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["requestPath"] = HttpContext.Request.Path,
++                    ["requestMethod"] = HttpContext.Request.Method,
++                    ["code"] = response.Code,
++                    ["domain"] = response.Domain,
++                    ["module"] = response.Module,
++                    ["fallbackTriggered"] = response.FallbackTriggered ? "true" : "false",
++                    ["seedRequested"] = response.SeedRequested ? "true" : "false",
++                    ["seedJobActive"] = response.SeedJobActive ? "true" : "false",
++                    ["progressState"] = response.ProgressState,
++                    ["seedingState"] = response.SeedingState,
++                    ["recommendedAction"] = response.RecommendedAction,
++                    ["statusEndpoint"] = response.StatusEndpoint,
++                    ["seedEndpoint"] = response.SeedEndpoint
++                },
++                CorrelationId: response.CorrelationId,
++                OccurredUtc: DateTime.UtcNow),
++            HttpContext.RequestAborted);
+ 
+-        var problem = CreateProblemDetails(
+-            exception.Message,
+-            "Finance data is not initialized.",
+-            StatusCodes.Status409Conflict);
+-        problem.Extensions["code"] = FinanceInitializationProblemCodeValues.NotInitialized;
+-        problem.Extensions["domain"] = exception.Domain;
+-        problem.Extensions["canTriggerSeed"] = exception.CanTriggerSeed;
+-        problem.Extensions["seedRequested"] = fallbackState?.SeedJobEnqueued ?? false;
+-        problem.Extensions["seedJobActive"] = fallbackState?.SeedJobActive ?? false;
+-        problem.Extensions["progressState"] = fallbackState?.ProgressState ?? FinanceEntryProgressStateContractValues.NotSeeded;
+-        problem.Extensions["jobStatus"] = fallbackState?.JobStatus;
+-        problem.Extensions["correlationId"] = fallbackState?.CorrelationId;
++        return new ObjectResult(response) { StatusCode = response.Status };
++    }
+ 
+-        return new ObjectResult(problem) { StatusCode = problem.Status };
++    private string ResolveCorrelationId()
++    {
++        if (Request.Headers.TryGetValue("X-Correlation-ID", out var headerValue) && !string.IsNullOrWhiteSpace(headerValue))
++        {
++            return headerValue.ToString();
++        }
++
++        return HttpContext.TraceIdentifier;
+     }
+ 
+     private ProblemDetails CreateProblemDetails(string detail, string title, int status) =>
+@@ -2795,6 +2887,9 @@ internal static partial class InternalFinanceControllerMappings
+             SeedEndpoint = result.SeedEndpoint,
+             ConfirmationMessage = result.ConfirmationMessage,
+             JobStatus = result.JobStatus,
+-            CorrelationId = result.CorrelationId
++            CorrelationId = result.CorrelationId,
++            CanGenerate = result.CanGenerate,
++            RecommendedAction = result.RecommendedAction,
++            SupportedModes = result.SupportedModes
+         };
+ }
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index ddb19cd..2463fe1 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -62,6 +62,9 @@
+     "ClaimTimeoutSeconds": 60
+   },
+   "FinanceSeedBackfill": {
++  },
++  "FinanceInitialization": {
++    "MissingDatasetBehavior": "trigger_seed"
+     "Enabled": true,
+     "PollIntervalSeconds": 300,
+     "ScanPageSize": 100,
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 68b2397..c8c251d 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -94,6 +94,12 @@ public static class DependencyInjection
+         services.AddOptions<FinanceSeedWorkerOptions>()
+             .Bind(configuration.GetSection(FinanceSeedWorkerOptions.SectionName))
+             .PostConfigure(options => options.BatchSize = Math.Max(1, options.BatchSize));
++        services.AddOptions<FinanceInitializationOptions>()
++            .Bind(configuration.GetSection(FinanceInitializationOptions.SectionName))
++            .PostConfigure(options =>
++            {
++                options.MissingDatasetBehavior = FinanceMissingDatasetBehaviorValues.Normalize(options.MissingDatasetBehavior);
++            });
+         services.AddOptions<FinanceSeedBackfillWorkerOptions>()
+             .Bind(configuration.GetSection(FinanceSeedBackfillWorkerOptions.SectionName))
+             .PostConfigure(options =>
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceEntryService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceEntryService.cs
+index a1fbe52..a59b15d 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceEntryService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceEntryService.cs
+@@ -348,6 +348,9 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+         var statusEndpoint = $"/internal/companies/{companyId:D}/finance/entry-state";
+         var seedEndpoint = $"/internal/companies/{companyId:D}/finance/manual-seed";
+         var confirmationMessage = confirmationRequired
++            ? "Finance data already exists. Confirm replace to regenerate the current seeded dataset."
++            : null;
++        var recommendedAction = ResolveRecommendedAction(seedingState, dataAlreadyExists);
+             ? "Finance data already exists. Send confirmReplace=true to regenerate in replace mode."
+             : null;
+ 
+@@ -373,7 +376,10 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+             seedEndpoint,
+             execution?.Status.ToStorageValue(),
+             execution?.IdempotencyKey,
+-            confirmationMessage,
++            confirmationMessage,
++            true,
++            recommendedAction,
++            [FinanceSeedRequestModes.Replace],
+             execution?.CorrelationId);
+     }
+ 
+@@ -427,4 +433,11 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+     {
+         if (confirmationRequired)
+         {
+@@ -438,4 +451,11 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+ 
+         return BuildMessage(progressState, execution);
+     }
++
++    private static string ResolveRecommendedAction(FinanceSeedingState seedingState, bool dataAlreadyExists) =>
++        dataAlreadyExists || seedingState != FinanceSeedingState.NotSeeded
++            ? FinanceRecommendedActionContractValues.Regenerate
++            : FinanceRecommendedActionContractValues.Generate;
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceInitializationOptions.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceInitializationOptions.cs
+new file mode 100644
+index 0000000..91d63b0
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceInitializationOptions.cs
+@@ -0,0 +1,29 @@
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class FinanceInitializationOptions
++{
++    public const string SectionName = "FinanceInitialization";
++
++    public string MissingDatasetBehavior { get; set; } = FinanceMissingDatasetBehaviorValues.TriggerSeed;
++
++    public bool ShouldTriggerSeedFallback() =>
++        string.Equals(
++            FinanceMissingDatasetBehaviorValues.Normalize(MissingDatasetBehavior),
++            FinanceMissingDatasetBehaviorValues.TriggerSeed,
++            StringComparison.OrdinalIgnoreCase);
++}
++
++public static class FinanceMissingDatasetBehaviorValues
++{
++    public const string ReturnNotInitialized = "return_not_initialized";
++    public const string TriggerSeed = "trigger_seed";
++
++    public static string Normalize(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? TriggerSeed
++            : value.Trim().Replace('-', '_').Replace(' ', '_').ToLowerInvariant();
++
++    public static bool IsSupported(string? value) =>
++        string.Equals(Normalize(value), ReturnNotInitialized, StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(Normalize(value), TriggerSeed, StringComparison.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Shared/FinanceSeedingContracts.cs b/src/VirtualCompany.Shared/FinanceSeedingContracts.cs
+index 84fd342..b7e8854 100644
+--- a/src/VirtualCompany.Shared/FinanceSeedingContracts.cs
++++ b/src/VirtualCompany.Shared/FinanceSeedingContracts.cs
+@@ -41,6 +41,9 @@ public sealed class FinanceEntryInitializationResponse
+     public string? IdempotencyKey { get; set; }
+     public bool DataAlreadyExists { get; set; }
+     public string SeedMode { get; set; } = string.Empty;
++    public bool CanGenerate { get; set; } = true;
++    public string RecommendedAction { get; set; } = FinanceRecommendedActionContractValues.Generate;
++    public IReadOnlyList<string> SupportedModes { get; set; } = [FinanceManualSeedModes.Replace];
+     public string SeedOperation { get; set; } = FinanceSeedOperationContractValues.None;
+     public bool ConfirmationRequired { get; set; }
+     public bool FallbackTriggered { get; set; }
+@@ -77,6 +80,31 @@ public sealed class FinanceManualSeedRequest
+     public bool ConfirmReplace { get; set; }
+ }
+ 
++public sealed class FinanceInitializationProblemResponse
++{
++    public string Title { get; set; } = string.Empty;
++    public string Detail { get; set; } = string.Empty;
++    public int Status { get; set; }
++    public string Code { get; set; } = string.Empty;
++    public string Message { get; set; } = string.Empty;
++    public Guid CompanyId { get; set; }
++    public string Domain { get; set; } = FinanceInitializationDomainValues.Finance;
++    public string Module { get; set; } = FinanceInitializationDomainValues.Finance;
++    public bool CanTriggerSeed { get; set; }
++    public bool CanGenerate { get; set; }
++    public string RecommendedAction { get; set; } = FinanceRecommendedActionContractValues.Generate;
++    public IReadOnlyList<string> SupportedModes { get; set; } = [FinanceManualSeedModes.Replace];
++    public bool FallbackTriggered { get; set; }
++    public bool SeedRequested { get; set; }
++    public bool SeedJobActive { get; set; }
++    public bool ConfirmationRequired { get; set; }
++    public string ProgressState { get; set; } = string.Empty;
++    public string SeedingState { get; set; } = string.Empty;
++    public string InitializationStatus { get; set; } = string.Empty;
++    public string? JobStatus { get; set; }
++    public string? CorrelationId { get; set; }
++    public string? StatusEndpoint { get; set; }
++    public string? SeedEndpoint { get; set; }
++    public string? ConfirmationMessage { get; set; }
++}
++
+ public static class FinanceInitializationProblemCodeValues
+ {
+     public const string NotInitialized = "not_initialized";
+@@ -87,6 +115,12 @@ public static class FinanceInitializationDomainValues
+     public const string Finance = "finance";
+ }
+ 
++public static class FinanceRecommendedActionContractValues
++{
++    public const string Generate = "generate";
++    public const string Regenerate = "regenerate";
++}
++
+ public static class FinanceSeedingStateContractValues
+ {
+     public const string Seeding = "seeding";
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
+index 99daf6a..325d1b3 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor
+@@ -112,7 +112,7 @@
+                     <div>
+                         <div class="small text-uppercase text-danger fw-semibold">Confirmation required</div>
+                         <h2 id="finance-seed-confirm-title" class="h5 mb-2">Replace existing finance data</h2>
+-                        <p id="finance-seed-confirm-description" class="text-body-secondary mb-0">
+-                            Regenerating finance data in replace mode overwrites the current seeded dataset for this company.
++                        <p id="finance-seed-confirm-description" class="text-body-secondary mb-0">
++                            @ManualSeedConfirmationMessage
+                         </p>
+                     </div>
+                     <div class="d-flex flex-wrap gap-2">
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
+index 973ea35..7358186 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
+@@ -32,12 +32,20 @@ public partial class FinancePage : FinancePageBase, IDisposable
+         string.Equals(EntryState?.SeedingState, FinanceSeedingStateContractValues.Seeded, StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(EntryState?.SeedingState, FinanceSeedingStateContractValues.FullySeeded, StringComparison.OrdinalIgnoreCase);
+ 
+-    protected string ManualSeedActionLabel => IsFinanceSeeded ? "Regenerate finance data" : "Generate finance data";
++    protected string ManualSeedActionLabel =>
++        string.Equals(ResolveRecommendedAction(), FinanceRecommendedActionContractValues.Regenerate, StringComparison.OrdinalIgnoreCase)
++            ? "Regenerate finance data"
++            : "Generate finance data";
+ 
+-    protected string ManualSeedActionDescription => IsFinanceSeeded
+-        ? "Regenerate the tenant-scoped finance seed dataset in replace mode."
+-        : "Generate the tenant-scoped finance seed dataset before opening finance workflows.";
++    protected string ManualSeedActionDescription =>
++        string.Equals(ResolveRecommendedAction(), FinanceRecommendedActionContractValues.Regenerate, StringComparison.OrdinalIgnoreCase)
++            ? "Regenerate the tenant-scoped finance seed dataset in replace mode."
++            : "Generate the tenant-scoped finance seed dataset before opening finance workflows.";
+ 
++    protected string ManualSeedConfirmationMessage =>
++        EntryState?.ConfirmationMessage ??
++        "Regenerating finance data in replace mode overwrites the current seeded dataset for this company.";
++
++
+     protected string FinanceStateMessage =>
+         EntryState?.Message ??
+         "Finance data is being prepared for this company.";
+@@ -305,4 +313,12 @@ public partial class FinancePage : FinancePageBase, IDisposable
+     }
+ 
+     public void Dispose() => CancelEntryStateRefresh();
++
++    private string ResolveRecommendedAction()
++    {
++        if (!string.IsNullOrWhiteSpace(EntryState?.RecommendedAction))
++        {
++            return EntryState!.RecommendedAction;
++        }
++        return IsFinanceSeeded ? FinanceRecommendedActionContractValues.Regenerate : FinanceRecommendedActionContractValues.Generate;
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 2a97d73..9c9c0c8 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -526,12 +526,17 @@ public sealed class FinanceApiClient
+             return new FinanceApiException($"The finance request failed with status code {(int)response.StatusCode}.");
+         }
+ 
+-        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        if (problem is not null &&
++            string.Equals(problem.Code, FinanceInitializationProblemCodeValues.NotInitialized, StringComparison.OrdinalIgnoreCase))
++        {
++            return new FinanceNotInitializedApiException(problem);
++        }
+         if (problem?.Errors is { Count: > 0 })
+         {
+-            return new FinanceApiValidationException(problem.Detail ?? problem.Title ?? "The finance request failed.", problem.Errors);
++            return new FinanceApiValidationException(problem.Detail ?? problem.Message ?? problem.Title ?? "The finance request failed.", problem.Errors);
+         }
+ 
+-        return new FinanceApiException(problem?.Detail ?? problem?.Title ?? "The finance request failed.");
++        return new FinanceApiException(problem?.Detail ?? problem?.Message ?? problem?.Title ?? "The finance request failed.");
+     }
+ 
+     private FinanceApiException CreateNetworkException(HttpRequestException ex)
+@@ -559,12 +564,30 @@ public sealed class FinanceApiClient
+     private sealed class ApiProblemResponse
+     {
+         public string? Title { get; set; }
++        public string? Code { get; set; }
+         public string? Detail { get; set; }
++        public string? Message { get; set; }
+         public Dictionary<string, string[]>? Errors { get; set; }
++        public Guid CompanyId { get; set; }
++        public string Domain { get; set; } = string.Empty;
++        public string Module { get; set; } = string.Empty;
++        public bool CanTriggerSeed { get; set; }
++        public bool CanGenerate { get; set; }
++        public string RecommendedAction { get; set; } = string.Empty;
++        public IReadOnlyList<string> SupportedModes { get; set; } = [];
++        public bool FallbackTriggered { get; set; }
++        public bool SeedRequested { get; set; }
++        public bool SeedJobActive { get; set; }
++        public string ProgressState { get; set; } = string.Empty;
+     }
+ }
+ 
+ public class FinanceApiException : Exception
+@@ -573,6 +596,16 @@ public class FinanceApiException : Exception
+     {
+     }
+ }
++
++public sealed class FinanceNotInitializedApiException : FinanceApiException
++{
++    public FinanceNotInitializedApiException(FinanceInitializationProblemResponse problem)
++        : base(problem.Message ?? problem.Detail ?? "Finance data is not initialized.")
++    {
++        Problem = problem;
++    }
++
++    public FinanceInitializationProblemResponse Problem { get; }
++}
+ 
+ public sealed class FinanceApiValidationException : FinanceApiException
+ {
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceEntryInitializationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceEntryInitializationIntegrationTests.cs
+index 62d0fa4..5730204 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceEntryInitializationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceEntryInitializationIntegrationTests.cs
+@@ -31,6 +31,8 @@ public sealed class FinanceEntryInitializationIntegrationTests : IClassFixture<T
+         Assert.False(payload.SeedJobEnqueued);
+         Assert.False(payload.SeedJobActive);
+         Assert.False(payload.CanRetry);
++        Assert.Equal(FinanceRecommendedActionContractValues.Generate, payload.RecommendedAction);
++        Assert.Equal([FinanceManualSeedModes.Replace], payload.SupportedModes);
+ 
+         var jobCount = await _factory.ExecuteDbContextAsync(async dbContext =>
+             await Task.FromResult(dbContext.BackgroundExecutions.Count(x =>
+@@ -218,6 +220,8 @@ public sealed class FinanceEntryInitializationIntegrationTests : IClassFixture<T
+         Assert.True(payload.SeedJobActive);
+         Assert.True(payload.DataAlreadyExists);
+         Assert.Equal(FinanceManualSeedModes.Replace, payload.SeedMode);
++        Assert.Equal(FinanceRecommendedActionContractValues.Regenerate, payload.RecommendedAction);
++        Assert.Equal([FinanceManualSeedModes.Replace], payload.SupportedModes);
+         Assert.Equal(FinanceSeedOperationContractValues.Started, payload.SeedOperation);
+         Assert.False(payload.ConfirmationRequired);
+ 
+@@ -318,6 +322,7 @@ public sealed class FinanceEntryInitializationIntegrationTests : IClassFixture<T
+         Assert.Equal(FinanceEntryInitializationContractValues.Ready, payload!.InitializationStatus);
+         Assert.Equal(FinanceEntryProgressStateContractValues.Seeded, payload.ProgressState);
+         Assert.False(payload.SeedJobActive);
++        Assert.Equal(FinanceRecommendedActionContractValues.Regenerate, payload.RecommendedAction);
+         Assert.False(payload.SeedJobEnqueued);
+ 
+         var jobCount = await _factory.ExecuteDbContextAsync(async dbContext =>
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+index 3c65b2a..d429515 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -159,12 +159,54 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         Assert.Equal(FinanceInitializationProblemCodeValues.NotInitialized, problem!.Code);
+         Assert.Equal(FinanceInitializationDomainValues.Finance, problem.Domain);
+         Assert.True(problem.CanTriggerSeed);
++        Assert.True(problem.CanGenerate);
++        Assert.Equal(FinanceRecommendedActionContractValues.Generate, problem.RecommendedAction);
++        Assert.Equal([FinanceManualSeedModes.Replace], problem.SupportedModes);
++        Assert.True(problem.FallbackTriggered);
+         Assert.True(problem.SeedRequested);
+         Assert.True(problem.SeedJobActive);
+         Assert.Equal(FinanceEntryProgressStateContractValues.SeedingRequested, problem.ProgressState);
+ 
+         var snapshot = await _factory.ExecuteDbContextAsync(async dbContext =>
+-            await Task.FromResult(dbContext.BackgroundExecutions.Count(x =>
++            await Task.FromResult(new
++            {
++                JobCount = dbContext.BackgroundExecutions.Count(x =>
++                    x.CompanyId == seed.CompanyId &&
++                    x.ExecutionType == BackgroundExecutionType.FinanceSeed),
++                AuditCount = dbContext.AuditEvents.Count(x =>
++                    x.CompanyId == seed.CompanyId &&
++                    x.Action == "finance.request.not_initialized")
++            }));
++
++        Assert.Equal(1, snapshot.JobCount);
++        Assert.Equal(1, snapshot.AuditCount);
++        var telemetryEvent = Assert.Single(_factory.FinanceSeedTelemetry.Events
++            .Where(x => x.EventName == FinanceSeedTelemetryEventNames.Requested && x.Context.CompanyId == seed.CompanyId));
++        Assert.Equal(FinanceEntrySources.FallbackRead, telemetryEvent.Context.TriggerSource);
++    }
++
++    [Fact]
++    public async Task Finance_read_endpoint_returns_structured_not_initialized_response_without_triggering_seed_when_fallback_is_disabled()
++    {
++        using var factory = new TestWebApplicationFactory(new Dictionary<string, string?>
++        {
++            [$"{FinanceInitializationOptions.SectionName}:MissingDatasetBehavior"] = FinanceMissingDatasetBehaviorValues.ReturnNotInitialized
++        });
++        factory.FinanceSeedTelemetry.Reset();
++
++        var seed = await SeedFinanceSeedingStateCompanyAsync(factory, (_, company, _) =>
++        {
++            ApplySeedingMetadata(company, FinanceSeedingState.NotSeeded);
++        });
++        using var client = CreateAuthenticatedClient(factory, seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/cash-balance");
++
++        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<FinanceInitializationProblemResponse>();
++        Assert.NotNull(problem);
++        Assert.Equal(FinanceInitializationProblemCodeValues.NotInitialized, problem!.Code);
++        Assert.False(problem.FallbackTriggered);
++        Assert.False(problem.SeedRequested);
++        Assert.False(problem.SeedJobActive);
++        Assert.Equal(FinanceEntryProgressStateContractValues.NotSeeded, problem.ProgressState);
++
++        var snapshot = await factory.ExecuteDbContextAsync(async dbContext =>
++            await Task.FromResult(dbContext.BackgroundExecutions.Count(x =>
+                 x.CompanyId == seed.CompanyId &&
+                 x.ExecutionType == BackgroundExecutionType.FinanceSeed)));
+ 
+@@ -172,9 +214,25 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         var telemetryEvent = Assert.Single(_factory.FinanceSeedTelemetry.Events
+             .Where(x => x.EventName == FinanceSeedTelemetryEventNames.Requested && x.Context.CompanyId == seed.CompanyId));
+         Assert.Equal(FinanceEntrySources.FallbackRead, telemetryEvent.Context.TriggerSource);
++        Assert.Empty(factory.FinanceSeedTelemetry.Events
++            .Where(x => x.EventName == FinanceSeedTelemetryEventNames.Requested && x.Context.CompanyId == seed.CompanyId));
++    }
++
++    [Fact]
++    public async Task Finance_review_listing_returns_structured_not_initialized_response_instead_of_server_error()
++    {
++        var seed = await SeedFinanceSeedingStateCompanyAsync((_, company, _) =>
++        {
++            ApplySeedingMetadata(company, FinanceSeedingState.NotSeeded);
++        });
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/reviews?limit=5");
++
++        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<FinanceInitializationProblemResponse>();
++        Assert.NotNull(problem);
++        Assert.Equal(FinanceInitializationProblemCodeValues.NotInitialized, problem!.Code);
+     }
+-
+     [Fact]
+     public async Task Finance_detail_endpoints_surface_route_drilldown_data_and_guard_linked_documents()
+     {
+@@ -358,7 +416,8 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         return new FinanceEndpointSeed(
+             companyId, otherCompanyId, subject, email, displayName,
+             employeeSubject, employeeEmail, employeeDisplayName,
+-            approverSubject, approverEmail, approverDisplayName,
++            approverSubject, approverEmail, approverDisplayName,
++            financeSeed!.DocumentIds, anomalyId, affectedRecordId,
+             financeSeed!.DocumentIds, anomalyId, affectedRecordId,
+             accessibleTransactionId, restrictedInvoiceId, reviewInvoiceId, missingTransactionId, missingInvoiceId);
+     }
+@@ -367,7 +426,16 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         Action<VirtualCompanyDbContext, Company, Guid> configureCompany)
+     {
+         var userId = Guid.NewGuid();
++        return await SeedFinanceSeedingStateCompanyAsync(_factory, configureCompany);
++    }
++
++    private static async Task<FinanceSeedingStateEndpointSeed> SeedFinanceSeedingStateCompanyAsync(
++        TestWebApplicationFactory factory,
++        Action<VirtualCompanyDbContext, Company, Guid> configureCompany)
++    {
++        var userId = Guid.NewGuid();
+         var companyId = Guid.NewGuid();
+         var subject = $"finance-seeding-state-{Guid.NewGuid():N}";
+         var email = $"{subject}@example.com}";
+         const string displayName = "Finance Seeding State Reader";
+ 
+-        await _factory.SeedAsync(dbContext =>
++        await factory.SeedAsync(dbContext =>
+         {
+             dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
+ 
+@@ -383,17 +451,17 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         return new FinanceSeedingStateEndpointSeed(companyId, subject, email, displayName);
+     }
+ 
+-    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName) =>
++        CreateAuthenticatedClient(_factory, subject, email, displayName);
++
++    private static HttpClient CreateAuthenticatedClient(TestWebApplicationFactory factory, string subject, string email, string displayName)
+     {
+-        var client = _factory.CreateClient();
++        var client = factory.CreateClient();
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
+         return client;
+     }
+-
+     private sealed record FinanceSeedingStateEndpointSeed(
+         Guid CompanyId,
+         string Subject,
+@@ -526,11 +594,22 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         public string Title { get; set; } = string.Empty;
+         public string Detail { get; set; } = string.Empty;
+         public string Code { get; set; } = string.Empty;
++        public string Message { get; set; } = string.Empty;
+         public string Domain { get; set; } = string.Empty;
++        public string Module { get; set; } = string.Empty;
+         public bool CanNavigateToWorkflow { get; set; }
+         public bool CanNavigateToApproval { get; set; }
+         public bool CanTriggerSeed { get; set; }
++        public bool CanGenerate { get; set; }
++        public string RecommendedAction { get; set; } = string.Empty;
++        public List<string> SupportedModes { get; set; } = [];
++        public bool FallbackTriggered { get; set; }
+         public bool SeedRequested { get; set; }
+         public bool SeedJobActive { get; set; }
+         public string ProgressState { get; set; } = string.Empty;
++        public string SeedingState { get; set; } = string.Empty;
++        public string InitializationStatus { get; set; } = string.Empty;
++        public string? JobStatus { get; set; }
++        public string? CorrelationId { get; set; }
++        public string? StatusEndpoint { get; set; }
++        public string? SeedEndpoint { get; set; }
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index 97a31fb..7d24c8a 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -18,12 +18,22 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+ {
+     private readonly TimeProvider _timeProvider;
+     private SqliteConnection? _connection;
++    private readonly IReadOnlyDictionary<string, string?> _configurationOverrides;
+ 
+     public TestWebApplicationFactory()
+-        : this(TimeProvider.System)
++        : this(TimeProvider.System, null)
+     {
+     }
+ 
+-    internal TestWebApplicationFactory(TimeProvider timeProvider) => _timeProvider = timeProvider;
++    internal TestWebApplicationFactory(TimeProvider timeProvider)
++        : this(timeProvider, null)
++    {
++    }
++
++    internal TestWebApplicationFactory(IReadOnlyDictionary<string, string?> configurationOverrides)
++        : this(TimeProvider.System, configurationOverrides)
++    {
++    }
++
++    internal TestWebApplicationFactory(TimeProvider timeProvider, IReadOnlyDictionary<string, string?>? configurationOverrides) { _timeProvider = timeProvider; _configurationOverrides = configurationOverrides ?? new Dictionary<string, string?>(); }
+ 
+     protected override void ConfigureWebHost(IWebHostBuilder builder)
+     {
+@@ -31,7 +41,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+         {
+-            configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
++            var settings = new Dictionary<string, string?>
+             {
+                 [$"{CompanyOutboxDispatcherOptions.SectionName}:Enabled"] = "false",
+                 [$"{WorkflowSchedulerOptions.SectionName}:Enabled"] = "false",
+@@ -47,7 +57,14 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KeyVersion"] = "tests-v1",
+                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KnowledgeTtlSeconds"] = "300",
+                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:MemoryTtlSeconds"] = "300",
+-                [$"{ObservabilityOptions.SectionName}:ObjectStorage:Enabled"] = "false"
+-            });
++                [$"{ObservabilityOptions.SectionName}:ObjectStorage:Enabled"] = "false"
++            };
++
++            foreach (var pair in _configurationOverrides)
++            {
++                settings[pair.Key] = pair.Value;
++            }
++
++            configurationBuilder.AddInMemoryCollection(settings);
+         });
+ 
+         builder.ConfigureServices(services =>
+END_OF_PATCH

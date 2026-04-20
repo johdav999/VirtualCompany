@@ -1,0 +1,75 @@
+@page "/finance/reviews"
+@inherits FinancePageBase
+
+<PageTitle>Invoice Reviews</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Invoice reviews"
+    Description="Review workflow recommendations, risk signals, and approval actions for invoice workbench items."
+    LoadingMessage="Loading invoice reviews workspace...">
+    <div class="invoice-review-page">
+        <InvoiceReviewSummaryBar
+            PendingCount="@PendingReviewCount"
+            HighRiskCount="@HighRiskReviewCount"
+            TotalAmountPending="@PendingReviewAmount"
+            NeedsAttentionCount="@NeedsAttentionCount"
+            CurrencyLabel="@PendingAmountCurrencyLabel"
+            CanReviewNextHighRisk="@CanReviewNextHighRisk"
+            CanRunReview="@CanRunReview"
+            IsBusy="@IsWorkbenchBusy"
+            OnReviewNextHighRisk="@ReviewNextHighRiskAsync"
+            OnRunReview="@RunSelectedReviewAsync"
+            OnRefreshAnalysis="@RefreshAnalysisAsync" />
+
+        <div class="invoice-review-page__layout">
+            <div class="invoice-review-page__main">
+                <InvoiceReviewWorkbench
+                    IsLoading="@IsListLoading"
+                    ErrorMessage="@ListErrorMessage"
+                    Filters="@Filters"
+                    Items="@VisibleReviews"
+                    VisibleCount="@VisibleReviews.Count"
+                    SelectedInvoiceId="@SelectedInvoiceId"
+                    SortColumn="@SortColumn"
+                    SortDescending="@SortDescending"
+                    HighRiskOnly="@HighRiskOnly"
+                    NeedsApprovalOnly="@NeedsApprovalOnly"
+                    LowConfidenceOnly="@LowConfidenceOnly"
+                    StatusOptions="@StatusOptions"
+                    RiskLevelOptions="@RiskLevelOptions"
+                    OutcomeOptions="@OutcomeOptions"
+                    EmptyStateActionHref="@SandboxAdminHref"
+                    OnApply="@HandleApplyFiltersAsync"
+                    OnClear="@ClearFiltersAsync"
+                    OnRetry="@ReloadAsync"
+                    OnToggleHighRisk="@ToggleHighRiskOnlyAsync"
+                    OnToggleNeedsApproval="@ToggleNeedsApprovalOnlyAsync"
+                    OnToggleLowConfidence="@ToggleLowConfidenceOnlyAsync"
+                    OnSelect="@SelectReviewAsync"
+                    OnSort="@HandleSortChangedAsync" />
+            </div>
+
+            <aside class="invoice-review-page__side" aria-label="Invoice detail panel">
+                <InvoiceReviewDetailPanel
+                    SelectedItem="@SelectedReview"
+                    Detail="@SelectedReviewDetail"
+                    IsLoading="@IsDetailLoading"
+                    IsSubmitting="@IsSubmittingAction"
+                    ErrorMessage="@DetailErrorMessage"
+                    StatusMessage="@ActionStatusMessage"
+                    VisibleInvoiceCount="@VisibleReviews.Count"
+                    HighRiskCount="@HighRiskReviewCount"
+                    NeedsAttentionCount="@NeedsAttentionCount"
+                    FullDetailHref="@SelectedDetailHref"
+                    SourceInvoiceHref="@SourceInvoiceHref"
+                    OnRetry="@ReloadSelectedDetailAsync"
+                    OnApprove="@ApproveAsync"
+                    OnReject="@RejectAsync"
+                    OnSendForFollowUp="@SendForFollowUpAsync" />
+            </aside>
+        </div>
+    </div>
+</FinancePageLayout>

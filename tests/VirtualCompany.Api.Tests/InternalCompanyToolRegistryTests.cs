@@ -28,6 +28,15 @@ public sealed class InternalCompanyToolRegistryTests : IClassFixture<TestWebAppl
         Assert.Contains(tools, tool => tool.ToolName == "approvals.create_request" && tool.Supports(ToolActionType.Execute, "approvals"));
         Assert.Contains(tools, tool => tool.ToolName == "knowledge.search" && tool.Supports(ToolActionType.Read, "knowledge"));
         Assert.Contains(tools, tool => tool.ToolName == "knowledge.search" && tool.Supports(ToolActionType.Recommend, "knowledge"));
+        Assert.Contains(tools, tool => tool.ToolName == "get_cash_balance" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+        Assert.Contains(tools, tool => tool.ToolName == "list_transactions" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+        Assert.Contains(tools, tool => tool.ToolName == "list_uncategorized_transactions" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+        Assert.Contains(tools, tool => tool.ToolName == "list_invoices_awaiting_approval" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+        Assert.Contains(tools, tool => tool.ToolName == "get_profit_and_loss_summary" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+        Assert.Contains(tools, tool => tool.ToolName == "recommend_transaction_category" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Recommend, "finance"));
+        Assert.Contains(tools, tool => tool.ToolName == "recommend_invoice_approval_decision" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Recommend, "finance"));
+        Assert.Contains(tools, tool => tool.ToolName == "categorize_transaction" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Execute, "finance"));
+        Assert.Contains(tools, tool => tool.ToolName == "approve_invoice" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Execute, "finance"));
     }
 
     [Fact]

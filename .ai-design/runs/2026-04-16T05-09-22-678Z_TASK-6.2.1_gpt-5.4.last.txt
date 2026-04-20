@@ -1,0 +1,744 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+new file mode 100644
+index 0000000..4c8af21
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -0,0 +1,105 @@
++namespace VirtualCompany.Application.Finance;
++
++public sealed record GetFinanceCashBalanceQuery(
++    Guid CompanyId,
++    DateTime? AsOfUtc = null);
++
++public sealed record GetFinanceMonthlyProfitAndLossQuery(
++    Guid CompanyId,
++    int Year,
++    int Month);
++
++public sealed record GetFinanceExpenseBreakdownQuery(
++    Guid CompanyId,
++    DateTime StartUtc,
++    DateTime EndUtc);
++
++public sealed record GetFinanceTransactionsQuery(
++    Guid CompanyId,
++    DateTime? StartUtc = null,
++    DateTime? EndUtc = null,
++    int Limit = 100);
++
++public sealed record GetFinanceInvoicesQuery(
++    Guid CompanyId,
++    DateTime? StartUtc = null,
++    DateTime? EndUtc = null,
++    int Limit = 100);
++
++public sealed record GetFinanceBalancesQuery(
++    Guid CompanyId,
++    DateTime? AsOfUtc = null);
++
++public sealed record FinanceCashBalanceDto(
++    Guid CompanyId,
++    DateTime AsOfUtc,
++    decimal Amount,
++    string Currency,
++    IReadOnlyList<FinanceAccountBalanceDto> Accounts);
++
++public sealed record FinanceAccountBalanceDto(
++    Guid AccountId,
++    string AccountCode,
++    string AccountName,
++    string AccountType,
++    decimal Amount,
++    string Currency,
++    DateTime AsOfUtc);
++
++public sealed record FinanceMonthlyProfitAndLossDto(
++    Guid CompanyId,
++    int Year,
++    int Month,
++    DateTime StartUtc,
++    DateTime EndUtc,
++    decimal Revenue,
++    decimal Expenses,
++    decimal NetResult,
++    string Currency);
++
++public sealed record FinanceExpenseBreakdownDto(
++    Guid CompanyId,
++    DateTime StartUtc,
++    DateTime EndUtc,
++    decimal TotalExpenses,
++    string Currency,
++    IReadOnlyList<FinanceExpenseCategoryDto> Categories);
++
++public sealed record FinanceExpenseCategoryDto(
++    string Category,
++    decimal Amount,
++    string Currency);
++
++public sealed record FinanceTransactionDto(
++    Guid Id,
++    Guid AccountId,
++    string AccountName,
++    Guid? CounterpartyId,
++    string? CounterpartyName,
++    Guid? InvoiceId,
++    Guid? BillId,
++    DateTime TransactionUtc,
++    string TransactionType,
++    decimal Amount,
++    string Currency,
++    string Description,
++    string ExternalReference);
++
++public sealed record FinanceInvoiceDto(
++    Guid Id,
++    Guid CounterpartyId,
++    string CounterpartyName,
++    string InvoiceNumber,
++    DateTime IssuedUtc,
++    DateTime DueUtc,
++    decimal Amount,
++    string Currency,
++    string Status);
++
++public interface IFinanceReadService
++{
++    Task<FinanceCashBalanceDto> GetCashBalanceAsync(
++        GetFinanceCashBalanceQuery query,
++        CancellationToken cancellationToken);
++
++    Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(
++        GetFinanceMonthlyProfitAndLossQuery query,
++        CancellationToken cancellationToken);
++
++    Task<FinanceExpenseBreakdownDto> GetExpenseBreakdownAsync(
++        GetFinanceExpenseBreakdownQuery query,
++        CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<FinanceTransactionDto>> GetTransactionsAsync(
++        GetFinanceTransactionsQuery query,
++        CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<FinanceInvoiceDto>> GetInvoicesAsync(
++        GetFinanceInvoicesQuery query,
++        CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(
++        GetFinanceBalancesQuery query,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 9c0a7a3..d8db465 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -17,6 +17,7 @@ using VirtualCompany.Application.ExecutionExceptions;
+ using VirtualCompany.Application.Escalations;
+ using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Finance;
+ using VirtualCompany.Application.Insights;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Tasks;
+@@ -31,6 +32,7 @@ using VirtualCompany.Infrastructure.Authorization;
+ using VirtualCompany.Infrastructure.Context;
+ using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Documents;
++using VirtualCompany.Infrastructure.Finance;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Memory;
+ using VirtualCompany.Infrastructure.Observability;
+@@ -289,6 +291,7 @@ public static class DependencyInjection
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
+         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
++        services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<ExecutionExceptionService>();
+         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+new file mode 100644
+index 0000000..71fc0a6
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -0,0 +1,285 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyFinanceReadService : IFinanceReadService
++{
++    private const int DefaultLimit = 100;
++    private const int MaxLimit = 500;
++
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public CompanyFinanceReadService(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<FinanceCashBalanceDto> GetCashBalanceAsync(
++        GetFinanceCashBalanceQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureCompanyId(query.CompanyId);
++        var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? DateTime.UtcNow;
++
++        var accountBalances = await BuildAccountBalancesAsync(query.CompanyId, asOfUtc, cancellationToken);
++        var cashAccounts = accountBalances
++            .Where(x => IsCashAccount(x.AccountName, x.AccountCode))
++            .ToList();
++
++        if (cashAccounts.Count == 0)
++        {
++            cashAccounts = accountBalances
++                .Where(x => string.Equals(x.AccountType, "asset", StringComparison.OrdinalIgnoreCase))
++                .ToList();
++        }
++
++        if (cashAccounts.Count == 0)
++        {
++            cashAccounts = accountBalances;
++        }
++
++        var currency = cashAccounts.Select(x => x.Currency).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1
++            ? cashAccounts[0].Currency
++            : "MIXED";
++
++        return new FinanceCashBalanceDto(
++            query.CompanyId,
++            asOfUtc,
++            cashAccounts.Sum(x => x.Amount),
++            currency,
++            cashAccounts
++                .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
++                .ToList());
++    }
++
++    public async Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(
++        GetFinanceMonthlyProfitAndLossQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureCompanyId(query.CompanyId);
++        if (query.Month is < 1 or > 12)
++        {
++            throw new ArgumentOutOfRangeException(nameof(query), "Month must be between 1 and 12.");
++        }
++
++        var startUtc = new DateTime(query.Year, query.Month, 1, 0, 0, 0, DateTimeKind.Utc);
++        var endUtc = startUtc.AddMonths(1);
++
++        var invoices = await _dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.IssuedUtc >= startUtc && x.IssuedUtc < endUtc)
++            .Select(x => new FinanceAmountRow(x.Amount, x.Currency))
++            .ToListAsync(cancellationToken);
++
++        var expenseTransactions = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.TransactionUtc >= startUtc && x.TransactionUtc < endUtc && x.Amount < 0)
++            .Select(x => new FinanceAmountRow(x.Amount, x.Currency))
++            .ToListAsync(cancellationToken);
++
++        var revenue = invoices.Sum(x => x.Amount);
++        var expenses = expenseTransactions.Sum(x => Math.Abs(x.Amount));
++        var currency = ResolveCurrency(invoices.Concat(expenseTransactions));
++
++        return new FinanceMonthlyProfitAndLossDto(
++            query.CompanyId,
++            query.Year,
++            query.Month,
++            startUtc,
++            endUtc,
++            revenue,
++            expenses,
++            revenue - expenses,
++            currency);
++    }
++
++    public async Task<FinanceExpenseBreakdownDto> GetExpenseBreakdownAsync(
++        GetFinanceExpenseBreakdownQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureCompanyId(query.CompanyId);
++        var startUtc = NormalizeUtc(query.StartUtc) ?? throw new ArgumentException("Start date is required.", nameof(query));
++        var endUtc = NormalizeUtc(query.EndUtc) ?? throw new ArgumentException("End date is required.", nameof(query));
++        if (startUtc >= endUtc)
++        {
++            throw new ArgumentException("Start date must be before end date.", nameof(query));
++        }
++
++        var expenses = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.TransactionUtc >= startUtc && x.TransactionUtc < endUtc && x.Amount < 0)
++            .Select(x => new FinanceExpenseRow(x.TransactionType, x.Amount, x.Currency))
++            .ToListAsync(cancellationToken);
++
++        var categories = expenses
++            .GroupBy(x => NormalizeCategory(x.TransactionType), StringComparer.OrdinalIgnoreCase)
++            .Select(group =>
++            {
++                var currency = ResolveCurrency(group.Select(x => new FinanceAmountRow(x.Amount, x.Currency)));
++                return new FinanceExpenseCategoryDto(
++                    group.Key,
++                    group.Sum(x => Math.Abs(x.Amount)),
++                    currency);
++            })
++            .OrderByDescending(x => x.Amount)
++            .ThenBy(x => x.Category, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++        return new FinanceExpenseBreakdownDto(
++            query.CompanyId,
++            startUtc,
++            endUtc,
++            categories.Sum(x => x.Amount),
++            ResolveCurrency(expenses.Select(x => new FinanceAmountRow(x.Amount, x.Currency))),
++            categories);
++    }
++
++    public async Task<IReadOnlyList<FinanceTransactionDto>> GetTransactionsAsync(
++        GetFinanceTransactionsQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureCompanyId(query.CompanyId);
++        var startUtc = NormalizeUtc(query.StartUtc);
++        var endUtc = NormalizeUtc(query.EndUtc);
++        var limit = NormalizeLimit(query.Limit);
++
++        var transactions = _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId);
++
++        if (startUtc is not null)
++        {
++            transactions = transactions.Where(x => x.TransactionUtc >= startUtc.Value);
++        }
++
++        if (endUtc is not null)
++        {
++            transactions = transactions.Where(x => x.TransactionUtc < endUtc.Value);
++        }
++
++        return await transactions
++            .OrderByDescending(x => x.TransactionUtc)
++            .ThenBy(x => x.ExternalReference)
++            .Take(limit)
++            .Select(x => new FinanceTransactionDto(
++                x.Id,
++                x.AccountId,
++                x.Account.Name,
++                x.CounterpartyId,
++                x.Counterparty == null ? null : x.Counterparty.Name,
++                x.InvoiceId,
++                x.BillId,
++                x.TransactionUtc,
++                x.TransactionType,
++                x.Amount,
++                x.Currency,
++                x.Description,
++                x.ExternalReference))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<FinanceInvoiceDto>> GetInvoicesAsync(
++        GetFinanceInvoicesQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureCompanyId(query.CompanyId);
++        var startUtc = NormalizeUtc(query.StartUtc);
++        var endUtc = NormalizeUtc(query.EndUtc);
++        var limit = NormalizeLimit(query.Limit);
++
++        var invoices = _dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId);
++
++        if (startUtc is not null)
++        {
++            invoices = invoices.Where(x => x.IssuedUtc >= startUtc.Value);
++        }
++
++        if (endUtc is not null)
++        {
++            invoices = invoices.Where(x => x.IssuedUtc < endUtc.Value);
++        }
++
++        return await invoices
++            .OrderByDescending(x => x.IssuedUtc)
++            .ThenBy(x => x.InvoiceNumber)
++            .Take(limit)
++            .Select(x => new FinanceInvoiceDto(
++                x.Id,
++                x.CounterpartyId,
++                x.Counterparty.Name,
++                x.InvoiceNumber,
++                x.IssuedUtc,
++                x.DueUtc,
++                x.Amount,
++                x.Currency,
++                x.Status))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(
++        GetFinanceBalancesQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureCompanyId(query.CompanyId);
++        var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? DateTime.UtcNow;
++        return await BuildAccountBalancesAsync(query.CompanyId, asOfUtc, cancellationToken);
++    }
++
++    private async Task<List<FinanceAccountBalanceDto>> BuildAccountBalancesAsync(
++        Guid companyId,
++        DateTime asOfUtc,
++        CancellationToken cancellationToken)
++    {
++        var accounts = await _dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => new AccountRow(x.Id, x.Code, x.Name, x.AccountType, x.OpeningBalance, x.Currency))
++            .ToListAsync(cancellationToken);
++
++        var balances = await _dbContext.FinanceBalances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.AsOfUtc <= asOfUtc)
++            .Select(x => new BalanceRow(x.AccountId, x.AsOfUtc, x.Amount, x.Currency))
++            .ToListAsync(cancellationToken);
++
++        var latestBalanceByAccount = balances
++            .GroupBy(x => x.AccountId)
++            .ToDictionary(
++                x => x.Key,
++                x => x.OrderByDescending(balance => balance.AsOfUtc).First());
++
++        var transactions = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.TransactionUtc <= asOfUtc)
++            .Select(x => new TransactionBalanceRow(x.AccountId, x.Amount))
++            .ToListAsync(cancellationToken);
++
++        var transactionTotalsByAccount = transactions
++            .GroupBy(x => x.AccountId)
++            .ToDictionary(x => x.Key, x => x.Sum(row => row.Amount));
++
++        return accounts
++            .Select(account =>
++            {
++                if (latestBalanceByAccount.TryGetValue(account.Id, out var balance))
++                {
++                    return new FinanceAccountBalanceDto(
++                        account.Id,
++                        account.Code,
++                        account.Name,
++                        account.AccountType,
++                        balance.Amount,
++                        balance.Currency,
++                        balance.AsOfUtc);
++                }
++
++                var postedAmount = transactionTotalsByAccount.GetValueOrDefault(account.Id);
++                return new FinanceAccountBalanceDto(
++                    account.Id,
++                    account.Code,
++                    account.Name,
++                    account.AccountType,
++                    account.OpeningBalance + postedAmount,
++                    account.Currency,
++                    asOfUtc);
++            })
++            .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++    }
++
++    private static void EnsureCompanyId(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++    }
++
++    private static int NormalizeLimit(int limit) =>
++        limit <= 0
++            ? DefaultLimit
++            : Math.Min(limit, MaxLimit);
++
++    private static DateTime? NormalizeUtc(DateTime? value) =>
++        value is null
++            ? null
++            : value.Value.Kind == DateTimeKind.Utc
++                ? value.Value
++                : value.Value.ToUniversalTime();
++
++    private static bool IsCashAccount(string name, string code) =>
++        name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
++        code.StartsWith("10", StringComparison.OrdinalIgnoreCase);
++
++    private static string NormalizeCategory(string category) =>
++        string.IsNullOrWhiteSpace(category)
++            ? "Uncategorized"
++            : category.Trim();
++
++    private static string ResolveCurrency(IEnumerable<FinanceAmountRow> rows)
++    {
++        var currencies = rows
++            .Select(x => x.Currency)
++            .Where(x => !string.IsNullOrWhiteSpace(x))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++        return currencies.Count switch
++        {
++            0 => "USD",
++            1 => currencies[0],
++            _ => "MIXED"
++        };
++    }
++
++    private sealed record AccountRow(
++        Guid Id,
++        string Code,
++        string Name,
++        string AccountType,
++        decimal OpeningBalance,
++        string Currency);
++
++    private sealed record BalanceRow(
++        Guid AccountId,
++        DateTime AsOfUtc,
++        decimal Amount,
++        string Currency);
++
++    private sealed record TransactionBalanceRow(
++        Guid AccountId,
++        decimal Amount);
++
++    private sealed record FinanceAmountRow(
++        decimal Amount,
++        string Currency);
++
++    private sealed record FinanceExpenseRow(
++        string TransactionType,
++        decimal Amount,
++        string Currency);
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSummaryCalculationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSummaryCalculationTests.cs
+new file mode 100644
+index 0000000..ab70926
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceSummaryCalculationTests.cs
+@@ -0,0 +1,161 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceSummaryCalculationTests
++{
++    [Fact]
++    public async Task Cash_balance_matches_seeded_account_balance_source_data()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++        dbContext.Companies.Add(new Company(companyId, "Seeded Finance Company"));
++        FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceReadService(dbContext);
++        var result = await service.GetCashBalanceAsync(new GetFinanceCashBalanceQuery(companyId, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)), CancellationToken.None);
++
++        var operatingCash = await dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleAsync(x => x.CompanyId == companyId && x.Name == "Operating Cash");
++        var expectedBalance = await dbContext.FinanceBalances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.AccountId == operatingCash.Id)
++            .Select(x => x.Amount)
++            .SingleAsync();
++
++        Assert.Equal(expectedBalance, result.Amount);
++        Assert.Equal("USD", result.Currency);
++    }
++
++    [Fact]
++    public async Task Monthly_profit_and_loss_returns_positive_and_negative_net_income_months()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++        SeedSummaryScenario(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceReadService(dbContext);
++        var positiveMonth = await service.GetMonthlyProfitAndLossAsync(new GetFinanceMonthlyProfitAndLossQuery(companyId, 2026, 1), CancellationToken.None);
++        var negativeMonth = await service.GetMonthlyProfitAndLossAsync(new GetFinanceMonthlyProfitAndLossQuery(companyId, 2026, 2), CancellationToken.None);
++
++        Assert.Equal(10000m, positiveMonth.Revenue);
++        Assert.Equal(3000m, positiveMonth.Expenses);
++        Assert.Equal(7000m, positiveMonth.NetResult);
++        Assert.Equal(1000m, negativeMonth.Revenue);
++        Assert.Equal(2200m, negativeMonth.Expenses);
++        Assert.Equal(-1200m, negativeMonth.NetResult);
++    }
++
++    [Fact]
++    public async Task Expense_breakdown_groups_expenses_by_category_with_deterministic_totals()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++        SeedSummaryScenario(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceReadService(dbContext);
++        var breakdown = await service.GetExpenseBreakdownAsync(
++            new GetFinanceExpenseBreakdownQuery(
++                companyId,
++                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc)),
++            CancellationToken.None);
++
++        Assert.Equal(3000m, breakdown.TotalExpenses);
++        Assert.Collection(
++            breakdown.Categories,
++            category =>
++            {
++                Assert.Equal("cloud_hosting", category.Category);
++                Assert.Equal(2000m, category.Amount);
++            },
++            category =>
++            {
++                Assert.Equal("office_supplies", category.Category);
++                Assert.Equal(1000m, category.Amount);
++            });
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options);
++
++    private static void SeedSummaryScenario(VirtualCompanyDbContext dbContext, Guid companyId)
++    {
++        var accountId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
++        var customerId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
++        var vendorId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
++        var januaryInvoiceId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
++        var februaryInvoiceId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
++
++        dbContext.Companies.Add(new Company(companyId, "Summary Finance Company"));
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            accountId,
++            companyId,
++            "1000",
++            "Operating Cash",
++            "asset",
++            "USD",
++            5000m,
++            new DateTime(2025, 12, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.FinanceCounterparties.AddRange(
++            new FinanceCounterparty(customerId, companyId, "Customer", "customer", "customer@example.com"),
++            new FinanceCounterparty(vendorId, companyId, "Vendor", "vendor", "vendor@example.com"));
++        dbContext.FinanceInvoices.AddRange(
++            new FinanceInvoice(
++                januaryInvoiceId,
++                companyId,
++                customerId,
++                "INV-202601-001",
++                new DateTime(2026, 1, 5, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 2, 5, 0, 0, 0, DateTimeKind.Utc),
++                10000m,
++                "USD",
++                "open"),
++            new FinanceInvoice(
++                februaryInvoiceId,
++                companyId,
++                customerId,
++                "INV-202602-001",
++                new DateTime(2026, 2, 5, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 3, 5, 0, 0, 0, DateTimeKind.Utc),
++                1000m,
++                "USD",
++                "open"));
++        dbContext.FinanceTransactions.AddRange(
++            new FinanceTransaction(
++                Guid.Parse("11111111-1111-1111-1111-111111111111"),
++                companyId,
++                accountId,
++                vendorId,
++                null,
++                null,
++                new DateTime(2026, 1, 10, 0, 0, 0, DateTimeKind.Utc),
++                "cloud_hosting",
++                -2000m,
++                "USD",
++                "Cloud hosting",
++                "EXP-202601-001"),
++            new FinanceTransaction(
++                Guid.Parse("22222222-2222-2222-2222-222222222222"),
++                companyId,
++                accountId,
++                vendorId,
++                null,
++                null,
++                new DateTime(2026, 1, 12, 0, 0, 0, DateTimeKind.Utc),
++                "office_supplies",
++                -1000m,
++                "USD",
++                "Office supplies",
++                "EXP-202601-002"),
++            new FinanceTransaction(
++                Guid.Parse("33333333-3333-3333-3333-333333333333"),
++                companyId,
++                accountId,
++                vendorId,
++                null,
++                null,
++                new DateTime(2026, 2, 10, 0, 0, 0, DateTimeKind.Utc),
++                "cloud_hosting",
++                -2200m,
++                "USD",
++                "Cloud hosting",
++                "EXP-202602-001"));
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceTenantIsolationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceTenantIsolationTests.cs
+index 47e6c68..f79a7c1 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceTenantIsolationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceTenantIsolationTests.cs
+@@ -145,6 +145,7 @@ public sealed class FinanceTenantIsolationTests : IClassFixture<TestWebApplicati
+             FinanceSeedData.AddMockFinanceData(dbContext, companyBId);
+             return Task.CompletedTask;
+         });
++    }
+ 
+     private static VirtualCompanyDbContext CreateFinanceSeedContext() =>
+         new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
+END_OF_PATCH

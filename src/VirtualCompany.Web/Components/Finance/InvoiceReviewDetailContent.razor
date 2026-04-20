@@ -1,0 +1,182 @@
+@using System.Globalization
+@using VirtualCompany.Web.Services
+
+@if (IsLoading)
+{
+    <FinanceLoadingState Title="Loading invoice review" Message="Fetching the latest finance review result for the selected invoice." />
+}
+else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+{
+    <FinanceErrorState Title="Invoice review unavailable" Message="@(ErrorMessage!)" RetryText="Retry" OnRetry="@OnRetry" />
+}
+else if (Detail is null)
+{
+    <FinanceEmptyState Title="No review result available" Message="The selected invoice does not currently have a finance review result to display." />
+}
+else
+{
+    <div class="invoice-review-detail">
+        <div class="invoice-review-detail__header">
+            <div>
+                <h2 class="h4 mb-1">@Detail.InvoiceNumber</h2>
+                <p class="text-body-secondary mb-0">@Detail.SupplierName</p>
+            </div>
+            <div class="text-end">
+                <div class="fw-semibold">@FormatCurrency(Detail.Amount, Detail.Currency)</div>
+                <div class="small text-body-secondary">Updated @FormatDateTime(Detail.LastUpdatedUtc)</div>
+            </div>
+        </div>
+
+        <div class="dashboard-actions">
+            <a class="btn btn-outline-secondary" href="@BackToListHref">Back to review list</a>
+            @if (!string.IsNullOrWhiteSpace(SourceInvoiceHref))
+            {
+                <a class="btn btn-outline-primary" href="@SourceInvoiceHref">Open source invoice</a>
+            }
+            @if (!string.IsNullOrWhiteSpace(RelatedApprovalHref))
+            {
+                <a class="btn btn-outline-primary" href="@RelatedApprovalHref">Open related approval</a>
+            }
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(StatusMessage))
+        {
+            <div class="alert alert-success mb-0" role="status">@StatusMessage</div>
+        }
+
+        <section class="mt-4" aria-label="Recommendation details">
+            <h3 class="h5">Recommendation details</h3>
+            @if (InvoiceWorkflowPresentation.ResolveRecommendationDetails(Detail) is { } recommendationDetails)
+            {
+                <dl class="kv-list mb-0">
+                    <dt>Classification</dt>
+                    <dd>@FormatLabel(recommendationDetails.Classification)</dd>
+                    <dt>Risk</dt>
+                    <dd>@FormatLabel(recommendationDetails.Risk)</dd>
+                    <dt>Rationale summary</dt>
+                    <dd>@recommendationDetails.RationaleSummary</dd>
+                    <dt>Confidence</dt>
+                    <dd>@FormatConfidence(recommendationDetails.Confidence)</dd>
+                    <dt>Recommended action</dt>
+                    <dd>@FormatLabel(recommendationDetails.RecommendedAction)</dd>
+                    <dt>Current workflow status</dt>
+                    <dd>@FormatLabel(recommendationDetails.CurrentWorkflowStatus)</dd>
+                </dl>
+            }
+            else
+            {
+                <p class="text-body-secondary mb-0">No recommendation details available yet.</p>
+            }
+        </section>
+
+        <section class="mt-4" aria-label="Workflow history">
+            <h3 class="h5">Workflow history</h3>
+            @if (InvoiceWorkflowPresentation.NormalizeWorkflowHistory(Detail.WorkflowHistory) is { Count: > 0 } workflowHistory)
+            {
+                <div class="list-group list-group-flush">
+                        @foreach (var entry in workflowHistory)
+                        {
+                            var auditHref = BuildAuditHref(entry.RelatedAuditId);
+                            var approvalHref = BuildApprovalHref(entry.RelatedApprovalId);
+                            <div class="list-group-item px-0">
+                                <div class="d-flex justify-content-between gap-3">
+                                    <div>
+                                    <div class="fw-semibold">@entry.EventType</div>
+                                    <div class="small text-body-secondary">@FormatActorOrSource(entry.ActorOrSourceDisplayName)</div>
+                                </div>
+                                <div class="small text-body-secondary text-end">@FormatDateTime(entry.OccurredAtUtc)</div>
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(auditHref) || !string.IsNullOrWhiteSpace(approvalHref))
+                            {
+                                <div class="small mt-2">
+                                    @if (!string.IsNullOrWhiteSpace(auditHref))
+                                    {
+                                        <a href="@auditHref">Audit detail</a>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(auditHref) && !string.IsNullOrWhiteSpace(approvalHref))
+                                    {
+                                        <span class="text-body-secondary"> | </span>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(approvalHref))
+                                    {
+                                        <a href="@approvalHref">Approval detail</a>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                <p class="text-body-secondary mb-0">No workflow history available yet.</p>
+            }
+        </section>
+
+        @if (Detail.Actions.IsActionable)
+        {
+            <div class="dashboard-actions">
+                @if (Detail.Actions.CanApprove)
+                {
+                    <button class="btn btn-primary" type="button" disabled="@IsSubmitting" @onclick="OnApprove">Approve</button>
+                }
+                @if (Detail.Actions.CanReject)
+                {
+                    <button class="btn btn-outline-secondary" type="button" disabled="@IsSubmitting" @onclick="OnReject">Reject</button>
+                }
+                @if (Detail.Actions.CanSendForFollowUp)
+                {
+                    <button class="btn btn-outline-secondary" type="button" disabled="@IsSubmitting" @onclick="OnSendForFollowUp">Send for follow-up</button>
+                }
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public bool IsSubmitting { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public string? StatusMessage { get; set; }
+    [Parameter] public FinanceInvoiceReviewDetailResponse? Detail { get; set; }
+    [Parameter] public Guid? CompanyId { get; set; }
+    [Parameter] public string BackToListHref { get; set; } = string.Empty;
+    [Parameter] public string? SourceInvoiceHref { get; set; }
+    [Parameter] public string? RelatedApprovalHref { get; set; }
+    [Parameter] public EventCallback OnRetry { get; set; }
+    [Parameter] public EventCallback OnApprove { get; set; }
+    [Parameter] public EventCallback OnReject { get; set; }
+    [Parameter] public EventCallback OnSendForFollowUp { get; set; }
+
+    private static string FormatCurrency(decimal amount, string currency) =>
+        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+
+    private static string FormatDateTime(DateTime value) =>
+        value == default
+            ? "Unknown time"
+            : value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+
+    private static string FormatConfidence(decimal confidence)
+    {
+        var clamped = Math.Clamp(confidence, 0m, 1m);
+        return $"{clamped:P0}";
+    }
+
+    private static string FormatLabel(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "n/a"
+            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+    private static string FormatActorOrSource(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "System" : value.Trim();
+
+    private string? BuildAuditHref(Guid? auditEventId) =>
+        CompanyId is Guid companyId && auditEventId is Guid resolvedAuditEventId
+            ? $"/audit/{resolvedAuditEventId:D}?companyId={companyId:D}"
+            : null;
+
+    private string? BuildApprovalHref(Guid? approvalId) =>
+        CompanyId is Guid companyId && approvalId is Guid resolvedApprovalId
+            ? $"/approvals?companyId={companyId:D}&approvalId={resolvedApprovalId:D}"
+            : null;
+}

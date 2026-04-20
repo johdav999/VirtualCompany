@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Workflows;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Domain.Entities;
@@ -89,6 +90,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
     private readonly ILogger<WorkflowProgressionService> _logger;
     private readonly IBackgroundExecutionIdentityFactory _identityFactory;
     private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
+    private readonly IInvoiceReviewWorkflowService _invoiceReviewWorkflowService;
 
     public WorkflowProgressionService(
         VirtualCompanyDbContext dbContext,
@@ -98,6 +100,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
         IOptions<WorkflowProgressionOptions> options,
         IBackgroundExecutionIdentityFactory identityFactory,
         ICompanyExecutionScopeFactory companyExecutionScopeFactory,
+        IInvoiceReviewWorkflowService invoiceReviewWorkflowService,
         ILogger<WorkflowProgressionService> logger)
     {
         _dbContext = dbContext;
@@ -108,6 +111,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
         _identityFactory = identityFactory;
         _logger = logger;
         _companyExecutionScopeFactory = companyExecutionScopeFactory;
+        _invoiceReviewWorkflowService = invoiceReviewWorkflowService;
     }
 
     public async Task<WorkflowProgressionRunResult> RunRunnableInstancesAsync(
@@ -316,6 +320,11 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
             throw new WorkflowBlockedException(TryGetString(output, "reason") ?? "Workflow step is blocked and requires review.");
         }
 
+        if (await TryHandleInvoiceReviewStepAsync(instance, currentStep, handler, steps, currentIndex, cancellationToken))
+        {
+            return;
+        }
+
         var nextStep = currentIndex + 1 < steps.Count
             ? ResolveStepId(steps[currentIndex + 1] as JsonObject)
             : null;
@@ -341,6 +350,81 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
             currentStep,
             nextStep,
             instance.CompanyId);
+    }
+
+    private async Task<bool> TryHandleInvoiceReviewStepAsync(
+        WorkflowInstance instance,
+        string? currentStep,
+        string handler,
+        JsonArray steps,
+        int currentIndex,
+        CancellationToken cancellationToken)
+    {
+        if (instance.Definition.Code != "INVOICE-APPROVAL-REVIEW")
+        {
+            return false;
+        }
+
+        if (handler is not ("capture_invoice" or "prepare_review" or "request_approval"))
+        {
+            return false;
+        }
+
+        var nextStep = currentIndex + 1 < steps.Count
+            ? ResolveStepId(steps[currentIndex + 1] as JsonObject)
+            : null;
+        var outputPayload = CloneNodes(instance.OutputPayload);
+        outputPayload["lastProcessedStep"] = JsonValue.Create(currentStep);
+        outputPayload["lastProcessedHandler"] = JsonValue.Create(handler);
+        outputPayload["lastProcessedUtc"] = JsonValue.Create(DateTime.UtcNow);
+
+        if (handler == "capture_invoice")
+        {
+            var invoiceId = ResolveInvoiceId(instance);
+            if (invoiceId.HasValue)
+            {
+                outputPayload["invoiceId"] = JsonValue.Create(invoiceId.Value);
+            }
+
+            outputPayload["invoiceWorkflowStage"] = JsonValue.Create("invoice_context_captured");
+        }
+        else if (handler == "prepare_review")
+        {
+            var invoiceId = ResolveInvoiceId(instance) ??
+                throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["invoiceId"] = ["Invoice review workflow input must include an invoice id."]
+                });
+
+            var result = await _invoiceReviewWorkflowService.ExecuteAsync(
+                new ReviewFinanceInvoiceWorkflowCommand(
+                    instance.CompanyId,
+                    invoiceId,
+                    instance.Id,
+                    null,
+                    CloneNodes(instance.InputPayload)),
+                cancellationToken);
+
+            outputPayload["invoiceId"] = JsonValue.Create(result.InvoiceId);
+            outputPayload["invoiceReviewTaskId"] = JsonValue.Create(result.TaskId);
+            outputPayload["approvalRequestId"] = result.ApprovalRequestId.HasValue ? JsonValue.Create(result.ApprovalRequestId.Value) : null;
+            outputPayload["invoiceClassification"] = JsonValue.Create(result.InvoiceClassification);
+            outputPayload["riskLevel"] = JsonValue.Create(result.RiskLevel);
+            outputPayload["recommendedAction"] = JsonValue.Create(result.RecommendedAction);
+            outputPayload["rationale"] = JsonValue.Create(result.Rationale);
+            outputPayload["confidenceScore"] = JsonValue.Create(result.ConfidenceScore);
+            outputPayload["requiresHumanApproval"] = JsonValue.Create(result.RequiresHumanApproval);
+        }
+        else
+        {
+            outputPayload["invoiceWorkflowStage"] = JsonValue.Create("approval_request_ready");
+        }
+
+        instance.UpdateState(
+            string.IsNullOrWhiteSpace(nextStep) ? WorkflowInstanceStatus.Completed : WorkflowInstanceStatus.Running,
+            string.IsNullOrWhiteSpace(nextStep) ? currentStep : nextStep,
+            outputPayload);
+        return true;
     }
 
     private async Task MarkWorkflowTerminalFailureAsync(
@@ -462,6 +546,20 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
         return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
     }
 
+    private static Guid? ResolveInvoiceId(WorkflowInstance instance) =>
+        TryGetGuid(instance.InputPayload, "invoiceId") ??
+        TryGetGuid(instance.OutputPayload, "invoiceId") ??
+        TryGetGuid(instance.ContextJson, "invoiceId") ??
+        TryGetGuidFromObject(instance.InputPayload, "metadata", "invoiceId") ??
+        TryParseGuid(instance.TriggerRef);
+
+    private static Guid? TryGetGuidFromObject(IReadOnlyDictionary<string, JsonNode?> payload, string objectKey, string key) =>
+        payload.TryGetValue(objectKey, out var node) &&
+        node is JsonObject jsonObject &&
+        TryGetGuid(jsonObject.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase), key) is { } value
+            ? value
+            : null;
+
     private static string? TryGetString(IReadOnlyDictionary<string, JsonNode?>? payload, string key)
     {
         if (payload is null ||
@@ -474,6 +572,30 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
 
         return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
     }
+
+    private static Guid? TryGetGuid(IReadOnlyDictionary<string, JsonNode?>? payload, string key)
+    {
+        if (payload is null ||
+            !payload.TryGetValue(key, out var node) ||
+            node is not JsonValue value)
+        {
+            return null;
+        }
+
+        if (value.TryGetValue<Guid>(out var guid) && guid != Guid.Empty)
+        {
+            return guid;
+        }
+
+        return value.TryGetValue<string>(out var text)
+            ? TryParseGuid(text)
+            : null;
+    }
+
+    private static Guid? TryParseGuid(string? value) =>
+        Guid.TryParse(value, out var guid) && guid != Guid.Empty
+            ? guid
+            : null;
 
     private enum WorkflowProgressionInstanceOutcome
     {

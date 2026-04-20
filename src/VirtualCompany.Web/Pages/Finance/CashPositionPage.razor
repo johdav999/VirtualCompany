@@ -1,0 +1,64 @@
+@page "/finance/cash-position"
+@inherits FinanceSummaryPageBase<CashPositionSummaryViewModel>
+
+<PageTitle>Cash position</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Cash position"
+    Description="Track company cash coverage and liquidity without leaving the active tenant context."
+    LoadingMessage="Loading cash position shell...">
+    <FinanceDataState
+        IsLoading="@IsSummaryLoading"
+        IsEmpty="@IsSummaryEmpty"
+        ErrorMessage="@SummaryErrorMessage"
+        LoadingTitle="Loading cash position"
+        LoadingMessage="Fetching the active tenant cash position from finance services."
+        EmptyTitle="No cash position yet"
+        EmptyMessage="No cash position summary is available for the active tenant."
+        RetryText="Reload cash position"
+        OnRetry="@RetryAsync">
+        @if (ViewModel is not null)
+        {
+            <section class="finance-summary-stack" aria-labelledby="cash-position-heading">
+                <div class="finance-summary-grid">
+                    <article class="wizard-card finance-metric-card finance-metric-card--hero">
+                        <span class="dashboard-kicker">Available cash</span>
+                        <h2 id="cash-position-heading" class="finance-metric-card__value">@ViewModel.AvailableBalance</h2>
+                        <p class="text-body-secondary mb-0">As of @ViewModel.AsOf</p>
+                    </article>
+                    <article class="wizard-card finance-metric-card">
+                        <span class="dashboard-kicker">Average monthly burn</span>
+                        <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.AverageMonthlyBurn</div>
+                        <p class="text-body-secondary mb-0">Estimated runway: @ViewModel.EstimatedRunway</p>
+                    </article>
+                    <article class="wizard-card finance-metric-card">
+                        <span class="dashboard-kicker">Workflow assessment</span>
+                        <div class="finance-risk-pill finance-risk-pill--@ViewModel.RiskLevelCssClass">@ViewModel.RiskLevel</div>
+                        <p class="mb-1 mt-3">@ViewModel.RecommendedAction</p>
+                        <small class="text-body-secondary">Confidence @ViewModel.Confidence</small>
+                    </article>
+                </div>
+                <div class="finance-detail-grid">
+                    <article class="wizard-card">
+                        <h2 class="h5">Thresholds</h2>
+                        <dl class="cockpit-kpi-list mb-0">
+                            <div><dt>Warning cash</dt><dd>@ViewModel.WarningThreshold</dd></div>
+                            <div><dt>Critical cash</dt><dd>@ViewModel.CriticalThreshold</dd></div>
+                            <div><dt>Warning runway</dt><dd>@ViewModel.WarningRunway</dd></div>
+                            <div><dt>Critical runway</dt><dd>@ViewModel.CriticalRunway</dd></div>
+                        </dl>
+                    </article>
+                    <article class="wizard-card">
+                        <h2 class="h5">Alert state</h2>
+                        <p class="mb-2"><strong>@ViewModel.AlertStatus</strong></p>
+                        <p class="mb-2">@ViewModel.Rationale</p>
+                        <small class="text-body-secondary">Classification: @ViewModel.Classification</small>
+                    </article>
+                </div>
+            </section>
+        }
+    </FinanceDataState>
+</FinancePageLayout>

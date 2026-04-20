@@ -133,6 +133,89 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
     }
 
     [Fact]
+    public async Task CreateCompany_seeds_laura_finance_agent_and_exposes_versioned_configuration()
+    {
+        using var client = CreateAuthenticatedClient("laura-owner", "laura-owner@example.com", "Laura Owner");
+        var response = await client.PostAsJsonAsync("/api/onboarding/company", new
+        {
+            Name = "Finance Agent Co",
+            Industry = "Technology",
+            BusinessType = "Software Company",
+            Timezone = "Europe/Stockholm",
+            Currency = "SEK",
+            Language = "sv-SE",
+            ComplianceRegion = "EU",
+            SelectedTemplateId = "saas-operations"
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var created = await response.Content.ReadFromJsonAsync<ProgressResponse>();
+        Assert.NotNull(created);
+        var companyId = created!.CompanyId!.Value;
+
+        var roster = await client.GetFromJsonAsync<AgentRosterResponse>($"/api/companies/{companyId}/agents/roster?department=Finance");
+        Assert.NotNull(roster);
+        var lauraRosterItem = Assert.Single(roster!.Items, item => item.DisplayName == "Laura");
+
+        Assert.Equal("laura-finance-agent", lauraRosterItem.TemplateId);
+        Assert.Equal("Finance Agent", lauraRosterItem.RoleName);
+        Assert.Equal("Finance", lauraRosterItem.Department);
+        Assert.Equal("active", lauraRosterItem.Status);
+        Assert.Equal("finance", lauraRosterItem.RoleMetadata["roleKey"].GetString());
+        Assert.Equal("finance", lauraRosterItem.RoleMetadata["responsibilityDomain"].GetString());
+        Assert.Contains(
+            lauraRosterItem.WorkflowCapabilities["defaults"].EnumerateArray(),
+            capability => capability.GetString() == "finance_risk_detection");
+
+        var profile = await client.GetFromJsonAsync<AgentProfileResponse>($"/api/companies/{companyId}/agents/{lauraRosterItem.Id}");
+        Assert.NotNull(profile);
+        Assert.Equal(1, profile!.Configuration.PersonaVersion);
+        Assert.Equal(1, profile.Configuration.WorkflowVersion);
+        Assert.Equal("Laura", profile.DisplayName);
+        Assert.Equal("Conservative finance agent focused on accounting accuracy, variance checks, cash visibility, and early risk detection.", profile.RoleBrief);
+
+        var traits = profile.Configuration.Persona["traits"].EnumerateArray().Select(x => x.GetString()).ToArray();
+        Assert.Contains("conservative", traits);
+        Assert.Contains("precise", traits);
+        Assert.Equal("finance", profile.Configuration.Persona["roleMetadata"].GetProperty("roleKey").GetString());
+
+        var objectives = profile.Objectives["primary"].EnumerateArray().Select(x => x.GetString()).ToArray();
+        Assert.Contains("Maintain accurate finance records", objectives);
+        Assert.Contains("Detect cash, invoice, and transaction risks early", objectives);
+        Assert.True(profile.Objectives["accuracy"].GetProperty("required").GetBoolean());
+        Assert.True(profile.Objectives["riskDetection"].GetProperty("required").GetBoolean());
+
+        Assert.Equal(
+            new[]
+            {
+                "get_cash_balance",
+                "list_transactions",
+                "list_uncategorized_transactions",
+                "list_invoices_awaiting_approval",
+                "get_profit_and_loss_summary",
+                "recommend_transaction_category",
+                "recommend_invoice_approval_decision",
+                "categorize_transaction",
+                "approve_invoice"
+            },
+            profile.ToolPermissions["allowed"].EnumerateArray().Select(x => x.GetString()));
+        Assert.DoesNotContain("erp", profile.ToolPermissions["allowed"].EnumerateArray().Select(x => x.GetString()));
+        Assert.Contains("erp", profile.ToolPermissions["denied"].EnumerateArray().Select(x => x.GetString()));
+        Assert.Equal("finance", Assert.Single(profile.DataScopes["read"].EnumerateArray()).GetString());
+        Assert.Equal("finance", Assert.Single(profile.DataScopes["recommend"].EnumerateArray()).GetString());
+        Assert.Equal("finance", Assert.Single(profile.DataScopes["execute"].EnumerateArray()).GetString());
+        Assert.Empty(profile.DataScopes["write"].EnumerateArray());
+
+        Assert.Contains(
+            profile.Configuration.WorkflowCapabilities["defaults"].EnumerateArray(),
+            capability => capability.GetString() == "cash_balance_review");
+        Assert.Contains(
+            profile.Configuration.WorkflowCapabilities["defaults"].EnumerateArray(),
+            capability => capability.GetString() == "finance_risk_detection");
+        Assert.Equal("finance", profile.Configuration.WorkflowCapabilities["financeBoundary"].GetString());
+    }
+
+    [Fact]
     public async Task SaveProgress_and_resume_restore_latest_values()
     {
         using var client = CreateAuthenticatedClient("resume-user", "resume@example.com", "Resume User");
@@ -543,6 +626,42 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
         public Dictionary<string, JsonElement> Metadata { get; set; } = new();
         public string? Industry { get; set; }
         public string? BusinessType { get; set; }
+    }
+
+    private sealed class AgentRosterResponse
+    {
+        public List<AgentRosterItem> Items { get; set; } = [];
+    }
+
+    private sealed class AgentRosterItem
+    {
+        public Guid Id { get; set; }
+        public string TemplateId { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public string RoleName { get; set; } = string.Empty;
+        public string Department { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public Dictionary<string, JsonElement> RoleMetadata { get; set; } = [];
+        public Dictionary<string, JsonElement> WorkflowCapabilities { get; set; } = [];
+    }
+
+    private sealed class AgentProfileResponse
+    {
+        public Guid Id { get; set; }
+        public string DisplayName { get; set; } = string.Empty;
+        public string? RoleBrief { get; set; }
+        public AgentConfigurationResponse Configuration { get; set; } = new();
+        public Dictionary<string, JsonElement> Objectives { get; set; } = [];
+        public Dictionary<string, JsonElement> ToolPermissions { get; set; } = [];
+        public Dictionary<string, JsonElement> DataScopes { get; set; } = [];
+    }
+
+    private sealed class AgentConfigurationResponse
+    {
+        public int PersonaVersion { get; set; }
+        public int WorkflowVersion { get; set; }
+        public Dictionary<string, JsonElement> Persona { get; set; } = [];
+        public Dictionary<string, JsonElement> WorkflowCapabilities { get; set; } = [];
     }
 
     private sealed class RecommendationResponse

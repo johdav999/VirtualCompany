@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Text.Json.Nodes;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Application.Finance;
 
 namespace VirtualCompany.Application.Briefings;
 
@@ -83,6 +84,7 @@ public sealed record BriefingAggregateResultDto(
     public string NarrativeText { get; init; } = string.Empty;
     public IReadOnlyList<AggregatedBriefingSectionDto> StructuredSections { get; init; } = [];
     public BriefingSummaryCountsDto SummaryCounts { get; init; } = new(0, 0, 0, 0);
+    public FinanceCashPositionDto? CashPosition { get; init; }
 
     public bool HasItems =>
         Alerts.Count > 0 ||

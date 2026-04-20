@@ -1,0 +1,1776 @@
+diff --git a/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs b/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
+index 8cf7f4d..de9dd68 100644
+--- a/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
++++ b/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
+@@ -1,3 +1,4 @@
++using System.Text.Json.Serialization;
+ namespace VirtualCompany.Shared;
+ 
+ public sealed class FinanceSandboxDatasetGenerationResponse
+@@ -55,12 +56,85 @@ public sealed class FinanceSandboxSeedGenerationIssueResponse
+     public string Message { get; set; } = string.Empty;
+ }
+ 
++public sealed class FinanceSandboxAnomalyScenarioProfileResponse
++{
++    public string Code { get; set; } = string.Empty;
++    public string Name { get; set; } = string.Empty;
++    public string Description { get; set; } = string.Empty;
++}
++
++public sealed class FinanceSandboxBackendMessageResponse
++{
++    public string Severity { get; set; } = string.Empty;
++    public string Code { get; set; } = string.Empty;
++    public string Message { get; set; } = string.Empty;
++}
++
++public sealed class FinanceSandboxAnomalyRegistryItemResponse
++{
++    public Guid Id { get; set; }
++    public string Type { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string ScenarioProfileCode { get; set; } = string.Empty;
++    public string ScenarioProfileName { get; set; } = string.Empty;
++    public string AffectedRecordType { get; set; } = string.Empty;
++    public Guid? AffectedRecordId { get; set; }
++    public string AffectedRecordReference { get; set; } = string.Empty;
++    public DateTime CreatedUtc { get; set; }
++    public IReadOnlyList<FinanceSandboxBackendMessageResponse> Messages { get; set; } = [];
++}
++
++public sealed class FinanceSandboxAnomalyDetailResponse
++{
++    public Guid Id { get; set; }
++    public string Type { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string ScenarioProfileCode { get; set; } = string.Empty;
++    public string ScenarioProfileName { get; set; } = string.Empty;
++    public string AffectedRecordType { get; set; } = string.Empty;
++    public Guid? AffectedRecordId { get; set; }
++    public string AffectedRecordReference { get; set; } = string.Empty;
++    public DateTime CreatedUtc { get; set; }
++    public string ExpectedDetectionMetadataJson { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceSandboxBackendMessageResponse> Messages { get; set; } = [];
++}
++
++public sealed class FinanceSandboxAnomalyInjectionRequest
++{
++    public Guid CompanyId { get; set; }
++    public string ScenarioProfileCode { get; set; } = string.Empty;
++}
++
+ public sealed class FinanceSandboxAnomalyInjectionResponse
+ {
+     public string Mode { get; set; } = string.Empty;
+     public DateTime LastInjectedUtc { get; set; }
+     public string Observation { get; set; } = string.Empty;
+     public IReadOnlyList<string> ActiveScenarios { get; set; } = [];
++    public IReadOnlyList<FinanceSandboxAnomalyScenarioProfileResponse> AvailableScenarioProfiles { get; set; } = [];
++    public IReadOnlyList<FinanceSandboxAnomalyRegistryItemResponse> RegistryEntries { get; set; } = [];
++}
++
++public sealed class FinanceSandboxProgressionRunStepResponse
++{
++    public DateTime WindowStartUtc { get; set; }
++    public DateTime WindowEndUtc { get; set; }
++    public int TransactionsGenerated { get; set; }
++    public int InvoicesGenerated { get; set; }
++    public int BillsGenerated { get; set; }
++    public int RecurringExpenseInstancesGenerated { get; set; }
++    public int EventsEmitted { get; set; }
++}
++
++public sealed class FinanceSandboxProgressionRunSummaryResponse
++{
++    public string RunType { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public DateTime StartedUtc { get; set; }
++    public DateTime CompletedUtc { get; set; }
++    public int AdvancedHours { get; set; }
++    public int ExecutionStepHours { get; set; }
++    public int TransactionsGenerated { get; set; }
++    public int InvoicesGenerated { get; set; }
++    public int BillsGenerated { get; set; }
++    public int RecurringExpenseInstancesGenerated { get; set; }
++    public int EventsEmitted { get; set; }
++    public IReadOnlyList<FinanceSandboxBackendMessageResponse> Messages { get; set; } = [];
++    public IReadOnlyList<FinanceSandboxProgressionRunStepResponse> Steps { get; set; } = [];
+ }
+ 
+ public sealed class FinanceSandboxSimulationControlsResponse
+@@ -68,6 +142,15 @@ public sealed class FinanceSandboxSimulationControlsResponse
+     public string ClockMode { get; set; } = string.Empty;
+     public DateTime ReferenceUtc { get; set; }
+     public string CheckpointLabel { get; set; } = string.Empty;
+     public string Observation { get; set; } = string.Empty;
+ }
+ 
++public sealed class FinanceSandboxSimulationAdvanceRequest
++{
++    public Guid CompanyId { get; set; }
++    public int IncrementHours { get; set; }
++    public int? ExecutionStepHours { get; set; }
++    [JsonPropertyName("accelerated")]
++    public bool Accelerated { get; set; }
++}
++
+ public sealed class FinanceSandboxToolExecutionVisibilityResponse
+ {
+     public string Summary { get; set; } = string.Empty;
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 3749464..98197fb 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -96,9 +96,25 @@ public sealed class FinanceApiClient
+             ? Task.FromResult<FinanceSandboxAnomalyInjectionResponse?>(null)
+             : GetAsync<FinanceSandboxAnomalyInjectionResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/anomaly-injection", allowNotFound: true, cancellationToken);
+ 
++    public Task<FinanceSandboxAnomalyDetailResponse?> GetSandboxAnomalyDetailAsync(Guid companyId, Guid anomalyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinanceSandboxAnomalyDetailResponse?>(null)
++            : GetAsync<FinanceSandboxAnomalyDetailResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/anomaly-injection/{anomalyId}", allowNotFound: true, cancellationToken);
++
++    public Task<FinanceSandboxAnomalyDetailResponse> InjectSandboxAnomalyAsync(Guid companyId, FinanceSandboxAnomalyInjectionRequest request, CancellationToken cancellationToken = default)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<FinanceSandboxAnomalyInjectionRequest, FinanceSandboxAnomalyDetailResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/sandbox-admin/anomaly-injection", request, cancellationToken);
++    }
++
+     public Task<FinanceSandboxSimulationControlsResponse?> GetSandboxSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+             ? Task.FromResult<FinanceSandboxSimulationControlsResponse?>(null)
+             : GetAsync<FinanceSandboxSimulationControlsResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/simulation-controls", allowNotFound: true, cancellationToken);
++
++    public Task<FinanceSandboxProgressionRunSummaryResponse> AdvanceSandboxSimulationAsync(Guid companyId, FinanceSandboxSimulationAdvanceRequest request, CancellationToken cancellationToken = default)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<FinanceSandboxSimulationAdvanceRequest, FinanceSandboxProgressionRunSummaryResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/sandbox-admin/simulation-controls/advance", request, cancellationToken);
++    }
+ 
+     public Task<FinanceSandboxToolExecutionVisibilityResponse?> GetSandboxToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+diff --git a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+index 0f3a626..dd59259 100644
+--- a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
++++ b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+@@ -6,7 +6,10 @@ public interface IFinanceSandboxAdminService
+     Task<FinanceSandboxDatasetGenerationViewModel?> GetDatasetGenerationAsync(Guid companyId, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxSeedGenerationViewModel> GenerateSeedDatasetAsync(FinanceSandboxSeedGenerationCommand command, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxAnomalyInjectionViewModel?> GetAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<FinanceSandboxAnomalyDetailViewModel?> GetAnomalyDetailAsync(Guid companyId, Guid anomalyId, CancellationToken cancellationToken = default);
++    Task<FinanceSandboxAnomalyDetailViewModel> InjectAnomalyAsync(FinanceSandboxAnomalyInjectionCommand command, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxSimulationControlsViewModel?> GetSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<FinanceSandboxProgressionRunViewModel> AdvanceSimulationAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxToolExecutionVisibilityViewModel?> GetToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxDomainEventsViewModel?> GetDomainEventsAsync(Guid companyId, CancellationToken cancellationToken = default);
+ }
+@@ -62,6 +65,39 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             Mode = response.Mode,
+             LastInjectedUtc = response.LastInjectedUtc,
+             Observation = response.Observation,
++            AvailableScenarioProfiles = response.AvailableScenarioProfiles.Select(MapScenarioProfile).ToArray(),
++            RegistryEntries = response.RegistryEntries.Select(MapAnomalyRegistryItem).ToArray(),
++            ActiveScenarios = response.ActiveScenarios
++        };
++    }
++
++    public async Task<FinanceSandboxAnomalyDetailViewModel?> GetAnomalyDetailAsync(Guid companyId, Guid anomalyId, CancellationToken cancellationToken = default)
++    {
++        var response = await _financeApiClient.GetSandboxAnomalyDetailAsync(companyId, anomalyId, cancellationToken);
++        return response is null ? null : MapAnomalyDetail(response);
++    }
++
++    public async Task<FinanceSandboxAnomalyDetailViewModel> InjectAnomalyAsync(FinanceSandboxAnomalyInjectionCommand command, CancellationToken cancellationToken = default)
++    {
++        var response = await _financeApiClient.InjectSandboxAnomalyAsync(command.CompanyId, new FinanceSandboxAnomalyInjectionRequest
++        {
++            CompanyId = command.CompanyId,
++            ScenarioProfileCode = command.ScenarioProfileCode
++        }, cancellationToken);
++
++        return MapAnomalyDetail(response);
++    }
++
++    public async Task<FinanceSandboxProgressionRunViewModel> AdvanceSimulationAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default)
++    {
++        var response = await _financeApiClient.AdvanceSandboxSimulationAsync(command.CompanyId, new FinanceSandboxSimulationAdvanceRequest
++        {
++            CompanyId = command.CompanyId,
++            IncrementHours = command.IncrementHours,
++            ExecutionStepHours = command.ExecutionStepHours,
++            Accelerated = command.Accelerated
++        }, cancellationToken);
++
++        return new FinanceSandboxProgressionRunViewModel
++        {
++            RunType = response.RunType,
++            Status = response.Status,
++            StartedUtc = response.StartedUtc,
++            CompletedUtc = response.CompletedUtc,
++            AdvancedHours = response.AdvancedHours,
++            ExecutionStepHours = response.ExecutionStepHours,
++            TransactionsGenerated = response.TransactionsGenerated,
++            InvoicesGenerated = response.InvoicesGenerated,
++            BillsGenerated = response.BillsGenerated,
++            RecurringExpenseInstancesGenerated = response.RecurringExpenseInstancesGenerated,
++            EventsEmitted = response.EventsEmitted,
++            Messages = response.Messages.Select(MapBackendMessage).ToArray(),
++            Steps = response.Steps.Select(MapProgressionStep).ToArray()
+-            ActiveScenarios = response.ActiveScenarios
+         };
+     }
+ 
+@@ -119,6 +155,18 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             Message = response.Message
+         };
+ 
++    private static FinanceSandboxAnomalyScenarioProfileViewModel MapScenarioProfile(FinanceSandboxAnomalyScenarioProfileResponse response) =>
++        new()
++        {
++            Code = response.Code,
++            Name = response.Name,
++            Description = response.Description
++        };
++
++    private static FinanceSandboxBackendMessageViewModel MapBackendMessage(FinanceSandboxBackendMessageResponse response) =>
++        new()
++        {
++            Severity = response.Severity,
++            Code = response.Code,
++            Message = response.Message
++        };
++
+     private static FinanceSandboxToolExecutionItemViewModel MapToolExecutionItem(FinanceSandboxToolExecutionItemResponse response) =>
+         new()
+         {
+@@ -126,6 +174,54 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             Visibility = response.Visibility,
+             LastStatus = response.LastStatus
+         };
++
++    private static FinanceSandboxAnomalyRegistryItemViewModel MapAnomalyRegistryItem(FinanceSandboxAnomalyRegistryItemResponse response) =>
++        new()
++        {
++            Id = response.Id,
++            Type = response.Type,
++            Status = response.Status,
++            ScenarioProfileCode = response.ScenarioProfileCode,
++            ScenarioProfileName = response.ScenarioProfileName,
++            AffectedRecordType = response.AffectedRecordType,
++            AffectedRecordId = response.AffectedRecordId,
++            AffectedRecordReference = response.AffectedRecordReference,
++            CreatedUtc = response.CreatedUtc,
++            Messages = response.Messages.Select(MapBackendMessage).ToArray()
++        };
++
++    private static FinanceSandboxAnomalyDetailViewModel MapAnomalyDetail(FinanceSandboxAnomalyDetailResponse response) =>
++        new()
++        {
++            Id = response.Id,
++            Type = response.Type,
++            Status = response.Status,
++            ScenarioProfileCode = response.ScenarioProfileCode,
++            ScenarioProfileName = response.ScenarioProfileName,
++            AffectedRecordType = response.AffectedRecordType,
++            AffectedRecordId = response.AffectedRecordId,
++            AffectedRecordReference = response.AffectedRecordReference,
++            CreatedUtc = response.CreatedUtc,
++            ExpectedDetectionMetadataJson = response.ExpectedDetectionMetadataJson,
++            Messages = response.Messages.Select(MapBackendMessage).ToArray()
++        };
++
++    private static FinanceSandboxProgressionRunStepViewModel MapProgressionStep(FinanceSandboxProgressionRunStepResponse response) =>
++        new()
++        {
++            WindowStartUtc = response.WindowStartUtc,
++            WindowEndUtc = response.WindowEndUtc,
++            TransactionsGenerated = response.TransactionsGenerated,
++            InvoicesGenerated = response.InvoicesGenerated,
++            BillsGenerated = response.BillsGenerated,
++            RecurringExpenseInstancesGenerated = response.RecurringExpenseInstancesGenerated,
++            EventsEmitted = response.EventsEmitted
++        };
+ 
+     private static FinanceSandboxDomainEventItemViewModel MapDomainEventItem(FinanceSandboxDomainEventItemResponse response) =>
+         new()
+@@ -181,10 +277,62 @@ public sealed class FinanceSandboxDatasetGenerationViewModel
+ public sealed class FinanceSandboxAnomalyInjectionViewModel
+ {
+     public string Mode { get; set; } = string.Empty;
+     public DateTime LastInjectedUtc { get; set; }
+     public string Observation { get; set; } = string.Empty;
+     public IReadOnlyList<string> ActiveScenarios { get; set; } = [];
++    public IReadOnlyList<FinanceSandboxAnomalyScenarioProfileViewModel> AvailableScenarioProfiles { get; set; } = [];
++    public IReadOnlyList<FinanceSandboxAnomalyRegistryItemViewModel> RegistryEntries { get; set; } = [];
++}
++
++public sealed class FinanceSandboxAnomalyInjectionCommand
++{
++    public Guid CompanyId { get; set; }
++    public string ScenarioProfileCode { get; set; } = string.Empty;
++}
++
++public sealed class FinanceSandboxAnomalyScenarioProfileViewModel
++{
++    public string Code { get; set; } = string.Empty;
++    public string Name { get; set; } = string.Empty;
++    public string Description { get; set; } = string.Empty;
++}
++
++public sealed class FinanceSandboxBackendMessageViewModel
++{
++    public string Severity { get; set; } = string.Empty;
++    public string Code { get; set; } = string.Empty;
++    public string Message { get; set; } = string.Empty;
++}
++
++public sealed class FinanceSandboxAnomalyRegistryItemViewModel
++{
++    public Guid Id { get; set; }
++    public string Type { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string ScenarioProfileCode { get; set; } = string.Empty;
++    public string ScenarioProfileName { get; set; } = string.Empty;
++    public string AffectedRecordType { get; set; } = string.Empty;
++    public Guid? AffectedRecordId { get; set; }
++    public string AffectedRecordReference { get; set; } = string.Empty;
++    public DateTime CreatedUtc { get; set; }
++    public IReadOnlyList<FinanceSandboxBackendMessageViewModel> Messages { get; set; } = [];
++}
++
++public sealed class FinanceSandboxAnomalyDetailViewModel
++{
++    public Guid Id { get; set; }
++    public string Type { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string ScenarioProfileCode { get; set; } = string.Empty;
++    public string ScenarioProfileName { get; set; } = string.Empty;
++    public string AffectedRecordType { get; set; } = string.Empty;
++    public Guid? AffectedRecordId { get; set; }
++    public string AffectedRecordReference { get; set; } = string.Empty;
++    public DateTime CreatedUtc { get; set; }
++    public string ExpectedDetectionMetadataJson { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceSandboxBackendMessageViewModel> Messages { get; set; } = [];
++}
++
++public sealed class FinanceSandboxSimulationAdvanceCommand
++{
++    public Guid CompanyId { get; set; }
++    public int IncrementHours { get; set; }
++    public int? ExecutionStepHours { get; set; }
++    public bool Accelerated { get; set; }
+ }
+ 
+ public sealed class FinanceSandboxSimulationControlsViewModel
+@@ -194,6 +342,36 @@ public sealed class FinanceSandboxSimulationControlsViewModel
+     public string Observation { get; set; } = string.Empty;
+ }
+ 
++public sealed class FinanceSandboxProgressionRunViewModel
++{
++    public string RunType { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public DateTime StartedUtc { get; set; }
++    public DateTime CompletedUtc { get; set; }
++    public int AdvancedHours { get; set; }
++    public int ExecutionStepHours { get; set; }
++    public int TransactionsGenerated { get; set; }
++    public int InvoicesGenerated { get; set; }
++    public int BillsGenerated { get; set; }
++    public int RecurringExpenseInstancesGenerated { get; set; }
++    public int EventsEmitted { get; set; }
++    public IReadOnlyList<FinanceSandboxBackendMessageViewModel> Messages { get; set; } = [];
++    public IReadOnlyList<FinanceSandboxProgressionRunStepViewModel> Steps { get; set; } = [];
++
++    public int GeneratedRecordCount =>
++        TransactionsGenerated +
++        InvoicesGenerated +
++        BillsGenerated +
++        RecurringExpenseInstancesGenerated;
++}
++
++public sealed class FinanceSandboxProgressionRunStepViewModel
++{
++    public DateTime WindowStartUtc { get; set; }
++    public DateTime WindowEndUtc { get; set; }
++    public int TransactionsGenerated { get; set; }
++    public int InvoicesGenerated { get; set; }
++    public int BillsGenerated { get; set; }
++    public int RecurringExpenseInstancesGenerated { get; set; }
++    public int EventsEmitted { get; set; }
++}
++
+ public sealed class FinanceSandboxToolExecutionVisibilityViewModel
+ {
+     public string Summary { get; set; } = string.Empty;
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+index 638d54d..4fb0f65 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+@@ -165,29 +165,138 @@
+                 </FinanceSandboxAdminSection>
+             </div>
+ 
+-            <FinanceSandboxAdminSection TSection="FinanceSandboxAnomalyInjectionViewModel"
+-                                        CompanyId="@AccessState.CompanyId!.Value"
+-                                        Kicker="Sandbox anomaly"
+-                                        Title="Anomaly injection"
+-                                        Description="Track the scenarios currently prepared for synthetic anomaly coverage."
+-                                        LoadingTitle="Loading anomaly injection"
+-                                        LoadingMessage="Fetching configured anomaly injection scenarios."
+-                                        EmptyTitle="No anomaly injections configured"
+-                                        EmptyMessage="No anomaly injection scenarios are configured."
+-                                        ErrorTitle="Anomaly injection is unavailable"
+-                                        Loader="@LoadAnomalyInjectionAsync">
+-                <ChildContent Context="injection">
+-                    <dl class="row mb-0">
+-                        <dt class="col-sm-4">Mode</dt>
+-                        <dd class="col-sm-8">@injection.Mode</dd>
+-                        <dt class="col-sm-4">Last seeded</dt>
+-                        <dd class="col-sm-8">@injection.LastInjectedUtc.ToString("u")</dd>
+-                        <dt class="col-sm-4">Observation</dt>
+-                        <dd class="col-sm-8">@injection.Observation</dd>
+-                    </dl>
+-                    <div class="mt-3">
+-                        <strong class="d-block mb-2">Active scenarios</strong>
+-                        <ul class="mb-0">
+-                            @foreach (var scenario in injection.ActiveScenarios)
++            <div @key="_anomalyInjectionSectionVersion">
++                <FinanceSandboxAdminSection TSection="FinanceSandboxAnomalyInjectionViewModel"
++                                            CompanyId="@AccessState.CompanyId!.Value"
++                                            Kicker="Sandbox anomaly"
++                                            Title="Anomaly injection"
++                                            Description="Submit anomaly registrations for a scenario profile and review the tenant-scoped registry inline."
++                                            LoadingTitle="Loading anomaly injection"
++                                            LoadingMessage="Fetching configured anomaly profiles and registry entries."
++                                            EmptyTitle="No anomaly injections configured"
++                                            EmptyMessage="No anomaly injection scenarios are configured."
++                                            ErrorTitle="Anomaly injection is unavailable"
++                                            Loader="@LoadAnomalyInjectionAsync">
++                    <ChildContent Context="injection">
++                        <div class="row g-4">
++                            <div class="col-lg-5">
++                                <dl class="row mb-3">
++                                    <dt class="col-sm-4">Mode</dt>
++                                    <dd class="col-sm-8">@injection.Mode</dd>
++                                    <dt class="col-sm-4">Last seeded</dt>
++                                    <dd class="col-sm-8">@injection.LastInjectedUtc.ToString("u")</dd>
++                                    <dt class="col-sm-4">Observation</dt>
++                                    <dd class="col-sm-8">@injection.Observation</dd>
++                                </dl>
++
++                                @if (!string.IsNullOrWhiteSpace(_anomalyInjectionErrorMessage))
++                                {
++                                    <div class="alert alert-danger" role="alert">
++                                        @_anomalyInjectionErrorMessage
++                                    </div>
++                                }
++
++                                @if (!string.IsNullOrWhiteSpace(_anomalyInjectionSuccessMessage))
++                                {
++                                    <div class="alert alert-success" role="status">
++                                        @_anomalyInjectionSuccessMessage
++                                    </div>
++                                }
++
++                                <EditForm id="anomaly-injection-form" EditContext="@_anomalyInjectionEditContext" OnValidSubmit="@HandleAnomalyInjectionSubmitAsync">
++                                    <DataAnnotationsValidator />
++                                    <ValidationSummary />
++
++                                    <div class="row g-3">
++                                        <div class="col-12">
++                                            <label class="form-label" for="anomaly-profile">Scenario profile</label>
++                                            <InputSelect id="anomaly-profile" class="form-select" @bind-Value="_anomalyInjectionForm.ScenarioProfileCode" disabled="@_isSubmittingAnomalyInjection">
++                                                <option value="">Select scenario profile</option>
++                                                @foreach (var profile in injection.AvailableScenarioProfiles)
++                                                {
++                                                    <option value="@profile.Code">@profile.Name</option>
++                                                }
++                                            </InputSelect>
++                                            <ValidationMessage For="@(() => _anomalyInjectionForm.ScenarioProfileCode)" />
++                                            <div class="form-text">@SelectedScenarioProfileDescription(injection)</div>
++                                        </div>
++                                        <div class="col-12 d-flex align-items-center gap-3">
++                                            <button id="anomaly-inject-submit" type="submit" class="btn btn-primary" disabled="@_isSubmittingAnomalyInjection">
++                                                @(_isSubmittingAnomalyInjection ? "Registering anomaly..." : "Inject anomaly")
++                                            </button>
++                                            @if (_isSubmittingAnomalyInjection)
++                                            {
++                                                <span class="text-body-secondary">Scenario submission is disabled until the current request finishes.</span>
++                                            }
++                                        </div>
++                                    </div>
++                                </EditForm>
++
++                                @if (injection.ActiveScenarios.Count > 0)
++                                {
++                                    <div class="mt-3">
++                                        <strong class="d-block mb-2">Active scenarios</strong>
++                                        <ul class="mb-0">
++                                            @foreach (var scenario in injection.ActiveScenarios)
++                                            {
++                                                <li>@scenario</li>
++                                            }
++                                        </ul>
++                                    </div>
++                                }
++                            </div>
++
++                            <div class="col-lg-7">
++                                <div class="d-flex justify-content-between align-items-center mb-3">
++                                    <div>
++                                        <h3 class="h6 mb-1">Registry</h3>
++                                        <p class="text-body-secondary mb-0">Select a registry entry to inspect scenario metadata and related finance record links.</p>
++                                    </div>
++                                </div>
++
++                                @if (injection.RegistryEntries.Count == 0)
++                                {
++                                    <p class="text-body-secondary mb-0">No anomaly registry entries are available for the active company.</p>
++                                }
++                                else
++                                {
++                                    <div class="table-responsive">
++                                        <table class="table finance-table mb-0">
++                                            <thead>
++                                                <tr>
++                                                    <th scope="col">Id</th>
++                                                    <th scope="col">Type</th>
++                                                    <th scope="col">Status</th>
++                                                    <th scope="col">Affected record</th>
++                                                </tr>
++                                            </thead>
++                                            <tbody>
++                                                @foreach (var entry in injection.RegistryEntries)
++                                                {
++                                                    <tr class="@(_selectedAnomalyId == entry.Id ? "table-active" : null)">
++                                                        <td class="text-nowrap">
++                                                            <button type="button" class="btn btn-link p-0 fw-semibold text-decoration-none text-start" @onclick="() => HandleAnomalySelectionAsync(entry.Id)">
++                                                                @entry.Id.ToString("D")[..8]
++                                                            </button>
++                                                        </td>
++                                                        <td>
++                                                            <div class="fw-semibold">@FinanceAnomalyPresentation.FormatLabel(entry.Type)</div>
++                                                            <div class="small text-body-secondary">@entry.ScenarioProfileName</div>
++                                                        </td>
++                                                        <td>
++                                                            <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(entry.Status)">
++                                                                @FinanceAnomalyPresentation.FormatLabel(entry.Status)
++                                                            </span>
++                                                        </td>
++                                                        <td>@entry.AffectedRecordReference</td>
++                                                    </tr>
++                                                }
++                                            </tbody>
++                                        </table>
++                                    </div>
++                                }
++                            </div>
++                        </div>
++
++                        <section class="border rounded p-3 mt-4" aria-labelledby="sandbox-anomaly-detail-title">
++                            <h3 id="sandbox-anomaly-detail-title" class="h6 mb-3">Selected anomaly detail</h3>
++
++                            @if (_isLoadingSelectedAnomaly)
+                             {
+-                                <li>@scenario</li>
++                                <p class="text-body-secondary mb-0">Loading anomaly detail...</p>
+                             }
+-                        </ul>
+-                    </div>
+-                </ChildContent>
+-            </FinanceSandboxAdminSection>
++                            else if (!string.IsNullOrWhiteSpace(_selectedAnomalyErrorMessage))
++                            {
++                                <div class="alert alert-danger mb-0">@_selectedAnomalyErrorMessage</div>
++                            }
++                            else if (_selectedAnomalyDetail is null)
++                            {
++                                <p class="text-body-secondary mb-0">Select a registry entry to inspect scenario metadata, affected finance records, and backend messages.</p>
++                            }
++                            else
++                            {
++                                <dl class="row mb-0">
++                                    <dt class="col-sm-4">Scenario profile</dt>
++                                    <dd class="col-sm-8">@_selectedAnomalyDetail.ScenarioProfileName</dd>
++                                    <dt class="col-sm-4">Created</dt>
++                                    <dd class="col-sm-8">@_selectedAnomalyDetail.CreatedUtc.ToString("u")</dd>
++                                    <dt class="col-sm-4">Affected record</dt>
++                                    <dd class="col-sm-8">
++                                        @if (BuildAffectedRecordHref(_selectedAnomalyDetail) is string affectedRecordHref)
++                                        {
++                                            <a href="@affectedRecordHref">@_selectedAnomalyDetail.AffectedRecordReference</a>
++                                        }
++                                        else
++                                        {
++                                            @_selectedAnomalyDetail.AffectedRecordReference
++                                        }
++                                    </dd>
++                                    <dt class="col-sm-4">Expected metadata</dt>
++                                    <dd class="col-sm-8"><code>@_selectedAnomalyDetail.ExpectedDetectionMetadataJson</code></dd>
++                                </dl>
++
++                                @if (_selectedAnomalyDetail.Messages.Count > 0)
++                                {
++                                    <div class="mt-3">
++                                        @foreach (var message in _selectedAnomalyDetail.Messages)
++                                        {
++                                            <div class="@ResolveBackendMessageAlertClass(message.Severity)" role="alert">
++                                                @if (!string.IsNullOrWhiteSpace(message.Code))
++                                                {
++                                                    <span class="fw-semibold">@message.Code:</span>
++                                                    <span> </span>
++                                                }
++                                                @message.Message
++                                            </div>
++                                        }
++                                    </div>
++                                }
++                            }
++                        </section>
++                    </ChildContent>
++                </FinanceSandboxAdminSection>
++            </div>
+ 
+-            <FinanceSandboxAdminSection TSection="FinanceSandboxSimulationControlsViewModel"
+-                                        CompanyId="@AccessState.CompanyId!.Value"
+-                                        Kicker="Simulation clock"
+-                                        Title="Simulation controls"
+-                                        Description="Expose the sandbox clock status and the current simulation checkpoint for the selected company."
+-                                        LoadingTitle="Loading simulation controls"
+-                                        LoadingMessage="Inspecting the sandbox simulation clock."
+-                                        EmptyTitle="Simulation controls are not configured"
+-                                        EmptyMessage="No simulation controls are configured for the active company."
+-                                        ErrorTitle="Simulation controls are unavailable"
+-                                        Loader="@LoadSimulationControlsAsync">
+-                <ChildContent Context="simulation">
+-                    <dl class="row mb-0">
+-                        <dt class="col-sm-4">Clock mode</dt>
+-                        <dd class="col-sm-8">@simulation.ClockMode</dd>
+-                        <dt class="col-sm-4">Reference time</dt>
+-                        <dd class="col-sm-8">@simulation.ReferenceUtc.ToString("u")</dd>
+-                        <dt class="col-sm-4">Checkpoint</dt>
+-                        <dd class="col-sm-8">@simulation.CheckpointLabel</dd>
+-                        <dt class="col-sm-4">Observation</dt>
+-                        <dd class="col-sm-8">@simulation.Observation</dd>
+-                    </dl>
+-                </ChildContent>
+-            </FinanceSandboxAdminSection>
++            <div @key="_simulationControlsSectionVersion">
++                <FinanceSandboxAdminSection TSection="FinanceSandboxSimulationControlsViewModel"
++                                            CompanyId="@AccessState.CompanyId!.Value"
++                                            Kicker="Simulation clock"
++                                            Title="Simulation controls"
++                                            Description="Advance the sandbox clock, start a progression run, and inspect run output without leaving the admin workspace."
++                                            LoadingTitle="Loading simulation controls"
++                                            LoadingMessage="Inspecting the sandbox simulation clock."
++                                            EmptyTitle="Simulation controls are not configured"
++                                            EmptyMessage="No simulation controls are configured for the active company."
++                                            ErrorTitle="Simulation controls are unavailable"
++                                            Loader="@LoadSimulationControlsAsync">
++                    <ChildContent Context="simulation">
++                        <div class="row g-4">
++                            <div class="col-lg-5">
++                                <dl class="row mb-3">
++                                    <dt class="col-sm-4">Clock mode</dt>
++                                    <dd class="col-sm-8">@simulation.ClockMode</dd>
++                                    <dt class="col-sm-4">Reference time</dt>
++                                    <dd class="col-sm-8">@simulation.ReferenceUtc.ToString("u")</dd>
++                                    <dt class="col-sm-4">Checkpoint</dt>
++                                    <dd class="col-sm-8">@simulation.CheckpointLabel</dd>
++                                    <dt class="col-sm-4">Observation</dt>
++                                    <dd class="col-sm-8">@simulation.Observation</dd>
++                                </dl>
++
++                                @if (!string.IsNullOrWhiteSpace(_simulationActionErrorMessage))
++                                {
++                                    <div class="alert alert-danger" role="alert">@_simulationActionErrorMessage</div>
++                                }
++
++                                @if (!string.IsNullOrWhiteSpace(_simulationActionSuccessMessage))
++                                {
++                                    <div class="alert alert-success" role="status">@_simulationActionSuccessMessage</div>
++                                }
++
++                                <EditForm EditContext="@_simulationControlsEditContext">
++                                    <DataAnnotationsValidator />
++                                    <ValidationSummary />
++
++                                    <div class="row g-3">
++                                        <div class="col-md-6">
++                                            <label class="form-label" for="simulation-advance-hours">Advance by hours</label>
++                                            <InputNumber id="simulation-advance-hours" class="form-control" @bind-Value="_simulationControlsForm.AdvanceHours" disabled="@IsSimulationBusy" />
++                                            <ValidationMessage For="@(() => _simulationControlsForm.AdvanceHours)" />
++                                        </div>
++                                        <div class="col-md-6">
++                                            <label class="form-label" for="progression-run-hours">Progression run hours</label>
++                                            <InputNumber id="progression-run-hours" class="form-control" @bind-Value="_simulationControlsForm.ProgressionRunHours" disabled="@IsSimulationBusy" />
++                                            <ValidationMessage For="@(() => _simulationControlsForm.ProgressionRunHours)" />
++                                        </div>
++                                        <div class="col-md-6">
++                                            <label class="form-label" for="simulation-step-hours">Execution step hours</label>
++                                            <InputNumber id="simulation-step-hours" class="form-control" @bind-Value="_simulationControlsForm.ExecutionStepHours" disabled="@IsSimulationBusy" />
++                                            <ValidationMessage For="@(() => _simulationControlsForm.ExecutionStepHours)" />
++                                        </div>
++                                        <div class="col-md-6 d-flex align-items-end">
++                                            <div class="form-check mb-2">
++                                                <InputCheckbox id="simulation-accelerated" class="form-check-input" @bind-Value="_simulationControlsForm.Accelerated" disabled="@IsSimulationBusy" />
++                                                <label class="form-check-label" for="simulation-accelerated">Accelerated progression</label>
++                                            </div>
++                                        </div>
++                                        <div class="col-12 d-flex flex-wrap gap-3">
++                                            <button id="simulation-advance-submit" type="button" class="btn btn-primary" disabled="@IsSimulationBusy" @onclick="HandleAdvanceSimulationAsync">
++                                                @(_isAdvancingSimulation ? "Advancing time..." : "Advance simulation time")
++                                            </button>
++                                            <button id="progression-run-submit" type="button" class="btn btn-outline-primary" disabled="@IsSimulationBusy" @onclick="HandleStartProgressionRunAsync">
++                                                @(_isStartingProgressionRun ? "Starting progression run..." : "Start progression run")
++                                            </button>
++                                        </div>
++                                    </div>
++                                </EditForm>
++                            </div>
++
++                            <div class="col-lg-7">
++                                <h3 class="h6 mb-3">Latest progression output</h3>
++
++                                @if (_latestProgressionRun is null)
++                                {
++                                    <p class="text-body-secondary mb-0">No progression run has been started from this admin session yet.</p>
++                                }
++                                else
++                                {
++                                    <div class="row g-3 mb-3">
++                                        <div class="col-sm-6 col-xl-3">
++                                            <div class="border rounded p-3 h-100">
++                                                <div class="text-body-secondary small">Status</div>
++                                                <div class="mt-1">
++                                                    <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(_latestProgressionRun.Status)">
++                                                        @FinanceAnomalyPresentation.FormatLabel(_latestProgressionRun.Status)
++                                                    </span>
++                                                </div>
++                                            </div>
++                                        </div>
++                                        <div class="col-sm-6 col-xl-3">
++                                            <div class="border rounded p-3 h-100">
++                                                <div class="text-body-secondary small">Generated records</div>
++                                                <div class="fs-5 fw-semibold">@_latestProgressionRun.GeneratedRecordCount</div>
++                                            </div>
++                                        </div>
++                                        <div class="col-sm-6 col-xl-3">
++                                            <div class="border rounded p-3 h-100">
++                                                <div class="text-body-secondary small">Events emitted</div>
++                                                <div class="fs-5 fw-semibold">@_latestProgressionRun.EventsEmitted</div>
++                                            </div>
++                                        </div>
++                                        <div class="col-sm-6 col-xl-3">
++                                            <div class="border rounded p-3 h-100">
++                                                <div class="text-body-secondary small">Advanced hours</div>
++                                                <div class="fs-5 fw-semibold">@_latestProgressionRun.AdvancedHours</div>
++                                            </div>
++                                        </div>
++                                    </div>
++
++                                    @foreach (var message in _latestProgressionRun.Messages)
++                                    {
++                                        <div class="@ResolveBackendMessageAlertClass(message.Severity)" role="alert">
++                                            @message.Message
++                                        </div>
++                                    }
++
++                                    @if (_latestProgressionRun.Steps.Count == 0)
++                                    {
++                                        <p class="text-body-secondary mb-0">The backend did not return step history for this run.</p>
++                                    }
++                                    else
++                                    {
++                                        <div class="table-responsive">
++                                            <table class="table finance-table mb-0">
++                                                <thead>
++                                                    <tr>
++                                                        <th scope="col">Window</th>
++                                                        <th scope="col">Transactions</th>
++                                                        <th scope="col">Invoices</th>
++                                                        <th scope="col">Bills</th>
++                                                        <th scope="col">Generated records</th>
++                                                    </tr>
++                                                </thead>
++                                                <tbody>
++                                                    @foreach (var step in _latestProgressionRun.Steps)
++                                                    {
++                                                        <tr>
++                                                            <td>@step.WindowStartUtc.ToString("u") - @step.WindowEndUtc.ToString("u")</td>
++                                                            <td>@step.TransactionsGenerated</td>
++                                                            <td>@step.InvoicesGenerated</td>
++                                                            <td>@step.BillsGenerated</td>
++                                                            <td>@(step.TransactionsGenerated + step.InvoicesGenerated + step.BillsGenerated + step.RecurringExpenseInstancesGenerated)</td>
++                                                        </tr>
++                                                    }
++                                                </tbody>
++                                            </table>
++                                        </div>
++                                    }
++                                }
++                            </div>
++                        </div>
++                    </ChildContent>
++                </FinanceSandboxAdminSection>
++            </div>
+ 
+             <FinanceSandboxAdminSection TSection="FinanceSandboxToolExecutionVisibilityViewModel"
+                                         CompanyId="@AccessState.CompanyId!.Value"
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+index 790f040..43b8e0f 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+@@ -16,9 +16,24 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         new(FinanceSandboxSeedGenerationModes.RefreshWithAnomalies, "Replace and inject anomalies", "Generate the dataset and add anomaly scenarios for validation coverage.")
+     ];
+     private EditContext _seedGenerationEditContext = default!;
++    private EditContext _anomalyInjectionEditContext = default!;
++    private EditContext _simulationControlsEditContext = default!;
+     private ValidationMessageStore _seedGenerationMessageStore = default!;
++    private ValidationMessageStore _anomalyInjectionMessageStore = default!;
+     private FinanceSandboxSeedGenerationViewModel? _seedGenerationResult;
+     private string? _seedGenerationErrorMessage;
++    private readonly AnomalyInjectionFormModel _anomalyInjectionForm = new();
++    private string? _anomalyInjectionErrorMessage;
++    private string? _anomalyInjectionSuccessMessage;
++    private bool _isSubmittingAnomalyInjection;
++    private Guid? _selectedAnomalyId;
++    private FinanceSandboxAnomalyDetailViewModel? _selectedAnomalyDetail;
++    private bool _isLoadingSelectedAnomaly;
++    private string? _selectedAnomalyErrorMessage;
++    private readonly SimulationControlsFormModel _simulationControlsForm = new();
++    private string? _simulationActionErrorMessage;
++    private string? _simulationActionSuccessMessage;
++    private bool _isAdvancingSimulation;
++    private bool _isStartingProgressionRun;
++    private FinanceSandboxProgressionRunViewModel? _latestProgressionRun;
+     private readonly List<CompanyOption> _companyOptions = [];
+     private bool _isSubmittingSeedGeneration;
+     private int _datasetGenerationSectionVersion;
++    private int _anomalyInjectionSectionVersion;
++    private int _simulationControlsSectionVersion;
+ 
+     private bool HasSandboxAdminAccess =>
+         AccessState.IsAllowed &&
+@@ -36,11 +51,22 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+             ? "Changing company updates the tenant-scoped route before you submit the generation request."
+             : "The active finance company context is applied automatically for seed generation.";
+ 
++    private bool IsSimulationBusy => _isAdvancingSimulation || _isStartingProgressionRun;
++
+     protected override void OnInitialized()
+     {
+         _seedGenerationEditContext = new EditContext(_seedGenerationForm);
+         _seedGenerationMessageStore = new ValidationMessageStore(_seedGenerationEditContext);
+         _seedGenerationEditContext.OnValidationRequested += HandleSeedGenerationValidationRequested;
+         _seedGenerationEditContext.OnFieldChanged += HandleSeedGenerationFieldChanged;
++
++        _anomalyInjectionEditContext = new EditContext(_anomalyInjectionForm);
++        _anomalyInjectionMessageStore = new ValidationMessageStore(_anomalyInjectionEditContext);
++        _anomalyInjectionEditContext.OnValidationRequested += HandleAnomalyInjectionValidationRequested;
++        _anomalyInjectionEditContext.OnFieldChanged += HandleAnomalyInjectionFieldChanged;
++
++        _simulationControlsEditContext = new EditContext(_simulationControlsForm);
++        _simulationControlsForm.AdvanceHours = 24;
++        _simulationControlsForm.ProgressionRunHours = 24;
++        _simulationControlsForm.ExecutionStepHours = 24;
+     }
+ 
+     protected override async Task OnParametersSetAsync()
+@@ -62,6 +88,14 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+             {
+                 _seedGenerationResult = null;
+                 _seedGenerationErrorMessage = null;
++                _anomalyInjectionForm.CompanyId = companyId;
++                _anomalyInjectionForm.ScenarioProfileCode = string.Empty;
++                _anomalyInjectionErrorMessage = null;
++                _anomalyInjectionSuccessMessage = null;
++                _selectedAnomalyId = null;
++                _selectedAnomalyDetail = null;
++                _simulationActionErrorMessage = null;
++                _simulationActionSuccessMessage = null;
++                _latestProgressionRun = null;
+                 ClearSeedGenerationValidation();
+             }
+         }
+@@ -72,6 +106,8 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         if (_seedGenerationForm.AnchorDateUtc == default)
+         {
+             _seedGenerationForm.AnchorDateUtc = DateTime.UtcNow.Date;
++            _simulationControlsForm.AdvanceHours = 24;
++            _simulationControlsForm.ProgressionRunHours = 24;
+         }
+     }
+ 
+@@ -85,6 +121,13 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         _seedGenerationForm.CompanyName = selectedCompany?.CompanyName ?? ResolveCompanyName(companyId);
+         _seedGenerationResult = null;
+         _seedGenerationErrorMessage = null;
++        _anomalyInjectionForm.CompanyId = companyId;
++        _anomalyInjectionForm.ScenarioProfileCode = string.Empty;
++        _anomalyInjectionErrorMessage = null;
++        _anomalyInjectionSuccessMessage = null;
++        _selectedAnomalyId = null;
++        _selectedAnomalyDetail = null;
++        _simulationActionErrorMessage = null;
++        _simulationActionSuccessMessage = null;
+         ClearSeedGenerationValidation();
+ 
+         Navigation.NavigateTo(FinanceRoutes.WithCompanyContext(FinanceRoutes.SandboxAdmin, companyId));
+@@ -149,6 +192,104 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         _seedGenerationMessageStore.Clear(e.FieldIdentifier);
+         _seedGenerationEditContext.NotifyValidationStateChanged();
+     }
++
++    private void HandleAnomalyInjectionValidationRequested(object? sender, ValidationRequestedEventArgs e) =>
++        ClearAnomalyInjectionValidation();
++
++    private void HandleAnomalyInjectionFieldChanged(object? sender, FieldChangedEventArgs e)
++    {
++        _anomalyInjectionMessageStore.Clear(e.FieldIdentifier);
++        _anomalyInjectionEditContext.NotifyValidationStateChanged();
++    }
++
++    private void ClearAnomalyInjectionValidation()
++    {
++        _anomalyInjectionMessageStore.Clear();
++        _anomalyInjectionEditContext.NotifyValidationStateChanged();
++    }
++
++    private async Task HandleAnomalyInjectionSubmitAsync()
++    {
++        if (_isSubmittingAnomalyInjection || _anomalyInjectionForm.CompanyId == Guid.Empty)
++        {
++            return;
++        }
++
++        _anomalyInjectionErrorMessage = null;
++        _anomalyInjectionSuccessMessage = null;
++        _selectedAnomalyErrorMessage = null;
++        _selectedAnomalyDetail = null;
++        _selectedAnomalyId = null;
++        ClearAnomalyInjectionValidation();
++        _isSubmittingAnomalyInjection = true;
++
++        try
++        {
++            var detail = await SandboxAdminService.InjectAnomalyAsync(new FinanceSandboxAnomalyInjectionCommand
++            {
++                CompanyId = _anomalyInjectionForm.CompanyId,
++                ScenarioProfileCode = _anomalyInjectionForm.ScenarioProfileCode
++            });
++
++            _selectedAnomalyId = detail.Id;
++            _selectedAnomalyDetail = detail;
++            _anomalyInjectionSuccessMessage = $"Scenario '{detail.ScenarioProfileName}' was registered successfully.";
++            _anomalyInjectionSectionVersion++;
++        }
++        catch (FinanceApiValidationException ex)
++        {
++            ApplyAnomalyInjectionValidation(ex.Errors);
++            _anomalyInjectionErrorMessage = string.IsNullOrWhiteSpace(ex.Message)
++                ? "The finance API rejected the anomaly injection request. Update the highlighted fields and try again."
++                : ex.Message;
++        }
++        catch (FinanceApiException ex)
++        {
++            _anomalyInjectionErrorMessage = ex.Message;
++        }
++        finally
++        {
++            _isSubmittingAnomalyInjection = false;
++        }
++    }
++
++    private async Task HandleAnomalySelectionAsync(Guid anomalyId)
++    {
++        if (AccessState.CompanyId is not Guid companyId || anomalyId == Guid.Empty)
++        {
++            return;
++        }
++
++        _selectedAnomalyId = anomalyId;
++        _selectedAnomalyErrorMessage = null;
++        _isLoadingSelectedAnomaly = true;
++
++        try
++        {
++            _selectedAnomalyDetail = await SandboxAdminService.GetAnomalyDetailAsync(companyId, anomalyId);
++        }
++        catch (FinanceApiException ex)
++        {
++            _selectedAnomalyDetail = null;
++            _selectedAnomalyErrorMessage = ex.Message;
++        }
++        finally
++        {
++            _isLoadingSelectedAnomaly = false;
++        }
++    }
++
++    private async Task HandleAdvanceSimulationAsync()
++    {
++        if (!_simulationControlsEditContext.Validate() || AccessState.CompanyId is not Guid companyId || IsSimulationBusy)
++        {
++            return;
++        }
++
++        await ExecuteSimulationAdvanceAsync(companyId, _simulationControlsForm.AdvanceHours, "advance");
++    }
++
++    private async Task HandleStartProgressionRunAsync()
++    {
++        if (!_simulationControlsEditContext.Validate() || AccessState.CompanyId is not Guid companyId || IsSimulationBusy)
++        {
++            return;
++        }
++
++        await ExecuteSimulationAdvanceAsync(companyId, _simulationControlsForm.ProgressionRunHours, "progression_run");
++    }
+ 
+     private void ClearSeedGenerationValidation()
+     {
+@@ -157,6 +298,91 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     }
+ 
+     private static DateTime NormalizeAnchorDate(DateTime value) =>
++        DateTime.SpecifyKind(value.Date, DateTimeKind.Utc);
++
++    private async Task ExecuteSimulationAdvanceAsync(Guid companyId, int incrementHours, string runType)
++    {
++        _simulationActionErrorMessage = null;
++        _simulationActionSuccessMessage = null;
++
++        if (string.Equals(runType, "advance", StringComparison.OrdinalIgnoreCase))
++        {
++            _isAdvancingSimulation = true;
++        }
++        else
++        {
++            _isStartingProgressionRun = true;
++        }
++
++        try
++        {
++            _latestProgressionRun = await SandboxAdminService.AdvanceSimulationAsync(new FinanceSandboxSimulationAdvanceCommand
++            {
++                CompanyId = companyId,
++                IncrementHours = incrementHours,
++                ExecutionStepHours = _simulationControlsForm.ExecutionStepHours,
++                Accelerated = _simulationControlsForm.Accelerated
++            });
++
++            _simulationActionSuccessMessage = string.Equals(runType, "advance", StringComparison.OrdinalIgnoreCase)
++                ? $"Simulation advanced by {incrementHours} hour(s)."
++                : $"Progression run completed for {incrementHours} hour(s).";
++            _simulationControlsSectionVersion++;
++            _anomalyInjectionSectionVersion++;
++        }
++        catch (FinanceApiException ex)
++        {
++            _simulationActionErrorMessage = ex.Message;
++        }
++        finally
++        {
++            _isAdvancingSimulation = false;
++            _isStartingProgressionRun = false;
++        }
++    }
++
++    private void ApplyAnomalyInjectionValidation(IReadOnlyDictionary<string, string[]> errors)
++    {
++        foreach (var (key, messages) in errors)
++        {
++            var fieldName = key.Contains(nameof(FinanceSandboxAnomalyInjectionRequest.ScenarioProfileCode), StringComparison.OrdinalIgnoreCase)
++                ? nameof(AnomalyInjectionFormModel.ScenarioProfileCode)
++                : string.Empty;
++            var fieldIdentifier = string.IsNullOrWhiteSpace(fieldName)
++                ? new FieldIdentifier(_anomalyInjectionForm, string.Empty)
++                : new FieldIdentifier(_anomalyInjectionForm, fieldName);
++            _anomalyInjectionMessageStore.Add(fieldIdentifier, messages);
++        }
++
++        _anomalyInjectionEditContext.NotifyValidationStateChanged();
++    }
++
++    private string SelectedScenarioProfileDescription(FinanceSandboxAnomalyInjectionViewModel injection) =>
++        injection.AvailableScenarioProfiles.FirstOrDefault(profile => string.Equals(profile.Code, _anomalyInjectionForm.ScenarioProfileCode, StringComparison.OrdinalIgnoreCase))?.Description
++        ?? "Choose the scenario profile to register in the anomaly sandbox.";
++
++    private string ResolveBackendMessageAlertClass(string? severity) =>
++        severity?.Trim().ToLowerInvariant() switch
++        {
++            "failure" or "error" => "alert alert-danger mb-2",
++            "warning" => "alert alert-warning mb-2",
++            _ => "alert alert-info mb-2"
++        };
++
++    private string? BuildAffectedRecordHref(FinanceSandboxAnomalyDetailViewModel detail) =>
++        detail.AffectedRecordId is not Guid recordId || recordId == Guid.Empty
++            ? null
++            : detail.AffectedRecordType.Trim().ToLowerInvariant() switch
++            {
++                "transaction" => FinanceRoutes.BuildTransactionDetailPath(recordId, AccessState.CompanyId),
++                "invoice" => FinanceRoutes.BuildInvoiceDetailPath(recordId, AccessState.CompanyId),
++                _ => null
++            };
++
++    private Task<FinanceSandboxDatasetGenerationViewModel?> LoadDatasetGenerationAsync(Guid companyId, CancellationToken cancellationToken) =>
++        SandboxAdminService.GetDatasetGenerationAsync(companyId, cancellationToken);
++
++    private Task<FinanceSandboxAnomalyInjectionViewModel?> LoadAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken) =>
++        SandboxAdminService.GetAnomalyInjectionAsync(companyId, cancellationToken);
++
++    private Task<FinanceSandboxSimulationControlsViewModel?> LoadSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken) =>
++        SandboxAdminService.GetSimulationControlsAsync(companyId, cancellationToken);
++
++    private static DateTime NormalizeAnchorDate(DateTime value) =>
+         DateTime.SpecifyKind(value.Date, DateTimeKind.Utc);
+ 
+     private IReadOnlyList<CompanyOption> GetSandboxAdminCompanyOptions() =>
+@@ -175,15 +401,6 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         _companyOptions.FirstOrDefault(option => option.CompanyId == companyId)?.CompanyName
+         ?? AccessState.CompanyName ?? "Active company";
+ 
+-    private Task<FinanceSandboxDatasetGenerationViewModel?> LoadDatasetGenerationAsync(Guid companyId, CancellationToken cancellationToken) =>
+-        SandboxAdminService.GetDatasetGenerationAsync(companyId, cancellationToken);
+-
+-    private Task<FinanceSandboxAnomalyInjectionViewModel?> LoadAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken) =>
+-        SandboxAdminService.GetAnomalyInjectionAsync(companyId, cancellationToken);
+-
+-    private Task<FinanceSandboxSimulationControlsViewModel?> LoadSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken) =>
+-        SandboxAdminService.GetSimulationControlsAsync(companyId, cancellationToken);
+-
+     private Task<FinanceSandboxToolExecutionVisibilityViewModel?> LoadToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken) =>
+         SandboxAdminService.GetToolExecutionVisibilityAsync(companyId, cancellationToken);
+ 
+@@ -222,10 +439,16 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+ 
+     public void Dispose()
+     {
+         _seedGenerationEditContext.OnValidationRequested -= HandleSeedGenerationValidationRequested;
+         _seedGenerationEditContext.OnFieldChanged -= HandleSeedGenerationFieldChanged;
++        _anomalyInjectionEditContext.OnValidationRequested -= HandleAnomalyInjectionValidationRequested;
++        _anomalyInjectionEditContext.OnFieldChanged -= HandleAnomalyInjectionFieldChanged;
+     }
+ 
+     private sealed class SeedGenerationFormModel : IValidatableObject
+     {
+         public Guid CompanyId { get; set; }
+@@ -264,6 +487,39 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         }
+     }
+ 
++    private sealed class AnomalyInjectionFormModel : IValidatableObject
++    {
++        public Guid CompanyId { get; set; }
++
++        [Required(ErrorMessage = "Select a scenario profile.")]
++        public string ScenarioProfileCode { get; set; } = string.Empty;
++
++        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
++        {
++            if (CompanyId == Guid.Empty)
++            {
++                yield return new ValidationResult("Select a company before injecting an anomaly.", [nameof(CompanyId)]);
++            }
++
++            if (string.IsNullOrWhiteSpace(ScenarioProfileCode))
++            {
++                yield return new ValidationResult("Select a scenario profile.", [nameof(ScenarioProfileCode)]);
++            }
++        }
++    }
++
++    private sealed class SimulationControlsFormModel
++    {
++        [Range(1, 720, ErrorMessage = "Enter a positive advance increment.")]
++        public int AdvanceHours { get; set; } = 24;
++
++        [Range(1, 720, ErrorMessage = "Enter a positive progression run duration.")]
++        public int ProgressionRunHours { get; set; } = 24;
++
++        [Range(1, 168, ErrorMessage = "Enter a positive execution step size.")]
++        public int? ExecutionStepHours { get; set; } = 24;
++
++        public bool Accelerated { get; set; } = true;
++    }
++
+     private sealed record GenerationModeOption(
+         string Value,
+         string Label,
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index e65f6e1..af408dc 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -565,12 +565,49 @@ public sealed class InternalFinanceController : ControllerBase
+         ExecuteReadOptionalAsync(
+             () => BuildSandboxAnomalyInjectionAsync(companyId, cancellationToken),
+             "Finance sandbox anomaly injection data was not found.");
++
++    [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
++    [HttpGet("sandbox-admin/anomaly-injection/{anomalyId:guid}")]
++    public Task<ActionResult<FinanceSandboxAnomalyDetailResponse>> GetSandboxAnomalyDetailAsync(
++        Guid companyId,
++        Guid anomalyId,
++        CancellationToken cancellationToken) =>
++        ExecuteReadOptionalAsync(
++            () => BuildSandboxAnomalyDetailAsync(companyId, anomalyId, cancellationToken),
++            "Finance sandbox anomaly detail was not found.");
++
++    [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
++    [HttpPost("sandbox-admin/anomaly-injection")]
++    public async Task<ActionResult<FinanceSandboxAnomalyDetailResponse>> InjectSandboxAnomalyAsync(
++        Guid companyId,
++        [FromBody] FinanceSandboxAnomalyInjectionRequest request,
++        CancellationToken cancellationToken)
++    {
++        var validationErrors = ValidateSandboxAnomalyInjectionRequest(companyId, request);
++        if (validationErrors.Count > 0)
++        {
++            return ValidationProblem(new ValidationProblemDetails(validationErrors)
++            {
++                Title = "Finance validation failed",
++                Detail = "Update the anomaly injection request and try again.",
++                Status = StatusCodes.Status400BadRequest,
++                Instance = HttpContext.Request.Path
++            });
++        }
++
++        var profile = SandboxScenarioProfiles.First(x => string.Equals(x.Code, request.ScenarioProfileCode.Trim(), StringComparison.OrdinalIgnoreCase));
++        var affectedRecord = await ResolveSandboxFinanceRecordAsync(companyId, [], cancellationToken);
++        if (affectedRecord is null)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]> { [nameof(FinanceSandboxAnomalyInjectionRequest.ScenarioProfileCode)] = ["No finance records are available yet for anomaly injection. Generate a sandbox dataset first."] })
++            {
++                Title = "Finance validation failed",
++                Detail = "Generate sandbox data before injecting anomalies.",
++                Status = StatusCodes.Status400BadRequest,
++                Instance = HttpContext.Request.Path
++            });
++        }
++
++        var anomaly = new FinanceSeedAnomaly(Guid.NewGuid(), companyId, MapScenarioProfileToAnomalyType(profile.Code), profile.Code, [affectedRecord.RecordId], BuildExpectedDetectionMetadataJson(profile, affectedRecord));
++        _dbContext.FinanceSeedAnomalies.Add(anomaly);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return Ok(await BuildSandboxAnomalyDetailAsync(companyId, anomaly.Id, cancellationToken));
++    }
+ 
+     [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
+     [HttpGet("sandbox-admin/simulation-controls")]
+@@ -582,6 +619,52 @@ public sealed class InternalFinanceController : ControllerBase
+             () => BuildSandboxSimulationControlsAsync(companyId, cancellationToken),
+             "Finance sandbox simulation controls were not found.");
+ 
++    [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
++    [HttpPost("sandbox-admin/simulation-controls/advance")]
++    public async Task<ActionResult<FinanceSandboxProgressionRunSummaryResponse>> AdvanceSandboxSimulationAsync(
++        Guid companyId,
++        [FromBody] FinanceSandboxSimulationAdvanceRequest request,
++        CancellationToken cancellationToken)
++    {
++        var validationErrors = ValidateSandboxSimulationAdvanceRequest(companyId, request);
++        if (validationErrors.Count > 0)
++        {
++            return ValidationProblem(new ValidationProblemDetails(validationErrors)
++            {
++                Title = "Finance validation failed",
++                Detail = "Update the simulation control request and try again.",
++                Status = StatusCodes.Status400BadRequest,
++                Instance = HttpContext.Request.Path
++            });
++        }
++
++        var result = await _companySimulationService.AdvanceAsync(
++            new AdvanceCompanySimulationTimeCommand(companyId, request.IncrementHours, request.ExecutionStepHours, request.Accelerated),
++            cancellationToken);
++
++        return Ok(BuildSandboxProgressionRunSummary("progression_run", result));
++    }
++
++    private static readonly FinanceSandboxAnomalyScenarioProfileResponse[] SandboxScenarioProfiles =
++    [
++        new() { Code = "baseline", Name = "Baseline threshold breach", Description = "Registers a threshold-breach anomaly against an existing sandbox record." },
++        new() { Code = "missing_receipt", Name = "Missing receipt", Description = "Registers a missing-receipt scenario for finance validation coverage." },
++        new() { Code = "duplicate_vendor_charge", Name = "Duplicate vendor charge", Description = "Registers a duplicate-charge anomaly for accounts payable review flows." },
++        new() { Code = "historical_baseline_deviation", Name = "Historical baseline deviation", Description = "Registers a historical-drift scenario against a representative sandbox record." }
++    ];
++
++    private sealed record SandboxFinanceRecordCandidate(
++        Guid RecordId,
++        string RecordType,
++        string Reference);
++
++    private static Dictionary<string, string[]> ValidateSandboxAnomalyInjectionRequest(Guid companyId, FinanceSandboxAnomalyInjectionRequest request)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++        if (request.CompanyId != companyId) errors[nameof(FinanceSandboxAnomalyInjectionRequest.CompanyId)] = ["The request company does not match the active company context."];
++        if (string.IsNullOrWhiteSpace(request.ScenarioProfileCode)) errors[nameof(FinanceSandboxAnomalyInjectionRequest.ScenarioProfileCode)] = ["Select a scenario profile."];
++        else if (!SandboxScenarioProfiles.Any(x => string.Equals(x.Code, request.ScenarioProfileCode.Trim(), StringComparison.OrdinalIgnoreCase))) errors[nameof(FinanceSandboxAnomalyInjectionRequest.ScenarioProfileCode)] = ["Select a supported scenario profile."];
++        return errors;
++    }
++
++    private static Dictionary<string, string[]> ValidateSandboxSimulationAdvanceRequest(Guid companyId, FinanceSandboxSimulationAdvanceRequest request)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++        if (request.CompanyId != companyId) errors[nameof(FinanceSandboxSimulationAdvanceRequest.CompanyId)] = ["The request company does not match the active company context."];
++        if (request.IncrementHours <= 0) errors[nameof(FinanceSandboxSimulationAdvanceRequest.IncrementHours)] = ["Enter a positive hour increment."];
++        if (request.ExecutionStepHours is <= 0) errors[nameof(FinanceSandboxSimulationAdvanceRequest.ExecutionStepHours)] = ["Enter a positive execution step size."];
++        return errors;
++    }
++
+     [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
+     [HttpGet("sandbox-admin/tool-execution-visibility")]
+     public Task<ActionResult<FinanceSandboxToolExecutionVisibilityResponse>> GetSandboxToolExecutionVisibilityAsync(
+@@ -711,6 +794,67 @@ public sealed class InternalFinanceController : ControllerBase
+             ActiveScenarios = anomalies
+                 .Select(x => $"{x.AnomalyType} ({x.ScenarioProfile})")
+                 .Distinct(StringComparer.OrdinalIgnoreCase)
++                .ToArray(),
++            AvailableScenarioProfiles = SandboxScenarioProfiles,
++            RegistryEntries = await Task.WhenAll(anomalies.Select(anomaly => BuildSandboxAnomalyRegistryItemAsync(companyId, anomaly, cancellationToken)))
++        };
++    }
++
++    private async Task<FinanceSandboxAnomalyRegistryItemResponse> BuildSandboxAnomalyRegistryItemAsync(
++        Guid companyId,
++        FinanceSeedAnomaly anomaly,
++        CancellationToken cancellationToken)
++    {
++        var affectedRecord = await ResolveSandboxFinanceRecordAsync(companyId, anomaly.GetAffectedRecordIds(), cancellationToken);
++        var profile = SandboxScenarioProfiles.FirstOrDefault(x => string.Equals(x.Code, anomaly.ScenarioProfile, StringComparison.OrdinalIgnoreCase));
++
++        return new FinanceSandboxAnomalyRegistryItemResponse
++        {
++            Id = anomaly.Id,
++            Type = anomaly.AnomalyType,
++            Status = "registered",
++            ScenarioProfileCode = anomaly.ScenarioProfile,
++            ScenarioProfileName = profile?.Name ?? HumanizeReviewToken(anomaly.ScenarioProfile),
++            AffectedRecordType = affectedRecord?.RecordType ?? "unknown",
++            AffectedRecordId = affectedRecord?.RecordId,
++            AffectedRecordReference = affectedRecord?.Reference ?? anomaly.GetAffectedRecordIds().FirstOrDefault().ToString("D"),
++            CreatedUtc = anomaly.CreatedUtc,
++            Messages =
++            [
++                new FinanceSandboxBackendMessageResponse
++                {
++                    Severity = "info",
++                    Code = "sandbox.registry.registered",
++                    Message = $"Scenario '{profile?.Name ?? anomaly.ScenarioProfile}' is registered for sandbox validation."
++                }
++            ]
++        };
++    }
++
++    private async Task<FinanceSandboxAnomalyDetailResponse?> BuildSandboxAnomalyDetailAsync(
++        Guid companyId,
++        Guid anomalyId,
++        CancellationToken cancellationToken)
++    {
++        var anomaly = await _dbContext.FinanceSeedAnomalies
++            .Where(x => x.CompanyId == companyId && x.Id == anomalyId)
++            .SingleOrDefaultAsync(cancellationToken);
++        if (anomaly is null)
++        {
++            return null;
++        }
++
++        var affectedRecord = await ResolveSandboxFinanceRecordAsync(companyId, anomaly.GetAffectedRecordIds(), cancellationToken);
++        var profile = SandboxScenarioProfiles.FirstOrDefault(x => string.Equals(x.Code, anomaly.ScenarioProfile, StringComparison.OrdinalIgnoreCase));
++
++        return new FinanceSandboxAnomalyDetailResponse
++        {
++            Id = anomaly.Id,
++            Type = anomaly.AnomalyType,
++            Status = "registered",
++            ScenarioProfileCode = anomaly.ScenarioProfile,
++            ScenarioProfileName = profile?.Name ?? HumanizeReviewToken(anomaly.ScenarioProfile),
++            AffectedRecordType = affectedRecord?.RecordType ?? "unknown",
++            AffectedRecordId = affectedRecord?.RecordId,
++            AffectedRecordReference = affectedRecord?.Reference ?? anomaly.GetAffectedRecordIds().FirstOrDefault().ToString("D"),
++            CreatedUtc = anomaly.CreatedUtc,
++            ExpectedDetectionMetadataJson = anomaly.ExpectedDetectionMetadataJson,
++            Messages =
++            [
++                new FinanceSandboxBackendMessageResponse
++                {
++                    Severity = "info",
++                    Code = "sandbox.anomaly.detail",
++                    Message = $"Scenario '{profile?.Name ?? anomaly.ScenarioProfile}' is ready for sandbox review."
++                }
++            ]
+-                .ToArray()
+         };
+     }
+ 
+@@ -735,6 +879,63 @@ public sealed class InternalFinanceController : ControllerBase
+                     ? "The latest simulation run used accelerated progression."
+                     : "The latest simulation run used standard progression."
+         };
++    }
++
++    private async Task<SandboxFinanceRecordCandidate?> ResolveSandboxFinanceRecordAsync(
++        Guid companyId,
++        IReadOnlyList<Guid> preferredIds,
++        CancellationToken cancellationToken)
++    {
++        foreach (var recordId in preferredIds.Where(x => x != Guid.Empty))
++        {
++            var transaction = await _dbContext.FinanceTransactions
++                .Where(x => x.CompanyId == companyId && x.Id == recordId)
++                .Select(x => new SandboxFinanceRecordCandidate(x.Id, "transaction", string.IsNullOrWhiteSpace(x.ExternalReference) ? $"Transaction {x.Id:D}" : x.ExternalReference))
++                .FirstOrDefaultAsync(cancellationToken);
++            if (transaction is not null) return transaction;
++
++            var invoice = await _dbContext.FinanceInvoices
++                .Where(x => x.CompanyId == companyId && x.Id == recordId)
++                .Select(x => new SandboxFinanceRecordCandidate(x.Id, "invoice", x.InvoiceNumber))
++                .FirstOrDefaultAsync(cancellationToken);
++            if (invoice is not null) return invoice;
++
++            var bill = await _dbContext.FinanceBills
++                .Where(x => x.CompanyId == companyId && x.Id == recordId)
++                .Select(x => new SandboxFinanceRecordCandidate(x.Id, "bill", x.BillNumber))
++                .FirstOrDefaultAsync(cancellationToken);
++            if (bill is not null) return bill;
++        }
++
++        return await _dbContext.FinanceTransactions
++            .Where(x => x.CompanyId == companyId)
++            .OrderByDescending(x => x.CreatedUtc)
++            .Select(x => new SandboxFinanceRecordCandidate(x.Id, "transaction", string.IsNullOrWhiteSpace(x.ExternalReference) ? $"Transaction {x.Id:D}" : x.ExternalReference))
++            .FirstOrDefaultAsync(cancellationToken)
++            ?? await _dbContext.FinanceInvoices
++                .Where(x => x.CompanyId == companyId)
++                .OrderByDescending(x => x.UpdatedUtc)
++                .Select(x => new SandboxFinanceRecordCandidate(x.Id, "invoice", x.InvoiceNumber))
++                .FirstOrDefaultAsync(cancellationToken)
++            ?? await _dbContext.FinanceBills
++                .Where(x => x.CompanyId == companyId)
++                .OrderByDescending(x => x.UpdatedUtc)
++                .Select(x => new SandboxFinanceRecordCandidate(x.Id, "bill", x.BillNumber))
++                .FirstOrDefaultAsync(cancellationToken);
++    }
++
++    private static string MapScenarioProfileToAnomalyType(string code) =>
++        code.Trim().ToLowerInvariant() switch
++        {
++            "missing_receipt" => "missing_receipt",
++            "duplicate_vendor_charge" => "duplicate_vendor_charge",
++            "historical_baseline_deviation" => "historical_baseline_deviation",
++            _ => "threshold_breach"
++        };
++
++    private static string BuildExpectedDetectionMetadataJson(FinanceSandboxAnomalyScenarioProfileResponse profile, SandboxFinanceRecordCandidate affectedRecord) =>
++        new JsonObject
++        {
++            ["scenarioProfileCode"] = profile.Code,
++            ["scenarioProfileName"] = profile.Name,
++            ["affectedRecordType"] = affectedRecord.RecordType,
++            ["affectedRecordReference"] = affectedRecord.Reference
++        }.ToJsonString();
++
++    private static FinanceSandboxProgressionRunSummaryResponse BuildSandboxProgressionRunSummary(string runType, AdvanceCompanySimulationTimeResultDto result)
++    {
++        var generatedRecordCount = result.TransactionsGenerated + result.InvoicesGenerated + result.BillsGenerated + result.RecurringExpenseInstancesGenerated;
++        return new FinanceSandboxProgressionRunSummaryResponse
++        {
++            RunType = runType,
++            Status = "completed",
++            StartedUtc = result.PreviousUtc,
++            CompletedUtc = result.CurrentUtc,
++            AdvancedHours = result.TotalHoursProcessed,
++            ExecutionStepHours = result.ExecutionStepHours,
++            TransactionsGenerated = result.TransactionsGenerated,
++            InvoicesGenerated = result.InvoicesGenerated,
++            BillsGenerated = result.BillsGenerated,
++            RecurringExpenseInstancesGenerated = result.RecurringExpenseInstancesGenerated,
++            EventsEmitted = result.EventsEmitted,
++            Messages = generatedRecordCount == 0
++                ? [new FinanceSandboxBackendMessageResponse { Severity = "warning", Code = "sandbox.progression.no_output", Message = "The progression run completed without generating new finance records." }]
++                : [new FinanceSandboxBackendMessageResponse { Severity = "info", Code = "sandbox.progression.completed", Message = $"The progression run completed and generated {generatedRecordCount} finance record(s)." }],
++            Steps = result.Logs.Select(log => new FinanceSandboxProgressionRunStepResponse
++            {
++                WindowStartUtc = log.WindowStartUtc,
++                WindowEndUtc = log.WindowEndUtc,
++                TransactionsGenerated = log.TransactionsGenerated,
++                InvoicesGenerated = log.InvoicesGenerated,
++                BillsGenerated = log.BillsGenerated,
++                RecurringExpenseInstancesGenerated = log.RecurringExpenseInstancesGenerated,
++                EventsEmitted = log.EventsEmitted
++            }).ToArray()
++        };
+     }
+ 
+     private async Task<FinanceSandboxToolExecutionVisibilityResponse?> BuildSandboxToolExecutionVisibilityAsync(
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs b/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs
+index 1d9b42b..4ec6723 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceApiClientTenantContextTests.cs
+@@ -57,6 +57,38 @@ public sealed class FinanceApiClientTenantContextTests
+         Assert.Equal(FinanceSandboxSeedGenerationModes.RefreshWithAnomalies, handler.CapturedRequest.Payload.GenerationMode);
+     }
+ 
++    [Fact]
++    public async Task Sandbox_admin_mutations_include_the_active_company_header_and_payload()
++    {
++        var companyId = Guid.NewGuid();
++        var handler = new RecordingSandboxAdminMutationHttpMessageHandler();
++        using var httpClient = new HttpClient(handler)
++        {
++            BaseAddress = new Uri("http://localhost/")
++        };
++
++        var financeClient = new FinanceApiClient(httpClient);
++
++        await financeClient.InjectSandboxAnomalyAsync(companyId, new FinanceSandboxAnomalyInjectionRequest
++        {
++            CompanyId = companyId,
++            ScenarioProfileCode = "duplicate_vendor_charge"
++        });
++
++        await financeClient.AdvanceSandboxSimulationAsync(companyId, new FinanceSandboxSimulationAdvanceRequest
++        {
++            CompanyId = companyId,
++            IncrementHours = 24,
++            ExecutionStepHours = 24,
++            Accelerated = true
++        });
++
++        Assert.Equal(2, handler.Requests.Count);
++        Assert.All(handler.Requests, request =>
++        {
++            Assert.Equal(companyId.ToString(), request.CompanyHeaderValue);
++            Assert.Equal(companyId, request.CompanyId);
++        });
++        Assert.Contains(handler.Requests, request => request.Path.EndsWith("/sandbox-admin/anomaly-injection", StringComparison.Ordinal));
++        Assert.Contains(handler.Requests, request => request.Path.EndsWith("/sandbox-admin/simulation-controls/advance", StringComparison.Ordinal));
++    }
++
+     private sealed class RecordingFinanceHttpMessageHandler : HttpMessageHandler
+     {
+         private readonly Guid _companyId;
+@@ -229,6 +261,57 @@ public sealed class FinanceApiClientTenantContextTests
+             };
+         }
+     }
++
++    private sealed class RecordingSandboxAdminMutationHttpMessageHandler : HttpMessageHandler
++    {
++        public List<CapturedSandboxMutationRequest> Requests { get; } = [];
++
++        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
++        {
++            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
++            if (path.EndsWith("/sandbox-admin/anomaly-injection", StringComparison.Ordinal))
++            {
++                var payload = await request.Content!.ReadFromJsonAsync<FinanceSandboxAnomalyInjectionRequest>(cancellationToken: cancellationToken);
++                Requests.Add(new CapturedSandboxMutationRequest(path, request.Headers.GetValues("X-Company-Id").Single(), payload!.CompanyId));
++                return new HttpResponseMessage(HttpStatusCode.OK)
++                {
++                    Content = JsonContent.Create(new FinanceSandboxAnomalyDetailResponse
++                    {
++                        Id = Guid.NewGuid(),
++                        Type = "duplicate_vendor_charge",
++                        Status = "registered",
++                        ScenarioProfileCode = payload.ScenarioProfileCode,
++                        ScenarioProfileName = "Duplicate vendor charge",
++                        AffectedRecordType = "transaction",
++                        AffectedRecordId = Guid.NewGuid(),
++                        AffectedRecordReference = "SIM-TX-1001",
++                        CreatedUtc = DateTime.UtcNow,
++                        ExpectedDetectionMetadataJson = """{"scenarioProfileCode":"duplicate_vendor_charge"}"""
++                    })
++                };
++            }
++
++            var simulationPayload = await request.Content!.ReadFromJsonAsync<FinanceSandboxSimulationAdvanceRequest>(cancellationToken: cancellationToken);
++            Requests.Add(new CapturedSandboxMutationRequest(path, request.Headers.GetValues("X-Company-Id").Single(), simulationPayload!.CompanyId));
++            return new HttpResponseMessage(HttpStatusCode.OK)
++            {
++                Content = JsonContent.Create(new FinanceSandboxProgressionRunSummaryResponse
++                {
++                    RunType = "progression_run",
++                    Status = "completed",
++                    StartedUtc = DateTime.UtcNow.AddHours(-24),
++                    CompletedUtc = DateTime.UtcNow,
++                    AdvancedHours = simulationPayload.IncrementHours,
++                    ExecutionStepHours = simulationPayload.ExecutionStepHours ?? 24,
++                    TransactionsGenerated = 4,
++                    InvoicesGenerated = 2,
++                    BillsGenerated = 1,
++                    RecurringExpenseInstancesGenerated = 1,
++                    EventsEmitted = 1
++                })
++            };
++        }
++    }
+ 
+     private sealed record CapturedRequest(
+         string Path,
+         string PathPrefix,
+         string? CompanyHeaderValue);
+@@ -237,4 +320,9 @@ public sealed class FinanceApiClientTenantContextTests
+     private sealed record CapturedSeedGenerationRequest(
+         string Path,
+         string? CompanyHeaderValue,
+         FinanceSandboxSeedGenerationRequest? Payload);
++
++    private sealed record CapturedSandboxMutationRequest(
++        string Path,
++        string? CompanyHeaderValue,
++        Guid CompanyId);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+index 65b840a..ab596f7 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+@@ -215,6 +215,56 @@ public sealed class FinanceSandboxAdminPageTests
+         });
+     }
+ 
++    [Fact]
++    public void Sandbox_admin_page_requires_a_scenario_profile_before_injecting_an_anomaly()
++    {
++        var companyId = Guid.Parse("d14589ee-0a75-4f2b-a4bc-4d6dd3661f98");
++        var sandboxService = new StubFinanceSandboxAdminService
++        {
++            OnGetAnomalyInjectionAsync = (_, _) => Task.FromResult<FinanceSandboxAnomalyInjectionViewModel?>(new FinanceSandboxAnomalyInjectionViewModel
++            {
++                Mode = "Seed anomaly scenarios",
++                LastInjectedUtc = new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc),
++                Observation = "Ready",
++                AvailableScenarioProfiles =
++                [
++                    new FinanceSandboxAnomalyScenarioProfileViewModel
++                    {
++                        Code = "duplicate_vendor_charge",
++                        Name = "Duplicate vendor charge",
++                        Description = "Inject a duplicate vendor charge scenario."
++                    }
++                ],
++                RegistryEntries = []
++            })
++        };
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId));
++
++        cut.WaitForAssertion(() => Assert.Contains("Scenario profile", cut.Markup));
++        cut.Find("#anomaly-injection-form").Submit();
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Select a scenario profile.", cut.Markup);
++            Assert.Equal(0, sandboxService.InjectAnomalyCalls);
++        });
++    }
++
++    [Fact]
++    public void Sandbox_admin_page_renders_progression_output_counts_and_backend_messages()
++    {
++        var companyId = Guid.Parse("909f4e3d-71d4-4fd0-a1f7-d7e6a0eb03d3");
++        var sandboxService = new StubFinanceSandboxAdminService
++        {
++            OnGetSimulationControlsAsync = (_, _) => Task.FromResult<FinanceSandboxSimulationControlsViewModel?>(new FinanceSandboxSimulationControlsViewModel
++            {
++                ClockMode = "Simulated clock enabled",
++                ReferenceUtc = new DateTime(2026, 4, 16, 10, 0, 0, DateTimeKind.Utc),
++                CheckpointLabel = "Ready",
++                Observation = "Awaiting run"
++            }),
++            OnAdvanceSimulationAsync = (_, _) => Task.FromResult(new FinanceSandboxProgressionRunViewModel
++            {
++                RunType = "progression_run",
++                Status = "completed",
++                StartedUtc = new DateTime(2026, 4, 16, 10, 0, 0, DateTimeKind.Utc),
++                CompletedUtc = new DateTime(2026, 4, 16, 11, 0, 0, DateTimeKind.Utc),
++                AdvancedHours = 24,
++                ExecutionStepHours = 24,
++                TransactionsGenerated = 4,
++                InvoicesGenerated = 2,
++                BillsGenerated = 1,
++                RecurringExpenseInstancesGenerated = 1,
++                EventsEmitted = 1,
++                Messages = [new FinanceSandboxBackendMessageViewModel { Severity = "warning", Code = "sandbox.progression.completed", Message = "The progression run completed and generated 8 finance record(s)." }],
++                Steps = [new FinanceSandboxProgressionRunStepViewModel { WindowStartUtc = new DateTime(2026, 4, 16, 10, 0, 0, DateTimeKind.Utc), WindowEndUtc = new DateTime(2026, 4, 16, 11, 0, 0, DateTimeKind.Utc), TransactionsGenerated = 4, InvoicesGenerated = 2, BillsGenerated = 1, RecurringExpenseInstancesGenerated = 1, EventsEmitted = 1 }]
++            })
++        };
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        var cut = RenderSandboxAdmin(harness, companyId);
++        cut.WaitForAssertion(() => Assert.Contains("Start progression run", cut.Markup));
++        cut.Find("#progression-run-submit").Click();
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("generated 8 finance record(s)", cut.Markup);
++            Assert.Contains(">8<", cut.Markup);
++            Assert.Contains(">1<", cut.Markup);
++        });
++    }
++
+     private static IRenderedComponent<SandboxAdminPage> RenderSandboxAdmin(SandboxAdminHarness harness, Guid companyId)
+     {
+         harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+@@ -322,6 +372,8 @@ public sealed class FinanceSandboxAdminPageTests
+         public Func<Guid, CancellationToken, Task<FinanceSandboxAnomalyInjectionViewModel?>>? OnGetAnomalyInjectionAsync { get; init; }
+         public Func<Guid, CancellationToken, Task<FinanceSandboxSimulationControlsViewModel?>>? OnGetSimulationControlsAsync { get; init; }
+         public Func<Guid, CancellationToken, Task<FinanceSandboxToolExecutionVisibilityViewModel?>>? OnGetToolExecutionVisibilityAsync { get; init; }
++        public Func<Guid, Guid, CancellationToken, Task<FinanceSandboxAnomalyDetailViewModel?>>? OnGetAnomalyDetailAsync { get; init; }
++        public Func<FinanceSandboxAnomalyInjectionCommand, CancellationToken, Task<FinanceSandboxAnomalyDetailViewModel>>? OnInjectAnomalyAsync { get; init; }
+         public Func<Guid, CancellationToken, Task<FinanceSandboxDomainEventsViewModel?>>? OnGetDomainEventsAsync { get; init; }
+         public Func<FinanceSandboxSeedGenerationCommand, CancellationToken, Task<FinanceSandboxSeedGenerationViewModel>>? OnGenerateSeedDatasetAsync { get; init; }
++        public Func<FinanceSandboxSimulationAdvanceCommand, CancellationToken, Task<FinanceSandboxProgressionRunViewModel>>? OnAdvanceSimulationAsync { get; init; }
+ 
+         public int DatasetGenerationCalls { get; private set; }
+         public int AnomalyInjectionCalls { get; private set; }
+@@ -329,7 +381,9 @@ public sealed class FinanceSandboxAdminPageTests
+         public int ToolExecutionVisibilityCalls { get; private set; }
+         public int DomainEventsCalls { get; private set; }
+ 
++        public int InjectAnomalyCalls { get; private set; }
+         public int GenerateSeedDatasetCalls { get; private set; }
++        public int AdvanceSimulationCalls { get; private set; }
+         public int TotalCalls =>
+             DatasetGenerationCalls +
+             AnomalyInjectionCalls +
+@@ -357,6 +411,24 @@ public sealed class FinanceSandboxAdminPageTests
+                 : Task.FromResult<FinanceSandboxSimulationControlsViewModel?>(null);
+         }
+ 
++        public Task<FinanceSandboxAnomalyDetailViewModel?> GetAnomalyDetailAsync(Guid companyId, Guid anomalyId, CancellationToken cancellationToken = default) =>
++            OnGetAnomalyDetailAsync is not null
++                ? OnGetAnomalyDetailAsync(companyId, anomalyId, cancellationToken)
++                : Task.FromResult<FinanceSandboxAnomalyDetailViewModel?>(null);
++
++        public Task<FinanceSandboxAnomalyDetailViewModel> InjectAnomalyAsync(FinanceSandboxAnomalyInjectionCommand command, CancellationToken cancellationToken = default)
++        {
++            InjectAnomalyCalls++;
++            return OnInjectAnomalyAsync is not null
++                ? OnInjectAnomalyAsync(command, cancellationToken)
++                : Task.FromResult(new FinanceSandboxAnomalyDetailViewModel());
++        }
++
++        public Task<FinanceSandboxProgressionRunViewModel> AdvanceSimulationAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default)
++        {
++            AdvanceSimulationCalls++;
++            return OnAdvanceSimulationAsync is not null
++                ? OnAdvanceSimulationAsync(command, cancellationToken)
++                : Task.FromResult(new FinanceSandboxProgressionRunViewModel());
++        }
++
+         public Task<FinanceSandboxToolExecutionVisibilityViewModel?> GetToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default)
+         {
+             ToolExecutionVisibilityCalls++;
+@@ -391,3 +463,4 @@ public sealed class FinanceSandboxAdminPageTests
+         }
+     }
+ }
++END_OF_PATCH

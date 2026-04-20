@@ -1,0 +1,112 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 5e9f3f1..3e9d7b8 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -1,5 +1,6 @@
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Documents;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+@@ -10,19 +11,27 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyContextAccessor? _companyContextAccessor;
++    private readonly ICompanyDocumentService? _documentService;
+ 
+     public CompanyFinanceReadService(VirtualCompanyDbContext dbContext)
+-        : this(dbContext, null)
++        : this(dbContext, null, null)
+     {
+     }
+ 
+     public CompanyFinanceReadService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyContextAccessor? companyContextAccessor)
++        : this(dbContext, companyContextAccessor, null)
++    {
++    }
++
++    public CompanyFinanceReadService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor? companyContextAccessor,
++        ICompanyDocumentService? documentService)
+     {
+         _dbContext = dbContext;
+         _companyContextAccessor = companyContextAccessor;
++        _documentService = documentService;
+     }
+ 
+     public async Task<FinanceCashBalanceDto> GetCashBalanceAsync(
+@@ -160,7 +169,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .OrderByDescending(x => x.TransactionUtc)
+             .ThenBy(x => x.ExternalReference)
+             .Take(limit)
+-            .Select(x => new FinanceTransactionDto(
++            .Select(x => new FinanceTransactionRow(
+                 x.Id,
+                 x.AccountId,
+                 x.Account.Name,
+@@ -208,7 +217,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .OrderByDescending(x => x.IssuedUtc)
+             .ThenBy(x => x.InvoiceNumber)
+             .Take(limit)
+-            .Select(x => new FinanceInvoiceDto(
++            .Select(x => new FinanceInvoiceRow(
+                 x.Id,
+                 x.CounterpartyId,
+                 x.Counterparty.Name,
+@@ -371,6 +380,11 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             return [];
+         }
+ 
++        if (_documentService is not null)
++        {
++            return await LoadLinkedDocumentsThroughKnowledgeServiceAsync(companyId, ids, cancellationToken);
++        }
++
+         return await _dbContext.CompanyKnowledgeDocuments
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && ids.Contains(x.Id))
+@@ -378,6 +392,34 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .ToDictionaryAsync(x => x.Id, cancellationToken);
+     }
+ 
++    private async Task<Dictionary<Guid, FinanceLinkedDocumentRow>> LoadLinkedDocumentsThroughKnowledgeServiceAsync(
++        Guid companyId,
++        IReadOnlyList<Guid> documentIds,
++        CancellationToken cancellationToken)
++    {
++        var linkedDocuments = new Dictionary<Guid, FinanceLinkedDocumentRow>();
++        foreach (var documentId in documentIds)
++        {
++            CompanyKnowledgeDocumentDto? document;
++            try
++            {
++                document = await _documentService!.GetAsync(companyId, documentId, cancellationToken);
++            }
++            catch (UnauthorizedAccessException)
++            {
++                continue;
++            }
++
++            if (document is null)
++            {
++                continue;
++            }
++
++            linkedDocuments[document.Id] = new FinanceLinkedDocumentRow(
++                document.Id,
++                document.Title,
++                document.OriginalFileName,
++                document.ContentType ?? string.Empty);
++        }
++
++        return linkedDocuments;
++    }
++
+     private static FinanceLinkedDocumentDto? MapLinkedDocument(Guid? documentId, IReadOnlyDictionary<Guid, FinanceLinkedDocumentRow> linkedDocuments) =>
+         documentId is Guid id && linkedDocuments.TryGetValue(id, out var document)
+             ? new FinanceLinkedDocumentDto(document.Id, document.Title, document.OriginalFileName, document.ContentType)
+END_OF_PATCH

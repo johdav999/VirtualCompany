@@ -1,0 +1,92 @@
+@page "/finance/alerts/{AlertId:guid}"
+@inherits FinancePageBase
+
+<PageTitle>Low Cash Alert</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Low-cash alert"
+    Description="Review the current low-cash summary, contributing factors, and finance drill-down links."
+    LoadingMessage="Loading low-cash alert detail...">
+    @if (isDetailLoading)
+    {
+        <section class="wizard-card">
+            <h2 class="h5 mb-2">Loading alert detail</h2>
+            <p class="text-body-secondary mb-0">Fetching the latest finance alert evidence and workspace links.</p>
+        </section>
+    }
+    else if (!string.IsNullOrWhiteSpace(detailErrorMessage))
+    {
+        <section class="wizard-card">
+            <div class="alert alert-danger mb-3">@detailErrorMessage</div>
+            <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync">Retry</button>
+        </section>
+    }
+    else if (detail is not null)
+    {
+        <section class="finance-detail-grid" data-testid="low-cash-alert-detail">
+            <article class="wizard-card finance-metric-card finance-metric-card--hero">
+                <span class="dashboard-kicker">@detail.Severity</span>
+                <h2 class="h4 mt-2 mb-2">Low-cash summary</h2>
+                <p class="mb-2">@detail.Summary</p>
+                <small class="text-body-secondary">Status: @detail.Status</small>
+            </article>
+
+            <article class="wizard-card finance-state-card" data-testid="low-cash-alert-actions">
+                <span class="dashboard-kicker">Actions</span>
+                @if (!string.IsNullOrWhiteSpace(financeActionStatusMessage))
+                {
+                    <div class="alert alert-success mt-3 mb-0">@financeActionStatusMessage</div>
+                }
+                @if (!string.IsNullOrWhiteSpace(financeActionErrorMessage))
+                {
+                    <div class="alert alert-warning mt-3 mb-0">@financeActionErrorMessage</div>
+                }
+                <div class="dashboard-actions mt-3">
+                    @foreach (var action in detail.AvailableActions)
+                    {
+                        @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(action.Route))
+                        {
+                            <a class="btn btn-outline-primary" href="@action.Route" data-testid="@($"finance-alert-action-{action.Key.Trim().ToLowerInvariant().Replace("_", "-")}")">@action.Label</a>
+                        }
+                        else
+                        {
+                            <button class="btn btn-outline-primary" type="button" data-testid="@($"finance-alert-action-{action.Key.Trim().ToLowerInvariant().Replace("_", "-")}")" @onclick="() => ExecuteFinanceActionAsync(action)" disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
+                        }
+                    }
+                </div>
+            </article>
+
+            <article class="wizard-card finance-state-card" data-testid="low-cash-alert-links">
+                <span class="dashboard-kicker">Links</span>
+                <h2 class="h5 mt-2">Finance drill-downs</h2>
+                <p class="text-body-secondary mb-0">Keep the active company context while moving into the workspace, summary, anomaly workbench, or cash detail.</p>
+                <div class="dashboard-actions mt-3">
+                    @foreach (var link in detail.Links)
+                    {
+                        <a class="btn btn-outline-secondary" href="@link.Route" data-testid="@($"finance-alert-link-{link.Key.Trim().ToLowerInvariant().Replace("_", "-")}")">@link.Label</a>
+                    }
+                </div>
+            </article>
+        </section>
+
+        <section class="wizard-card finance-anomaly-section mt-4" data-testid="low-cash-alert-factors">
+            <h2 class="h5 mb-2">Contributing factors</h2>
+            @if (detail.ContributingFactors.Count == 0)
+            {
+                <p class="text-body-secondary mb-0">No contributing factors were captured for this alert.</p>
+            }
+            else
+            {
+                <ul class="mb-0">
+                    @foreach (var factor in detail.ContributingFactors)
+                    {
+                        <li>@factor</li>
+                    }
+                </ul>
+            }
+        </section>
+    }
+</FinancePageLayout>

@@ -1,0 +1,642 @@
+diff --git a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+--- a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
++++ b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+@@ -8,6 +8,7 @@ public interface IFinanceSandboxAdminService
+     Task<FinanceSandboxAnomalyDetailViewModel?> GetAnomalyDetailAsync(Guid companyId, Guid anomalyId, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxAnomalyDetailViewModel> InjectAnomalyAsync(FinanceSandboxAnomalyInjectionCommand command, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxSimulationControlsViewModel?> GetSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<FinanceSandboxSimulationDiagnosticsViewModel?> GetSimulationDiagnosticsAsync(Guid companyId, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxProgressionRunViewModel> AdvanceSimulationAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxProgressionRunViewModel> StartProgressionRunAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default);
+     Task<FinanceTransparencyToolManifestListViewModel?> GetTransparencyToolManifestsAsync(Guid companyId, CancellationToken cancellationToken = default);
+@@ -130,6 +131,24 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+         };
+     }
+ 
++    public async Task<FinanceSandboxSimulationDiagnosticsViewModel?> GetSimulationDiagnosticsAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        var response = await _financeApiClient.GetCompanySimulationStateAsync(companyId, cancellationToken);
++        return response is null ? null : new FinanceSandboxSimulationDiagnosticsViewModel
++        {
++            CompanyId = response.CompanyId,
++            Status = response.Status,
++            CurrentSimulatedDateTime = response.CurrentSimulatedDateTime,
++            LastProgressionTimestamp = response.LastProgressionTimestamp,
++            GenerationEnabled = response.GenerationEnabled,
++            Seed = response.Seed,
++            ActiveSessionId = response.ActiveSessionId,
++            StartSimulatedDateTime = response.StartSimulatedDateTime,
++            UiVisible = response.UiVisible,
++            BackendExecutionEnabled = response.BackendExecutionEnabled,
++            BackgroundJobsEnabled = response.BackgroundJobsEnabled,
++            DisabledReason = response.DisabledReason,
++            RecentHistory = response.RecentHistory.Select(MapSimulationRunHistory).ToArray()
++        };
++    }
++
+     public async Task<FinanceTransparencyToolManifestListViewModel?> GetTransparencyToolManifestsAsync(Guid companyId, CancellationToken cancellationToken = default)
+     {
+         var response = await _financeApiClient.GetTransparencyToolManifestsAsync(companyId, cancellationToken);
+@@ -291,6 +310,44 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             Messages = response.Messages.Select(MapBackendMessage).ToArray()
+         };
+ 
++    private static FinanceSandboxSimulationRunHistoryViewModel MapSimulationRunHistory(FinanceCompanySimulationRunHistoryResponse response) =>
++        new()
++        {
++            SessionId = response.SessionId,
++            Status = response.Status,
++            StartedUtc = response.StartedUtc,
++            CompletedUtc = response.CompletedUtc,
++            LastUpdatedUtc = response.LastUpdatedUtc,
++            GenerationEnabled = response.GenerationEnabled,
++            Seed = response.Seed,
++            StartSimulatedDateTime = response.StartSimulatedDateTime,
++            CurrentSimulatedDateTime = response.CurrentSimulatedDateTime,
++            InjectedAnomalies = response.InjectedAnomalies.ToArray(),
++            Warnings = response.Warnings.ToArray(),
++            Errors = response.Errors.ToArray(),
++            StatusTransitions = response.StatusTransitions.Select(MapSimulationStatusTransition).ToArray(),
++            DayLogs = response.DayLogs.Select(MapSimulationDayLog).ToArray()
++        };
++
++    private static FinanceSandboxSimulationStatusTransitionViewModel MapSimulationStatusTransition(FinanceCompanySimulationStatusTransitionResponse response) =>
++        new()
++        {
++            Status = response.Status,
++            TransitionedUtc = response.TransitionedUtc,
++            Message = response.Message ?? string.Empty
++        };
++
++    private static FinanceSandboxSimulationDayLogViewModel MapSimulationDayLog(FinanceCompanySimulationDayLogResponse response) =>
++        new()
++        {
++            SimulatedDateUtc = response.SimulatedDateUtc,
++            TransactionsGenerated = response.TransactionsGenerated,
++            InvoicesGenerated = response.InvoicesGenerated,
++            BillsGenerated = response.BillsGenerated,
++            RecurringExpenseInstancesGenerated = response.RecurringExpenseInstancesGenerated,
++            AlertsGenerated = response.AlertsGenerated,
++            InjectedAnomalies = response.InjectedAnomalies.ToArray(),
++            Warnings = response.Warnings.ToArray(),
++            Errors = response.Errors.ToArray()
++        };
++
+     private static FinanceSandboxProgressionRunViewModel MapProgressionRun(FinanceSandboxProgressionRunSummaryResponse response) =>
+         new()
+         {
+@@ -383,6 +440,54 @@ public sealed class FinanceSandboxSimulationControlsViewModel
+     public IReadOnlyList<FinanceSandboxProgressionRunViewModel> RunHistory { get; set; } = [];
+ }
+ 
++public sealed class FinanceSandboxSimulationDiagnosticsViewModel
++{
++    public Guid CompanyId { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public DateTime? CurrentSimulatedDateTime { get; set; }
++    public DateTime? LastProgressionTimestamp { get; set; }
++    public bool? GenerationEnabled { get; set; }
++    public int? Seed { get; set; }
++    public Guid? ActiveSessionId { get; set; }
++    public DateTime? StartSimulatedDateTime { get; set; }
++    public bool UiVisible { get; set; } = true;
++    public bool BackendExecutionEnabled { get; set; } = true;
++    public bool BackgroundJobsEnabled { get; set; } = true;
++    public string? DisabledReason { get; set; }
++    public IReadOnlyList<FinanceSandboxSimulationRunHistoryViewModel> RecentHistory { get; set; } = [];
++}
++
++public sealed class FinanceSandboxSimulationRunHistoryViewModel
++{
++    public Guid SessionId { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public DateTime StartedUtc { get; set; }
++    public DateTime? CompletedUtc { get; set; }
++    public DateTime LastUpdatedUtc { get; set; }
++    public bool GenerationEnabled { get; set; }
++    public int Seed { get; set; }
++    public DateTime StartSimulatedDateTime { get; set; }
++    public DateTime? CurrentSimulatedDateTime { get; set; }
++    public IReadOnlyList<string> InjectedAnomalies { get; set; } = [];
++    public IReadOnlyList<string> Warnings { get; set; } = [];
++    public IReadOnlyList<string> Errors { get; set; } = [];
++    public IReadOnlyList<FinanceSandboxSimulationStatusTransitionViewModel> StatusTransitions { get; set; } = [];
++    public IReadOnlyList<FinanceSandboxSimulationDayLogViewModel> DayLogs { get; set; } = [];
++}
++
++public sealed class FinanceSandboxSimulationStatusTransitionViewModel
++{
++    public string Status { get; set; } = string.Empty;
++    public DateTime TransitionedUtc { get; set; }
++    public string Message { get; set; } = string.Empty;
++}
++
++public sealed class FinanceSandboxSimulationDayLogViewModel
++{
++    public DateTime SimulatedDateUtc { get; set; }
++    public int TransactionsGenerated { get; set; }
++    public int InvoicesGenerated { get; set; }
++    public int BillsGenerated { get; set; }
++    public int RecurringExpenseInstancesGenerated { get; set; }
++    public int AlertsGenerated { get; set; }
++    public IReadOnlyList<string> InjectedAnomalies { get; set; } = [];
++    public IReadOnlyList<string> Warnings { get; set; } = [];
++    public IReadOnlyList<string> Errors { get; set; } = [];
++    public int GeneratedRecordCount => TransactionsGenerated + InvoicesGenerated + BillsGenerated + RecurringExpenseInstancesGenerated;
++}
++
+ public sealed class FinanceSandboxProgressionRunViewModel
+ {
+     public string RunType { get; set; } = string.Empty;
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+@@ -56,6 +56,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private CancellationTokenSource? _simulationPollingCts;
+     private int _datasetGenerationSectionVersion;
+     private int _anomalyInjectionSectionVersion;
++    private int _simulationDiagnosticsSectionVersion;
+     private int _simulationControlsSectionVersion;
+ 
+     [Parameter]
+@@ -374,6 +375,9 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private async Task HandleRefreshSimulationControlsAsync()
+     {
+         if (AccessState.CompanyId is not Guid companyId || _isRefreshingSimulationControls)
++        {
++            return;
++        }
++        if (!SimulationUiVisible)
+         {
+             return;
+         }
+@@ -429,6 +433,9 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private Task<FinanceSandboxAnomalyInjectionViewModel?> LoadAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken) =>
+         SandboxAdminService.GetAnomalyInjectionAsync(companyId, cancellationToken);
+ 
++    private Task<FinanceSandboxSimulationDiagnosticsViewModel?> LoadSimulationDiagnosticsAsync(Guid companyId, CancellationToken cancellationToken) =>
++        SandboxAdminService.GetSimulationDiagnosticsAsync(companyId, cancellationToken);
++
+     private async Task<FinanceSandboxSimulationControlsViewModel?> LoadSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var simulation = await SandboxAdminService.GetSimulationControlsAsync(companyId, cancellationToken);
+@@ -559,6 +566,57 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         severity?.Trim().ToLowerInvariant() switch
+         {
+             "failure" or "error" => "alert alert-danger mb-2",
++            "warning" => "alert alert-warning mb-2",
++            _ => "alert alert-info mb-2"
++        };
++
++    private static string ResolveSimulationLifecycleBadgeClass(string? status) =>
++        status?.Trim().ToLowerInvariant() switch
++        {
++            FinanceCompanySimulationStatusValues.Running => "badge text-bg-success",
+             "warning" => "alert alert-warning mb-2",
++            FinanceCompanySimulationStatusValues.Paused => "badge text-bg-warning",
++            FinanceCompanySimulationStatusValues.Stopped => "badge text-bg-secondary",
++            _ => "badge text-bg-secondary"
++        };
++
++    private static string ResolveSimulationLifecycleLabel(string? status) =>
++        status?.Trim().ToLowerInvariant() switch
++        {
++            FinanceCompanySimulationStatusValues.Running => "Running",
++            FinanceCompanySimulationStatusValues.Paused => "Paused",
++            FinanceCompanySimulationStatusValues.Stopped => "Stopped",
++            _ => "Not started"
++        };
++
++    private static string FormatSimulationSnapshotMessage(
++        IReadOnlyList<string> anomalies,
++        IReadOnlyList<string> warnings,
++        IReadOnlyList<string> errors)
++    {
++        var segments = new List<string>();
++        if (anomalies.Count > 0)
++        {
++            segments.Add($"Anomalies: {string.Join(", ", anomalies)}");
++        }
++
++        if (warnings.Count > 0)
++        {
++            segments.Add($"Warnings: {string.Join(" | ", warnings)}");
++        }
++
++        if (errors.Count > 0)
++        {
++            segments.Add($"Errors: {string.Join(" | ", errors)}");
++        }
++
++        return segments.Count == 0
++            ? "No warnings, errors, or injected anomalies were captured for the selected session."
++            : string.Join(" ", segments);
++    }
++
++    private static string ResolveSimulationSnapshotAlertClass(FinanceSandboxSimulationRunHistoryViewModel? run) =>
++        run is null
++            ? "alert alert-info mb-0"
++            : run.Errors.Count > 0
++                ? "alert alert-danger mb-0"
++                : run.Warnings.Count > 0
++                    ? "alert alert-warning mb-0"
++                    : run.InjectedAnomalies.Count > 0
++                        ? "alert alert-info mb-0"
+             _ => "alert alert-info mb-2"
+         };
+ 
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+@@ -8,7 +8,7 @@
+ <FinancePageLayout
+     IsLoading="@IsLoading"
+     AccessState="@AccessState"
+-    ErrorMessage="@ErrorMessage"
++    ErrorMessage="@ErrorMessage"
+     Title="Finance sandbox admin"
+-    Description="Inspect the finance sandbox posture for dataset generation, anomaly injection, simulation controls, tool execution visibility, and domain events."
++    Description="Inspect the finance sandbox posture for dataset generation, anomaly injection, simulation diagnostics, simulation controls, tool execution visibility, and domain events."
+     LoadingMessage="Loading finance sandbox administration shell...">
+     @if (!HasSandboxAdminAccess)
+     {
+@@ -422,7 +422,111 @@
+                     </ChildContent>
+                 </FinanceSandboxAdminSection>
+             </div>
+-            {<div @key="_simulationControlsSectionVersion">
++            @if (SimulationUiVisible)
++            {
++                <div @key="_simulationDiagnosticsSectionVersion">
++                    <FinanceSandboxAdminSection TSection="FinanceSandboxSimulationDiagnosticsViewModel"
++                                                CompanyId="@AccessState.CompanyId!.Value"
++                                                Kicker="Simulation diagnostics"
++                                                Title="Simulation history and error state"
++                                                Description="Review tenant-scoped simulation sessions, feature gate state, lifecycle transitions, and per-day generation logs before triggering more sandbox activity."
++                                                LoadingTitle="Loading simulation diagnostics"
++                                                LoadingMessage="Reading the latest company simulation history and feature gate state."
++                                                EmptyTitle="Simulation diagnostics are not available"
++                                                EmptyMessage="No simulation diagnostics were returned for the active company."
++                                                ErrorTitle="Simulation diagnostics are unavailable"
++                                                Loader="@LoadSimulationDiagnosticsAsync">
++                        <ChildContent Context="diagnostics">
++                            @{
++                                var latestRun = diagnostics.RecentHistory.OrderByDescending(run => run.LastUpdatedUtc).FirstOrDefault();
++                            }
++
++                            <div class="row g-3 mb-3">
++                                <div class="col-sm-6 col-xl-3">
++                                    <div class="border rounded p-3 h-100">
++                                        <div class="text-body-secondary small">UI visibility</div>
++                                        <div class="fs-6 fw-semibold">@(diagnostics.UiVisible ? "Visible" : "Hidden")</div>
++                                    </div>
++                                </div>
++                                <div class="col-sm-6 col-xl-3">
++                                    <div class="border rounded p-3 h-100">
++                                        <div class="text-body-secondary small">Backend execution</div>
++                                        <div class="fs-6 fw-semibold">@(diagnostics.BackendExecutionEnabled ? "Enabled" : "Disabled")</div>
++                                    </div>
++                                </div>
++                                <div class="col-sm-6 col-xl-3">
++                                    <div class="border rounded p-3 h-100">
++                                        <div class="text-body-secondary small">Background jobs</div>
++                                        <div class="fs-6 fw-semibold">@(diagnostics.BackgroundJobsEnabled ? "Enabled" : "Disabled")</div>
++                                    </div>
++                                </div>
++                                <div class="col-sm-6 col-xl-3">
++                                    <div class="border rounded p-3 h-100">
++                                        <div class="text-body-secondary small">Current session</div>
++                                        <div class="fs-6 fw-semibold">@(diagnostics.ActiveSessionId?.ToString("N")[..8] ?? "None")</div>
++                                    </div>
++                                </div>
++                            </div>
++
++                            @if (!string.IsNullOrWhiteSpace(diagnostics.DisabledReason))
++                            {
++                                <div class="alert alert-warning" role="alert">@diagnostics.DisabledReason</div>
++                            }
++
++                            <div class="@ResolveSimulationSnapshotAlertClass(latestRun)" role="alert">
++                                <div class="fw-semibold">Current or last error state</div>
++                                <div class="text-body-secondary">
++                                    @(latestRun is null
++                                        ? "No simulation session has been recorded for the active company yet."
++                                        : FormatSimulationSnapshotMessage(latestRun.InjectedAnomalies, latestRun.Warnings, latestRun.Errors))
++                                </div>
++                            </div>
++
++                            @if (diagnostics.RecentHistory.Count == 0)
++                            {
++                                <p class="text-body-secondary mt-3 mb-0">No simulation sessions have been recorded for the active company yet.</p>
++                            }
++                            else
++                            {
++                                <div class="d-flex flex-column gap-3 mt-3">
++                                    @foreach (var run in diagnostics.RecentHistory)
++                                    {
++                                        <details class="border rounded p-3" open="@(ReferenceEquals(run, latestRun) ? true : false)">
++                                            <summary class="d-flex flex-wrap align-items-center gap-2">
++                                                <span class="fw-semibold">Session @run.SessionId.ToString("N")[..8]</span>
++                                                <span class="@ResolveSimulationLifecycleBadgeClass(run.Status)">@ResolveSimulationLifecycleLabel(run.Status)</span>
++                                                <span class="text-body-secondary">Started @run.StartedUtc.ToString("u")</span>
++                                                <span class="text-body-secondary">Seed @run.Seed</span>
++                                            </summary>
++
++                                            <div class="row g-3 mt-2">
++                                                <div class="col-lg-4">
++                                                    <dl class="row mb-0">
++                                                        <dt class="col-sm-5">Simulated start</dt>
++                                                        <dd class="col-sm-7">@run.StartSimulatedDateTime.ToString("u")</dd>
++                                                        <dt class="col-sm-5">Current time</dt>
++                                                        <dd class="col-sm-7">@(run.CurrentSimulatedDateTime?.ToString("u") ?? "Unavailable")</dd>
++                                                        <dt class="col-sm-5">Completed</dt>
++                                                        <dd class="col-sm-7">@(run.CompletedUtc?.ToString("u") ?? "In progress")</dd>
++                                                        <dt class="col-sm-5">Generation</dt>
++                                                        <dd class="col-sm-7">@(run.GenerationEnabled ? "Enabled" : "Disabled")</dd>
++                                                    </dl>
++                                                </div>
++                                                <div class="col-lg-8">
++                                                    <div class="mb-3">
++                                                        <h4 class="h6 mb-2">Status transitions</h4>
++                                                        @if (run.StatusTransitions.Count == 0)
++                                                        {
++                                                            <p class="text-body-secondary mb-0">No lifecycle transitions were captured for this session.</p>
++                                                        }
++                                                        else
++                                                        {
++                                                            <ul class="mb-0">
++                                                                @foreach (var transition in run.StatusTransitions.OrderBy(item => item.TransitionedUtc))
++                                                                {
++                                                                    <li>
++                                                                        <span class="fw-semibold">@ResolveSimulationLifecycleLabel(transition.Status)</span>
++                                                                        <span> | @transition.TransitionedUtc.ToString("u")</span>
++                                                                        @if (!string.IsNullOrWhiteSpace(transition.Message))
++                                                                        {
++                                                                            <span> | @transition.Message</span>
++                                                                        }
++                                                                    </li>
++                                                                }
++                                                            </ul>
++                                                        }
++                                                    </div>
++                                                    <div class="table-responsive">
++                                                        <table class="table finance-table mb-0">
++                                                            <thead>
++                                                                <tr>
++                                                                    <th scope="col">Simulated day</th>
++                                                                    <th scope="col">Generated records</th>
++                                                                    <th scope="col">Alerts</th>
++                                                                    <th scope="col">Anomalies</th>
++                                                                    <th scope="col">Warnings</th>
++                                                                    <th scope="col">Errors</th>
++                                                                </tr>
++                                                            </thead>
++                                                            <tbody>
++                                                                @foreach (var day in run.DayLogs.OrderBy(item => item.SimulatedDateUtc))
++                                                                {
++                                                                    <tr>
++                                                                        <td>@day.SimulatedDateUtc.ToString("yyyy-MM-dd")</td>
++                                                                        <td>@day.GeneratedRecordCount</td>
++                                                                        <td>@day.AlertsGenerated</td>
++                                                                        <td>@(day.InjectedAnomalies.Count == 0 ? "None" : string.Join(", ", day.InjectedAnomalies))</td>
++                                                                        <td>@(day.Warnings.Count == 0 ? "None" : string.Join(" | ", day.Warnings))</td>
++                                                                        <td>@(day.Errors.Count == 0 ? "None" : string.Join(" | ", day.Errors))</td>
++                                                                    </tr>
++                                                                }
++                                                            </tbody>
++                                                        </table>
++                                                    </div>
++                                                </div>
++                                            </div>
++                                        </details>
++                                    }
++                                </div>
++                            }
++                        </ChildContent>
++                    </FinanceSandboxAdminSection>
++                </div>
++
++                <div @key="_simulationControlsSectionVersion">
+                 <FinanceSandboxAdminSection TSection="FinanceSandboxSimulationControlsViewModel"
+                                             CompanyId="@AccessState.CompanyId!.Value"
+                                             Kicker="Simulation controls"
+@@ -622,7 +726,8 @@
+                         </div>
+                     </ChildContent>
+                 </FinanceSandboxAdminSection>
+-            </div>}
++                </div>
++            }
+ 
+             <FinanceSandboxAdminSection TSection="FinanceTransparencyToolManifestListViewModel"
+                                         CompanyId="@AccessState.CompanyId!.Value"
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+@@ -43,9 +43,9 @@ public sealed class FinanceSandboxAdminPageTests
+             Assert.Contains("Dataset generation is not configured", cut.Markup);
+         });
+ 
+-        Assert.Equal(6, sandboxService.TotalCalls);
++        Assert.Equal(7, sandboxService.TotalCalls);
+     }
+-
++
+     [Fact]
+     public void Sandbox_admin_page_exposes_tenant_aware_company_selection_for_seed_generation()
+     {
+@@ -111,6 +111,7 @@ public sealed class FinanceSandboxAdminPageTests
+             OnGetDatasetGenerationAsync = (_, _) => datasetSource.Task,
+             OnGetAnomalyInjectionAsync = (_, _) => anomalySource.Task,
+             OnGetSimulationControlsAsync = (_, _) => simulationSource.Task,
++            OnGetSimulationDiagnosticsAsync = (_, _) => Task.FromResult<FinanceSandboxSimulationDiagnosticsViewModel?>(new FinanceSandboxSimulationDiagnosticsViewModel()),
+             OnGetTransparencyToolManifestsAsync = (_, _) => manifestSource.Task,
+             OnGetTransparencyToolExecutionsAsync = (_, _) => executionSource.Task,
+             OnGetTransparencyEventsAsync = (_, _) => eventsSource.Task
+@@ -142,11 +143,75 @@ public sealed class FinanceSandboxAdminPageTests
+         Assert.Equal(1, sandboxService.DatasetGenerationCalls);
+         Assert.Equal(1, sandboxService.AnomalyInjectionCalls);
+         Assert.Equal(1, sandboxService.SimulationControlsCalls);
++        Assert.Equal(1, sandboxService.SimulationDiagnosticsCalls);
+         Assert.Equal(1, sandboxService.TransparencyToolManifestCalls);
+         Assert.Equal(1, sandboxService.TransparencyToolExecutionCalls);
+         Assert.Equal(1, sandboxService.TransparencyEventCalls);
+     }
+ 
++    [Fact]
++    public void Sandbox_admin_page_renders_simulation_diagnostics_with_error_state_and_day_logs()
++    {
++        var companyId = Guid.Parse("f344eddd-a997-4620-b80f-7a75d9bba132");
++        var sandboxService = new StubFinanceSandboxAdminService
++        {
++            OnGetSimulationDiagnosticsAsync = (_, _) => Task.FromResult<FinanceSandboxSimulationDiagnosticsViewModel?>(new FinanceSandboxSimulationDiagnosticsViewModel
++            {
++                CompanyId = companyId,
++                Status = FinanceCompanySimulationStatusValues.Stopped,
++                UiVisible = true,
++                BackendExecutionEnabled = false,
++                BackgroundJobsEnabled = false,
++                DisabledReason = "Simulation backend execution is disabled for the sandbox.",
++                RecentHistory =
++                [
++                    new FinanceSandboxSimulationRunHistoryViewModel
++                    {
++                        SessionId = Guid.Parse("7b7cf4be-2f66-4923-84d8-ed71908d0b98"),
++                        Status = FinanceCompanySimulationStatusValues.Stopped,
++                        StartedUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                        CompletedUtc = new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc),
++                        LastUpdatedUtc = new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc),
++                        GenerationEnabled = true,
++                        Seed = 42,
++                        StartSimulatedDateTime = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                        CurrentSimulatedDateTime = new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc),
++                        InjectedAnomalies = ["duplicate_vendor_charge"],
++                        Warnings = ["Manual review recommended."],
++                        Errors = ["Safe generation failure summary."],
++                        StatusTransitions =
++                        [
++                            new FinanceSandboxSimulationStatusTransitionViewModel
++                            {
++                                Status = FinanceCompanySimulationStatusValues.Running,
++                                TransitionedUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                                Message = "Simulation started."
++                            },
++                            new FinanceSandboxSimulationStatusTransitionViewModel
++                            {
++                                Status = FinanceCompanySimulationStatusValues.Stopped,
++                                TransitionedUtc = new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc),
++                                Message = "Simulation stopped."
++                            }
++                        ],
++                        DayLogs =
++                        [
++                            new FinanceSandboxSimulationDayLogViewModel
++                            {
++                                SimulatedDateUtc = new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc),
++                                TransactionsGenerated = 2,
++                                InvoicesGenerated = 1,
++                                BillsGenerated = 1,
++                                RecurringExpenseInstancesGenerated = 1,
++                                AlertsGenerated = 1,
++                                InjectedAnomalies = ["duplicate_vendor_charge"],
++                                Warnings = ["Manual review recommended."],
++                                Errors = ["Safe generation failure summary."]
++                            }
++                        ]
++                    }
++                ]
++            })
++        };
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        var cut = RenderSandboxAdmin(harness, companyId);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Simulation history and error state", cut.Markup);
++            Assert.Contains("Current or last error state", cut.Markup);
++            Assert.Contains("Simulation backend execution is disabled for the sandbox.", cut.Markup);
++            Assert.Contains("duplicate_vendor_charge", cut.Markup);
++            Assert.Contains("Manual review recommended.", cut.Markup);
++            Assert.Contains("Safe generation failure summary.", cut.Markup);
++            Assert.Contains("Simulation started.", cut.Markup);
++            Assert.Contains(">5<", cut.Markup);
++        });
++    }
++
++    [Fact]
++    public void Sandbox_admin_page_hides_simulation_sections_when_ui_visibility_is_disabled()
++    {
++        var companyId = Guid.Parse("2de08c4c-3c0d-4ac9-b7b6-bc3db5f6a4df");
++        var sandboxService = new StubFinanceSandboxAdminService();
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService, simulationUiVisible: false);
++        var cut = RenderSandboxAdmin(harness, companyId);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.DoesNotContain("Simulation history and error state", cut.Markup);
++            Assert.DoesNotContain("Simulation controls", cut.Markup);
++            Assert.DoesNotContain("Advance simulation time", cut.Markup);
++        });
++
++        Assert.Equal(0, sandboxService.SimulationDiagnosticsCalls);
++        Assert.Equal(0, sandboxService.SimulationControlsCalls);
++    }
++
+     [Fact]
+     public void Sandbox_admin_page_renders_transparency_lists_and_loads_selected_detail_views()
+     {
+@@ -806,15 +871,18 @@ public sealed class FinanceSandboxAdminPageTests
+     private static SandboxAdminHarness CreateHarness(
+         CurrentUserContextViewModel currentUserContext,
+-        StubFinanceSandboxAdminService sandboxService)
++        StubFinanceSandboxAdminService sandboxService,
++        bool simulationUiVisible = true)
+     {
+         var context = new TestContext();
+ 
++        context.Services.AddOptions();
++        context.Services.Configure<FinanceSimulationControlPanelOptions>(options => options.UiVisible = simulationUiVisible);
+         context.Services.AddSingleton(new FinanceAccessResolver());
+         context.Services.AddSingleton<IFinanceSandboxAdminService>(sandboxService);
+         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
+         {
+             return Task.FromResult(request.RequestUri?.AbsolutePath switch
+             {
+-                "/api/auth/me" => CreateJsonResponse(currentUserContext),
++                "/api/auth/me" => CreateJsonResponse(currentUserContext),
+                 _ => CreateNotFoundResponse()
+             });
+         }))
+@@ -826,8 +894,8 @@ public sealed class FinanceSandboxAdminPageTests
+         return new SandboxAdminHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
+     }
+ 
+-    private static SandboxAdminHarness CreateHarness(Guid companyId, string membershipRole, StubFinanceSandboxAdminService sandboxService) =>
+-        CreateHarness(CreateCurrentUserContext(companyId, membershipRole), sandboxService);
++    private static SandboxAdminHarness CreateHarness(Guid companyId, string membershipRole, StubFinanceSandboxAdminService sandboxService, bool simulationUiVisible = true) =>
++        CreateHarness(CreateCurrentUserContext(companyId, membershipRole), sandboxService, simulationUiVisible);
+ 
+     private static CurrentUserContextViewModel CreateCurrentUserContext(
+         Guid companyId,
+@@ -882,6 +950,7 @@ public sealed class FinanceSandboxAdminPageTests
+         public Func<Guid, CancellationToken, Task<FinanceSandboxDatasetGenerationViewModel?>>? OnGetDatasetGenerationAsync { get; init; }
+         public Func<Guid, CancellationToken, Task<FinanceSandboxAnomalyInjectionViewModel?>>? OnGetAnomalyInjectionAsync { get; init; }
+         public Func<Guid, CancellationToken, Task<FinanceSandboxSimulationControlsViewModel?>>? OnGetSimulationControlsAsync { get; init; }
++        public Func<Guid, CancellationToken, Task<FinanceSandboxSimulationDiagnosticsViewModel?>>? OnGetSimulationDiagnosticsAsync { get; init; }
+         public Func<Guid, Guid, CancellationToken, Task<FinanceSandboxAnomalyDetailViewModel?>>? OnGetAnomalyDetailAsync { get; init; }
+         public Func<FinanceSandboxAnomalyInjectionCommand, CancellationToken, Task<FinanceSandboxAnomalyDetailViewModel>>? OnInjectAnomalyAsync { get; init; }
+         public Func<FinanceSandboxSeedGenerationCommand, CancellationToken, Task<FinanceSandboxSeedGenerationViewModel>>? OnGenerateSeedDatasetAsync { get; init; }
+@@ -894,6 +963,7 @@ public sealed class FinanceSandboxAdminPageTests
+         public int DatasetGenerationCalls { get; private set; }
+         public int AnomalyInjectionCalls { get; private set; }
+         public int SimulationControlsCalls { get; private set; }
++        public int SimulationDiagnosticsCalls { get; private set; }
+         public int ToolExecutionVisibilityCalls { get; private set; }
+         public int DomainEventsCalls { get; private set; }
+ 
+@@ -906,6 +976,7 @@ public sealed class FinanceSandboxAdminPageTests
+         public int TotalCalls =>
+             DatasetGenerationCalls +
+             AnomalyInjectionCalls +
++            SimulationDiagnosticsCalls +
+             SimulationControlsCalls +
+             TransparencyToolManifestCalls +
+             TransparencyToolExecutionCalls +
+@@ -929,6 +1000,14 @@ public sealed class FinanceSandboxAdminPageTests
+                 : Task.FromResult<FinanceSandboxAnomalyInjectionViewModel?>(null);
+         }
+ 
++        public Task<FinanceSandboxSimulationDiagnosticsViewModel?> GetSimulationDiagnosticsAsync(Guid companyId, CancellationToken cancellationToken = default)
++        {
++            SimulationDiagnosticsCalls++;
++            return OnGetSimulationDiagnosticsAsync is not null
++                ? OnGetSimulationDiagnosticsAsync(companyId, cancellationToken)
++                : Task.FromResult<FinanceSandboxSimulationDiagnosticsViewModel?>(null);
++        }
++
+         public Task<FinanceSandboxSimulationControlsViewModel?> GetSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default)
+         {
+             SimulationControlsCalls++;
+END_OF_PATCH

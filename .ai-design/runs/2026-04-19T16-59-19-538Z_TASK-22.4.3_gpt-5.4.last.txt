@@ -1,0 +1,746 @@
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index 8f5d4a1..f04c4be 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -1,10 +1,11 @@
+ @page "/dashboard"
+ @rendermode InteractiveServer
+ @implements IAsyncDisposable
+ @inject OnboardingApiClient ApiClient
+ @inject NavigationManager Navigation
+ @inject IJSRuntime JS
++@inject IDashboardInteractionService DashboardInteractionService
+ @using Microsoft.AspNetCore.Components
+ @using Microsoft.JSInterop
+ @using VirtualCompany.Web.Services
+ 
+@@ -160,13 +161,12 @@ else
+     private CompanyAccessViewModel? companyAccess;
+     private CompanyDashboardEntryViewModel? dashboardEntry;
+     private DashboardBriefingCardViewModel? briefings;
+     private string? errorMessage;
+-    private DashboardTelemetrySession? telemetrySession;
+-    private Guid? telemetryCompanyId;
+     private IJSObjectReference? telemetryModule;
+     private DotNetObjectReference<Dashboard>? dotNetReference;
+     private string? scrollTrackerId;
+-    private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
+-    private string AgentRosterPath => CompanyId is Guid companyId ? $"/agents?companyId={companyId}" : "/agents";
++    private Guid? trackedInteractionCompanyId;
++    private string DashboardPath => DashboardRoutes.EnsureCompanyContext("/dashboard", CompanyId, "/dashboard");
++    private string AgentRosterPath => DashboardRoutes.EnsureCompanyContext("/agents", CompanyId, "/agents");
+     private string BriefingStatus => PrimaryBriefing is null ? "Pending" : "Ready";
+     private BriefingCardViewModel? PrimaryBriefing => briefings?.Daily ?? briefings?.Weekly;
+     private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
+@@ -181,13 +181,6 @@ else
+     protected override async Task OnParametersSetAsync()
+     {
+         isLoading = true;
+         errorMessage = null;
+-        if (telemetryCompanyId != CompanyId)
+-        {
+-            telemetryCompanyId = CompanyId;
+-            telemetrySession = CompanyId is Guid selectedCompanyId
+-                ? new DashboardTelemetrySession("dashboard", selectedCompanyId)
+-                : null;
+-        }
+ 
+         try
+         {
+@@ -234,10 +227,24 @@ else
+ 
+     protected override async Task OnAfterRenderAsync(bool firstRender)
+     {
+-        if (CompanyId is not Guid || !string.IsNullOrWhiteSpace(scrollTrackerId))
++        if (CompanyId is not Guid selectedCompanyId)
+         {
++            if (!string.IsNullOrWhiteSpace(scrollTrackerId))
++            {
++                await DisposeScrollTrackerAsync();
++            }
++
++            trackedInteractionCompanyId = null;
++            DashboardInteractionService.EndSession();
+             return;
+         }
++
++        if (trackedInteractionCompanyId != selectedCompanyId)
++        {
++            await DisposeScrollTrackerAsync();
++            trackedInteractionCompanyId = selectedCompanyId;
++            DashboardInteractionService.StartSession("dashboard", selectedCompanyId);
++        }
++
++        if (!string.IsNullOrWhiteSpace(scrollTrackerId)) return;
+ 
+         try
+         {
+@@ -253,37 +260,51 @@ else
+     [JSInvokable]
+     public Task OnDashboardScrollDepthChanged(double depthPercentage)
+     {
+-        telemetrySession?.RecordScrollDepth(depthPercentage);
++        DashboardInteractionService.RecordScrollDepth(depthPercentage);
+         return Task.CompletedTask;
+     }
+ 
+     private Task HandleDashboardActionAsync(DashboardActionTelemetryContext context)
+     {
+-        if (telemetrySession is null)
+-        {
+-            return Task.CompletedTask;
+-        }
+-
+         if (string.Equals(context.Area, "today-focus", StringComparison.OrdinalIgnoreCase))
+         {
+-            telemetrySession.RecordFocusItemClick(context.ItemId, context.SourceType, context.Target, context.Label);
++            DashboardInteractionService.RecordFocusItemClick(context);
+             return Task.CompletedTask;
+         }
+ 
+-        telemetrySession.RecordAction(context);
++        DashboardInteractionService.RecordAction(context);
+         return Task.CompletedTask;
+     }
+ 
+-    public async ValueTask DisposeAsync()
++    private async Task DisposeScrollTrackerAsync()
+     {
++        if (telemetryModule is null || string.IsNullOrWhiteSpace(scrollTrackerId))
++        {
++            scrollTrackerId = null;
++            return;
++        }
++
+         try
+         {
+-            if (telemetryModule is not null && !string.IsNullOrWhiteSpace(scrollTrackerId))
+-            {
+-                await telemetryModule.InvokeVoidAsync("disposeDashboardScrollTracker", scrollTrackerId);
+-            }
++            await telemetryModule.InvokeVoidAsync("disposeDashboardScrollTracker", scrollTrackerId);
+         }
+         catch
+         {
+         }
++        finally
++        {
++            scrollTrackerId = null;
++        }
++    }
++
++    public async ValueTask DisposeAsync()
++    {
++        await DisposeScrollTrackerAsync();
++        DashboardInteractionService.EndSession();
++
++        if (telemetryModule is not null)
++        {
++            try
++            {
++                await telemetryModule.DisposeAsync();
++            }
++            catch
++            {
++            }
++        }
++
+         dotNetReference?.Dispose();
+     }
+ 
+diff --git a/src/VirtualCompany.Web/Components/TodayFocusPanel.razor b/src/VirtualCompany.Web/Components/TodayFocusPanel.razor
+index 98a54c3..c16ad5c 100644
+--- a/src/VirtualCompany.Web/Components/TodayFocusPanel.razor
++++ b/src/VirtualCompany.Web/Components/TodayFocusPanel.razor
+@@ -58,9 +58,10 @@ else
+             </div>
+             <span class="badge text-bg-light" data-testid="today-focus-count">@items.Count item@(items.Count == 1 ? string.Empty : "s")</span>
+         </div>
+         <div class="row g-3">
+-            @foreach (var item in items)
++            @for (var index = 0; index < items.Count; index++)
+             {
++                var item = items[index];
+                 <div class="col-12 col-lg-6" data-testid="today-focus-card">
+                     <article class="border rounded-3 p-3 h-100 d-flex flex-column justify-content-between">
+                         <div>
+                             <div class="d-flex justify-content-between align-items-start gap-2">
+@@ -74,9 +75,9 @@ else
+                         <div class="mt-3">
+                             <button class="btn btn-outline-primary btn-sm"
+                                     type="button"
+                                     data-testid="today-focus-cta"
+-                                    @onclick="() => NavigateToAsync(item)">
++                                    @onclick="() => NavigateToAsync(item, index)">
+                                 @ToCallToAction(item.ActionType)
+                             </button>
+                         </div>
+                     </article>
+@@ -134,7 +135,7 @@ else
+         loadCancellationTokenSource?.Dispose();
+     }
+ 
+-    private async Task NavigateToAsync(FocusItemViewModel item)
++    private async Task NavigateToAsync(FocusItemViewModel item, int position)
+     {
+         var navigationTarget = DashboardRoutes.NormalizeFocusTarget(item.NavigationTarget, CompanyId);
+         if (string.IsNullOrWhiteSpace(navigationTarget))
+@@ -149,7 +150,8 @@ else
+                 navigationTarget,
+                 item.Id,
+                 item.SourceType,
+-                item.Title));
++                item.Title,
++                position + 1));
+         }
+         Navigation.NavigateTo(navigationTarget);
+     }
+diff --git a/src/VirtualCompany.Web/Components/TopActionsList.razor b/src/VirtualCompany.Web/Components/TopActionsList.razor
+index 7de5d2c..e8891b3 100644
+--- a/src/VirtualCompany.Web/Components/TopActionsList.razor
++++ b/src/VirtualCompany.Web/Components/TopActionsList.razor
+@@ -94,7 +94,7 @@ else
+     private CancellationTokenSource? loadCancellationTokenSource;
+     private bool isLoading = true;
+     private string? errorMessage;
+     private IReadOnlyList<ActionQueueItemViewModel> items = Array.Empty<ActionQueueItemViewModel>();
+-    private string QueuePath => QueueRoutes.BuildPath(CompanyId);
++    private string QueuePath => DashboardRoutes.EnsureCompanyContext(QueueRoutes.BuildPath(CompanyId), CompanyId, QueueRoutes.Home);
+ 
+     protected override async Task OnParametersSetAsync()
+     {
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index d2f7189..0a55d7e 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -202,7 +202,7 @@ else
+     private string DashboardPath => DashboardRoutes.EnsureCompanyContext("/dashboard", CompanyId, "/dashboard");
+     private string AgentsPath => DashboardRoutes.EnsureCompanyContext("/agents", CompanyId, "/agents");
+     private string TasksPath => DashboardRoutes.BuildTasksPath(CompanyId, filter: "today");
+     private string WorkflowsPath => DashboardRoutes.EnsureCompanyContext("/workflows", CompanyId, "/workflows");
+     private string ApprovalsPath => DashboardRoutes.BuildApprovalsPath(CompanyId);
+-    private string QueuePath => QueueRoutes.BuildPath(CompanyId);
++    private string QueuePath => DashboardRoutes.EnsureCompanyContext(QueueRoutes.BuildPath(CompanyId), CompanyId, QueueRoutes.Home);
+     private string ActivityFeedPath => DashboardRoutes.EnsureCompanyContext("/activity-feed", CompanyId, "/activity-feed");
+     private string ResolvedCompanyName => !string.IsNullOrWhiteSpace(CompanyName)
+         ? CompanyName!
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index 821ad57..d34c1e1 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -12,6 +12,7 @@ builder.Services.AddRazorComponents()
+ builder.Services.AddHttpContextAccessor();
+ builder.Services.Configure<FinanceSimulationControlPanelOptions>(builder.Configuration.GetSection(FinanceSimulationControlPanelOptions.SectionName));
+ builder.Services.AddScoped<IFinanceSandboxAdminService, FinanceSandboxAdminService>();
+ builder.Services.AddScoped<FinanceAccessResolver>();
++builder.Services.AddScoped<IDashboardInteractionService, DashboardInteractionService>();
+ 
+ builder.Services.AddScoped(sp =>
+ {
+diff --git a/src/VirtualCompany.Web/Services/DashboardInteractionService.cs b/src/VirtualCompany.Web/Services/DashboardInteractionService.cs
+new file mode 100644
+index 0000000..8da36fe
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/DashboardInteractionService.cs
+@@ -0,0 +1,61 @@
++using Microsoft.Extensions.Logging;
++
++namespace VirtualCompany.Web.Services;
++
++public interface IDashboardInteractionService
++{
++    DashboardTelemetrySession? CurrentSession { get; }
++    DashboardTelemetrySession StartSession(string pageName, Guid? companyId);
++    void RecordAction(DashboardActionTelemetryContext context);
++    void RecordFocusItemClick(DashboardActionTelemetryContext context);
++    void RecordScrollDepth(double depthPercentage);
++    void EndSession();
++}
++
++public sealed class DashboardInteractionService : IDashboardInteractionService
++{
++    private readonly ILogger<DashboardInteractionService> _logger;
++
++    public DashboardInteractionService(ILogger<DashboardInteractionService> logger)
++    {
++        _logger = logger;
++    }
++
++    public DashboardTelemetrySession? CurrentSession { get; private set; }
++
++    public DashboardTelemetrySession StartSession(string pageName, Guid? companyId)
++    {
++        if (CurrentSession is not null && CurrentSession.Matches(pageName, companyId))
++        {
++            return CurrentSession;
++        }
++
++        CurrentSession = new DashboardTelemetrySession(pageName, companyId);
++        CurrentSession.RecordSessionStarted();
++        return CurrentSession;
++    }
++
++    public void RecordAction(DashboardActionTelemetryContext context) =>
++        Execute(session => session.RecordAction(context), "dashboard action");
++
++    public void RecordFocusItemClick(DashboardActionTelemetryContext context) =>
++        Execute(session => session.RecordFocusItemClick(context), "dashboard focus item");
++
++    public void RecordScrollDepth(double depthPercentage) =>
++        Execute(session => session.RecordScrollDepth(depthPercentage), "dashboard scroll depth");
++
++    public void EndSession()
++    {
++        CurrentSession = null;
++    }
++
++    private void Execute(Action<DashboardTelemetrySession> callback, string operationName)
++    {
++        if (CurrentSession is null)
++        {
++            return;
++        }
++
++        try
++        {
++            callback(CurrentSession);
++        }
++        catch (Exception ex)
++        {
++            _logger.LogDebug(ex, "Ignoring telemetry failure while recording {OperationName}.", operationName);
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Web/Services/DashboardRoutes.cs b/src/VirtualCompany.Web/Services/DashboardRoutes.cs
+index 51a54a8..9355066 100644
+--- a/src/VirtualCompany.Web/Services/DashboardRoutes.cs
++++ b/src/VirtualCompany.Web/Services/DashboardRoutes.cs
+@@ -100,6 +100,15 @@ public static class DashboardRoutes
+         {
+             return EnsureFinanceContext(route);
+         }
++
++        if (route.StartsWith("/queue", StringComparison.OrdinalIgnoreCase) ||
++            route.StartsWith("/activity-feed", StringComparison.OrdinalIgnoreCase) ||
++            route.StartsWith("/agents", StringComparison.OrdinalIgnoreCase) ||
++            route.StartsWith("/workflows", StringComparison.OrdinalIgnoreCase) ||
++            route.StartsWith("/dashboard", StringComparison.OrdinalIgnoreCase) ||
++            route.StartsWith("/briefing-preferences", StringComparison.OrdinalIgnoreCase))
++        {
++            return EnsureSourceContext(route);
++        }
+ 
+         return route;
+     }
+@@ -143,6 +152,11 @@ public static class DashboardRoutes
+             (RangeQueryKey, range),
+             (SourceQueryKey, GetQueryValue(route, SourceQueryKey) ?? DashboardSource));
+     }
++
++    private static string EnsureSourceContext(string route) =>
++        WithQuery(
++            route,
++            (SourceQueryKey, GetQueryValue(route, SourceQueryKey) ?? DashboardSource));
+ 
+     private static string? NormalizeApprovalFilter(string? filter) =>
+         string.IsNullOrWhiteSpace(filter)
+diff --git a/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs b/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs
+index 3b71ec4..d9a1a7f 100644
+--- a/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs
++++ b/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs
+@@ -1,91 +1,144 @@
+ using System.Diagnostics.Metrics;
+ 
+ namespace VirtualCompany.Web.Services;
+ 
+ public sealed record DashboardActionTelemetryContext(
+     string Area,
+     string ActionKey,
+     string Target,
+     string? ItemId = null,
+     string? SourceType = null,
+-    string? Label = null);
++    string? Label = null,
++    int? Position = null);
+ 
+ public sealed class DashboardTelemetrySession
+ {
+     private static readonly Meter DashboardMeter = new("VirtualCompany.Dashboard.Web");
+-    private static readonly Counter<long> FocusClicks = DashboardMeter.CreateCounter<long>("dashboard_focus_item_clicks");
+-    private static readonly Counter<long> Actions = DashboardMeter.CreateCounter<long>("dashboard_action_clicks");
+-    private static readonly Counter<long> FirstActionTimestamp = DashboardMeter.CreateCounter<long>("dashboard_first_action_timestamp_ms");
++    private static readonly Counter<long> SessionsStarted = DashboardMeter.CreateCounter<long>("dashboard_session_started");
++    private static readonly Counter<long> FocusClicks = DashboardMeter.CreateCounter<long>("dashboard_focus_item_clicked");
++    private static readonly Counter<long> Actions = DashboardMeter.CreateCounter<long>("dashboard_action_clicked");
++    private static readonly Counter<long> FirstActionRecorded = DashboardMeter.CreateCounter<long>("dashboard_first_action_recorded");
++    private static readonly Counter<long> ScrollDepthReached = DashboardMeter.CreateCounter<long>("dashboard_scroll_depth_reached");
+     private static readonly Histogram<double> ScrollDepth = DashboardMeter.CreateHistogram<double>("dashboard_scroll_depth_pct", unit: "%");
+     private static readonly Histogram<double> TimeToFirstAction = DashboardMeter.CreateHistogram<double>("dashboard_time_to_first_action_ms", "ms");
++    private static readonly int[] ScrollMilestones = [25, 50, 75, 100];
+ 
+     private readonly DateTime _sessionStartedUtc = DateTime.UtcNow;
++    private readonly HashSet<int> _scrollDepthMilestones = [];
+     private double _maxScrollDepthPercentage;
+ 
+     public DashboardTelemetrySession(string pageName, Guid? companyId)
+     {
+         PageName = pageName;
+@@ -24,67 +77,95 @@ public sealed class DashboardTelemetrySession
+     public string SessionId { get; }
+     public string PageName { get; }
+     public Guid? CompanyId { get; }
++    public bool HasStarted { get; private set; }
+     public DateTime? FirstActionAtUtc { get; private set; }
+     public double? TimeToFirstActionMilliseconds { get; private set; }
+     public bool HasRecordedFirstAction => FirstActionAtUtc.HasValue;
+     public double MaxScrollDepthPercentage => _maxScrollDepthPercentage;
++    public int HighestScrollDepthMilestone { get; private set; }
++    public DashboardActionTelemetryContext? FirstActionContext { get; private set; }
++    public DashboardActionTelemetryContext? LastActionContext { get; private set; }
++    public DashboardActionTelemetryContext? LastFocusItemContext { get; private set; }
++    public IReadOnlyCollection<int> ScrollDepthMilestonesReached => _scrollDepthMilestones.OrderBy(value => value).ToArray();
++
++    public bool Matches(string pageName, Guid? companyId) =>
++        string.Equals(PageName, pageName, StringComparison.OrdinalIgnoreCase) &&
++        CompanyId == companyId;
++
++    public void RecordSessionStarted()
++    {
++        if (HasStarted)
++        {
++            return;
++        }
++
++        HasStarted = true;
++        SessionsStarted.Add(1, Tags("dashboard_session_started", "dashboard", "session-started", $"/{PageName}", null, null, null, null, null));
++    }
+ 
+-    public void RecordFocusItemClick(string? itemId, string? sourceType, string target, string? label)
++    public void RecordFocusItemClick(DashboardActionTelemetryContext context)
+     {
+-        FocusClicks.Add(1, Tags("today-focus", "focus-item", target, itemId, sourceType, label));
+-        RecordAction(new DashboardActionTelemetryContext("today-focus", "focus-item", target, itemId, sourceType, label));
++        var normalizedContext = string.Equals(context.Area, "today-focus", StringComparison.OrdinalIgnoreCase)
++            ? context
++            : context with { Area = "today-focus" };
++
++        LastFocusItemContext = normalizedContext;
++        FocusClicks.Add(1, Tags("dashboard_focus_item_clicked", normalizedContext.Area, normalizedContext.ActionKey, normalizedContext.Target, normalizedContext.ItemId, normalizedContext.SourceType, normalizedContext.Label, normalizedContext.Position, null));
++        RecordAction(normalizedContext);
+     }
+ 
+     public void RecordAction(DashboardActionTelemetryContext context)
+     {
+-        Actions.Add(1, Tags(context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label));
++        LastActionContext = context;
++        Actions.Add(1, Tags("dashboard_action_clicked", context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label, context.Position, null));
+ 
+         if (FirstActionAtUtc.HasValue)
+         {
+             return;
+         }
+ 
++        FirstActionContext = context;
+         FirstActionAtUtc = DateTime.UtcNow;
+         TimeToFirstActionMilliseconds = Math.Max(0, (FirstActionAtUtc.Value - _sessionStartedUtc).TotalMilliseconds);
+-        TimeToFirstAction.Record(TimeToFirstActionMilliseconds.Value, Tags(context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label));
+-        FirstActionTimestamp.Add(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Tags(context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label));
++        TimeToFirstAction.Record(TimeToFirstActionMilliseconds.Value, Tags("dashboard_first_action_recorded", context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label, context.Position, null));
++        FirstActionRecorded.Add(1, Tags("dashboard_first_action_recorded", context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label, context.Position, null));
+     }
+ 
+     public void RecordScrollDepth(double depthPercentage)
+     {
+         var normalizedDepth = Math.Clamp(depthPercentage, 0, 100);
+-        if (normalizedDepth <= _maxScrollDepthPercentage)
+-        {
+-            return;
+-        }
+-
+-        _maxScrollDepthPercentage = normalizedDepth;
+-        ScrollDepth.Record(normalizedDepth, Tags("dashboard", "scroll-depth", string.Empty, null, null, null));
++        _maxScrollDepthPercentage = Math.Max(_maxScrollDepthPercentage, normalizedDepth);
++
++        foreach (var milestone in ScrollMilestones)
++        {
++            if (normalizedDepth < milestone || !_scrollDepthMilestones.Add(milestone))
++            {
++                continue;
++            }
++
++            HighestScrollDepthMilestone = Math.Max(HighestScrollDepthMilestone, milestone);
++            ScrollDepthReached.Add(1, Tags("dashboard_scroll_depth_reached", "dashboard", "scroll-depth", string.Empty, null, null, null, null, milestone));
++            ScrollDepth.Record(milestone, Tags("dashboard_scroll_depth_reached", "dashboard", "scroll-depth", string.Empty, null, null, null, null, milestone));
++        }
+     }
+ 
+     private KeyValuePair<string, object?>[] Tags(
++        string eventName,
+         string area,
+         string actionKey,
+         string target,
+         string? itemId,
+         string? sourceType,
+-        string? label) =>
++        string? label,
++        int? position,
++        int? scrollMilestone) =>
+     [
++        new("event_name", eventName),
+         new("session_id", SessionId),
+         new("page", PageName),
+         new("company_id", CompanyId?.ToString("D")),
+         new("area", area),
+         new("action_key", actionKey),
+         new("target", target),
+         new("item_id", itemId),
+         new("source_type", sourceType),
+-        new("label", label)
++        new("label", label),
++        new("position", position),
++        new("scroll_milestone", scrollMilestone)
+     ];
+ }
+diff --git a/src/VirtualCompany.Web/wwwroot/js/dashboardTelemetry.js b/src/VirtualCompany.Web/wwwroot/js/dashboardTelemetry.js
+index 0b41522..1e6e93b 100644
+--- a/src/VirtualCompany.Web/wwwroot/js/dashboardTelemetry.js
++++ b/src/VirtualCompany.Web/wwwroot/js/dashboardTelemetry.js
+@@ -1,38 +1,63 @@
+ const trackers = new Map();
++const milestones = [25, 50, 75, 100];
+ 
+ function computeDepth() {
+     const doc = document.documentElement;
+     const body = document.body;
+     const top = window.scrollY || doc.scrollTop || body.scrollTop || 0;
+     const height = Math.max(body.scrollHeight, doc.scrollHeight, body.offsetHeight, doc.offsetHeight, body.clientHeight, doc.clientHeight);
+     const viewport = window.innerHeight || doc.clientHeight || 0;
+-    const scrollable = Math.max(height - viewport, 1);
++    const scrollable = height - viewport;
++    if (scrollable <= 1) {
++        return 100;
++    }
++
+     return Math.max(0, Math.min(100, Math.round((top / scrollable) * 100)));
+ }
+ 
+ export function registerDashboardScrollTracker(dotNetHelper) {
+     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+     let frame = null;
+-    let lastDepth = -1;
++    let milestoneIndex = 0;
+ 
+     const publish = () => {
+         frame = null;
+         const depth = computeDepth();
+-        if (depth <= lastDepth) {
+-            return;
++
++        while (milestoneIndex < milestones.length && depth >= milestones[milestoneIndex]) {
++            dotNetHelper.invokeMethodAsync("OnDashboardScrollDepthChanged", milestones[milestoneIndex]);
++            milestoneIndex += 1;
+         }
+-
+-        lastDepth = depth;
+-        dotNetHelper.invokeMethodAsync("OnDashboardScrollDepthChanged", depth);
+     };
+ 
+     const schedule = () => {
+         if (frame !== null) {
+             return;
+         }
+-
+         frame = window.requestAnimationFrame(publish);
+     };
+ 
+-    const entry = { schedule };
++    const dispose = () => {
++        if (frame !== null) {
++            window.cancelAnimationFrame(frame);
++            frame = null;
++        }
++
++        window.removeEventListener("scroll", schedule);
++        window.removeEventListener("resize", schedule);
++        trackers.delete(id);
++    };
++
++    const entry = { schedule, dispose };
+     trackers.set(id, entry);
+     window.addEventListener("scroll", schedule, { passive: true });
+     window.addEventListener("resize", schedule, { passive: true });
+@@ -40,4 +65,11 @@ export function registerDashboardScrollTracker(dotNetHelper) {
+     return id;
+ }
+ 
+-export function disposeDashboardScrollTracker(id) { const entry = trackers.get(id); if (!entry) { return; } window.removeEventListener("scroll", entry.schedule); window.removeEventListener("resize", entry.schedule); trackers.delete(id); }
++export function disposeDashboardScrollTracker(id) {
++    const entry = trackers.get(id);
++    if (!entry) {
++        return;
++    }
++
++    entry.dispose();
++}
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs b/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs
+index 8fd3418..a66ce71 100644
+--- a/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs
+@@ -42,6 +42,7 @@ public sealed class DashboardPageTests
+     {
+         var context = new TestContext();
+         context.Services.AddLogging();
++        context.Services.AddScoped<IDashboardInteractionService, DashboardInteractionService>();
+ 
+         var onboardingHttpClient = new HttpClient(new AsyncStubHttpMessageHandler(request =>
+         {
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardRoutesTests.cs b/tests/VirtualCompany.Api.Tests/DashboardRoutesTests.cs
+index 3c80ea2..2eb46ea 100644
+--- a/tests/VirtualCompany.Api.Tests/DashboardRoutesTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DashboardRoutesTests.cs
+@@ -1,39 +1,51 @@
+ using VirtualCompany.Web.Services;
+ using Xunit;
+ 
+ namespace VirtualCompany.Api.Tests;
+ 
+ public sealed class DashboardRoutesTests
+ {
+     [Fact]
+     public void Build_approvals_path_includes_dashboard_context_parameters()
+     {
+         var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+ 
+         var route = DashboardRoutes.BuildApprovalsPath(companyId);
+ 
+         Assert.Equal(
+             $"/approvals?companyId={companyId:D}&filter=pending&status=pending&source=dashboard",
+             route);
+     }
+ 
+     [Fact]
+     public void Ensure_company_context_preserves_task_selection_and_adds_dashboard_source()
+     {
+         var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+         var taskId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+ 
+         var route = DashboardRoutes.EnsureCompanyContext($"/tasks?taskId={taskId:D}", companyId, "/tasks");
+ 
+         Assert.Contains($"companyId={companyId:D}", route, StringComparison.Ordinal);
+         Assert.Contains($"taskId={taskId:D}", route, StringComparison.Ordinal);
+         Assert.Contains("source=dashboard", route, StringComparison.Ordinal);
+         Assert.DoesNotContain("filter=today", route, StringComparison.Ordinal);
+     }
+ 
+     [Fact]
++    public void Ensure_company_context_adds_dashboard_source_to_queue_links()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++
++        var route = DashboardRoutes.EnsureCompanyContext(QueueRoutes.BuildPath(companyId), companyId, QueueRoutes.Home);
++
++        Assert.Equal(
++            $"/queue?companyId={companyId:D}&source=dashboard",
++            route);
++    }
++
++    [Fact]
+     public void Ensure_company_context_adds_finance_action_context()
+     {
+         var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+ 
+         var route = DashboardRoutes.EnsureCompanyContext(
+             FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId),
+             companyId,
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs b/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs
+index a5b9847..f0d245c 100644
+--- a/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs
+@@ -1,32 +1,42 @@
++using System.Linq;
+ using VirtualCompany.Web.Services;
+ using Xunit;
+ 
+ namespace VirtualCompany.Api.Tests;
+ 
+ public sealed class DashboardTelemetrySessionTests
+ {
+     [Fact]
+     public void First_action_is_recorded_once_per_session()
+     {
+         var session = new DashboardTelemetrySession("dashboard", Guid.NewGuid());
+ 
+         session.RecordAction(new DashboardActionTelemetryContext("action-queue", "open-queue", "/queue"));
+         var firstAction = session.FirstActionAtUtc;
+         session.RecordAction(new DashboardActionTelemetryContext("finance", "open-finance-home", "/finance"));
+ 
+         Assert.True(session.HasRecordedFirstAction);
+         Assert.Equal(firstAction, session.FirstActionAtUtc);
++        Assert.Equal("open-queue", session.FirstActionContext?.ActionKey);
+     }
+ 
+     [Fact]
+-    public void Focus_click_records_time_to_first_action_metric()
++    public void Focus_click_preserves_payload_and_records_time_to_first_action_metric()
+     {
+         var session = new DashboardTelemetrySession("dashboard", Guid.NewGuid());
++        var context = new DashboardActionTelemetryContext(
++            "today-focus",
++            "review",
++            "/approvals?filter=pending&status=pending&source=dashboard",
++            "approval-1",
++            "approval",
++            "Review approval",
++            2);
+ 
+-        session.RecordFocusItemClick(
+-            "approval-1",
+-            "approval",
+-            "/approvals?filter=pending&status=pending&source=dashboard",
+-            "Review approval");
++        session.RecordFocusItemClick(context);
+ 
++        Assert.Equal(context, session.LastFocusItemContext);
++        Assert.Equal(context, session.FirstActionContext);
+         Assert.NotNull(session.TimeToFirstActionMilliseconds);
+         Assert.True(session.TimeToFirstActionMilliseconds >= 0);
+     }
+@@ -35,12 +45,14 @@ public sealed class DashboardTelemetrySessionTests
+     public void Scroll_depth_only_moves_forward()
+     {
+         var session = new DashboardTelemetrySession("dashboard", Guid.NewGuid());
+ 
+         session.RecordScrollDepth(12);
+-        session.RecordScrollDepth(8);
+-        session.RecordScrollDepth(57);
++        session.RecordScrollDepth(30);
++        session.RecordScrollDepth(80);
++        session.RecordScrollDepth(80);
++        session.RecordScrollDepth(100);
+ 
+-        Assert.Equal(57, session.MaxScrollDepthPercentage);
++        Assert.Equal(100, session.MaxScrollDepthPercentage);
++        Assert.Equal(100, session.HighestScrollDepthMilestone);
++        Assert.Equal(new[] { 25, 50, 75, 100 }, session.ScrollDepthMilestonesReached.ToArray());
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs
+index 89d3939..f44ebc3 100644
+--- a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs
++++ b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs
+@@ -38,11 +38,12 @@ public sealed class TopActionsListTests
+             Assert.DoesNotContain("Deferred follow-up", cut.Markup);
+         });
+ 
+-        Assert.Equal(QueueRoutes.BuildPath(companyId), cut.Find("[data-testid='view-full-queue-link']").GetAttribute("href"));
++        var expectedQueuePath = DashboardRoutes.EnsureCompanyContext(QueueRoutes.BuildPath(companyId), companyId, QueueRoutes.Home);
++        Assert.Equal(expectedQueuePath, cut.Find("[data-testid='view-full-queue-link']").GetAttribute("href"));
+         cut.Find("[data-testid='view-full-queue-link']").Click();
+ 
+-        Assert.Equal($"http://localhost{QueueRoutes.BuildPath(companyId)}", navigation.Uri);
++        Assert.Equal($"http://localhost{expectedQueuePath}", navigation.Uri);
+     }
+ 
+     [Fact]
+     public void Component_caps_requested_top_actions_at_five()
+END_OF_PATCH

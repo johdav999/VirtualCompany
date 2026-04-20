@@ -1,0 +1,30 @@
+@if (IsLoading)
+{
+    <FinanceLoadingState Title="@LoadingTitle" Message="@LoadingMessage" />
+}
+else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+{
+    <FinanceErrorState Title="@ErrorTitle" Message="@(ErrorMessage!)" RetryText="@RetryText" OnRetry="@OnRetry" />
+}
+else if (IsEmpty)
+{
+    <FinanceEmptyState Title="@EmptyTitle" Message="@EmptyMessage" />
+}
+else if (ChildContent is not null)
+{
+    @ChildContent
+}
+
+@code {
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public bool IsEmpty { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public string LoadingTitle { get; set; } = "Loading finance summary";
+    [Parameter] public string LoadingMessage { get; set; } = "Fetching the latest tenant-scoped finance data.";
+    [Parameter] public string EmptyTitle { get; set; } = "Nothing to show";
+    [Parameter] public string EmptyMessage { get; set; } = "No finance data is available for the active tenant.";
+    [Parameter] public string ErrorTitle { get; set; } = "Finance data is unavailable";
+    [Parameter] public string RetryText { get; set; } = "Retry";
+    [Parameter] public EventCallback OnRetry { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

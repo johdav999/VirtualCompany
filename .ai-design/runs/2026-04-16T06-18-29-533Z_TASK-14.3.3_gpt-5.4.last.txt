@@ -1,0 +1,78 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -116,7 +116,6 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+         PolicyDecision = CloneNodes(policyDecision);
+         ResultPayload = CloneNodes(resultPayload);
+         DenialReason = NormalizeOptional(denialReason, nameof(denialReason), DenialReasonMaxLength);
+-        ApprovalRequestId = null;
+         CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
+         ExecutedUtc = null;
+         UpdatedUtc = CompletedUtc.Value;
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -437,10 +437,13 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         thresholdContext["toolExecutionId"] = decision.Audit is null
+             ? null
+             : JsonValue.Create(decision.Audit.ExecutionId);
++        thresholdContext["toolExecutionAttemptId"] = thresholdContext["toolExecutionId"]?.DeepClone();
+ 
+         if (command.TaskId.HasValue)
+         {
+             thresholdContext["taskId"] = JsonValue.Create(command.TaskId.Value);
++            thresholdContext["originatingTaskId"] = JsonValue.Create(command.TaskId.Value);
+         }
+ 
+         thresholdContext["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null;
+@@ -505,7 +508,11 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 ["requestedByUserId"] = requestedByUserId,
+                 ["toolName"] = command.ToolName,
+                 ["actionType"] = ToolActionTypeValues.Parse(command.ActionType).ToStorageValue(),
++                ["toolExecutionAttemptId"] = executionId,
+                 ["scope"] = command.Scope,
++                ["taskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
++                ["originatingTaskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
++                ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
+                 ["approvalTarget"] = TryGetNonEmptyString(decision.Metadata, "approvalTarget")
+             }
+         };
+@@ -515,6 +522,9 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             ["schemaVersion"] = JsonValue.Create("2026-04-12"),
+             ["approvalRequestId"] = JsonValue.Create(approvalRequestId),
+             ["executionId"] = JsonValue.Create(executionId),
++            ["toolExecutionAttemptId"] = JsonValue.Create(executionId),
++            ["taskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
++            ["originatingTaskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
+             ["status"] = JsonValue.Create("pending"),
+             ["currentStep"] = JsonValue.Create("approval_request_created"),
+             ["steps"] = steps
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs
+@@ -239,8 +239,13 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+         Assert.Equal(payload.ApprovalRequestId, attempt.ApprovalRequestId);
+         Assert.Equal(attempt.Id, approval.ToolExecutionAttemptId);
+         Assert.Equal(attempt.Id, approval.TargetEntityId);
++        Assert.Equal("action", approval.TargetEntityType);
+         Assert.Equal(financeSeed.TaskId, approval.ThresholdContext["taskId"]!.GetValue<Guid>());
++        Assert.Equal(financeSeed.TaskId, approval.ThresholdContext["originatingTaskId"]!.GetValue<Guid>());
+         Assert.Equal(attempt.Id, approval.ThresholdContext["toolExecutionId"]!.GetValue<Guid>());
++        Assert.Equal(attempt.Id, approval.ThresholdContext["toolExecutionAttemptId"]!.GetValue<Guid>());
++        Assert.Equal(financeSeed.TaskId, approval.DecisionChain["originatingTaskId"]!.GetValue<Guid>());
++        Assert.Equal(attempt.Id, approval.DecisionChain["toolExecutionAttemptId"]!.GetValue<Guid>());
+         Assert.Equal(0, financeFactory.Services.GetRequiredService<TrackingFinanceCommandService>().TotalCallCount);
+     }
+ 
+@@ -356,6 +361,7 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+         Assert.Equal("uncategorized", transaction.TransactionType);
+         Assert.Equal(ToolExecutionStatus.Rejected, attempt.Status);
+         Assert.Null(attempt.ExecutedUtc);
++        Assert.Equal(executePayload.ApprovalRequestId, attempt.ApprovalRequestId);
+         Assert.Equal(PolicyDecisionReasonCodes.ApprovalRejected, attempt.DenialReason);
+         Assert.Equal("rejected", attempt.ResultPayload["status"]!.GetValue<string>());
+         Assert.Equal(0, financeFactory.Services.GetRequiredService<TrackingFinanceCommandService>().TotalCallCount);
+END_OF_PATCH

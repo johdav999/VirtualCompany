@@ -1,0 +1,1946 @@
+diff --git a/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs b/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
+index 6e3ef0d..f8c8931 100644
+--- a/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
++++ b/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
+@@ -194,3 +194,93 @@ public sealed class FinanceSandboxDomainEventItemResponse
+     public string Status { get; set; } = string.Empty;
+     public DateTime OccurredAtUtc { get; set; }
+ }
++
++public sealed class FinanceTransparencyEventStreamResponse
++{
++    public string Summary { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceTransparencyEventListItemResponse> Items { get; set; } = [];
++}
++
++public sealed class FinanceTransparencyEventListItemResponse
++{
++    public Guid Id { get; set; }
++    public string EventType { get; set; } = string.Empty;
++    public DateTime OccurredAtUtc { get; set; }
++    public string CorrelationId { get; set; } = string.Empty;
++    public string EntityReference { get; set; } = string.Empty;
++}
++
++public sealed class FinanceTransparencyEventDetailResponse
++{
++    public Guid Id { get; set; }
++    public string EventType { get; set; } = string.Empty;
++    public DateTime OccurredAtUtc { get; set; }
++    public string CorrelationId { get; set; } = string.Empty;
++    public string EntityType { get; set; } = string.Empty;
++    public string EntityId { get; set; } = string.Empty;
++    public string EntityReference { get; set; } = string.Empty;
++    public string PayloadSummary { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceTransparencyTriggerTraceItemResponse> TriggerConsumptionTrace { get; set; } = [];
++}
++
++public sealed class FinanceTransparencyTriggerTraceItemResponse
++{
++    public string SourceType { get; set; } = string.Empty;
++    public string SourceId { get; set; } = string.Empty;
++    public string DisplayName { get; set; } = string.Empty;
++    public string Reference { get; set; } = string.Empty;
++}
++
++public sealed class FinanceTransparencyToolManifestListResponse
++{
++    public string Summary { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceTransparencyToolManifestItemResponse> Items { get; set; } = [];
++}
++
++public sealed class FinanceTransparencyToolManifestItemResponse
++{
++    public string ToolName { get; set; } = string.Empty;
++    public string Version { get; set; } = string.Empty;
++    public string ContractSummary { get; set; } = string.Empty;
++    public string ProviderAdapterIdentity { get; set; } = string.Empty;
++}
++
++public sealed class FinanceTransparencyToolExecutionHistoryResponse
++{
++    public string Summary { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceTransparencyToolExecutionListItemResponse> Items { get; set; } = [];
++}
++
++public sealed class FinanceTransparencyToolExecutionListItemResponse
++{
++    public Guid ExecutionId { get; set; }
++    public string ToolName { get; set; } = string.Empty;
++    public string ToolVersion { get; set; } = string.Empty;
++    public string LifecycleState { get; set; } = string.Empty;
++    public string RequestSummary { get; set; } = string.Empty;
++    public string ResponseSummary { get; set; } = string.Empty;
++    public DateTime ExecutionTimestampUtc { get; set; }
++    public string CorrelationId { get; set; } = string.Empty;
++}
++
++public sealed class FinanceTransparencyToolExecutionDetailResponse
++{
++    public Guid ExecutionId { get; set; }
++    public string ToolName { get; set; } = string.Empty;
++    public string ToolVersion { get; set; } = string.Empty;
++    public string LifecycleState { get; set; } = string.Empty;
++    public string RequestSummary { get; set; } = string.Empty;
++    public string ResponseSummary { get; set; } = string.Empty;
++    public DateTime ExecutionTimestampUtc { get; set; }
++    public string CorrelationId { get; set; } = string.Empty;
++    public Guid? ApprovalRequestId { get; set; }
++    public string OriginatingEntityType { get; set; } = string.Empty;
++    public Guid? OriginatingEntityId { get; set; }
++    public string OriginatingEntityReference { get; set; } = string.Empty;
++    public Guid? TaskId { get; set; }
++    public Guid? WorkflowInstanceId { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 4a27789..e56aaf8 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -132,6 +132,31 @@ public sealed class FinanceApiClient
+             ? Task.FromResult<FinanceSandboxDomainEventsResponse?>(null)
+             : GetAsync<FinanceSandboxDomainEventsResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/domain-events", allowNotFound: true, cancellationToken);
+ 
++    public Task<FinanceTransparencyToolManifestListResponse?> GetTransparencyToolManifestsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinanceTransparencyToolManifestListResponse?>(null)
++            : GetAsync<FinanceTransparencyToolManifestListResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/transparency/tool-manifests", allowNotFound: true, cancellationToken);
++
++    public Task<FinanceTransparencyToolExecutionHistoryResponse?> GetTransparencyToolExecutionsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinanceTransparencyToolExecutionHistoryResponse?>(null)
++            : GetAsync<FinanceTransparencyToolExecutionHistoryResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/transparency/tool-executions", allowNotFound: true, cancellationToken);
++
++    public Task<FinanceTransparencyToolExecutionDetailResponse?> GetTransparencyToolExecutionDetailAsync(Guid companyId, Guid executionId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinanceTransparencyToolExecutionDetailResponse?>(null)
++            : GetAsync<FinanceTransparencyToolExecutionDetailResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/transparency/tool-executions/{executionId}", allowNotFound: true, cancellationToken);
++
++    public Task<FinanceTransparencyEventStreamResponse?> GetTransparencyEventsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinanceTransparencyEventStreamResponse?>(null)
++            : GetAsync<FinanceTransparencyEventStreamResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/transparency/events", allowNotFound: true, cancellationToken);
++
++    public Task<FinanceTransparencyEventDetailResponse?> GetTransparencyEventDetailAsync(Guid companyId, Guid eventId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinanceTransparencyEventDetailResponse?>(null)
++            : GetAsync<FinanceTransparencyEventDetailResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/transparency/events/{eventId}", allowNotFound: true, cancellationToken);
++
+     public Task<FinanceCashPositionResponse?> GetCashPositionAsync(Guid companyId, DateTime? asOfUtc = null, CancellationToken cancellationToken = default)
+     {
+         if (_useOfflineMode)
+diff --git a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+index 6411972..8d06191 100644
+--- a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
++++ b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+@@ -11,6 +11,11 @@ public interface IFinanceSandboxAdminService
+     Task<FinanceSandboxAnomalyDetailViewModel> InjectAnomalyAsync(FinanceSandboxAnomalyInjectionCommand command, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxSimulationControlsViewModel?> GetSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxProgressionRunViewModel> StartProgressionRunAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default);
++    Task<FinanceTransparencyToolManifestListViewModel?> GetTransparencyToolManifestsAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<FinanceTransparencyExecutionHistoryViewModel?> GetTransparencyToolExecutionsAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<FinanceTransparencyToolExecutionDetailViewModel?> GetTransparencyToolExecutionDetailAsync(Guid companyId, Guid executionId, CancellationToken cancellationToken = default);
++    Task<FinanceTransparencyEventStreamViewModel?> GetTransparencyEventsAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<FinanceTransparencyEventDetailViewModel?> GetTransparencyEventDetailAsync(Guid companyId, Guid eventId, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxToolExecutionVisibilityViewModel?> GetToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxDomainEventsViewModel?> GetDomainEventsAsync(Guid companyId, CancellationToken cancellationToken = default);
+ }
+@@ -121,6 +126,41 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             RunHistory = response.RunHistory.Select(MapProgressionRun).ToArray()
+         };
+     }
++
++    public async Task<FinanceTransparencyToolManifestListViewModel?> GetTransparencyToolManifestsAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        var response = await _financeApiClient.GetTransparencyToolManifestsAsync(companyId, cancellationToken);
++        return response is null ? null : new FinanceTransparencyToolManifestListViewModel
++        {
++            Summary = response.Summary,
++            Items = response.Items.Select(MapTransparencyToolManifestItem).ToArray()
++        };
++    }
++
++    public async Task<FinanceTransparencyExecutionHistoryViewModel?> GetTransparencyToolExecutionsAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        var response = await _financeApiClient.GetTransparencyToolExecutionsAsync(companyId, cancellationToken);
++        return response is null ? null : new FinanceTransparencyExecutionHistoryViewModel
++        {
++            Summary = response.Summary,
++            Items = response.Items.Select(MapTransparencyToolExecutionItem).ToArray()
++        };
++    }
++
++    public async Task<FinanceTransparencyToolExecutionDetailViewModel?> GetTransparencyToolExecutionDetailAsync(Guid companyId, Guid executionId, CancellationToken cancellationToken = default)
++    {
++        var response = await _financeApiClient.GetTransparencyToolExecutionDetailAsync(companyId, executionId, cancellationToken);
++        return response is null ? null : MapTransparencyToolExecutionDetail(response);
++    }
++
++    public async Task<FinanceTransparencyEventStreamViewModel?> GetTransparencyEventsAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        var response = await _financeApiClient.GetTransparencyEventsAsync(companyId, cancellationToken);
++        return response is null ? null : new FinanceTransparencyEventStreamViewModel
++        {
++            Summary = response.Summary,
++            Items = response.Items.Select(MapTransparencyEventItem).ToArray()
++        };
++    }
+ 
+     public async Task<FinanceSandboxToolExecutionVisibilityViewModel?> GetToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default)
+     {
+@@ -144,6 +184,12 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             Items = response.Items.Select(MapDomainEventItem).ToArray()
+         };
+     }
++
++    public async Task<FinanceTransparencyEventDetailViewModel?> GetTransparencyEventDetailAsync(Guid companyId, Guid eventId, CancellationToken cancellationToken = default)
++    {
++        var response = await _financeApiClient.GetTransparencyEventDetailAsync(companyId, eventId, cancellationToken);
++        return response is null ? null : MapTransparencyEventDetail(response);
++    }
+ 
+     private static FinanceSandboxSeedGenerationIssueViewModel MapSeedGenerationIssue(FinanceSandboxSeedGenerationIssueResponse response) =>
+         new()
+@@ -187,6 +233,62 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             Message = response.Message
+         };
+ 
++    private static FinanceTransparencyToolManifestItemViewModel MapTransparencyToolManifestItem(FinanceTransparencyToolManifestItemResponse response) =>
++        new()
++        {
++            ToolName = response.ToolName,
++            Version = response.Version,
++            ContractSummary = response.ContractSummary,
++            ProviderAdapterIdentity = response.ProviderAdapterIdentity
++        };
++
++    private static FinanceTransparencyToolExecutionListItemViewModel MapTransparencyToolExecutionItem(FinanceTransparencyToolExecutionListItemResponse response) =>
++        new()
++        {
++            ExecutionId = response.ExecutionId,
++            ToolName = response.ToolName,
++            ToolVersion = response.ToolVersion,
++            LifecycleState = response.LifecycleState,
++            RequestSummary = response.RequestSummary,
++            ResponseSummary = response.ResponseSummary,
++            ExecutionTimestampUtc = response.ExecutionTimestampUtc,
++            CorrelationId = response.CorrelationId
++        };
++
++    private static FinanceTransparencyToolExecutionDetailViewModel MapTransparencyToolExecutionDetail(FinanceTransparencyToolExecutionDetailResponse response) =>
++        new()
++        {
++            ExecutionId = response.ExecutionId,
++            ToolName = response.ToolName,
++            ToolVersion = response.ToolVersion,
++            LifecycleState = response.LifecycleState,
++            RequestSummary = response.RequestSummary,
++            ResponseSummary = response.ResponseSummary,
++            ExecutionTimestampUtc = response.ExecutionTimestampUtc,
++            CorrelationId = response.CorrelationId,
++            ApprovalRequestId = response.ApprovalRequestId,
++            OriginatingEntityType = response.OriginatingEntityType,
++            OriginatingEntityId = response.OriginatingEntityId,
++            OriginatingEntityReference = response.OriginatingEntityReference,
++            TaskId = response.TaskId,
++            WorkflowInstanceId = response.WorkflowInstanceId
++        };
++
++    private static FinanceTransparencyEventListItemViewModel MapTransparencyEventItem(FinanceTransparencyEventListItemResponse response) =>
++        new()
++        {
++            Id = response.Id,
++            EventType = response.EventType,
++            OccurredAtUtc = response.OccurredAtUtc,
++            CorrelationId = response.CorrelationId,
++            EntityReference = response.EntityReference
++        };
++
++    private static FinanceTransparencyTriggerTraceItemViewModel MapTransparencyTraceItem(FinanceTransparencyTriggerTraceItemResponse response) =>
++        new()
++        {
++            SourceType = response.SourceType,
++            SourceId = response.SourceId,
++            DisplayName = response.DisplayName,
++            Reference = response.Reference
++        };
++
+     private static FinanceSandboxToolExecutionItemViewModel MapToolExecutionItem(FinanceSandboxToolExecutionItemResponse response) =>
+         new()
+         {
+@@ -242,6 +344,21 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             OccurredAtUtc = response.OccurredAtUtc
+         };
+ 
++    private static FinanceTransparencyEventDetailViewModel MapTransparencyEventDetail(FinanceTransparencyEventDetailResponse response) =>
++        new()
++        {
++            Id = response.Id,
++            EventType = response.EventType,
++            OccurredAtUtc = response.OccurredAtUtc,
++            CorrelationId = response.CorrelationId,
++            EntityType = response.EntityType,
++            EntityId = response.EntityId,
++            EntityReference = response.EntityReference,
++            PayloadSummary = response.PayloadSummary,
++            TriggerConsumptionTrace = response.TriggerConsumptionTrace
++                .Select(MapTransparencyTraceItem)
++                .ToArray()
++        };
++
+ public sealed record FinanceSandboxSectionState<TSection>(bool IsLoading, string? ErrorMessage, TSection? Value)
+     where TSection : class
+ {
+@@ -406,6 +523,52 @@ public sealed class FinanceSandboxProgressionRunStepViewModel
+     public int EventsEmitted { get; set; }
+ }
+ 
++public sealed class FinanceTransparencyToolManifestListViewModel
++{
++    public string Summary { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceTransparencyToolManifestItemViewModel> Items { get; set; } = [];
++}
++
++public sealed class FinanceTransparencyToolManifestItemViewModel
++{
++    public string ToolName { get; set; } = string.Empty;
++    public string Version { get; set; } = string.Empty;
++    public string ContractSummary { get; set; } = string.Empty;
++    public string ProviderAdapterIdentity { get; set; } = string.Empty;
++}
++
++public sealed class FinanceTransparencyExecutionHistoryViewModel
++{
++    public string Summary { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceTransparencyToolExecutionListItemViewModel> Items { get; set; } = [];
++}
++
++public sealed class FinanceTransparencyToolExecutionListItemViewModel
++{
++    public Guid ExecutionId { get; set; }
++    public string ToolName { get; set; } = string.Empty;
++    public string ToolVersion { get; set; } = string.Empty;
++    public string LifecycleState { get; set; } = string.Empty;
++    public string RequestSummary { get; set; } = string.Empty;
++    public string ResponseSummary { get; set; } = string.Empty;
++    public DateTime ExecutionTimestampUtc { get; set; }
++    public string CorrelationId { get; set; } = string.Empty;
++}
++
++public sealed class FinanceTransparencyToolExecutionDetailViewModel
++{
++    public Guid ExecutionId { get; set; }
++    public string ToolName { get; set; } = string.Empty;
++    public string ToolVersion { get; set; } = string.Empty;
++    public string LifecycleState { get; set; } = string.Empty;
++    public string RequestSummary { get; set; } = string.Empty;
++    public string ResponseSummary { get; set; } = string.Empty;
++    public DateTime ExecutionTimestampUtc { get; set; }
++    public string CorrelationId { get; set; } = string.Empty;
++    public Guid? ApprovalRequestId { get; set; }
++    public string OriginatingEntityType { get; set; } = string.Empty;
++    public Guid? OriginatingEntityId { get; set; }
++    public string OriginatingEntityReference { get; set; } = string.Empty;
++    public Guid? TaskId { get; set; }
++    public Guid? WorkflowInstanceId { get; set; }
++}
++
+ public sealed class FinanceSandboxToolExecutionVisibilityViewModel
+ {
+     public string Summary { get; set; } = string.Empty;
+@@ -422,3 +585,29 @@ public sealed class FinanceSandboxDomainEventItemViewModel
+     public string Status { get; set; } = string.Empty;
+     public DateTime OccurredAtUtc { get; set; }
+ }
++
++public sealed class FinanceTransparencyEventStreamViewModel
++{
++    public string Summary { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceTransparencyEventListItemViewModel> Items { get; set; } = [];
++}
++
++public sealed class FinanceTransparencyEventListItemViewModel
++{
++    public Guid Id { get; set; }
++    public string EventType { get; set; } = string.Empty;
++    public DateTime OccurredAtUtc { get; set; }
++    public string CorrelationId { get; set; } = string.Empty;
++    public string EntityReference { get; set; } = string.Empty;
++}
++
++public sealed class FinanceTransparencyEventDetailViewModel
++{
++    public Guid Id { get; set; }
++    public string EventType { get; set; } = string.Empty;
++    public DateTime OccurredAtUtc { get; set; }
++    public string CorrelationId { get; set; } = string.Empty;
++    public string EntityType { get; set; } = string.Empty;
++    public string EntityId { get; set; } = string.Empty;
++    public string EntityReference { get; set; } = string.Empty;
++    public string PayloadSummary { get; set; } = string.Empty;
++    public IReadOnlyList<FinanceTransparencyTriggerTraceItemViewModel> TriggerConsumptionTrace { get; set; } = [];
++}
++
++public sealed class FinanceTransparencyTriggerTraceItemViewModel
++{
++    public string SourceType { get; set; } = string.Empty;
++    public string SourceId { get; set; } = string.Empty;
++    public string DisplayName { get; set; } = string.Empty;
++    public string Reference { get; set; } = string.Empty;
++}
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 6c1ce0a..efc2f94 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -1,3 +1,4 @@
++using System.Globalization;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.AspNetCore.Mvc;
+@@ -5,6 +6,7 @@ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Application.Finance;
++using VirtualCompany.Application.Agents;
+ using VirtualCompany.Shared;
+ using VirtualCompany.Infrastructure.Tenancy;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -29,6 +31,8 @@ public sealed class InternalFinanceController : ControllerBase
+     private readonly IFinanceTransactionAnomalyDetectionService _anomalyDetectionService;
+     private readonly IFinanceCashPositionWorkflowService _cashPositionWorkflowService;
+     private readonly ICompanySimulationService _companySimulationService;
++    private readonly ICompanyToolRegistry _toolRegistry;
++    private readonly IFinanceToolProvider _financeToolProvider;
+     private readonly VirtualCompanyDbContext _dbContext;
+ 
+     public InternalFinanceController(
+@@ -40,10 +44,14 @@ public sealed class InternalFinanceController : ControllerBase
+         IApprovalRequestService approvalRequestService,
+         IFinanceTransactionAnomalyDetectionService anomalyDetectionService,
+         IFinanceCashPositionWorkflowService cashPositionWorkflowService,
++        ICompanyToolRegistry toolRegistry,
++        IFinanceToolProvider financeToolProvider,
+         VirtualCompanyDbContext dbContext,
+         ICompanySimulationService companySimulationService)
+     {
+         _financeReadService = financeReadService;
++        _toolRegistry = toolRegistry;
++        _financeToolProvider = financeToolProvider;
+         _financeCommandService = financeCommandService;
+         _auditQueryService = auditQueryService;
+         _financePolicyConfigurationService = financePolicyConfigurationService;
+@@ -736,6 +744,36 @@ public sealed class InternalFinanceController : ControllerBase
+         ExecuteReadOptionalAsync(
+             () => BuildSandboxDomainEventsAsync(companyId, cancellationToken),
+             "Finance sandbox domain events were not found.");
++
++    [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
++    [HttpGet("sandbox-admin/transparency/tool-manifests")]
++    public Task<ActionResult<FinanceTransparencyToolManifestListResponse>> GetTransparencyToolManifestsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken) =>
++        ExecuteReadOptionalAsync(
++            () => BuildFinanceTransparencyToolManifestsAsync(companyId, cancellationToken),
++            "Finance transparency tool manifests were not found.");
++
++    [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
++    [HttpGet("sandbox-admin/transparency/tool-executions")]
++    public Task<ActionResult<FinanceTransparencyToolExecutionHistoryResponse>> GetTransparencyToolExecutionsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken) =>
++        ExecuteReadOptionalAsync(
++            () => BuildFinanceTransparencyToolExecutionsAsync(companyId, cancellationToken),
++            "Finance transparency tool executions were not found.");
++
++    [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
++    [HttpGet("sandbox-admin/transparency/tool-executions/{executionId:guid}")]
++    public Task<ActionResult<FinanceTransparencyToolExecutionDetailResponse>> GetTransparencyToolExecutionDetailAsync(
++        Guid companyId,
++        Guid executionId,
++        CancellationToken cancellationToken) =>
++        ExecuteReadOptionalAsync(
++            () => BuildFinanceTransparencyToolExecutionDetailAsync(companyId, executionId, cancellationToken),
++            "Finance transparency tool execution detail was not found.");
++
++    [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
++    [HttpGet("sandbox-admin/transparency/events")]
++    public Task<ActionResult<FinanceTransparencyEventStreamResponse>> GetTransparencyEventsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken) =>
++        ExecuteReadOptionalAsync(
++            () => BuildFinanceTransparencyEventsAsync(companyId, cancellationToken),
++            "Finance transparency events were not found.");
++
++    [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
++    [HttpGet("sandbox-admin/transparency/events/{eventId:guid}")]
++    public Task<ActionResult<FinanceTransparencyEventDetailResponse>> GetTransparencyEventDetailAsync(
++        Guid companyId,
++        Guid eventId,
++        CancellationToken cancellationToken) =>
++        ExecuteReadOptionalAsync(
++            () => BuildFinanceTransparencyEventDetailAsync(companyId, eventId, cancellationToken),
++            "Finance transparency event detail was not found.");
+ 
+     private static FinanceSandboxSeedGenerationResponse BuildSandboxSeedGenerationResponse(
+         FinanceSeedBootstrapResultDto result,
+@@ -1290,6 +1328,273 @@ public sealed class InternalFinanceController : ControllerBase
+                 })
+                 .ToArray()
+         };
++    }
++
++    private Task<FinanceTransparencyToolManifestListResponse?> BuildFinanceTransparencyToolManifestsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var financeRegistrations = _toolRegistry.ListTools()
++            .Where(registration => registration.Scopes.Contains("finance"))
++            .ToDictionary(registration => registration.ToolName, StringComparer.OrdinalIgnoreCase);
++
++        var definitions = _toolRegistry.ListToolDefinitions()
++            .Where(definition => financeRegistrations.ContainsKey(definition.ToolName))
++            .OrderBy(definition => definition.ToolName, StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++
++        if (definitions.Length == 0)
++        {
++            return Task.FromResult<FinanceTransparencyToolManifestListResponse?>(null);
++        }
++
++        var providerAdapterIdentity = _financeToolProvider.GetType().Name;
++        return Task.FromResult<FinanceTransparencyToolManifestListResponse?>(new FinanceTransparencyToolManifestListResponse
++        {
++            Summary = $"Registered {definitions.Length} finance tool manifest(s) for provider adapter {providerAdapterIdentity}.",
++            Items = definitions
++                .Select(definition => new FinanceTransparencyToolManifestItemResponse
++                {
++                    ToolName = definition.ToolName,
++                    Version = definition.Version,
++                    ContractSummary = BuildSchemaSummary(definition.InputSchema, definition.OutputSchema),
++                    ProviderAdapterIdentity = providerAdapterIdentity
++                })
++                .ToArray()
++        });
++    }
++
++    private async Task<FinanceTransparencyToolExecutionHistoryResponse?> BuildFinanceTransparencyToolExecutionsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var financeToolNames = BuildFinanceToolNameSet();
++        var attempts = await _dbContext.ToolExecutionAttempts
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderByDescending(x => x.ExecutedUtc ?? x.CompletedUtc ?? x.StartedUtc)
++            .Take(100)
++            .ToListAsync(cancellationToken);
++
++        var items = attempts
++            .Where(attempt => IsFinanceToolExecution(attempt, financeToolNames))
++            .Take(25)
++            .Select(BuildToolExecutionListItem)
++            .ToArray();
++
++        if (items.Length == 0)
++        {
++            return null;
++        }
++
++        return new FinanceTransparencyToolExecutionHistoryResponse
++        {
++            Summary = $"Showing {items.Length} recent finance tool execution(s) for the active company.",
++            Items = items
++        };
++    }
++
++    private async Task<FinanceTransparencyToolExecutionDetailResponse?> BuildFinanceTransparencyToolExecutionDetailAsync(
++        Guid companyId,
++        Guid executionId,
++        CancellationToken cancellationToken)
++    {
++        var financeToolNames = BuildFinanceToolNameSet();
++        var attempt = await _dbContext.ToolExecutionAttempts
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == executionId, cancellationToken);
++
++        if (attempt is null || !IsFinanceToolExecution(attempt, financeToolNames))
++        {
++            return null;
++        }
++
++        var (originatingEntityType, originatingEntityId, originatingEntityReference) = ResolveOriginatingEntity(attempt);
++        return new FinanceTransparencyToolExecutionDetailResponse
++        {
++            ExecutionId = attempt.Id,
++            ToolName = attempt.ToolName,
++            ToolVersion = attempt.ToolVersion,
++            LifecycleState = attempt.Status.ToString().ToLowerInvariant(),
++            RequestSummary = BuildToolExecutionRequestSummary(attempt),
++            ResponseSummary = BuildToolExecutionResponseSummary(attempt),
++            ExecutionTimestampUtc = attempt.ExecutedUtc ?? attempt.CompletedUtc ?? attempt.StartedUtc,
++            CorrelationId = attempt.CorrelationId ?? string.Empty,
++            ApprovalRequestId = attempt.ApprovalRequestId,
++            OriginatingEntityType = originatingEntityType,
++            OriginatingEntityId = originatingEntityId,
++            OriginatingEntityReference = originatingEntityReference,
++            TaskId = attempt.TaskId,
++            WorkflowInstanceId = attempt.WorkflowInstanceId
++        };
++    }
++
++    private async Task<FinanceTransparencyEventStreamResponse?> BuildFinanceTransparencyEventsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var auditEvents = await _dbContext.AuditEvents
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(100)
++            .ToListAsync(cancellationToken);
++
++        var items = auditEvents
++            .Where(IsFinanceTransparencyEvent)
++            .Take(25)
++            .Select(auditEvent => new FinanceTransparencyEventListItemResponse
++            {
++                Id = auditEvent.Id,
++                EventType = auditEvent.Action,
++                OccurredAtUtc = auditEvent.OccurredUtc,
++                CorrelationId = auditEvent.CorrelationId ?? string.Empty,
++                EntityReference = BuildAuditEntityReference(auditEvent)
++            })
++            .ToArray();
++
++        if (items.Length == 0)
++        {
++            return null;
++        }
++
++        return new FinanceTransparencyEventStreamResponse
++        {
++            Summary = $"Showing {items.Length} recent finance event(s) for the active company.",
++            Items = items
++        };
++    }
++
++    private async Task<FinanceTransparencyEventDetailResponse?> BuildFinanceTransparencyEventDetailAsync(
++        Guid companyId,
++        Guid eventId,
++        CancellationToken cancellationToken)
++    {
++        var auditEvent = await _dbContext.AuditEvents
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == eventId, cancellationToken);
++
++        if (auditEvent is null || !IsFinanceTransparencyEvent(auditEvent))
++        {
++            return null;
++        }
++
++        return new FinanceTransparencyEventDetailResponse
++        {
++            Id = auditEvent.Id,
++            EventType = auditEvent.Action,
++            OccurredAtUtc = auditEvent.OccurredUtc,
++            CorrelationId = auditEvent.CorrelationId ?? string.Empty,
++            EntityType = auditEvent.TargetType,
++            EntityId = auditEvent.TargetId,
++            EntityReference = BuildAuditEntityReference(auditEvent),
++            PayloadSummary = BuildAuditPayloadSummary(auditEvent),
++            TriggerConsumptionTrace = BuildTriggerConsumptionTrace(auditEvent)
++        };
++    }
++
++    private HashSet<string> BuildFinanceToolNameSet() =>
++        _toolRegistry.ListTools()
++            .Where(registration => registration.Scopes.Contains("finance"))
++            .Select(registration => registration.ToolName)
++            .ToHashSet(StringComparer.OrdinalIgnoreCase);
++
++    private static bool IsFinanceToolExecution(ToolExecutionAttempt attempt, HashSet<string> financeToolNames) =>
++        string.Equals(attempt.Scope, "finance", StringComparison.OrdinalIgnoreCase) ||
++        financeToolNames.Contains(attempt.ToolName);
++
++    private static bool IsFinanceTransparencyEvent(AuditEvent auditEvent)
++    {
++        if (auditEvent.Action.StartsWith("finance", StringComparison.OrdinalIgnoreCase) ||
++            auditEvent.TargetType.StartsWith("finance", StringComparison.OrdinalIgnoreCase))
++        {
++            return true;
++        }
++
++        return auditEvent.Metadata.TryGetValue("requestedDomain", out var requestedDomain) &&
++               string.Equals(requestedDomain, "finance", StringComparison.OrdinalIgnoreCase) ||
++               auditEvent.Metadata.TryGetValue("responsibilityDomain", out var responsibilityDomain) &&
++               string.Equals(responsibilityDomain, "finance", StringComparison.OrdinalIgnoreCase);
++    }
++
++    private static FinanceTransparencyToolExecutionListItemResponse BuildToolExecutionListItem(ToolExecutionAttempt attempt) =>
++        new()
++        {
++            ExecutionId = attempt.Id,
++            ToolName = attempt.ToolName,
++            ToolVersion = attempt.ToolVersion,
++            LifecycleState = attempt.Status.ToString().ToLowerInvariant(),
++            RequestSummary = BuildToolExecutionRequestSummary(attempt),
++            ResponseSummary = BuildToolExecutionResponseSummary(attempt),
++            ExecutionTimestampUtc = attempt.ExecutedUtc ?? attempt.CompletedUtc ?? attempt.StartedUtc,
++            CorrelationId = attempt.CorrelationId ?? string.Empty
++        };
++
++    private static string BuildSchemaSummary(JsonObject inputSchema, JsonObject outputSchema) =>
++        $"Input {DescribeSchema(inputSchema)}; output {DescribeSchema(outputSchema)}.";
++
++    private static string DescribeSchema(JsonObject schema)
++    {
++        var properties = schema["properties"] as JsonObject;
++        if (properties is null || properties.Count == 0)
++        {
++            return "has no declared fields";
++        }
++
++        var required = (schema["required"] as JsonArray)?
++            .Select(node => node?.GetValue<string>())
++            .Where(value => !string.IsNullOrWhiteSpace(value))
++            .Select(value => value!)
++            .ToArray() ?? [];
++
++        if (required.Length > 0)
++        {
++            return $"requires {string.Join(", ", required.Take(3))}";
++        }
++
++        return $"declares {string.Join(", ", properties.Select(pair => pair.Key).Take(3))}";
++    }
++
++    private static string BuildToolExecutionRequestSummary(ToolExecutionAttempt attempt) =>
++        SummarizePayload(
++            attempt.RequestPayload,
++            ["transactionId", "invoiceId", "category", "status", "candidateCategory", "candidateStatus", "limit", "asOfUtc"]);
++
++    private static string BuildToolExecutionResponseSummary(ToolExecutionAttempt attempt)
++    {
++        var safeSummary = TryReadSummaryScalar(attempt.ResultPayload, "userSafeSummary");
++        if (!string.IsNullOrWhiteSpace(safeSummary))
++        {
++            return safeSummary;
++        }
++
++        if (!string.IsNullOrWhiteSpace(attempt.DenialReason))
++        {
++            return attempt.DenialReason;
++        }
++
++        return SummarizePayload(
++            attempt.ResultPayload,
++            ["status", "errorCode", "toolName", "actionType", "success", "recommendedCategory", "recommendedStatus", "confidence"]);
++    }
++
++    private static string SummarizePayload(IReadOnlyDictionary<string, JsonNode?> payload, IReadOnlyList<string> preferredKeys)
++    {
++        if (payload.Count == 0)
++        {
++            return "No payload recorded.";
++        }
++
++        var parts = new List<string>();
++        foreach (var key in preferredKeys)
++        {
++            var value = TryReadSummaryScalar(payload, key);
++            if (string.IsNullOrWhiteSpace(value))
++            {
++                continue;
++            }
++
++            parts.Add($"{key}={value}");
++            if (parts.Count == 3)
++            {
++                break;
++            }
++        }
++
++        if (parts.Count == 0 && payload.TryGetValue("data", out var dataNode) && dataNode is JsonObject dataObject)
++        {
++            foreach (var pair in dataObject)
++            {
++                var value = NodeToSummaryText(pair.Value);
++                if (string.IsNullOrWhiteSpace(value))
++                {
++                    continue;
++                }
++
++                parts.Add($"{pair.Key}={value}");
++                if (parts.Count == 3)
++                {
++                    break;
++                }
++            }
++        }
++
++        if (parts.Count == 0)
++        {
++            foreach (var pair in payload)
++            {
++                var value = NodeToSummaryText(pair.Value);
++                if (string.IsNullOrWhiteSpace(value))
++                {
++                    continue;
++                }
++
++                parts.Add($"{pair.Key}={value}");
++                if (parts.Count == 3)
++                {
++                    break;
++                }
++            }
++        }
++
++        return parts.Count == 0
++            ? "Payload captured without scalar summary."
++            : TruncateSummary(string.Join(" | ", parts), 240);
+     }
+ 
+     private static bool IsReferentialIntegrityCode(string? code)
+@@ -1309,4 +1614,127 @@ public sealed class InternalFinanceController : ControllerBase
+                code.StartsWith("transactions.invoice", StringComparison.OrdinalIgnoreCase) ||
+                code.StartsWith("transactions.bill", StringComparison.OrdinalIgnoreCase) ||
+                code.StartsWith("balances.account", StringComparison.OrdinalIgnoreCase);
++
++    private static (string EntityType, Guid? EntityId, string EntityReference) ResolveOriginatingEntity(ToolExecutionAttempt attempt)
++    {
++        var transactionId = TryReadGuid(attempt.RequestPayload, "transactionId") ?? TryReadGuid(attempt.ResultPayload, "transactionId");
++        if (transactionId is Guid resolvedTransactionId)
++        {
++            return ("finance_transaction", resolvedTransactionId, $"Finance transaction {resolvedTransactionId:D}");
++        }
++
++        var invoiceId = TryReadGuid(attempt.RequestPayload, "invoiceId") ?? TryReadGuid(attempt.ResultPayload, "invoiceId");
++        if (invoiceId is Guid resolvedInvoiceId)
++        {
++            return ("finance_invoice", resolvedInvoiceId, $"Finance invoice {resolvedInvoiceId:D}");
++        }
++
++        return (string.Empty, null, string.Empty);
++    }
++
++    private static string BuildAuditEntityReference(AuditEvent auditEvent)
++    {
++        if (auditEvent.Metadata.TryGetValue("recordReference", out var recordReference) && !string.IsNullOrWhiteSpace(recordReference))
++        {
++            return recordReference;
++        }
++
++        if (auditEvent.Metadata.TryGetValue("affectedRecordReference", out var affectedReference) && !string.IsNullOrWhiteSpace(affectedReference))
++        {
++            return affectedReference;
++        }
++
++        return string.IsNullOrWhiteSpace(auditEvent.TargetId)
++            ? NormalizeTransparencyToken(auditEvent.TargetType)
++            : $"{NormalizeTransparencyToken(auditEvent.TargetType)} {auditEvent.TargetId}";
++    }
++
++    private static string BuildAuditPayloadSummary(AuditEvent auditEvent)
++    {
++        var parts = new List<string>();
++        if (!string.IsNullOrWhiteSpace(auditEvent.RationaleSummary))
++        {
++            parts.Add(auditEvent.RationaleSummary);
++        }
++
++        var metadataSummary = auditEvent.Metadata
++            .Where(pair => !string.IsNullOrWhiteSpace(pair.Value))
++            .Take(3)
++            .Select(pair => $"{pair.Key}={pair.Value}")
++            .ToArray();
++
++        if (metadataSummary.Length > 0)
++        {
++            parts.Add(string.Join(" | ", metadataSummary));
++        }
++
++        if (parts.Count == 0 && !string.IsNullOrWhiteSpace(auditEvent.PayloadDiffJson))
++        {
++            parts.Add(auditEvent.PayloadDiffJson);
++        }
++
++        return parts.Count == 0
++            ? "No payload summary recorded."
++            : TruncateSummary(string.Join(" ", parts), 320);
++    }
++
++    private static IReadOnlyList<FinanceTransparencyTriggerTraceItemResponse> BuildTriggerConsumptionTrace(AuditEvent auditEvent)
++    {
++        var items = auditEvent.DataSourcesUsed
++            .Select(dataSource => new FinanceTransparencyTriggerTraceItemResponse
++            {
++                SourceType = dataSource.SourceType,
++                SourceId = dataSource.SourceId ?? string.Empty,
++                DisplayName = dataSource.DisplayName ?? dataSource.SourceType,
++                Reference = dataSource.Reference ?? string.Empty
++            })
++            .ToList();
++
++        if (auditEvent.RelatedWorkflowInstanceId is Guid workflowInstanceId)
++        {
++            items.Add(new FinanceTransparencyTriggerTraceItemResponse
++            {
++                SourceType = "workflow_instance",
++                SourceId = workflowInstanceId.ToString("D"),
++                DisplayName = "Workflow instance",
++                Reference = workflowInstanceId.ToString("D")
++            });
++        }
++
++        if (auditEvent.RelatedToolExecutionAttemptId is Guid toolExecutionAttemptId)
++        {
++            items.Add(new FinanceTransparencyTriggerTraceItemResponse
++            {
++                SourceType = "tool_execution",
++                SourceId = toolExecutionAttemptId.ToString("D"),
++                DisplayName = "Tool execution",
++                Reference = toolExecutionAttemptId.ToString("D")
++            });
++        }
++
++        return items;
++    }
++
++    private static Guid? TryReadGuid(IReadOnlyDictionary<string, JsonNode?> payload, string key)
++    {
++        if (!payload.TryGetValue(key, out var node))
++        {
++            return null;
++        }
++
++        if (node is JsonValue value && value.TryGetValue<Guid>(out var guid) && guid != Guid.Empty)
++        {
++            return guid;
++        }
++
++        return node is JsonValue stringValue &&
++               stringValue.TryGetValue<string>(out var text) &&
++               Guid.TryParse(text, out guid) &&
++               guid != Guid.Empty
++            ? guid
++            : null;
++    }
++
++    private static string? TryReadSummaryScalar(IReadOnlyDictionary<string, JsonNode?> payload, string key)
++    {
++        if (payload.TryGetValue(key, out var node))
++        {
++            return NodeToSummaryText(node);
++        }
++
++        if (payload.TryGetValue("data", out var dataNode) && dataNode is JsonObject dataObject)
++        {
++            return NodeToSummaryText(dataObject[key]);
++        }
++
++        return null;
++    }
++
++    private static string? NodeToSummaryText(JsonNode? node)
++    {
++        if (node is null)
++        {
++            return null;
++        }
++
++        if (node is JsonValue value)
++        {
++            if (value.TryGetValue<string>(out var text))
++            {
++                return TruncateSummary(text, 96);
++            }
++
++            if (value.TryGetValue<Guid>(out var guid))
++            {
++                return guid.ToString("D");
++            }
++
++            if (value.TryGetValue<DateTime>(out var dateTime))
++            {
++                return dateTime.ToString("u");
++            }
++
++            if (value.TryGetValue<decimal>(out var decimalValue))
++            {
++                return decimalValue.ToString(CultureInfo.InvariantCulture);
++            }
++
++            if (value.TryGetValue<int>(out var intValue))
++            {
++                return intValue.ToString(CultureInfo.InvariantCulture);
++            }
++
++            if (value.TryGetValue<bool>(out var boolValue))
++            {
++                return boolValue ? "true" : "false";
++            }
++        }
++
++        return TruncateSummary(node.ToJsonString(), 96);
++    }
++
++    private static string NormalizeTransparencyToken(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "unknown"
++            : value.Replace("_", " ", StringComparison.Ordinal);
++
++    private static string TruncateSummary(string value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return string.Empty;
++        }
++
++        var normalized = value.Trim();
++        return normalized.Length <= maxLength
++            ? normalized
++            : $"{normalized[..Math.Max(0, maxLength - 1)]}…";
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+index 83836d7..2ea68d1 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+@@ -25,6 +25,12 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private bool _isLoadingSelectedAnomaly;
+     private string? _selectedAnomalyErrorMessage;
+     private readonly SimulationControlsFormModel _simulationControlsForm = new();
++    private Guid? _selectedTransparencyEventId;
++    private FinanceTransparencyEventDetailViewModel? _selectedTransparencyEventDetail;
++    private bool _isLoadingSelectedTransparencyEvent;
++    private string? _selectedTransparencyEventErrorMessage;
++    private Guid? _selectedTransparencyExecutionId;
++    private FinanceTransparencyToolExecutionDetailViewModel? _selectedTransparencyExecutionDetail;
+     private string? _simulationActionErrorMessage;
+     private string? _simulationActionSuccessMessage;
+     private bool _isAdvancingSimulation;
+@@ -34,6 +40,8 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private bool _isSubmittingSeedGeneration;
+     private bool _isRefreshingSimulationControls;
+     private bool _isPollingSimulationControls;
++    private bool _isLoadingSelectedTransparencyExecution;
++    private string? _selectedTransparencyExecutionErrorMessage;
+     private string? _simulationRefreshErrorMessage;
+     private DateTime? _lastSimulationRefreshUtc;
+     private Guid? _simulationPollingCompanyId;
+@@ -117,6 +125,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+                 _latestSimulationControls = null;
+                 _lastSimulationRefreshUtc = null;
+                 ClearSeedGenerationValidation();
++                ResetTransparencySelectionState();
+                 StopSimulationPolling();
+             }
+         }
+@@ -156,6 +165,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         _latestSimulationControls = null;
+         _lastSimulationRefreshUtc = null;
+         ClearSeedGenerationValidation();
++        ResetTransparencySelectionState();
+         StopSimulationPolling();
+ 
+         Navigation.NavigateTo(FinanceRoutes.WithCompanyContext(FinanceRoutes.SandboxAdmin, companyId));
+@@ -605,11 +615,111 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private string ResolveCompanyName(Guid companyId) =>
+         _companyOptions.FirstOrDefault(option => option.CompanyId == companyId)?.CompanyName
+         ?? AccessState.CompanyName ?? "Active company";
++
++    private Task<FinanceTransparencyToolManifestListViewModel?> LoadTransparencyToolManifestsAsync(Guid companyId, CancellationToken cancellationToken) =>
++        SandboxAdminService.GetTransparencyToolManifestsAsync(companyId, cancellationToken);
++
++    private Task<FinanceTransparencyExecutionHistoryViewModel?> LoadTransparencyToolExecutionsAsync(Guid companyId, CancellationToken cancellationToken) =>
++        SandboxAdminService.GetTransparencyToolExecutionsAsync(companyId, cancellationToken);
++
++    private Task<FinanceTransparencyEventStreamViewModel?> LoadTransparencyEventsAsync(Guid companyId, CancellationToken cancellationToken) =>
++        SandboxAdminService.GetTransparencyEventsAsync(companyId, cancellationToken);
+ 
+     private Task<FinanceSandboxToolExecutionVisibilityViewModel?> LoadToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken) =>
+         SandboxAdminService.GetToolExecutionVisibilityAsync(companyId, cancellationToken);
+ 
+     private Task<FinanceSandboxDomainEventsViewModel?> LoadDomainEventsAsync(Guid companyId, CancellationToken cancellationToken) =>
+         SandboxAdminService.GetDomainEventsAsync(companyId, cancellationToken);
++
++    private async Task HandleTransparencyEventSelectionAsync(Guid eventId)
++    {
++        if (AccessState.CompanyId is not Guid companyId || eventId == Guid.Empty)
++        {
++            return;
++        }
++
++        _selectedTransparencyEventId = eventId;
++        _selectedTransparencyEventDetail = null;
++        _selectedTransparencyEventErrorMessage = null;
++        _isLoadingSelectedTransparencyEvent = true;
++
++        try
++        {
++            _selectedTransparencyEventDetail = await SandboxAdminService.GetTransparencyEventDetailAsync(companyId, eventId);
++            if (_selectedTransparencyEventDetail is null)
++            {
++                _selectedTransparencyEventErrorMessage = "The selected finance event detail is no longer available.";
++            }
++        }
++        catch (FinanceApiException ex)
++        {
++            _selectedTransparencyEventErrorMessage = ex.Message;
++        }
++        finally
++        {
++            _isLoadingSelectedTransparencyEvent = false;
++        }
++    }
++
++    private async Task HandleTransparencyExecutionSelectionAsync(Guid executionId)
++    {
++        if (AccessState.CompanyId is not Guid companyId || executionId == Guid.Empty)
++        {
++            return;
++        }
++
++        _selectedTransparencyExecutionId = executionId;
++        _selectedTransparencyExecutionDetail = null;
++        _selectedTransparencyExecutionErrorMessage = null;
++        _isLoadingSelectedTransparencyExecution = true;
++
++        try
++        {
++            _selectedTransparencyExecutionDetail = await SandboxAdminService.GetTransparencyToolExecutionDetailAsync(companyId, executionId);
++            if (_selectedTransparencyExecutionDetail is null)
++            {
++                _selectedTransparencyExecutionErrorMessage = "The selected tool execution detail is no longer available.";
++            }
++        }
++        catch (FinanceApiException ex)
++        {
++            _selectedTransparencyExecutionErrorMessage = ex.Message;
++        }
++        finally
++        {
++            _isLoadingSelectedTransparencyExecution = false;
++        }
++    }
++
++    private string BuildApprovalInboxHref() =>
++        AccessState.CompanyId is Guid companyId
++            ? $"/approvals?companyId={companyId:D}"
++            : "/approvals";
++
++    private string BuildTasksHref() =>
++        AccessState.CompanyId is Guid companyId
++            ? $"/tasks?companyId={companyId:D}"
++            : "/tasks";
++
++    private string BuildWorkflowsHref() =>
++        AccessState.CompanyId is Guid companyId
++            ? $"/workflows?companyId={companyId:D}"
++            : "/workflows";
++
++    private string? BuildOriginatingEntityHref(FinanceTransparencyToolExecutionDetailViewModel detail)
++    {
++        if (AccessState.CompanyId is not Guid companyId || detail.OriginatingEntityId is not Guid entityId)
++        {
++            return null;
++        }
++
++        return detail.OriginatingEntityType.Trim().ToLowerInvariant() switch
++        {
++            "finance_transaction" or "transaction" => FinanceRoutes.BuildTransactionDetailPath(entityId, companyId),
++            "finance_invoice" or "invoice" => FinanceRoutes.BuildInvoiceDetailPath(entityId, companyId),
++            _ => null
++        };
++    }
++
++    private static string NormalizeTransparencyToken(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "unknown"
++            : value.Replace("_", " ", StringComparison.Ordinal);
++
++    private void ResetTransparencySelectionState()
++    {
++        _selectedTransparencyEventId = null;
++        _selectedTransparencyEventDetail = null;
++        _selectedTransparencyEventErrorMessage = null;
++        _isLoadingSelectedTransparencyEvent = false;
++        _selectedTransparencyExecutionId = null;
++        _selectedTransparencyExecutionDetail = null;
++        _selectedTransparencyExecutionErrorMessage = null;
++        _isLoadingSelectedTransparencyExecution = false;
++    }
+ 
+     private void ApplySeedGenerationValidation(IReadOnlyDictionary<string, string[]> errors)
+     {
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+index 8ae80d5..a2dcd3f 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+@@ -652,52 +652,190 @@
+                 </FinanceSandboxAdminSection>
+             </div>
+ 
+-            <FinanceSandboxAdminSection TSection="FinanceSandboxToolExecutionVisibilityViewModel"
++            <FinanceSandboxAdminSection TSection="FinanceTransparencyToolManifestListViewModel"
+                                         CompanyId="@AccessState.CompanyId!.Value"
+-                                        Kicker="Tool telemetry"
+-                                        Title="Tool execution visibility"
+-                                        Description="Summarize the finance sandbox tool surfaces that are currently observable in the admin workspace."
+-                                        LoadingTitle="Loading tool execution visibility"
+-                                        LoadingMessage="Collecting tool execution visibility signals."
+-                                        EmptyTitle="Tool execution visibility is empty"
+-                                        EmptyMessage="No tool execution telemetry is available for this sandbox."
+-                                        ErrorTitle="Tool execution visibility is unavailable"
+-                                        Loader="@LoadToolExecutionVisibilityAsync">
+-                <ChildContent Context="visibility">
+-                    <p class="mb-3">@visibility.Summary</p>
++                                        Kicker="Tool manifests"
++                                        Title="Finance tool manifests"
++                                        Description="Inspect finance tool name, version metadata, schema summary, and provider adapter identity for the active company."
++                                        LoadingTitle="Loading finance tool manifests"
++                                        LoadingMessage="Resolving registered finance tool manifests."
++                                        EmptyTitle="No tool manifests available"
++                                        EmptyMessage="No finance tool manifests are currently registered."
++                                        ErrorTitle="Finance tool manifests are unavailable"
++                                        Loader="@LoadTransparencyToolManifestsAsync">
++                <ChildContent Context="manifests">
++                    <p class="mb-3">@manifests.Summary</p>
+                     <div class="table-responsive">
+                         <table class="table finance-table mb-0">
+                             <thead>
+                                 <tr>
+-                                    <th scope="col">Tool surface</th>
+-                                    <th scope="col">Visibility</th>
+-                                    <th scope="col">Last status</th>
++                                    <th scope="col">Tool</th>
++                                    <th scope="col">Version</th>
++                                    <th scope="col">Contract summary</th>
++                                    <th scope="col">Provider adapter</th>
+                                 </tr>
+                             </thead>
+                             <tbody>
+-                                @foreach (var item in visibility.Items)
++                                @foreach (var item in manifests.Items)
+                                 {
+                                     <tr>
+-                                        <td>@item.Name</td>
+-                                        <td>@item.Visibility</td>
+-                                        <td>@item.LastStatus</td>
++                                        <td>@item.ToolName</td>
++                                        <td>@item.Version</td>
++                                        <td>@item.ContractSummary</td>
++                                        <td>@item.ProviderAdapterIdentity</td>
+                                     </tr>
+                                 }
+                             </tbody>
+                         </table>
+                     </div>
+                 </ChildContent>
+             </FinanceSandboxAdminSection>
+ 
+-            <FinanceSandboxAdminSection TSection="FinanceSandboxDomainEventsViewModel"
++            <FinanceSandboxAdminSection TSection="FinanceTransparencyExecutionHistoryViewModel"
++                                        CompanyId="@AccessState.CompanyId!.Value"
++                                        Kicker="Execution history"
++                                        Title="Finance tool executions"
++                                        Description="Review lifecycle state, request and response summaries, execution timestamps, and related identifiers for recent finance tool runs."
++                                        LoadingTitle="Loading finance tool executions"
++                                        LoadingMessage="Reading recent finance tool execution history."
++                                        EmptyTitle="No finance tool executions available"
++                                        EmptyMessage="No finance tool executions are recorded for the active company."
++                                        ErrorTitle="Finance tool executions are unavailable"
++                                        Loader="@LoadTransparencyToolExecutionsAsync">
++                <ChildContent Context="executions">
++                    <p class="mb-3">@executions.Summary</p>
++                    <div class="table-responsive">
++                        <table class="table finance-table mb-0">
++                            <thead>
++                                <tr>
++                                    <th scope="col">Tool</th>
++                                    <th scope="col">State</th>
++                                    <th scope="col">Request</th>
++                                    <th scope="col">Response</th>
++                                    <th scope="col">Executed</th>
++                                    <th scope="col">Correlation</th>
++                                    <th scope="col"></th>
++                                </tr>
++                            </thead>
++                            <tbody>
++                                @foreach (var item in executions.Items)
++                                {
++                                    <tr>
++                                        <td>
++                                            <div class="fw-semibold">@item.ToolName</div>
++                                            <small class="text-body-secondary">@item.ToolVersion</small>
++                                        </td>
++                                        <td>@NormalizeTransparencyToken(item.LifecycleState)</td>
++                                        <td>@item.RequestSummary</td>
++                                        <td>@item.ResponseSummary</td>
++                                        <td>@item.ExecutionTimestampUtc.ToString("u")</td>
++                                        <td>@(string.IsNullOrWhiteSpace(item.CorrelationId) ? "Unavailable" : item.CorrelationId)</td>
++                                        <td class="text-end">
++                                            <button id="@($"transparency-execution-{item.ExecutionId:D}")"
++                                                    type="button"
++                                                    class="btn btn-sm btn-outline-secondary"
++                                                    @onclick="() => HandleTransparencyExecutionSelectionAsync(item.ExecutionId)">
++                                                View detail
++                                            </button>
++                                        </td>
++                                    </tr>
++                                }
++                            </tbody>
++                        </table>
++                    </div>
++
++                    @if (_isLoadingSelectedTransparencyExecution)
++                    {
++                        <div class="border rounded p-3 mt-3 text-body-secondary">
++                            Loading execution detail...
++                        </div>
++                    }
++                    else if (!string.IsNullOrWhiteSpace(_selectedTransparencyExecutionErrorMessage))
++                    {
++                        <div class="alert alert-warning mt-3 mb-0">@_selectedTransparencyExecutionErrorMessage</div>
++                    }
++                    else if (_selectedTransparencyExecutionDetail is not null)
++                    {
++                        var originatingHref = BuildOriginatingEntityHref(_selectedTransparencyExecutionDetail);
++
++                        <section class="border rounded p-3 mt-3" aria-live="polite" aria-label="Finance tool execution detail">
++                            <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
++                                <div>
++                                    <span class="dashboard-kicker">Execution detail</span>
++                                    <h3 class="h6 mb-1">@_selectedTransparencyExecutionDetail.ToolName</h3>
++                                    <p class="text-body-secondary mb-0">@_selectedTransparencyExecutionDetail.ResponseSummary</p>
++                                </div>
++                                <span class="badge text-bg-light">@NormalizeTransparencyToken(_selectedTransparencyExecutionDetail.LifecycleState)</span>
++                            </div>
++
++                            <dl class="row mb-3">
++                                <dt class="col-sm-4">Version</dt>
++                                <dd class="col-sm-8">@_selectedTransparencyExecutionDetail.ToolVersion</dd>
++                                <dt class="col-sm-4">Correlation ID</dt>
++                                <dd class="col-sm-8">@(string.IsNullOrWhiteSpace(_selectedTransparencyExecutionDetail.CorrelationId) ? "Unavailable" : _selectedTransparencyExecutionDetail.CorrelationId)</dd>
++                                <dt class="col-sm-4">Execution timestamp</dt>
++                                <dd class="col-sm-8">@_selectedTransparencyExecutionDetail.ExecutionTimestampUtc.ToString("u")</dd>
++                                <dt class="col-sm-4">Request summary</dt>
++                                <dd class="col-sm-8">@_selectedTransparencyExecutionDetail.RequestSummary</dd>
++                            </dl>
++
++                            <div class="d-flex flex-column gap-2">
++                                @if (_selectedTransparencyExecutionDetail.ApprovalRequestId is Guid approvalRequestId)
++                                {
++                                    <div>
++                                        <a class="btn btn-sm btn-outline-secondary" href="@BuildApprovalInboxHref()">Open approval inbox</a>
++                                        <span class="ms-2 text-body-secondary">Approval request @approvalRequestId</span>
++                                    </div>
++                                }
++                                else
++                                {
++                                    <div class="text-body-secondary">No related approval request.</div>
++                                }
++
++                                @if (originatingHref is not null)
++                                {
++                                    <div>
++                                        <a class="btn btn-sm btn-outline-secondary" href="@originatingHref">Open originating finance record</a>
++                                        <span class="ms-2 text-body-secondary">@_selectedTransparencyExecutionDetail.OriginatingEntityReference</span>
++                                    </div>
++                                }
++                                else if (!string.IsNullOrWhiteSpace(_selectedTransparencyExecutionDetail.OriginatingEntityReference))
++                                {
++                                    <div class="text-body-secondary">@_selectedTransparencyExecutionDetail.OriginatingEntityReference</div>
++                                }
++                                else
++                                {
++                                    <div class="text-body-secondary">Originating finance action unavailable.</div>
++                                }
++
++                                @if (_selectedTransparencyExecutionDetail.TaskId is Guid taskId)
++                                {
++                                    <div>
++                                        <a class="btn btn-sm btn-outline-secondary" href="@BuildTasksHref()">Open task workspace</a>
++                                        <span class="ms-2 text-body-secondary">Task @taskId</span>
++                                    </div>
++                                }
++
++                                @if (_selectedTransparencyExecutionDetail.WorkflowInstanceId is Guid workflowInstanceId)
++                                {
++                                    <div>
++                                        <a class="btn btn-sm btn-outline-secondary" href="@BuildWorkflowsHref()">Open workflows</a>
++                                        <span class="ms-2 text-body-secondary">Workflow instance @workflowInstanceId</span>
++                                    </div>
++                                }
++                            </div>
++                        </section>
++                    }
++                    else
++                    {
++                        <p class="text-body-secondary mt-3 mb-0">Select an execution to inspect approval and originating action links.</p>
++                    }
++                </ChildContent>
++            </FinanceSandboxAdminSection>
++
++            <FinanceSandboxAdminSection TSection="FinanceTransparencyEventStreamViewModel"
+                                         CompanyId="@AccessState.CompanyId!.Value"
+-                                        Kicker="Domain events"
+-                                        Title="Domain events"
+-                                        Description="Surface the domain events most relevant to sandbox validation and replay analysis."
+-                                        LoadingTitle="Loading domain events"
+-                                        LoadingMessage="Reading the latest finance sandbox domain events."
+-                                        EmptyTitle="No domain events available"
+-                                        EmptyMessage="No finance sandbox domain events are available for the active company."
+-                                        ErrorTitle="Domain events are unavailable"
+-                                        Loader="@LoadDomainEventsAsync">
++                                        Kicker="Event stream"
++                                        Title="Finance domain events"
++                                        Description="Review finance event type, timestamp, correlation, affected entity reference, and inspect detailed payload tracing when backend data exists."
++                                        LoadingTitle="Loading finance domain events"
++                                        LoadingMessage="Reading the finance event stream."
++                                        EmptyTitle="No finance events available"
++                                        EmptyMessage="No finance domain events are available for the active company."
++                                        ErrorTitle="Finance domain events are unavailable"
++                                        Loader="@LoadTransparencyEventsAsync">
+                 <ChildContent Context="events">
+                     <p class="mb-3">@events.Summary</p>
+-                    <ul class="mb-0">
+-                        @foreach (var item in events.Items)
+-                        {
+-                            <li>@item.EventType | @item.Status | @item.OccurredAtUtc.ToString("u")</li>
+-                        }
+-                    </ul>
++                    <div class="table-responsive">
++                        <table class="table finance-table mb-0">
++                            <thead>
++                                <tr>
++                                    <th scope="col">Event type</th>
++                                    <th scope="col">Occurred</th>
++                                    <th scope="col">Correlation</th>
++                                    <th scope="col">Affected entity</th>
++                                    <th scope="col"></th>
++                                </tr>
++                            </thead>
++                            <tbody>
++                                @foreach (var item in events.Items)
++                                {
++                                    <tr>
++                                        <td>@NormalizeTransparencyToken(item.EventType)</td>
++                                        <td>@item.OccurredAtUtc.ToString("u")</td>
++                                        <td>@(string.IsNullOrWhiteSpace(item.CorrelationId) ? "Unavailable" : item.CorrelationId)</td>
++                                        <td>@item.EntityReference</td>
++                                        <td class="text-end">
++                                            <button id="@($"transparency-event-{item.Id:D}")"
++                                                    type="button"
++                                                    class="btn btn-sm btn-outline-secondary"
++                                                    @onclick="() => HandleTransparencyEventSelectionAsync(item.Id)">
++                                                View detail
++                                            </button>
++                                        </td>
++                                    </tr>
++                                }
++                            </tbody>
++                        </table>
++                    </div>
++
++                    @if (_isLoadingSelectedTransparencyEvent)
++                    {
++                        <div class="border rounded p-3 mt-3 text-body-secondary">
++                            Loading event detail...
++                        </div>
++                    }
++                    else if (!string.IsNullOrWhiteSpace(_selectedTransparencyEventErrorMessage))
++                    {
++                        <div class="alert alert-warning mt-3 mb-0">@_selectedTransparencyEventErrorMessage</div>
++                    }
++                    else if (_selectedTransparencyEventDetail is not null)
++                    {
++                        <section class="border rounded p-3 mt-3" aria-live="polite" aria-label="Finance event detail">
++                            <div class="mb-3">
++                                <span class="dashboard-kicker">Event detail</span>
++                                <h3 class="h6 mb-1">@NormalizeTransparencyToken(_selectedTransparencyEventDetail.EventType)</h3>
++                                <p class="text-body-secondary mb-0">@_selectedTransparencyEventDetail.PayloadSummary</p>
++                            </div>
++
++                            <dl class="row mb-3">
++                                <dt class="col-sm-4">Occurred</dt>
++                                <dd class="col-sm-8">@_selectedTransparencyEventDetail.OccurredAtUtc.ToString("u")</dd>
++                                <dt class="col-sm-4">Correlation ID</dt>
++                                <dd class="col-sm-8">@(string.IsNullOrWhiteSpace(_selectedTransparencyEventDetail.CorrelationId) ? "Unavailable" : _selectedTransparencyEventDetail.CorrelationId)</dd>
++                                <dt class="col-sm-4">Entity type</dt>
++                                <dd class="col-sm-8">@NormalizeTransparencyToken(_selectedTransparencyEventDetail.EntityType)</dd>
++                                <dt class="col-sm-4">Entity reference</dt>
++                                <dd class="col-sm-8">@_selectedTransparencyEventDetail.EntityReference</dd>
++                            </dl>
++
++                            <div>
++                                <h4 class="h6 mb-2">Trigger consumption trace</h4>
++                                @if (_selectedTransparencyEventDetail.TriggerConsumptionTrace.Count == 0)
++                                {
++                                    <p class="text-body-secondary mb-0">No trigger consumption trace available.</p>
++                                }
++                                else
++                                {
++                                    <ul class="mb-0">
++                                        @foreach (var trace in _selectedTransparencyEventDetail.TriggerConsumptionTrace)
++                                        {
++                                            <li>
++                                                @NormalizeTransparencyToken(trace.SourceType)
++                                                @if (!string.IsNullOrWhiteSpace(trace.DisplayName))
++                                                {
++                                                    <span> | @trace.DisplayName</span>
++                                                }
++                                                @if (!string.IsNullOrWhiteSpace(trace.SourceId))
++                                                {
++                                                    <span> | @trace.SourceId</span>
++                                                }
++                                                @if (!string.IsNullOrWhiteSpace(trace.Reference))
++                                                {
++                                                    <span> | @trace.Reference</span>
++                                                }
++                                            </li>
++                                        }
++                                    </ul>
++                                }
++                            </div>
++                        </section>
++                    }
++                    else
++                    {
++                        <p class="text-body-secondary mt-3 mb-0">Select an event to inspect payload summary and trigger consumption tracing.</p>
++                    }
+                 </ChildContent>
+             </FinanceSandboxAdminSection>
+         </section>
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+index 26d9164..56a0c93 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+@@ -1,4 +1,5 @@
+ using System.Net;
++using System.Text.Json.Nodes;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -14,6 +15,9 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+         "sandbox-admin/anomaly-injection",
+         "sandbox-admin/simulation-controls",
+         "sandbox-admin/tool-execution-visibility",
++        "sandbox-admin/transparency/tool-manifests",
++        "sandbox-admin/transparency/tool-executions",
++        "sandbox-admin/transparency/events",
+         "sandbox-admin/domain-events"
+     ];
+@@ -204,6 +208,53 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+             entry => entry.Id == injectedDetail.Id && !string.IsNullOrWhiteSpace(entry.AffectedRecordReference));
+     }
+ 
++    [Fact]
++    public async Task Transparency_endpoints_return_event_execution_and_manifest_details()
++    {
++        var seed = await SeedSandboxAdminCompanyAsync();
++        var identity = seed.GetIdentity("owner");
++        using var client = CreateAuthenticatedClient(identity.Subject, identity.Email, identity.DisplayName);
++
++        var manifestResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/transparency/tool-manifests");
++        Assert.Equal(HttpStatusCode.OK, manifestResponse.StatusCode);
++        var manifests = await manifestResponse.Content.ReadFromJsonAsync<FinanceTransparencyToolManifestListResponse>();
++        Assert.NotNull(manifests);
++        Assert.NotEmpty(manifests!.Items);
++        Assert.Contains(manifests.Items, item => item.ToolName == "approve_invoice");
++        Assert.All(manifests.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.ProviderAdapterIdentity)));
++
++        var executionsResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/transparency/tool-executions");
++        Assert.Equal(HttpStatusCode.OK, executionsResponse.StatusCode);
++        var executions = await executionsResponse.Content.ReadFromJsonAsync<FinanceTransparencyToolExecutionHistoryResponse>();
++        Assert.NotNull(executions);
++        Assert.Contains(executions!.Items, item => item.ExecutionId == seed.TransparencyExecutionId);
++
++        var executionDetailResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/transparency/tool-executions/{seed.TransparencyExecutionId}");
++        Assert.Equal(HttpStatusCode.OK, executionDetailResponse.StatusCode);
++        var executionDetail = await executionDetailResponse.Content.ReadFromJsonAsync<FinanceTransparencyToolExecutionDetailResponse>();
++        Assert.NotNull(executionDetail);
++        Assert.Equal(seed.TransparencyExecutionId, executionDetail!.ExecutionId);
++        Assert.Equal("approve_invoice", executionDetail.ToolName);
++        Assert.Equal("awaitingapproval", executionDetail.LifecycleState.Replace("_", string.Empty, StringComparison.OrdinalIgnoreCase));
++        Assert.Equal(seed.TransparencyApprovalRequestId, executionDetail.ApprovalRequestId);
++        Assert.Equal("finance_invoice", executionDetail.OriginatingEntityType);
++        Assert.True(executionDetail.OriginatingEntityId.HasValue);
++
++        var eventResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/transparency/events");
++        Assert.Equal(HttpStatusCode.OK, eventResponse.StatusCode);
++        var events = await eventResponse.Content.ReadFromJsonAsync<FinanceTransparencyEventStreamResponse>();
++        Assert.NotNull(events);
++        Assert.Contains(events!.Items, item => item.Id == seed.TransparencyEventId);
++
++        var eventDetailResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/transparency/events/{seed.TransparencyEventId}");
++        Assert.Equal(HttpStatusCode.OK, eventDetailResponse.StatusCode);
++        var eventDetail = await eventDetailResponse.Content.ReadFromJsonAsync<FinanceTransparencyEventDetailResponse>();
++        Assert.NotNull(eventDetail);
++        Assert.Equal(seed.TransparencyEventId, eventDetail!.Id);
++        Assert.Equal("finance.invoice.approval.requested", eventDetail.EventType);
++        Assert.Equal(seed.TransparencyCorrelationId, eventDetail.CorrelationId);
++        Assert.Contains("awaiting approval", eventDetail.PayloadSummary, StringComparison.OrdinalIgnoreCase);
++        Assert.NotEmpty(eventDetail.TriggerConsumptionTrace);
++    }
++
+     [Fact]
+     public async Task Simulation_control_endpoints_reject_invalid_hour_increment()
+     {
+@@ -286,6 +337,11 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+         var tester = TestIdentity.Create("Sandbox Tester");
+         var approver = TestIdentity.Create("Sandbox Approver");
+         var employee = TestIdentity.Create("Sandbox Employee");
++        var transparencyEventId = Guid.NewGuid();
++        var transparencyExecutionId = Guid.NewGuid();
++        var transparencyApprovalRequestId = Guid.NewGuid();
++        var transparencyCorrelationId = $"finance-transparency-{Guid.NewGuid():N}";
++        var transparencyAgentId = Guid.NewGuid();
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+@@ -307,6 +363,44 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+                 "sandbox_validation",
+                 [financeSeed.TransactionIds[0]],
+                 """{"expectedDetector":"receipt_completeness"}"""));
++            dbContext.Agents.Add(new Agent(
++                transparencyAgentId,
++                companyId,
++                "finance-transparency",
++                "Finance Transparency Agent",
++                "Finance operator",
++                "finance",
++                null,
++                AgentSeniority.Mid));
++
++            var transparencyExecution = new ToolExecutionAttempt(
++                transparencyExecutionId,
++                companyId,
++                transparencyAgentId,
++                "approve_invoice",
++                ToolActionType.Execute,
++                "finance",
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["invoiceId"] = JsonValue.Create(financeSeed.InvoiceIds[0]),
++                    ["status"] = JsonValue.Create("approved")
++                },
++                taskId: Guid.NewGuid(),
++                workflowInstanceId: Guid.NewGuid(),
++                correlationId: transparencyCorrelationId,
++                toolVersion: "1.0.0");
++            transparencyExecution.MarkAwaitingApproval(
++                transparencyApprovalRequestId,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["outcome"] = JsonValue.Create("require_approval")
++                },
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["status"] = JsonValue.Create("awaiting_approval"),
++                    ["userSafeSummary"] = JsonValue.Create("Invoice approval request is awaiting approval.")
++                },
++                new DateTime(2026, 4, 16, 12, 30, 0, DateTimeKind.Utc));
++            dbContext.ToolExecutionAttempts.Add(transparencyExecution);
++
+             dbContext.AuditEvents.Add(new AuditEvent(
+                 Guid.NewGuid(),
+                 companyId,
+@@ -316,6 +410,28 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+                 "finance_sandbox",
+                 "dataset_generation",
+                 "captured"));
++            dbContext.AuditEvents.Add(new AuditEvent(
++                transparencyEventId,
++                companyId,
++                "agent",
++                transparencyAgentId,
++                "finance.invoice.approval.requested",
++                "finance_invoice",
++                financeSeed.InvoiceIds[0].ToString("D"),
++                "captured",
++                rationaleSummary: "Invoice approval is awaiting approval after finance policy evaluation.",
++                metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["requestedDomain"] = "finance",
++                    ["recordReference"] = $"Invoice {financeSeed.InvoiceIds[0]:D}"
++                },
++                correlationId: transparencyCorrelationId,
++                dataSourcesUsed:
++                [
++                    new AuditDataSourceUsed("tool_execution", transparencyExecutionId.ToString("D"), "Approval decision trace", "Finance tool execution"),
++                    new AuditDataSourceUsed("workflow_trigger", "finance.approval.threshold", "Threshold trigger", "Invoice amount exceeded approval threshold")
++                ],
++                payloadDiffJson: """{"approvalStatus":"awaiting_approval","toolName":"approve_invoice"}"""));
+ 
+             return Task.CompletedTask;
+         });
+@@ -326,7 +442,11 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+             manager,
+             tester,
+             approver,
+-            employee);
++            employee,
++            transparencyEventId,
++            transparencyExecutionId,
++            transparencyApprovalRequestId,
++            transparencyCorrelationId);
+     }
+@@ -348,7 +468,11 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+         TestIdentity Admin,
+         TestIdentity Manager,
+         TestIdentity Tester,
+         TestIdentity Approver,
+-        TestIdentity Employee)
++        TestIdentity Employee,
++        Guid TransparencyEventId,
++        Guid TransparencyExecutionId,
++        Guid TransparencyApprovalRequestId,
++        string TransparencyCorrelationId)
+     {
+         public TestIdentity GetIdentity(string role) =>
+             role switch
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+index c7d86b2..0cdf4d1 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+@@ -42,7 +42,7 @@ public sealed class FinanceSandboxAdminPageTests
+             Assert.Contains("Dataset generation is not configured", cut.Markup);
+         });
+ 
+-        Assert.Equal(5, sandboxService.TotalCalls);
++        Assert.Equal(6, sandboxService.TotalCalls);
+     }
+@@ -89,18 +89,21 @@ public sealed class FinanceSandboxAdminPageTests
+         var datasetSource = new TaskCompletionSource<FinanceSandboxDatasetGenerationViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
+         var anomalySource = new TaskCompletionSource<FinanceSandboxAnomalyInjectionViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
+         var simulationSource = new TaskCompletionSource<FinanceSandboxSimulationControlsViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
+-        var toolSource = new TaskCompletionSource<FinanceSandboxToolExecutionVisibilityViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
+-        var eventsSource = new TaskCompletionSource<FinanceSandboxDomainEventsViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
++        var manifestSource = new TaskCompletionSource<FinanceTransparencyToolManifestListViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
++        var executionSource = new TaskCompletionSource<FinanceTransparencyExecutionHistoryViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
++        var eventsSource = new TaskCompletionSource<FinanceTransparencyEventStreamViewModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
+         var sandboxService = new StubFinanceSandboxAdminService
+         {
+             OnGetDatasetGenerationAsync = (_, _) => datasetSource.Task,
+             OnGetAnomalyInjectionAsync = (_, _) => anomalySource.Task,
+             OnGetSimulationControlsAsync = (_, _) => simulationSource.Task,
+-            OnGetToolExecutionVisibilityAsync = (_, _) => toolSource.Task,
+-            OnGetDomainEventsAsync = (_, _) => eventsSource.Task
++            OnGetTransparencyToolManifestsAsync = (_, _) => manifestSource.Task,
++            OnGetTransparencyToolExecutionsAsync = (_, _) => executionSource.Task,
++            OnGetTransparencyEventsAsync = (_, _) => eventsSource.Task
+         };
+ 
+         using var harness = CreateHarness(companyId, "admin", sandboxService);
+         harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
+         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
+             .Add(x => x.CompanyId, companyId));
+ 
+@@ -109,18 +112,21 @@ public sealed class FinanceSandboxAdminPageTests
+             Assert.Contains("Loading dataset generation", cut.Markup);
+             Assert.Contains("Loading anomaly injection", cut.Markup);
+             Assert.Contains("Loading simulation controls", cut.Markup);
+-            Assert.Contains("Loading tool execution visibility", cut.Markup);
+-            Assert.Contains("Loading domain events", cut.Markup);
++            Assert.Contains("Loading finance tool manifests", cut.Markup);
++            Assert.Contains("Loading finance tool executions", cut.Markup);
++            Assert.Contains("Loading finance domain events", cut.Markup);
+         });
+ 
+         datasetSource.SetResult(new FinanceSandboxDatasetGenerationViewModel
+         {
+             ProfileName = "Seed dataset refresh",
+             LastGeneratedUtc = new DateTime(2026, 4, 16, 10, 30, 0, DateTimeKind.Utc),
+             CoverageSummary = "90-day replay coverage",
+             AvailableProfiles = ["Baseline 90-day ledger"]
+         });
+         anomalySource.SetResult(null);
+-        toolSource.SetException(new FinanceApiException("Tool execution telemetry is unavailable."));
++        manifestSource.SetResult(null);
++        executionSource.SetException(new FinanceApiException("Finance execution history is unavailable."));
++        eventsSource.SetResult(null);
+ 
+         cut.WaitForAssertion(() =>
+         {
+@@ -128,15 +134,51 @@ public sealed class FinanceSandboxAdminPageTests
+             Assert.Contains("No anomaly injection scenarios are configured.", cut.Markup);
+-            Assert.Contains("Tool execution telemetry is unavailable.", cut.Markup);
++            Assert.Contains("No finance tool manifests are currently registered.", cut.Markup);
++            Assert.Contains("Finance execution history is unavailable.", cut.Markup);
++            Assert.Contains("No finance domain events are available for the active company.", cut.Markup);
+             Assert.Contains("Loading simulation controls", cut.Markup);
+-            Assert.Contains("Loading domain events", cut.Markup);
+         });
+ 
+         Assert.Equal(1, sandboxService.DatasetGenerationCalls);
+         Assert.Equal(1, sandboxService.AnomalyInjectionCalls);
+         Assert.Equal(1, sandboxService.SimulationControlsCalls);
+-        Assert.Equal(1, sandboxService.ToolExecutionVisibilityCalls);
+-        Assert.Equal(1, sandboxService.DomainEventsCalls);
++        Assert.Equal(1, sandboxService.TransparencyToolManifestCalls);
++        Assert.Equal(1, sandboxService.TransparencyToolExecutionCalls);
++        Assert.Equal(1, sandboxService.TransparencyEventCalls);
++    }
++
++    [Fact]
++    public void Sandbox_admin_page_renders_transparency_lists_and_loads_selected_detail_views()
++    {
++        var companyId = Guid.Parse("a1f0be7d-2821-4f25-9a2c-a36d8ca87ec5");
++        var eventId = Guid.Parse("8da18d57-5425-4f14-b6fc-c7298d2d98f4");
++        var executionId = Guid.Parse("77d8f4c4-df7b-49a7-a7de-f0fbbd36f14f");
++        var sandboxService = new StubFinanceSandboxAdminService
++        {
++            OnGetTransparencyToolManifestsAsync = (_, _) => Task.FromResult<FinanceTransparencyToolManifestListViewModel?>(new FinanceTransparencyToolManifestListViewModel
++            {
++                Summary = "Registered manifests.",
++                Items = [new FinanceTransparencyToolManifestItemViewModel { ToolName = "approve_invoice", Version = "1.0.0", ContractSummary = "Input requires invoiceId; output declares status.", ProviderAdapterIdentity = "InternalFinanceToolProvider" }]
++            }),
++            OnGetTransparencyToolExecutionsAsync = (_, _) => Task.FromResult<FinanceTransparencyExecutionHistoryViewModel?>(new FinanceTransparencyExecutionHistoryViewModel
++            {
++                Summary = "Recent executions.",
++                Items = [new FinanceTransparencyToolExecutionListItemViewModel { ExecutionId = executionId, ToolName = "approve_invoice", ToolVersion = "1.0.0", LifecycleState = "awaiting_approval", RequestSummary = "invoiceId=123", ResponseSummary = "Awaiting approval.", ExecutionTimestampUtc = new DateTime(2026, 4, 16, 10, 0, 0, DateTimeKind.Utc), CorrelationId = "corr-1" }]
++            }),
++            OnGetTransparencyToolExecutionDetailAsync = (_, _, _) => Task.FromResult<FinanceTransparencyToolExecutionDetailViewModel?>(new FinanceTransparencyToolExecutionDetailViewModel
++            {
++                ExecutionId = executionId,
++                ToolName = "approve_invoice",
++                ToolVersion = "1.0.0",
++                LifecycleState = "awaiting_approval",
++                RequestSummary = "invoiceId=123",
++                ResponseSummary = "Awaiting approval.",
++                ExecutionTimestampUtc = new DateTime(2026, 4, 16, 10, 0, 0, DateTimeKind.Utc),
++                CorrelationId = "corr-1",
++                ApprovalRequestId = Guid.Parse("11223344-5566-7788-99aa-bbccddeeff00"),
++                OriginatingEntityType = "finance_invoice",
++                OriginatingEntityId = Guid.Parse("22334455-6677-8899-aabb-ccddeeff0011"),
++                OriginatingEntityReference = "Finance invoice 22334455-6677-8899-aabb-ccddeeff0011"
++            }),
++            OnGetTransparencyEventsAsync = (_, _) => Task.FromResult<FinanceTransparencyEventStreamViewModel?>(new FinanceTransparencyEventStreamViewModel
++            {
++                Summary = "Recent finance events.",
++                Items = [new FinanceTransparencyEventListItemViewModel { Id = eventId, EventType = "finance.invoice.approval.requested", OccurredAtUtc = new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc), CorrelationId = "corr-1", EntityReference = "Finance invoice 22334455-6677-8899-aabb-ccddeeff0011" }]
++            }),
++            OnGetTransparencyEventDetailAsync = (_, _, _) => Task.FromResult<FinanceTransparencyEventDetailViewModel?>(new FinanceTransparencyEventDetailViewModel
++            {
++                Id = eventId,
++                EventType = "finance.invoice.approval.requested",
++                OccurredAtUtc = new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc),
++                CorrelationId = "corr-1",
++                EntityType = "finance_invoice",
++                EntityId = "22334455-6677-8899-aabb-ccddeeff0011",
++                EntityReference = "Finance invoice 22334455-6677-8899-aabb-ccddeeff0011",
++                PayloadSummary = "Invoice approval is awaiting approval.",
++                TriggerConsumptionTrace = [new FinanceTransparencyTriggerTraceItemViewModel { SourceType = "workflow_trigger", DisplayName = "Threshold trigger", Reference = "Invoice amount exceeded threshold" }]
++            })
++        };
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        var cut = RenderSandboxAdmin(harness, companyId);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("approve_invoice", cut.Markup);
++            Assert.Contains("finance.invoice.approval.requested", cut.Markup);
++        });
++
++        cut.Find($"#transparency-execution-{executionId:D}").Click();
++        cut.Find($"#transparency-event-{eventId:D}").Click();
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Open approval inbox", cut.Markup);
++            Assert.Contains("Originating finance record", cut.Markup, StringComparison.OrdinalIgnoreCase);
++            Assert.Contains("Invoice approval is awaiting approval.", cut.Markup);
++            Assert.Contains("Threshold trigger", cut.Markup);
++        });
+     }
+@@ -666,12 +708,17 @@ public sealed class FinanceSandboxAdminPageTests
+         public Func<Guid, CancellationToken, Task<FinanceSandboxDatasetGenerationViewModel?>>? OnGetDatasetGenerationAsync { get; init; }
+         public Func<Guid, CancellationToken, Task<FinanceSandboxAnomalyInjectionViewModel?>>? OnGetAnomalyInjectionAsync { get; init; }
+         public Func<Guid, CancellationToken, Task<FinanceSandboxSimulationControlsViewModel?>>? OnGetSimulationControlsAsync { get; init; }
+-        public Func<Guid, CancellationToken, Task<FinanceSandboxToolExecutionVisibilityViewModel?>>? OnGetToolExecutionVisibilityAsync { get; init; }
+         public Func<Guid, Guid, CancellationToken, Task<FinanceSandboxAnomalyDetailViewModel?>>? OnGetAnomalyDetailAsync { get; init; }
+         public Func<FinanceSandboxAnomalyInjectionCommand, CancellationToken, Task<FinanceSandboxAnomalyDetailViewModel>>? OnInjectAnomalyAsync { get; init; }
+-        public Func<Guid, CancellationToken, Task<FinanceSandboxDomainEventsViewModel?>>? OnGetDomainEventsAsync { get; init; }
+         public Func<FinanceSandboxSeedGenerationCommand, CancellationToken, Task<FinanceSandboxSeedGenerationViewModel>>? OnGenerateSeedDatasetAsync { get; init; }
+         public Func<FinanceSandboxSimulationAdvanceCommand, CancellationToken, Task<FinanceSandboxProgressionRunViewModel>>? OnAdvanceSimulationAsync { get; init; }
+         public Func<FinanceSandboxSimulationAdvanceCommand, CancellationToken, Task<FinanceSandboxProgressionRunViewModel>>? OnStartProgressionRunAsync { get; init; }
++        public Func<Guid, CancellationToken, Task<FinanceTransparencyToolManifestListViewModel?>>? OnGetTransparencyToolManifestsAsync { get; init; }
++        public Func<Guid, CancellationToken, Task<FinanceTransparencyExecutionHistoryViewModel?>>? OnGetTransparencyToolExecutionsAsync { get; init; }
++        public Func<Guid, Guid, CancellationToken, Task<FinanceTransparencyToolExecutionDetailViewModel?>>? OnGetTransparencyToolExecutionDetailAsync { get; init; }
++        public Func<Guid, CancellationToken, Task<FinanceTransparencyEventStreamViewModel?>>? OnGetTransparencyEventsAsync { get; init; }
++        public Func<Guid, Guid, CancellationToken, Task<FinanceTransparencyEventDetailViewModel?>>? OnGetTransparencyEventDetailAsync { get; init; }
++        public Func<Guid, CancellationToken, Task<FinanceSandboxToolExecutionVisibilityViewModel?>>? OnGetToolExecutionVisibilityAsync { get; init; }
++        public Func<Guid, CancellationToken, Task<FinanceSandboxDomainEventsViewModel?>>? OnGetDomainEventsAsync { get; init; }
+ 
+         public int DatasetGenerationCalls { get; private set; }
+         public int AnomalyInjectionCalls { get; private set; }
+@@ -679,6 +726,9 @@ public sealed class FinanceSandboxAdminPageTests
+         public int ToolExecutionVisibilityCalls { get; private set; }
+         public int DomainEventsCalls { get; private set; }
+ 
++        public int TransparencyToolManifestCalls { get; private set; }
++        public int TransparencyToolExecutionCalls { get; private set; }
++        public int TransparencyEventCalls { get; private set; }
+         public int InjectAnomalyCalls { get; private set; }
+         public int GenerateSeedDatasetCalls { get; private set; }
+         public int StartProgressionRunCalls { get; private set; }
+@@ -687,6 +737,9 @@ public sealed class FinanceSandboxAdminPageTests
+             DatasetGenerationCalls +
+             AnomalyInjectionCalls +
+             SimulationControlsCalls +
++            TransparencyToolManifestCalls +
++            TransparencyToolExecutionCalls +
++            TransparencyEventCalls +
+             ToolExecutionVisibilityCalls +
+             DomainEventsCalls;
+@@ -716,6 +769,42 @@ public sealed class FinanceSandboxAdminPageTests
+                 ? OnStartProgressionRunAsync(command, cancellationToken)
+                 : Task.FromResult(new FinanceSandboxProgressionRunViewModel());
+         }
++
++        public Task<FinanceTransparencyToolManifestListViewModel?> GetTransparencyToolManifestsAsync(Guid companyId, CancellationToken cancellationToken = default)
++        {
++            TransparencyToolManifestCalls++;
++            return OnGetTransparencyToolManifestsAsync is not null
++                ? OnGetTransparencyToolManifestsAsync(companyId, cancellationToken)
++                : Task.FromResult<FinanceTransparencyToolManifestListViewModel?>(null);
++        }
++
++        public Task<FinanceTransparencyExecutionHistoryViewModel?> GetTransparencyToolExecutionsAsync(Guid companyId, CancellationToken cancellationToken = default)
++        {
++            TransparencyToolExecutionCalls++;
++            return OnGetTransparencyToolExecutionsAsync is not null
++                ? OnGetTransparencyToolExecutionsAsync(companyId, cancellationToken)
++                : Task.FromResult<FinanceTransparencyExecutionHistoryViewModel?>(null);
++        }
++
++        public Task<FinanceTransparencyToolExecutionDetailViewModel?> GetTransparencyToolExecutionDetailAsync(Guid companyId, Guid executionId, CancellationToken cancellationToken = default) =>
++            OnGetTransparencyToolExecutionDetailAsync is not null
++                ? OnGetTransparencyToolExecutionDetailAsync(companyId, executionId, cancellationToken)
++                : Task.FromResult<FinanceTransparencyToolExecutionDetailViewModel?>(null);
++
++        public Task<FinanceTransparencyEventStreamViewModel?> GetTransparencyEventsAsync(Guid companyId, CancellationToken cancellationToken = default)
++        {
++            TransparencyEventCalls++;
++            return OnGetTransparencyEventsAsync is not null
++                ? OnGetTransparencyEventsAsync(companyId, cancellationToken)
++                : Task.FromResult<FinanceTransparencyEventStreamViewModel?>(null);
++        }
++
++        public Task<FinanceTransparencyEventDetailViewModel?> GetTransparencyEventDetailAsync(Guid companyId, Guid eventId, CancellationToken cancellationToken = default) =>
++            OnGetTransparencyEventDetailAsync is not null
++                ? OnGetTransparencyEventDetailAsync(companyId, eventId, cancellationToken)
++                : Task.FromResult<FinanceTransparencyEventDetailViewModel?>(null);
+ 
+         public Task<FinanceSandboxToolExecutionVisibilityViewModel?> GetToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default)
+         {
+@@ -743,4 +832,4 @@ public sealed class FinanceSandboxAdminPageTests
+         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+             _handler(request, cancellationToken);
+     }
+-}
++}
+END_OF_PATCH

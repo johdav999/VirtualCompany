@@ -1,0 +1,349 @@
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedBackfillOrchestratorTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedBackfillOrchestratorTests.cs
+index 6ee8f39..efc0d7a 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedBackfillOrchestratorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedBackfillOrchestratorTests.cs
+@@ -86,6 +86,89 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+         Assert.All(secondRunAttempts, attempt => Assert.Equal(FinanceSeedBackfillSkipReasons.ActiveExecution, attempt.SkipReason));
+     }
+ 
++    [Fact]
++    public async Task Backfill_scans_not_seeded_and_eligible_partial_companies_and_reconciles_operator_counts_end_to_end()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var services = CreateSchedulerServices(connection);
++
++        var startedUtc = new DateTime(2026, 4, 17, 9, 0, 0, DateTimeKind.Utc);
++
++        await using (var setupScope = services.CreateAsyncScope())
++        {
++            var setupContext = setupScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            await setupContext.Database.EnsureCreatedAsync();
++
++            var notSeededCompany = new Company(Guid.NewGuid(), "Queued Not Seeded Company");
++            var partialCompany = new Company(Guid.NewGuid(), "Queued Partial Company");
++            partialCompany.SetFinanceSeedStatus(FinanceSeedingState.Seeding, startedUtc);
++
++            var failedCompany = new Company(Guid.NewGuid(), "Skipped Failed Company");
++            failedCompany.SetFinanceSeedStatus(FinanceSeedingState.Failed, startedUtc);
++
++            var activeExecutionCompany = new Company(Guid.NewGuid(), "Skipped Active Execution Company");
++            activeExecutionCompany.SetFinanceSeedStatus(FinanceSeedingState.Seeding, startedUtc);
++
++            setupContext.Companies.AddRange(notSeededCompany, partialCompany, failedCompany, activeExecutionCompany);
++            setupContext.FinanceAccounts.Add(new FinanceAccount(
++                Guid.NewGuid(),
++                partialCompany.Id,
++                "1000",
++                "Cash",
++                "asset",
++                "USD",
++                1250m,
++                startedUtc.AddDays(-30)));
++            setupContext.BackgroundExecutions.Add(new BackgroundExecution(
++                Guid.NewGuid(),
++                activeExecutionCompany.Id,
++                BackgroundExecutionType.FinanceSeed,
++                BackgroundExecutionRelatedEntityTypes.FinanceSeed,
++                activeExecutionCompany.Id.ToString("D"),
++                "finance-seed-active",
++                $"finance-seed:{activeExecutionCompany.Id:N}",
++                maxAttempts: 5));
++            await setupContext.SaveChangesAsync();
++        }
++
++        FinanceSeedBackfillRunDto run;
++        await using (var orchestratorScope = services.CreateAsyncScope())
++        {
++            var dbContext = orchestratorScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            var orchestrator = orchestratorScope.ServiceProvider.GetRequiredService<IFinanceSeedBackfillOrchestrator>();
++            run = await orchestrator.RunAsync(CancellationToken.None);
++        }
++
++        Assert.Equal(FinanceSeedBackfillRunStatus.Completed, run.Status);
++        Assert.Equal(4, run.ScannedCount);
++        Assert.Equal(2, run.QueuedCount);
++        Assert.Equal(2, run.SkippedCount);
++        Assert.Equal(0, run.FailedCount);
++
++        await using (var runnerContext = CreateContext(connection))
++        {
++            var runner = CreateRunner(runnerContext);
++            var handled = await runner.RunDueAsync(CancellationToken.None);
++            Assert.Equal(2, handled);
++        }
++
++        await using var verificationContext = CreateContext(connection);
++        var persistedRun = await verificationContext.FinanceSeedBackfillRuns
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == run.RunId);
++        var attempts = await verificationContext.FinanceSeedBackfillAttempts
++            .IgnoreQueryFilters()
++            .Where(x => x.RunId == run.RunId)
++            .OrderBy(x => x.CompanyId)
++            .ToListAsync();
++
++        Assert.Equal(4, attempts.Count);
++        Assert.Equal(2, persistedRun.SucceededCount);
++        Assert.Equal(2, persistedRun.SkippedCount);
++        Assert.Equal(0, persistedRun.FailedCount);
++        Assert.Equal(2, attempts.Count(x => x.Status == FinanceSeedBackfillAttemptStatus.Succeeded));
++
++        Assert.Contains(attempts, attempt => attempt.Status == FinanceSeedBackfillAttemptStatus.Skipped && attempt.SkipReason == FinanceSeedBackfillSkipReasons.ActiveExecution);
++        Assert.Contains(attempts, attempt => attempt.Status == FinanceSeedBackfillAttemptStatus.Skipped && attempt.SkipReason == FinanceSeedBackfillSkipReasons.IneligibleState);
++        Assert.Equal(2, await verificationContext.BackgroundExecutions.IgnoreQueryFilters().CountAsync(x => x.ExecutionType == BackgroundExecutionType.FinanceSeed && x.Status == BackgroundExecutionStatus.Succeeded));
++    }
++
+     [Fact]
+     public async Task Backfill_rerun_after_completed_seed_skips_already_seeded_company_and_reconciles_run_metrics()
+     {
+@@ -101,6 +184,7 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+         }
+ 
+         FinanceSeedBackfillRunDto firstRun;
++        FinanceSeedDatasetCounts firstSeedSnapshot;
+         await using (var firstRunScope = services.CreateAsyncScope())
+         {
+             var dbContext = firstRunScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+@@ -132,6 +216,7 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+             Assert.Equal(0, persistedFirstRun.SkippedCount);
+             Assert.Equal(0, persistedFirstRun.FailedCount);
+             Assert.Equal(1, await verificationContext.BackgroundExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == company.Id));
++            firstSeedSnapshot = await CaptureSeedCountsAsync(verificationContext, company.Id);
+         }
+ 
+         FinanceSeedBackfillRunDto secondRun;
+@@ -154,6 +239,72 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+         var skippedAttempt = Assert.Single(secondRunAttempts);
+         Assert.Equal(FinanceSeedBackfillAttemptStatus.Skipped, skippedAttempt.Status);
+         Assert.Equal(FinanceSeedBackfillSkipReasons.AlreadySeeded, skippedAttempt.SkipReason);
++
++        var secondSeedSnapshot = await CaptureSeedCountsAsync(secondVerificationContext, company.Id);
++        Assert.Equal(firstSeedSnapshot, secondSeedSnapshot);
++        Assert.Equal(1, await secondVerificationContext.BackgroundExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == company.Id));
++    }
++
++    [Fact]
++    public async Task Backfill_records_failure_timestamps_and_error_details_and_recovers_partial_company_on_rerun()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var services = CreateSchedulerServices(connection);
++        var seededAtUtc = new DateTime(2026, 4, 17, 10, 0, 0, DateTimeKind.Utc);
++
++        Guid healthyCompanyId;
++        Guid partialCompanyId;
++
++        await using (var setupScope = services.CreateAsyncScope())
++        {
++            var setupContext = setupScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            await setupContext.Database.EnsureCreatedAsync();
++
++            var healthyCompany = new Company(Guid.NewGuid(), "Healthy Rerun Company");
++            var partialCompany = new Company(Guid.NewGuid(), "Recoverable Partial Company");
++            partialCompany.SetFinanceSeedStatus(FinanceSeedingState.Seeding, seededAtUtc);
++
++            setupContext.Companies.AddRange(healthyCompany, partialCompany);
++            setupContext.FinanceAccounts.Add(new FinanceAccount(
++                Guid.NewGuid(),
++                partialCompany.Id,
++                "1000",
++                "Cash",
++                "asset",
++                "USD",
++                900m,
++                seededAtUtc.AddDays(-14)));
++            await setupContext.SaveChangesAsync();
++
++            healthyCompanyId = healthyCompany.Id;
++            partialCompanyId = partialCompany.Id;
++        }
++
++        FinanceSeedBackfillRunDto firstRun;
++        await using (var firstRunScope = services.CreateAsyncScope())
++        {
++            var orchestrator = firstRunScope.ServiceProvider.GetRequiredService<IFinanceSeedBackfillOrchestrator>();
++            firstRun = await orchestrator.RunAsync(CancellationToken.None);
++        }
++
++        await using (var failingRunnerContext = CreateContext(connection))
++        {
++            var runner = CreateRunner(
++                failingRunnerContext,
++                new SelectiveThrowingFinanceSeedBootstrapService(
++                    failingRunnerContext,
++                    partialCompanyId,
++                    "Configured finance seed bootstrap failure for rerun recovery."));
++            var handled = await runner.RunDueAsync(CancellationToken.None);
++            Assert.Equal(2, handled);
++        }
++
++        FinanceSeedDatasetCounts healthySnapshotAfterFirstRun;
++        await using (var firstVerificationContext = CreateContext(connection))
++        {
++            var persistedRun = await firstVerificationContext.FinanceSeedBackfillRuns
++                .IgnoreQueryFilters()
++                .SingleAsync(x => x.Id == firstRun.RunId);
++            var partialAttempt = await firstVerificationContext.FinanceSeedBackfillAttempts
++                .IgnoreQueryFilters()
++                .SingleAsync(x => x.RunId == firstRun.RunId && x.CompanyId == partialCompanyId);
++
++            Assert.Equal(FinanceSeedBackfillRunStatus.CompletedWithErrors, persistedRun.Status);
++            Assert.Equal(2, persistedRun.ScannedCount);
++            Assert.Equal(2, persistedRun.QueuedCount);
++            Assert.Equal(1, persistedRun.SucceededCount);
++            Assert.Equal(1, persistedRun.FailedCount);
++            Assert.Equal(FinanceSeedBackfillAttemptStatus.Failed, partialAttempt.Status);
++            Assert.NotEqual(default, partialAttempt.StartedUtc);
++            Assert.NotNull(partialAttempt.CompletedUtc);
++            Assert.True(partialAttempt.CompletedUtc >= partialAttempt.StartedUtc);
++            Assert.Contains("rerun recovery", partialAttempt.ErrorDetails ?? string.Empty, StringComparison.OrdinalIgnoreCase);
++
++            var partialCompany = await firstVerificationContext.Companies.IgnoreQueryFilters().SingleAsync(x => x.Id == partialCompanyId);
++            Assert.Equal(FinanceSeedingState.Failed, partialCompany.FinanceSeedStatus);
++            healthySnapshotAfterFirstRun = await CaptureSeedCountsAsync(firstVerificationContext, healthyCompanyId);
++        }
++
++        FinanceSeedBackfillRunDto secondRun;
++        await using (var secondRunScope = services.CreateAsyncScope())
++        {
++            var orchestrator = secondRunScope.ServiceProvider.GetRequiredService<IFinanceSeedBackfillOrchestrator>();
++            secondRun = await orchestrator.RunAsync(CancellationToken.None);
++        }
++
++        await using (var recoveryRunnerContext = CreateContext(connection))
++        {
++            var runner = CreateRunner(recoveryRunnerContext);
++            var handled = await runner.RunDueAsync(CancellationToken.None);
++            Assert.Equal(1, handled);
++        }
++
++        await using var recoveryVerificationContext = CreateContext(connection);
++        var recoveredAttempt = await recoveryVerificationContext.FinanceSeedBackfillAttempts
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.RunId == secondRun.RunId && x.CompanyId == partialCompanyId);
++        var recoveredCompany = await recoveryVerificationContext.Companies.IgnoreQueryFilters().SingleAsync(x => x.Id == partialCompanyId);
++        var healthySnapshotAfterSecondRun = await CaptureSeedCountsAsync(recoveryVerificationContext, healthyCompanyId);
++        var recoveredSnapshot = await CaptureSeedCountsAsync(recoveryVerificationContext, partialCompanyId);
++
++        Assert.Equal(FinanceSeedBackfillAttemptStatus.Succeeded, recoveredAttempt.Status);
++        Assert.Equal(FinanceSeedingState.Seeded, recoveredCompany.FinanceSeedStatus);
++        Assert.Equal(healthySnapshotAfterFirstRun, healthySnapshotAfterSecondRun);
++        Assert.True(recoveredSnapshot.AccountCount > 1);
++        Assert.True(recoveredSnapshot.TransactionCount > 0);
++        Assert.Equal(1, await recoveryVerificationContext.BackgroundExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == healthyCompanyId));
++        Assert.Equal(2, await recoveryVerificationContext.BackgroundExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == partialCompanyId));
+     }
+ 
+     [Fact]
+@@ -316,6 +467,12 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+         return services.BuildServiceProvider();
+     }
+ 
++    private static CompanyFinanceSeedJobRunner CreateRunner(
++        VirtualCompanyDbContext dbContext,
++        IFinanceSeedBootstrapService bootstrapService) =>
++        CreateRunnerCore(dbContext, bootstrapService);
++
++    private static CompanyFinanceSeedJobRunner CreateRunner(VirtualCompanyDbContext dbContext) => CreateRunnerCore(dbContext, new CompanyFinanceSeedBootstrapService(dbContext));
++
+     private static async Task<SqliteConnection> OpenConnectionAsync()
+     {
+         var connection = new SqliteConnection("Data Source=:memory:");
+@@ -323,8 +480,7 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+         return connection;
+     }
+ 
+-    private static CompanyFinanceSeedJobRunner CreateRunner(VirtualCompanyDbContext dbContext) =>
+-        new(
++    private static CompanyFinanceSeedJobRunner CreateRunnerCore(VirtualCompanyDbContext dbContext, IFinanceSeedBootstrapService bootstrapService) => new(
+             dbContext,
+-            new CompanyFinanceSeedBootstrapService(dbContext),
++            bootstrapService,
+             new BackgroundJobExecutor(
+                 NullLogger<BackgroundJobExecutor>.Instance,
+                 new DefaultBackgroundJobFailureClassifier(),
+@@ -347,6 +503,20 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+         new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
+             .UseSqlite(connection)
+             .Options);
++
++    private static async Task<FinanceSeedDatasetCounts> CaptureSeedCountsAsync(VirtualCompanyDbContext dbContext, Guid companyId) =>
++        new(
++            await dbContext.FinanceAccounts.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
++            await dbContext.FinanceCounterparties.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
++            await dbContext.FinanceTransactions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
++            await dbContext.FinanceBalances.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
++            await dbContext.FinanceInvoices.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
++            await dbContext.FinanceBills.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
++            await dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
++            await dbContext.FinanceSeedAnomalies.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
++            await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().CountAsync(x =>
++                x.CompanyId == companyId &&
++                x.StorageKey != null &&
++                x.StorageKey.StartsWith("seed-finance/")));
+ 
+     private sealed class NoOpDelayStrategy : IFinanceSeedBackfillDelayStrategy
+     {
+@@ -395,6 +565,31 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+                     : FinanceSeedBackfillScheduleResult.Queued(
+                         request.CompanyId,
+                         request.SeedStateBefore,
++                        DateTime.UtcNow,
++                        Guid.NewGuid(),
++                        $"finance-seed-backfill:{request.CompanyId:N}"));
++    }
++
++    private sealed class SelectiveThrowingFinanceSeedBootstrapService : IFinanceSeedBootstrapService
++    {
++        private readonly VirtualCompanyDbContext _dbContext;
++        private readonly Guid _failingCompanyId;
++        private readonly string _message;
++
++        public SelectiveThrowingFinanceSeedBootstrapService(
++            VirtualCompanyDbContext dbContext,
++            Guid failingCompanyId,
++            string message)
++        {
++            _dbContext = dbContext;
++            _failingCompanyId = failingCompanyId;
++            _message = message;
++        }
++
++        public Task<FinanceSeedBootstrapResultDto> GenerateAsync(FinanceSeedBootstrapCommand command, CancellationToken cancellationToken)
++        {
++            if (command.CompanyId == _failingCompanyId)
++            {
++                throw new InvalidOperationException(_message);
++            }
++
++            return new CompanyFinanceSeedBootstrapService(_dbContext).GenerateAsync(command, cancellationToken);
++        }
++    }
++
++    private sealed record FinanceSeedDatasetCounts(
++        int AccountCount,
++        int CounterpartyCount,
++        int TransactionCount,
++        int BalanceCount,
++        int InvoiceCount,
++        int BillCount,
++        int PolicyConfigurationCount,
++        int AnomalyCount,
++        int SeedDocumentCount);
++
++    private sealed class NoOpFinanceSeedTelemetry : IFinanceSeedTelemetry
++    {
++        public Task TrackAsync(string eventName, FinanceSeedTelemetryContext context, CancellationToken cancellationToken = default) =>
++            Task.CompletedTask;
++    }
+-                        DateTime.UtcNow,
+-                        Guid.NewGuid(),
+-                        $"finance-seed-backfill:{request.CompanyId:N}"));
+-    }
+-
+-    private sealed class NoOpFinanceSeedTelemetry : IFinanceSeedTelemetry
+-    {
+-        public Task TrackAsync(string eventName, FinanceSeedTelemetryContext context, CancellationToken cancellationToken = default) =>
+-            Task.CompletedTask;
+-    }
+ }
+END_OF_PATCH

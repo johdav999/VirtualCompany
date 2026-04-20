@@ -4,6 +4,7 @@
 @inject OnboardingApiClient OnboardingApiClient
 @inject NavigationManager Navigation
 @using Microsoft.AspNetCore.Components
+@using VirtualCompany.Web.Services
 
 <PageTitle>Approvals</PageTitle>
 
@@ -27,7 +28,7 @@ else if (CompanyId is null)
                     <div class="template-grid mt-4">
                         @foreach (var membership in ActiveMemberships)
                         {
-                            <a class="template-card text-decoration-none text-reset" href="@($"/approvals?companyId={membership.CompanyId}")">
+                            <a class="template-card text-decoration-none text-reset" href="@BuildApprovalsUri(membership.CompanyId, null, null, null, Source)">
                                 <strong>@membership.CompanyName</strong>
                                 <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
                             </a>
@@ -62,18 +63,22 @@ else
                     {
                         <input type="hidden" name="approvalId" value="@approvalId" />
                     }
+                    @if (!string.IsNullOrWhiteSpace(Source))
+                    {
+                        <input type="hidden" name="source" value="@Source" />
+                    }
                     <div>
                         <label class="form-label" for="approval-status-filter">Status</label>
                         <select id="approval-status-filter" class="form-select" name="status">
-                            <option value="" selected="@string.IsNullOrWhiteSpace(Status)">All approvals</option>
-                            <option value="pending" selected="@IsSelected(Status, "pending")">Pending</option>
-                            <option value="approved" selected="@IsSelected(Status, "approved")">Approved</option>
-                            <option value="rejected" selected="@IsSelected(Status, "rejected")">Rejected</option>
+                            <option value="" selected="@false">All approvals</option>
+                            <option value="pending" selected="@IsSelected(StatusOrDefault, "pending")">Pending</option>
+                            <option value="approved" selected="@IsSelected(StatusOrDefault, "approved")">Approved</option>
+                            <option value="rejected" selected="@IsSelected(StatusOrDefault, "rejected")">Rejected</option>
                         </select>
                     </div>
                     <div class="dashboard-actions">
                         <button class="btn btn-primary" type="submit">Apply filter</button>
-                        <a class="btn btn-outline-secondary" href="@($"/approvals?companyId={CompanyId}")">Clear</a>
+                        <a class="btn btn-outline-secondary" href="@BuildApprovalsUri(CompanyId!.Value, null, null, null, Source)">Clear</a>
                     </div>
                 </form>
 
@@ -205,6 +210,12 @@ else
     [SupplyParameterFromQuery(Name = "status")]
     public string? Status { get; set; }
 
+    [SupplyParameterFromQuery(Name = DashboardRoutes.FilterQueryKey)]
+    public string? Filter { get; set; }
+
+    [SupplyParameterFromQuery(Name = DashboardRoutes.SourceQueryKey)]
+    public string? Source { get; set; }
+
     private bool isLoading = true;
     private bool isDeciding;
     private CurrentUserContextViewModel? currentUser;
@@ -261,7 +272,7 @@ else
 
         selectedApproval = IsPendingInboxFilter ? await InboxApiClient.GetPendingApprovalDetailAsync(companyId, approvalId) : await ApprovalApiClient.GetAsync(companyId, approvalId);
         decisionComment = null;
-        Navigation.NavigateTo($"/approvals?companyId={companyId}&approvalId={approvalId}", replace: true);
+        Navigation.NavigateTo(BuildApprovalsUri(companyId, Filter, StatusOrDefault, approvalId, Source), replace: true);
     }
 
     private async Task DecideAsync(string decision)
@@ -343,14 +354,40 @@ else
             : "list-group-item list-group-item-action";
 
     private string? StatusOrDefault =>
-        string.IsNullOrWhiteSpace(Status)
-            ? "pending"
-            : Status.Trim();
+        NormalizeApprovalStatus(Status, Filter);
 
     private bool IsPendingInboxFilter => string.Equals(StatusOrDefault, "pending", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsSelected(string? currentValue, string expectedValue) =>
         string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeApprovalStatus(string? status, string? filter)
+    {
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            return status.Trim();
+        }
+
+        return filter?.Trim().ToLowerInvariant() switch
+        {
+            "approved" => "approved",
+            "rejected" => "rejected",
+            _ => "pending"
+        };
+    }
+
+    private static string? NormalizeApprovalFilter(string? filter, string? status)
+    {
+        if (!string.IsNullOrWhiteSpace(filter))
+        {
+            return filter.Trim().ToLowerInvariant();
+        }
+
+        return string.IsNullOrWhiteSpace(status) ? null : status.Trim().ToLowerInvariant();
+    }
+
+    private static string BuildApprovalsUri(Guid companyId, string? filter, string? status, Guid? approvalId, string? source) =>
+        DashboardRoutes.BuildApprovalsPath(companyId, NormalizeApprovalFilter(filter, status), approvalId, source);
 
     private static bool IsPending(ApprovalRequestViewModel approval) =>
         string.Equals(approval.Status, "pending", StringComparison.OrdinalIgnoreCase);

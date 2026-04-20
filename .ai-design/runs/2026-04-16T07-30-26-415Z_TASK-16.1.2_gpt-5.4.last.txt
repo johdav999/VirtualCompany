@@ -1,0 +1,377 @@
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs b/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
+@@ -43,6 +43,7 @@ public static class DeterministicFinanceSeedDatasetGenerator
+             "payroll"
+         };
+ 
++        var allCategoryIds = categoryIds.Append("supplier_payment").ToArray();
+         var invoices = CreateInvoices(companyId, counterparties, documents, windowStartUtc, random);
+         var bills = CreateBills(companyId, counterparties, documents, windowStartUtc, random);
+         var recurringExpenses = CreateRecurringExpenses(companyId, counterparties);
+@@ -91,14 +92,28 @@ public static class DeterministicFinanceSeedDatasetGenerator
+             counterparties.Select(x => x.Id).ToArray(),
+             counterparties.Where(x => x.CounterpartyType is "supplier" or "vendor").Select(x => x.Id).ToArray(),
+-            categoryIds,
++            allCategoryIds,
+             invoices.Select(x => x.Id).ToArray(),
+             bills.Select(x => x.Id).ToArray(),
+             recurringExpenses,
+             transactions.Select(x => x.Id).ToArray(),
+             balances.Select(x => x.Id).ToArray(),
+             documents.Select(x => x.Id).ToArray(),
+             policy.Id,
+-            Validate(companyId, accounts, counterparties, documents, invoices, bills, recurringExpenses, transactions, balances, windowStartUtc, windowEndUtc));
++            FinanceSeedDatasetConsistencyValidator.Validate(new FinanceSeedDatasetValidationInput(
++                companyId,
++                windowStartUtc,
++                windowEndUtc,
++                allCategoryIds,
++                accounts,
++                counterparties,
++                documents,
++                invoices,
++                bills,
++                recurringExpenses,
++                transactions,
++                balances)));
+ 
+         return dataset;
+     }
+@@ -411,112 +426,6 @@ public static class DeterministicFinanceSeedDatasetGenerator
+             })
+             .ToArray();
+ 
+-    private static IReadOnlyList<FinanceSeedValidationError> Validate(
+-        Guid companyId,
+-        IReadOnlyList<FinanceAccount> accounts,
+-        IReadOnlyList<FinanceCounterparty> counterparties,
+-        IReadOnlyList<CompanyKnowledgeDocument> documents,
+-        IReadOnlyList<FinanceInvoice> invoices,
+-        IReadOnlyList<FinanceBill> bills,
+-        IReadOnlyList<FinanceRecurringExpenseSeed> recurringExpenses,
+-        IReadOnlyList<FinanceTransaction> transactions,
+-        IReadOnlyList<FinanceBalance> balances,
+-        DateTime windowStartUtc,
+-        DateTime windowEndUtc)
+-    {
+-        var errors = new List<FinanceSeedValidationError>();
+-        var accountIds = accounts.Select(x => x.Id).ToHashSet();
+-        var counterpartyIds = counterparties.Select(x => x.Id).ToHashSet();
+-        var documentIds = documents.Select(x => x.Id).ToHashSet();
+-        var invoiceIds = invoices.Select(x => x.Id).ToHashSet();
+-        var billIds = bills.Select(x => x.Id).ToHashSet();
+-        var recurringCategoryIds = recurringExpenses.Select(x => x.CategoryId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+-
+-        AddIf(errors, accounts.Any(x => x.CompanyId != companyId), "accounts.company", "Account company ids must match the seed company.");
+-        AddIf(errors, counterparties.Any(x => x.CompanyId != companyId), "counterparties.company", "Counterparty company ids must match the seed company.");
+-        AddIf(errors, invoices.Any(x => x.CompanyId != companyId), "invoices.company", "Invoice company ids must match the seed company.");
+-        AddIf(errors, bills.Any(x => x.CompanyId != companyId), "bills.company", "Bill company ids must match the seed company.");
+-        AddIf(errors, transactions.Any(x => x.CompanyId != companyId), "transactions.company", "Transaction company ids must match the seed company.");
+-        AddIf(errors, invoices.Any(x => !counterpartyIds.Contains(x.CounterpartyId)), "invoices.counterparty", "Invoices must reference valid counterparties.");
+-        AddIf(errors, bills.Any(x => !counterpartyIds.Contains(x.CounterpartyId)), "bills.counterparty", "Bills must reference valid counterparties.");
+-        AddIf(errors, invoices.Any(x => x.DocumentId.HasValue && !documentIds.Contains(x.DocumentId.Value)), "invoices.document", "Invoices must reference valid documents.");
+-        AddIf(errors, bills.Any(x => x.DocumentId.HasValue && !documentIds.Contains(x.DocumentId.Value)), "bills.document", "Bills must reference valid documents.");
+-        AddIf(errors, recurringExpenses.Any(x => !counterpartyIds.Contains(x.SupplierId)), "recurring.supplier", "Recurring expenses must reference valid suppliers.");
+-        AddIf(errors, transactions.Any(x => !accountIds.Contains(x.AccountId)), "transactions.account", "Transactions must reference valid accounts.");
+-        AddIf(errors, transactions.Any(x => x.CounterpartyId.HasValue && !counterpartyIds.Contains(x.CounterpartyId.Value)), "transactions.counterparty", "Transactions must reference valid counterparties.");
+-        AddIf(errors, transactions.Any(x => x.InvoiceId.HasValue && !invoiceIds.Contains(x.InvoiceId.Value)), "transactions.invoice", "Transactions must reference valid invoices.");
+-        AddIf(errors, transactions.Any(x => x.BillId.HasValue && !billIds.Contains(x.BillId.Value)), "transactions.bill", "Transactions must reference valid bills.");
+-        AddIf(errors, transactions.Any(x => x.DocumentId.HasValue && !documentIds.Contains(x.DocumentId.Value)), "transactions.document", "Transactions must reference valid documents.");
+-        AddIf(errors, transactions.Any(x => x.TransactionUtc < windowStartUtc || x.TransactionUtc > windowEndUtc), "transactions.window", "Transactions must be inside the seeded history window.");
+-
+-        foreach (var invoice in invoices)
+-        {
+-            var paidAmount = transactions.Where(x => x.InvoiceId == invoice.Id).Sum(x => x.Amount);
+-            AddIf(errors, paidAmount != invoice.Amount, $"invoice.{invoice.InvoiceNumber}", "Invoice linked transactions must equal the invoice amount.");
+-        }
+-
+-        foreach (var bill in bills)
+-        {
+-            var paidAmount = transactions.Where(x => x.BillId == bill.Id).Sum(x => Math.Abs(x.Amount));
+-            AddIf(errors, paidAmount != bill.Amount, $"bill.{bill.BillNumber}", "Bill linked transactions must equal the bill amount.");
+-        }
+-
+-        foreach (var balance in balances)
+-        {
+-            var account = accounts.SingleOrDefault(x => x.Id == balance.AccountId);
+-            if (account is null)
+-            {
+-                errors.Add(new FinanceSeedValidationError("balances.account", "Balances must reference valid accounts."));
+-                continue;
+-            }
+-
+-            var expected = account.OpeningBalance + transactions.Where(x => x.AccountId == account.Id).Sum(x => x.Amount);
+-            AddIf(errors, balance.Amount != expected, $"balance.{account.Code}", "Ledger balance must equal opening balance plus posted transactions.");
+-        }
+-
+-        foreach (var recurringExpense in recurringExpenses)
+-        {
+-            var expectedOccurrences = recurringExpense.GetOccurrences(windowStartUtc, windowEndUtc).ToArray();
+-            var actualOccurrences = transactions
+-                .Where(x => x.CounterpartyId == recurringExpense.SupplierId && recurringCategoryIds.Contains(x.TransactionType) && x.TransactionType == recurringExpense.CategoryId)
+-                .Where(x => x.Amount == -recurringExpense.Amount)
+-                .Select(x => x.TransactionUtc)
+-                .OrderBy(x => x)
+-                .ToArray();
+-            AddIf(errors, !expectedOccurrences.SequenceEqual(actualOccurrences), $"recurring.{recurringExpense.Name}", "Recurring expense transactions must align to their cadence.");
+-        }
+-
+-        return errors;
+-    }
+-
+-    private static void AddIf(List<FinanceSeedValidationError> errors, bool condition, string code, string message)
+-    {
+-        if (condition)
+-        {
+-            errors.Add(new FinanceSeedValidationError(code, message));
+-        }
+-    }
+-
+     private static decimal Money(decimal amount) => decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
+ 
+     private static int StableSeed(Guid companyId, int seedValue)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedDatasetConsistencyValidator.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedDatasetConsistencyValidator.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedDatasetConsistencyValidator.cs
+@@ -0,0 +1,209 @@
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++public static class FinanceSeedDatasetConsistencyValidator
++{
++    public static IReadOnlyList<FinanceSeedValidationError> Validate(FinanceSeedDatasetValidationInput input)
++    {
++        ArgumentNullException.ThrowIfNull(input);
++
++        var errors = new List<FinanceSeedValidationError>();
++        var accountIds = input.Accounts.Select(x => x.Id).ToHashSet();
++        var counterpartyIds = input.Counterparties.Select(x => x.Id).ToHashSet();
++        var supplierIds = input.Counterparties
++            .Where(x => x.CounterpartyType is "supplier" or "vendor")
++            .Select(x => x.Id)
++            .ToHashSet();
++        var documentIds = input.Documents.Select(x => x.Id).ToHashSet();
++        var invoiceIds = input.Invoices.Select(x => x.Id).ToHashSet();
++        var billIds = input.Bills.Select(x => x.Id).ToHashSet();
++        var categoryIds = input.CategoryIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
++
++        ValidateMinimumDatasetShape(input, errors);
++        ValidateCompanyOwnership(input, errors);
++        ValidateReferences(input, errors, accountIds, counterpartyIds, supplierIds, documentIds, invoiceIds, billIds, categoryIds);
++        ValidateDates(input, errors);
++        ValidateDocumentTotals(input, errors);
++        ValidateLedgerBalances(input, errors);
++        ValidateRecurringExpansion(input, errors);
++
++        return errors;
++    }
++
++    private static void ValidateMinimumDatasetShape(FinanceSeedDatasetValidationInput input, List<FinanceSeedValidationError> errors)
++    {
++        var historyDays = (input.WindowEndUtc.Date - input.WindowStartUtc.Date).Days + 1;
++        AddIf(errors, historyDays is < 60 or > 90, "history.window", "Seed history must cover between 60 and 90 days.");
++        AddIf(errors, input.Transactions.Count == 0, "transactions.required", "Seed history must include transactions.");
++        AddIf(errors, input.Invoices.Count == 0, "invoices.required", "Seed history must include invoices.");
++        AddIf(errors, input.Bills.Count == 0, "bills.required", "Seed history must include bills.");
++        AddIf(errors, input.Counterparties.All(x => x.CounterpartyType is not "supplier" and not "vendor"), "suppliers.required", "Seed history must include suppliers.");
++        AddIf(errors, input.RecurringExpenses.Count == 0, "recurring.required", "Seed history must include recurring expenses.");
++    }
++
++    private static void ValidateCompanyOwnership(FinanceSeedDatasetValidationInput input, List<FinanceSeedValidationError> errors)
++    {
++        AddIf(errors, input.Accounts.Any(x => x.CompanyId != input.CompanyId), "accounts.company", "Account company ids must match the seed company.");
++        AddIf(errors, input.Counterparties.Any(x => x.CompanyId != input.CompanyId), "counterparties.company", "Counterparty company ids must match the seed company.");
++        AddIf(errors, input.Documents.Any(x => x.CompanyId != input.CompanyId), "documents.company", "Document company ids must match the seed company.");
++        AddIf(errors, input.Invoices.Any(x => x.CompanyId != input.CompanyId), "invoices.company", "Invoice company ids must match the seed company.");
++        AddIf(errors, input.Bills.Any(x => x.CompanyId != input.CompanyId), "bills.company", "Bill company ids must match the seed company.");
++        AddIf(errors, input.RecurringExpenses.Any(x => x.CompanyId != input.CompanyId), "recurring.company", "Recurring expense company ids must match the seed company.");
++        AddIf(errors, input.Transactions.Any(x => x.CompanyId != input.CompanyId), "transactions.company", "Transaction company ids must match the seed company.");
++        AddIf(errors, input.Balances.Any(x => x.CompanyId != input.CompanyId), "balances.company", "Balance company ids must match the seed company.");
++    }
++
++    private static void ValidateReferences(
++        FinanceSeedDatasetValidationInput input,
++        List<FinanceSeedValidationError> errors,
++        HashSet<Guid> accountIds,
++        HashSet<Guid> counterpartyIds,
++        HashSet<Guid> supplierIds,
++        HashSet<Guid> documentIds,
++        HashSet<Guid> invoiceIds,
++        HashSet<Guid> billIds,
++        HashSet<string> categoryIds)
++    {
++        AddIf(errors, input.Invoices.Any(x => !counterpartyIds.Contains(x.CounterpartyId)), "invoices.counterparty", "Invoices must reference valid counterparties.");
++        AddIf(errors, input.Bills.Any(x => !counterpartyIds.Contains(x.CounterpartyId)), "bills.counterparty", "Bills must reference valid counterparties.");
++        AddIf(errors, input.Invoices.Any(x => x.DocumentId.HasValue && !documentIds.Contains(x.DocumentId.Value)), "invoices.document", "Invoices must reference valid documents.");
++        AddIf(errors, input.Bills.Any(x => x.DocumentId.HasValue && !documentIds.Contains(x.DocumentId.Value)), "bills.document", "Bills must reference valid documents.");
++        AddIf(errors, input.RecurringExpenses.Any(x => !supplierIds.Contains(x.SupplierId)), "recurring.supplier", "Recurring expenses must reference valid suppliers.");
++        AddIf(errors, input.RecurringExpenses.Any(x => !categoryIds.Contains(x.CategoryId)), "recurring.category", "Recurring expenses must reference valid categories.");
++        AddIf(errors, input.Transactions.Any(x => !accountIds.Contains(x.AccountId)), "transactions.account", "Transactions must reference valid accounts.");
++        AddIf(errors, input.Transactions.Any(x => x.CounterpartyId.HasValue && !counterpartyIds.Contains(x.CounterpartyId.Value)), "transactions.counterparty", "Transactions must reference valid counterparties.");
++        AddIf(errors, input.Transactions.Any(x => x.InvoiceId.HasValue && !invoiceIds.Contains(x.InvoiceId.Value)), "transactions.invoice", "Transactions must reference valid invoices.");
++        AddIf(errors, input.Transactions.Any(x => x.BillId.HasValue && !billIds.Contains(x.BillId.Value)), "transactions.bill", "Transactions must reference valid bills.");
++        AddIf(errors, input.Transactions.Any(x => x.DocumentId.HasValue && !documentIds.Contains(x.DocumentId.Value)), "transactions.document", "Transactions must reference valid documents.");
++        AddIf(errors, input.Transactions.Any(x => !categoryIds.Contains(x.TransactionType)), "transactions.category", "Transactions must reference valid categories.");
++        AddIf(errors, input.Balances.Any(x => !accountIds.Contains(x.AccountId)), "balances.account", "Balances must reference valid accounts.");
++    }
++
++    private static void ValidateDates(FinanceSeedDatasetValidationInput input, List<FinanceSeedValidationError> errors)
++    {
++        AddIf(errors, input.WindowEndUtc < input.WindowStartUtc, "history.window-order", "Seed history window end must be on or after its start.");
++        AddIf(errors, input.Invoices.Any(x => x.DueUtc < x.IssuedUtc), "invoices.dates", "Invoice due dates must be on or after issued dates.");
++        AddIf(errors, input.Bills.Any(x => x.DueUtc < x.ReceivedUtc), "bills.dates", "Bill due dates must be on or after received dates.");
++        AddIf(errors, input.Invoices.Any(x => x.IssuedUtc < input.WindowStartUtc || x.IssuedUtc > input.WindowEndUtc), "invoices.window", "Invoices must be issued inside the seeded history window.");
++        AddIf(errors, input.Bills.Any(x => x.ReceivedUtc < input.WindowStartUtc || x.ReceivedUtc > input.WindowEndUtc), "bills.window", "Bills must be received inside the seeded history window.");
++        AddIf(errors, input.Transactions.Any(x => x.TransactionUtc < input.WindowStartUtc || x.TransactionUtc > input.WindowEndUtc), "transactions.window", "Transactions must be inside the seeded history window.");
++
++        foreach (var invoice in input.Invoices)
++        {
++            var linkedTransactions = input.Transactions.Where(x => x.InvoiceId == invoice.Id).ToArray();
++            AddIf(errors, linkedTransactions.Any(x => x.TransactionUtc < invoice.IssuedUtc), $"invoice.{invoice.InvoiceNumber}.payment-date", "Invoice payments cannot predate invoice issue dates.");
++        }
++
++        foreach (var bill in input.Bills)
++        {
++            var linkedTransactions = input.Transactions.Where(x => x.BillId == bill.Id).ToArray();
++            AddIf(errors, linkedTransactions.Any(x => x.TransactionUtc < bill.ReceivedUtc), $"bill.{bill.BillNumber}.payment-date", "Bill payments cannot predate bill received dates.");
++        }
++    }
++
++    private static void ValidateDocumentTotals(FinanceSeedDatasetValidationInput input, List<FinanceSeedValidationError> errors)
++    {
++        foreach (var invoice in input.Invoices)
++        {
++            var paidAmount = input.Transactions.Where(x => x.InvoiceId == invoice.Id).Sum(x => x.Amount);
++            AddIf(errors, paidAmount != invoice.Amount, $"invoice.{invoice.InvoiceNumber}", "Invoice linked transactions must equal the invoice amount.");
++        }
++
++        foreach (var bill in input.Bills)
++        {
++            var paidAmount = input.Transactions.Where(x => x.BillId == bill.Id).Sum(x => Math.Abs(x.Amount));
++            AddIf(errors, paidAmount != bill.Amount, $"bill.{bill.BillNumber}", "Bill linked transactions must equal the bill amount.");
++        }
++    }
++
++    private static void ValidateLedgerBalances(FinanceSeedDatasetValidationInput input, List<FinanceSeedValidationError> errors)
++    {
++        foreach (var balance in input.Balances)
++        {
++            var account = input.Accounts.SingleOrDefault(x => x.Id == balance.AccountId);
++            if (account is null)
++            {
++                errors.Add(new FinanceSeedValidationError("balances.account", "Balances must reference valid accounts."));
++                continue;
++            }
++
++            var expected = account.OpeningBalance + input.Transactions.Where(x => x.AccountId == account.Id).Sum(x => x.Amount);
++            AddIf(errors, balance.Amount != expected, $"balance.{account.Code}", "Ledger balance must equal opening balance plus posted transactions.");
++            AddIf(errors, balance.Currency != account.Currency, $"balance.{account.Code}.currency", "Balance currency must match its account currency.");
++        }
++    }
++
++    private static void ValidateRecurringExpansion(FinanceSeedDatasetValidationInput input, List<FinanceSeedValidationError> errors)
++    {
++        foreach (var recurringExpense in input.RecurringExpenses)
++        {
++            var expectedOccurrences = recurringExpense.GetOccurrences(input.WindowStartUtc, input.WindowEndUtc).ToArray();
++            var actualOccurrences = input.Transactions
++                .Where(x => x.CounterpartyId == recurringExpense.SupplierId)
++                .Where(x => x.TransactionType == recurringExpense.CategoryId)
++                .Where(x => x.Amount == -recurringExpense.Amount)
++                .Where(x => x.Currency == recurringExpense.Currency)
++                .Select(x => x.TransactionUtc)
++                .OrderBy(x => x)
++                .ToArray();
++
++            AddIf(errors, !expectedOccurrences.SequenceEqual(actualOccurrences), $"recurring.{recurringExpense.Name}", "Recurring expense transactions must align to their cadence.");
++        }
++    }
++
++    private static void AddIf(List<FinanceSeedValidationError> errors, bool condition, string code, string message)
++    {
++        if (condition)
++        {
++            errors.Add(new FinanceSeedValidationError(code, message));
++        }
++    }
++}
++
++public sealed record FinanceSeedDatasetValidationInput(
++    Guid CompanyId,
++    DateTime WindowStartUtc,
++    DateTime WindowEndUtc,
++    IReadOnlyList<string> CategoryIds,
++    IReadOnlyList<FinanceAccount> Accounts,
++    IReadOnlyList<FinanceCounterparty> Counterparties,
++    IReadOnlyList<CompanyKnowledgeDocument> Documents,
++    IReadOnlyList<FinanceInvoice> Invoices,
++    IReadOnlyList<FinanceBill> Bills,
++    IReadOnlyList<FinanceRecurringExpenseSeed> RecurringExpenses,
++    IReadOnlyList<FinanceTransaction> Transactions,
++    IReadOnlyList<FinanceBalance> Balances);
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
+@@ -33,6 +33,7 @@ public sealed class FinanceSeedDatasetGeneratorTests
+         Assert.NotEmpty(dataset.SupplierIds);
+         Assert.NotEmpty(dataset.RecurringExpenses);
+         Assert.NotEmpty(dataset.CategoryIds);
++        Assert.InRange(dataset.CategoryIds.Count, 10, int.MaxValue);
+ 
+         var transactions = await dbContext.FinanceTransactions
+             .IgnoreQueryFilters()
+@@ -45,6 +46,7 @@ public sealed class FinanceSeedDatasetGeneratorTests
+         {
+             Assert.InRange(transaction.TransactionUtc, dataset.WindowStartUtc, dataset.WindowEndUtc);
+             Assert.Contains(transaction.Id, dataset.TransactionIds);
++            Assert.Contains(transaction.TransactionType, dataset.CategoryIds);
+         });
+     }
+ 
+@@ -154,6 +156,30 @@ public sealed class FinanceSeedDatasetGeneratorTests
+         Assert.All(balances, balance =>
+         {
+             var account = accounts.Single(x => x.Id == balance.AccountId);
+             Assert.Equal(account.OpeningBalance + transactions.Where(x => x.AccountId == account.Id).Sum(x => x.Amount), balance.Amount);
+         });
+     }
+ 
++    [Fact]
++    public async Task Consistency_validator_reports_zero_errors_for_generated_dataset()
++    {
++        var companyId = Guid.Parse("ffffffff-1111-2222-3333-444444444444");
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++        dbContext.Companies.Add(new Company(companyId, "Validator Seed Company"));
++
++        var dataset = DeterministicFinanceSeedDatasetGenerator.Generate(dbContext, companyId, 160102);
++        await dbContext.SaveChangesAsync();
++
++        var errors = FinanceSeedDatasetConsistencyValidator.Validate(new FinanceSeedDatasetValidationInput(
++            companyId,
++            dataset.WindowStartUtc,
++            dataset.WindowEndUtc,
++            dataset.CategoryIds,
++            await dbContext.FinanceAccounts.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToArrayAsync(),
++            await dbContext.FinanceCounterparties.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToArrayAsync(),
++            await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToArrayAsync(),
++            await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToArrayAsync(),
++            await dbContext.FinanceBills.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToArrayAsync(),
++            dataset.RecurringExpenses,
++            await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToArrayAsync(),
++            await dbContext.FinanceBalances.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToArrayAsync()));
++
++        Assert.Empty(errors);
++    }
++
+     private static async Task<IReadOnlyList<FinanceTransactionSnapshot>> GenerateSnapshotAsync(Guid companyId, int seedValue, DateTime anchorUtc)
+     {
+         await using var connection = await OpenConnectionAsync();
+END_OF_PATCH

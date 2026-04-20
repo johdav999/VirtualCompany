@@ -1,0 +1,249 @@
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+index 6417a9a..39cdb28 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+@@ -303,8 +303,23 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
+-    private static bool IsValidApprovalStatusTransition(string current, string next) =>
+-        (current.ToLowerInvariant(), next) is ("open" or "pending" or "pending_approval", "approved" or "rejected") or ("approved", "paid" or "void") or ("rejected", "open" or "void");
++    private static bool IsValidApprovalStatusTransition(string current, string next)
++    {
++        var normalizedCurrent = NormalizeRequired(current, nameof(current), 32).ToLowerInvariant();
++        if (string.Equals(normalizedCurrent, next, StringComparison.OrdinalIgnoreCase))
++        {
++            return true;
++        }
++
++        return (normalizedCurrent, next) switch
++        {
++            ("open", "pending_approval" or "approved" or "rejected") => true,
++            ("pending", "pending_approval" or "approved" or "rejected") => true,
++            ("pending_approval", "approved" or "rejected") => true,
++            ("approved", "paid" or "void") => true,
++            ("rejected", "open" or "void") => true,
++            _ => false
++        };
++    }
+ 
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+diff --git a/src/VirtualCompany.Shared/FinanceAccess.cs b/src/VirtualCompany.Shared/FinanceAccess.cs
+index 3bdc81b..b0da6ce 100644
+--- a/src/VirtualCompany.Shared/FinanceAccess.cs
++++ b/src/VirtualCompany.Shared/FinanceAccess.cs
+@@ -100,6 +100,28 @@ public static class FinanceInvoiceApprovalStatuses
+ 
+     public static IReadOnlyList<string> EditableValues => EditableStatusValues;
+ 
++    public static IReadOnlyList<string> GetEditableValues(string? currentStatus)
++    {
++        var normalizedCurrent = Normalize(currentStatus ?? string.Empty);
++        return normalizedCurrent switch
++        {
++            "open" => ["open", "pending_approval", "approved", "rejected"],
++            "pending" => ["pending_approval", "approved", "rejected"],
++            "pending_approval" => ["pending_approval", "approved", "rejected"],
++            "approved" => ["approved", "paid", "void"],
++            "rejected" => ["rejected", "open", "void"],
++            "paid" => ["paid"],
++            "void" => ["void"],
++            _ => EditableStatusValues
++        };
++    }
++
++    public static bool IsTransitionSupported(string? currentStatus, string? nextStatus)
++    {
++        var normalizedNext = Normalize(nextStatus ?? string.Empty);
++        return GetEditableValues(currentStatus)
++            .Contains(normalizedNext, StringComparer.OrdinalIgnoreCase);
++    }
++
+     public static string Normalize(string value) =>
+         string.IsNullOrWhiteSpace(value)
+             ? string.Empty
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+index b1c3d39..4829a40 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -48,7 +48,7 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFin
+         EnsureRecordTenant(invoice, command.CompanyId, "invoice");
+         var reviewResult = workflowService is null
+             ? null
+-            : await workflowService.ExecuteAsync(
++            : string.Equals(normalizedStatus, "pending_approval", StringComparison.OrdinalIgnoreCase) ? null : await workflowService.ExecuteAsync(
+                 new ReviewFinanceInvoiceWorkflowCommand(
+                     command.CompanyId,
+                     command.InvoiceId,
+diff --git a/src/VirtualCompany.Web/Pages/AgentProfile.razor b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+index 031253a..9d087c5 100644
+--- a/src/VirtualCompany.Web/Pages/AgentProfile.razor
++++ b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+@@ -568,7 +568,7 @@ else
+     private static bool IsLauraFinanceManagerProfile(AgentProfileViewModel profile) =>
+         AgentFinancePresentation.IsLauraFinanceManagerProfile(profile);
+ 
+-    private IReadOnlyList<string> GetFinanceCapabilitySummaries(AgentProfileViewModel profile)
++    private IReadOnlyList<string> GetFinanceCapabilitySummaries(AgentProfileViewModel profile) =>
+         AgentFinancePresentation.GetCapabilitySummaries(profile);
+ 
+     private IReadOnlyList<(string Title, string Description, string Href)> BuildFinanceWorkflowCards() =>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
+index 288e9c8..c734145 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor.cs
+@@ -24,7 +24,8 @@ public partial class InvoicesPage : FinancePageBase
+     private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Invoices.Count == 0;
+     private bool CanChangeInvoiceApprovalStatus =>
+         SelectedInvoice?.Permissions.CanChangeInvoiceApprovalStatus ?? FinanceAccess.CanApproveInvoices(AccessState.MembershipRole);
+-    private IReadOnlyList<string> EditableStatusOptions => FinanceInvoiceApprovalStatuses.EditableValues;
++    private IReadOnlyList<string> EditableStatusOptions =>
++        FinanceInvoiceApprovalStatuses.GetEditableValues(SelectedInvoice?.Status);
+ 
+     protected override async Task OnParametersSetAsync()
+     {
+diff --git a/src/VirtualCompany.Web/Services/AgentFinancePresentation.cs b/src/VirtualCompany.Web/Services/AgentFinancePresentation.cs
+index ac37f90..682eb5d 100644
+--- a/src/VirtualCompany.Web/Services/AgentFinancePresentation.cs
++++ b/src/VirtualCompany.Web/Services/AgentFinancePresentation.cs
+@@ -19,11 +19,17 @@ public static class AgentFinancePresentation
+         var allowedTools = TryReadStringArray(profile.ToolPermissions, "allowed");
+ 
+         if (IsLauraFinanceManagerProfile(profile)) capabilities.Add("Preconfigured Finance Manager coverage");
++        if (allowedTools.Contains("categorize_transaction", StringComparer.OrdinalIgnoreCase) ||
++            allowedTools.Contains("approve_invoice", StringComparer.OrdinalIgnoreCase))
++        {
++            capabilities.Add("Finance policy-aware actions");
++        }
++
+         if (defaults.Contains("transaction_categorization_review", StringComparer.OrdinalIgnoreCase)) capabilities.Add("Transaction category governance");
+         if (defaults.Contains("invoice_approval_review", StringComparer.OrdinalIgnoreCase)) capabilities.Add("Invoice approval workflow oversight");
+         if (allowedTools.Contains("categorize_transaction", StringComparer.OrdinalIgnoreCase)) capabilities.Add("Transaction categorization actions");
+         if (allowedTools.Contains("approve_invoice", StringComparer.OrdinalIgnoreCase) ||
+-            allowedTools.Contains("recommend_invoice_approval_decision", StringComparer.OrdinalIgnoreCase))
++            allowedTools.Contains("recommend_invoice_approval_decision", StringComparer.OrdinalIgnoreCase) ||
++            defaults.Contains("invoice_approval_review", StringComparer.OrdinalIgnoreCase))
+         {
+             capabilities.Add("Invoice approval status decisions");
+         }
+@@ -32,6 +38,7 @@ public static class AgentFinancePresentation
+             defaults.Contains("finance_risk_detection", StringComparer.OrdinalIgnoreCase))
+         {
+             capabilities.Add("Cash risk and liquidity monitoring");
++            capabilities.Add("Audit and reconciliation visibility");
+         }
+ 
+         if (capabilities.Count == 0)
+@@ -39,6 +46,8 @@ public static class AgentFinancePresentation
+             capabilities.Add("Finance workflow ownership");
+             capabilities.Add("Invoice review coordination");
+             capabilities.Add("Transaction categorization review");
++            capabilities.Add("Finance policy-aware actions");
++            capabilities.Add("Audit and reconciliation visibility");
+         }
+ 
+         return capabilities
+@@ -52,6 +61,7 @@ public static class AgentFinancePresentation
+         new("Transactions", "Open transaction detail and category editing for the active company.", FinanceRoutes.WithCompanyContext(FinanceRoutes.Transactions, companyId)),
+         new("Invoices", "Open invoice review and approval status workflows.", FinanceRoutes.WithCompanyContext(FinanceRoutes.Invoices, companyId)),
+         new("Approvals", "Open approval requests linked to finance review workflows.", companyId is Guid resolvedCompanyId ? $"/approvals?companyId={resolvedCompanyId:D}" : "/approvals"),
++        new("Audit trail", "Review audit and reconciliation evidence tied to finance actions.", companyId is Guid auditCompanyId ? $"/audit?companyId={auditCompanyId:D}" : "/audit"),
+         new("Cash position", "Review liquidity signals and runway warnings.", FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)),
+         new("Monthly summary", "Open the finance summary page for current reporting context.", FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId))
+     ];
+diff --git a/tests/VirtualCompany.Api.Tests/AgentFinancePresentationTests.cs b/tests/VirtualCompany.Api.Tests/AgentFinancePresentationTests.cs
+index 460cfae..8d65be2 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentFinancePresentationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentFinancePresentationTests.cs
+@@ -31,6 +31,8 @@ public sealed class AgentFinancePresentationTests
+         var capabilities = AgentFinancePresentation.GetCapabilitySummaries(profile);
+         Assert.Contains("Preconfigured Finance Manager coverage", capabilities);
+         Assert.Contains("Transaction category governance", capabilities);
++        Assert.Contains("Finance policy-aware actions", capabilities);
++        Assert.Contains("Audit and reconciliation visibility", capabilities);
+         Assert.Contains("Invoice approval workflow oversight", capabilities);
+         Assert.Contains("Invoice approval status decisions", capabilities);
+         Assert.Contains("Cash risk and liquidity monitoring", capabilities);
+@@ -38,12 +40,13 @@ public sealed class AgentFinancePresentationTests
+         var cards = AgentFinancePresentation.BuildWorkflowCards(companyId);
+-        Assert.Equal(6, cards.Count);
++        Assert.Equal(7, cards.Count);
+         Assert.Contains(cards, card => card.Href == FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId));
+         Assert.Contains(cards, card => card.Href == FinanceRoutes.WithCompanyContext(FinanceRoutes.Transactions, companyId));
+         Assert.Contains(cards, card => card.Href == FinanceRoutes.WithCompanyContext(FinanceRoutes.Invoices, companyId));
+         Assert.Contains(cards, card => card.Href == FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId));
+         Assert.Contains(cards, card => card.Href == FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId));
+         Assert.Contains(cards, card => card.Href == $"/approvals?companyId={companyId:D}");
++        Assert.Contains(cards, card => card.Href == $"/audit?companyId={companyId:D}");
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
+index 7d7b71d..f1c8dc3 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
+@@ -28,6 +28,25 @@ public sealed class FinanceCommandServiceTests
+         Assert.Equal("approved", await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceId).Select(x => x.Status).SingleAsync());
+     }
+ 
++    [Fact]
++    public async Task Update_invoice_approval_status_allows_pending_approval_transition()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedFinanceWriteScenario(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++        var result = await service.UpdateInvoiceApprovalStatusAsync(
++            new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, "pending_approval"),
++            CancellationToken.None);
++
++        Assert.Equal("pending_approval", result.Status);
++        Assert.Equal("pending_approval", await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceId).Select(x => x.Status).SingleAsync());
++    }
++
+     [Fact]
+     public async Task Update_transaction_category_succeeds_for_authorized_tenant()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs
+index 8fd0e15..d4e7d7e 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs
+@@ -53,6 +53,31 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Tes
+             await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());
+     }
+ 
++    [Fact]
++    public async Task Internal_finance_invoice_pending_approval_update_runs_review_workflow_and_exposes_updated_detail_state()
++    {
++        var seed = await SeedFinanceWriteCompanyAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var updateResponse = await client.PatchAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.InvoiceId}/approval-status",
++            new { Status = "pending_approval" });
++
++        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
++
++        var invoice = await updateResponse.Content.ReadFromJsonAsync<InvoiceResponse>();
++        Assert.NotNull(invoice);
++        Assert.Equal("pending_approval", invoice!.Status);
++
++        var detailResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.InvoiceId}");
++        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
++
++        var detail = await detailResponse.Content.ReadFromJsonAsync<FinanceInvoiceDetailResponse>();
++        Assert.NotNull(detail);
++        Assert.Equal("pending_approval", detail!.Status);
++        Assert.NotNull(detail.WorkflowContext);
++        Assert.Equal("awaiting_approval", detail.WorkflowContext!.ReviewTaskStatus);
++    }
++
+     [Fact]
+     public async Task Internal_finance_transaction_category_update_returns_validation_problem_for_invalid_category()
+     {
+END_OF_PATCH

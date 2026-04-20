@@ -1,8 +1,10 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace VirtualCompany.Domain.Entities;
 
+[JsonConverter(typeof(CompanyKnowledgeDocumentAccessScopeJsonConverter))]
 public sealed class CompanyKnowledgeDocumentAccessScope
 {
     public const string CompanyVisibility = "company";
@@ -27,15 +29,14 @@ public sealed class CompanyKnowledgeDocumentAccessScope
     [JsonPropertyName("company_id")]
     public Guid CompanyId { get; init; }
 
-    [JsonExtensionData]
-    public Dictionary<string, JsonNode?> AdditionalProperties { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    public JsonObject AdditionalProperties { get; init; } = [];
 
     public CompanyKnowledgeDocumentAccessScope()
     {
     }
 
     public CompanyKnowledgeDocumentAccessScope(Guid companyId, string visibility, Dictionary<string, JsonNode?>? additionalProperties = null)
-    {
+        {
         if (!TryCreate(companyId, visibility, additionalProperties, out var scope, out var errors))
         {
             throw new ArgumentException(string.Join(" ", errors), nameof(additionalProperties));
@@ -47,7 +48,7 @@ public sealed class CompanyKnowledgeDocumentAccessScope
     }
 
     public CompanyKnowledgeDocumentAccessScope Clone() =>
-        new(CompanyId, Visibility, CloneDictionary(AdditionalProperties));
+        new(CompanyId, Visibility, CloneDictionary(AdditionalProperties).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase));
 
     public CompanyKnowledgeDocumentAccessScope NormalizeForCompany(Guid companyId)
     {
@@ -69,14 +70,14 @@ public sealed class CompanyKnowledgeDocumentAccessScope
 
     public static bool TryNormalizeForCompany(
         Guid companyId,
-        Dictionary<string, JsonNode?>? value,
+        IEnumerable<KeyValuePair<string, JsonNode?>>? value,
         out CompanyKnowledgeDocumentAccessScope? accessScope,
         out IReadOnlyList<string> errors)
     {
         accessScope = null;
         var validationErrors = new List<string>();
 
-        if (value is null || value.Count == 0)
+        if (value is null || !value.Any())
         {
             validationErrors.Add("AccessScope is required and must include tenant-aware visibility metadata.");
             errors = validationErrors;
@@ -85,7 +86,7 @@ public sealed class CompanyKnowledgeDocumentAccessScope
 
         string? visibility = null;
         Guid? suppliedCompanyId = null;
-        var additionalProperties = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+        var additionalProperties = new JsonObject();
 
         foreach (var pair in value)
         {
@@ -150,7 +151,7 @@ public sealed class CompanyKnowledgeDocumentAccessScope
     private static bool TryCreate(
         Guid companyId,
         string? visibility,
-        Dictionary<string, JsonNode?>? additionalProperties,
+        IEnumerable<KeyValuePair<string, JsonNode?>>? additionalProperties,
         out CompanyKnowledgeDocumentAccessScope? accessScope,
         out IReadOnlyList<string> errors)
     {
@@ -194,7 +195,7 @@ public sealed class CompanyKnowledgeDocumentAccessScope
 
     private static void ValidateAdditionalProperties(
         Guid companyId,
-        IReadOnlyDictionary<string, JsonNode?> additionalProperties,
+        IEnumerable<KeyValuePair<string, JsonNode?>> additionalProperties,
         ICollection<string> errors)
     {
         foreach (var pair in additionalProperties)
@@ -298,9 +299,9 @@ public sealed class CompanyKnowledgeDocumentAccessScope
         key.Equals("tenant_id", StringComparison.OrdinalIgnoreCase) ||
         key.Equals("tenantId", StringComparison.OrdinalIgnoreCase);
 
-    private static Dictionary<string, JsonNode?> CloneDictionary(Dictionary<string, JsonNode?>? value)
+    private static JsonObject CloneDictionary(IEnumerable<KeyValuePair<string, JsonNode?>>? value)
     {
-        var clone = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+        var clone = new JsonObject();
         if (value is null)
         {
             return clone;
@@ -317,5 +318,67 @@ public sealed class CompanyKnowledgeDocumentAccessScope
         }
 
         return clone;
+    }
+}
+
+internal sealed class CompanyKnowledgeDocumentAccessScopeJsonConverter : JsonConverter<CompanyKnowledgeDocumentAccessScope>
+{
+    public override CompanyKnowledgeDocumentAccessScope Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var document = JsonDocument.ParseValue(ref reader);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException("CompanyKnowledgeDocumentAccessScope must be a JSON object.");
+        }
+
+        string visibility = string.Empty;
+        var companyId = Guid.Empty;
+        var additionalProperties = new JsonObject();
+
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            if (property.NameEquals("visibility"))
+            {
+                visibility = property.Value.ValueKind == JsonValueKind.String
+                    ? property.Value.GetString() ?? string.Empty
+                    : string.Empty;
+                continue;
+            }
+
+            if (property.NameEquals("company_id"))
+            {
+                if (property.Value.ValueKind == JsonValueKind.String &&
+                    Guid.TryParse(property.Value.GetString(), out var parsedCompanyId))
+                {
+                    companyId = parsedCompanyId;
+                }
+
+                continue;
+            }
+
+            additionalProperties[property.Name] = JsonNode.Parse(property.Value.GetRawText());
+        }
+
+        return new CompanyKnowledgeDocumentAccessScope
+        {
+            Visibility = visibility,
+            CompanyId = companyId,
+            AdditionalProperties = additionalProperties
+        };
+    }
+
+    public override void Write(Utf8JsonWriter writer, CompanyKnowledgeDocumentAccessScope value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("visibility", value.Visibility);
+        writer.WriteString("company_id", value.CompanyId);
+
+        foreach (var property in value.AdditionalProperties)
+        {
+            writer.WritePropertyName(property.Key);
+            (property.Value ?? JsonValue.Create((string?)null))!.WriteTo(writer, options);
+        }
+
+        writer.WriteEndObject();
     }
 }

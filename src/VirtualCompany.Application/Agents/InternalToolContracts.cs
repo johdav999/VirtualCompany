@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Application.Agents;
@@ -11,7 +12,8 @@ public sealed record InternalToolExecutionContext(
     string? Scope,
     Guid? TaskId = null,
     Guid? WorkflowInstanceId = null,
-    string? CorrelationId = null);
+    string? CorrelationId = null,
+    string? ToolVersion = null);
 
 public sealed record InternalToolExecutionRequest(
     string ToolName,
@@ -27,6 +29,7 @@ public sealed record InternalToolExecutionRequest(
     public Guid? TaskId => Context.TaskId;
     public Guid? WorkflowInstanceId => Context.WorkflowInstanceId;
     public string? CorrelationId => Context.CorrelationId;
+    public string? ToolVersion => Context.ToolVersion;
 }
 
 public sealed record InternalToolExecutionResponse(
@@ -97,11 +100,23 @@ public sealed record InternalToolExecutionResponse(
 public sealed record TrustedToolRegistration(
     string ToolName,
     IReadOnlySet<ToolActionType> SupportedActions,
-    IReadOnlySet<string> Scopes)
+    IReadOnlySet<string> Scopes,
+    string Version = "1.0.0",
+    JsonObject? InputSchema = null,
+    JsonObject? OutputSchema = null)
 {
+    private static readonly Regex SemanticVersionPattern = new(
+        @"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$",
+        RegexOptions.Compiled);
+
     public bool Supports(ToolActionType actionType, string? scope)
     {
         if (!SupportedActions.Contains(actionType))
+        {
+            return false;
+        }
+
+        if (!SemanticVersionPattern.IsMatch(Version))
         {
             return false;
         }
@@ -111,11 +126,22 @@ public sealed record TrustedToolRegistration(
     }
 }
 
+public sealed record ToolDefinitionManifest(
+    string ToolName,
+    string Version,
+    ToolActionType ActionType,
+    JsonObject InputSchema,
+    JsonObject OutputSchema);
+
 public interface ICompanyToolRegistry
 {
     bool TryGetTool(string toolName, out TrustedToolRegistration registration);
 
     IReadOnlyList<TrustedToolRegistration> ListTools();
+
+    bool TryGetToolDefinition(string toolName, out ToolDefinitionManifest definition);
+
+    IReadOnlyList<ToolDefinitionManifest> ListToolDefinitions();
 }
 
 public interface IInternalCompanyToolContract

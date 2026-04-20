@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Shared;
 
 namespace VirtualCompany.Infrastructure.Authorization;
 
@@ -42,7 +43,24 @@ public static class CompanyAuthorizationServiceCollectionExtensions
                     .AddRequirements(new CompanyMembershipRoleRequirement(
                         CompanyMembershipRole.Owner,
                         CompanyMembershipRole.Admin,
-                        CompanyMembershipRole.Manager)));
+                        CompanyMembershipRole.Manager,
+                        CompanyMembershipRole.FinanceApprover)));
+
+            options.AddPolicy(CompanyPolicies.FinanceView, policy =>
+                policy.RequireAuthenticatedUser()
+                    .AddRequirements(new CompanyPermissionRequirement(FinancePermissions.View)));
+
+            options.AddPolicy(CompanyPolicies.FinanceEdit, policy =>
+                policy.RequireAuthenticatedUser()
+                    .AddRequirements(new CompanyPermissionRequirement(FinancePermissions.Edit)));
+
+            options.AddPolicy(CompanyPolicies.FinanceApproval, policy =>
+                policy.RequireAuthenticatedUser()
+                    .AddRequirements(new CompanyPermissionRequirement(FinancePermissions.Approve)));
+
+            options.AddPolicy(CompanyPolicies.FinanceSandboxAdmin, policy =>
+                policy.RequireAuthenticatedUser()
+                    .AddRequirements(new CompanyPermissionRequirement(FinancePermissions.SandboxAdmin)));
 
             options.AddPolicy(CompanyPolicies.CompanyOwnerOrAdmin, policy =>
                 policy.RequireAuthenticatedUser()

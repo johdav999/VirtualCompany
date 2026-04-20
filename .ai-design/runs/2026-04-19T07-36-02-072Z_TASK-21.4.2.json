@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-21.4.2",
+  "promptPath": ".ai-design/prompts/TASK-21.4.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-19T07:36:02.072Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-19T07-36-02-072Z_TASK-21.4.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-19T07-36-02-072Z_TASK-21.4.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-19T07:43:25.677Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": " {\n         var connection = new SqliteConnection(\"Data Source=:memory:\");\n@@ -470,10 +507,11 @@ public sealed class CompanySimulationStateServiceTests\n \n     private sealed class TestSimulationFeatureGate : ISimulationFeatureGate\n     {\n-        private readonly SimulationFeatureStateDto _state;\n+        private SimulationFeatureStateDto _state;\n \n         public TestSimulationFeatureGate(bool uiVisible, bool backendExecutionEnabled, bool backgroundJobsEnabled)\n         {\n             _state = new SimulationFeatureStateDto(uiVisible, backendExecutionEnabled, backgroundJobsEnabled, \"Simulation is disabled by configuration.\");\n         }\n+\n+        public void SetExecution(bool backendExecutionEnabled, bool backgroundJobsEnabled) => _state = _state with { BackendExecutionEnabled = backendExecutionEnabled, BackgroundJobsEnabled = backgroundJobsEnabled };\n \n         public SimulationFeatureStateDto GetState() => _state;\n \n@@ -482,10 +520,15 @@ public sealed class CompanySimulationStateServiceTests\n \n         public bool IsBackendExecutionEnabled() => _state.BackendExecutionEnabled;\n \n         public bool AreBackgroundJobsEnabled() => _state.BackgroundJobsEnabled;\n \n+        public bool IsBackgroundExecutionAllowed() =>\n+            _state.BackendExecutionEnabled &&\n+            _state.BackgroundJobsEnabled;\n+\n         public bool IsFullyDisabled() => !_state.UiVisible && !_state.BackendExecutionEnabled && !_state.BackgroundJobsEnabled;\n \n         public void EnsureBackendExecutionEnabled()\n         {\n             if (!_state.BackendExecutionEnabled)\n             {\n                 throw new SimulationBackendDisabledException(_state.DisabledMessage);\n             }\n         }\n+\n+        public void EnsureBackgroundExecutionEnabled()\n+        {\n+            if (!IsBackgroundExecutionAllowed())\n+            {\n+                throw new SimulationBackendDisabledException(_state.DisabledMessage, isBackgroundExecution: true);\n+            }\n+        }\n     }\n }\nEND_OF_PATCH\n",
+  "stderrTail": "ection = new SqliteConnection(\"Data Source=:memory:\");\n@@ -470,10 +507,11 @@ public sealed class CompanySimulationStateServiceTests\n \n     private sealed class TestSimulationFeatureGate : ISimulationFeatureGate\n     {\n-        private readonly SimulationFeatureStateDto _state;\n+        private SimulationFeatureStateDto _state;\n \n         public TestSimulationFeatureGate(bool uiVisible, bool backendExecutionEnabled, bool backgroundJobsEnabled)\n         {\n             _state = new SimulationFeatureStateDto(uiVisible, backendExecutionEnabled, backgroundJobsEnabled, \"Simulation is disabled by configuration.\");\n         }\n+\n+        public void SetExecution(bool backendExecutionEnabled, bool backgroundJobsEnabled) => _state = _state with { BackendExecutionEnabled = backendExecutionEnabled, BackgroundJobsEnabled = backgroundJobsEnabled };\n \n         public SimulationFeatureStateDto GetState() => _state;\n \n@@ -482,10 +520,15 @@ public sealed class CompanySimulationStateServiceTests\n \n         public bool IsBackendExecutionEnabled() => _state.BackendExecutionEnabled;\n \n         public bool AreBackgroundJobsEnabled() => _state.BackgroundJobsEnabled;\n \n+        public bool IsBackgroundExecutionAllowed() =>\n+            _state.BackendExecutionEnabled &&\n+            _state.BackgroundJobsEnabled;\n+\n         public bool IsFullyDisabled() => !_state.UiVisible && !_state.BackendExecutionEnabled && !_state.BackgroundJobsEnabled;\n \n         public void EnsureBackendExecutionEnabled()\n         {\n             if (!_state.BackendExecutionEnabled)\n             {\n                 throw new SimulationBackendDisabledException(_state.DisabledMessage);\n             }\n         }\n+\n+        public void EnsureBackgroundExecutionEnabled()\n+        {\n+            if (!IsBackgroundExecutionAllowed())\n+            {\n+                throw new SimulationBackendDisabledException(_state.DisabledMessage, isBackgroundExecution: true);\n+            }\n+        }\n     }\n }\nEND_OF_PATCH\ntokens used\n175,386\n",
+  "verbosityMode": "verbose"
+}

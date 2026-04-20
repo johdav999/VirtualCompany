@@ -1,0 +1,592 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -1,5 +1,6 @@
+ using System.Collections.ObjectModel;
+ using System.Text.Json.Nodes;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Application.Agents;
+@@ -737,7 +738,10 @@ public sealed record FinanceSeedTelemetryContext(
+     bool JobAlreadyRunning = false,
+     int? Attempt = null,
+     int? MaxAttempts = null,
+     long? DurationMs = null,
+     string? ErrorType = null,
+-    string? ErrorMessageSafe = null);
++    string? ErrorMessageSafe = null,
++    string SeedMode = FinanceSeedRequestModes.Replace,
++    string ActorType = AuditActorTypes.System,
++    Guid? ActorId = null);
+ 
+ public interface IFinanceCashPositionWorkflowService
+ {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceEntryService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceEntryService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceEntryService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceEntryService.cs
+@@ -134,6 +134,7 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+         var seedStateBefore = seedingState.State;
+         var normalizedSeedMode = FinanceSeedRequestModes.Normalize(query.SeedMode);
+         var dataAlreadyExists = seedingState.State == FinanceSeedingState.Seeded;
++        var actor = ResolveActor(query.Source);
+         var fallbackTriggered = string.Equals(query.Source, FinanceEntrySources.FallbackRead, StringComparison.OrdinalIgnoreCase);
+         var seedOperation = FinanceSeedOperationContractValues.None;
+         var confirmationRequired = false;
+@@ -149,8 +150,12 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+             _logger.LogInformation(
+-                "Finance replace seed request for company {CompanyId} from {TriggerSource} was rejected because explicit confirmation was not provided.",
++                "Finance replace seed request for company {CompanyId} from {TriggerSource} in {SeedMode} mode was rejected because explicit confirmation was not provided. ActorType={ActorType}, ActorId={ActorId}, CorrelationId={CorrelationId}.",
+                 query.CompanyId,
+-                query.Source);
++                query.Source,
++                normalizedSeedMode,
++                actor.ActorType,
++                actor.ActorId,
++                _correlationContextAccessor?.CorrelationId);
+             await WriteDecisionAuditAsync(
+                 query.CompanyId,
+                 execution,
+@@ -159,8 +164,12 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+                 "Finance replace seed request requires explicit confirmation before overwriting existing seeded data.",
+                 query.Source,
+                 normalizedSeedMode,
++                actor.ActorType,
++                actor.ActorId,
+                 cancellationToken,
+-                new Dictionary<string, string?> { ["confirmationRequired"] = "true", ["dataAlreadyExists"] = "true" });
++                new Dictionary<string, string?>
++                {
++                    ["confirmationRequired"] = "true", ["dataAlreadyExists"] = "true", ["seedStateBefore"] = seedStateBefore.ToStorageValue()
++                });
+             return (seedingState, execution, false, true, normalizedSeedMode, seedOperation, true, fallbackTriggered);
+         }
+ 
+@@ -182,7 +191,17 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+                 correlationId: execution.CorrelationId);
+             seedJobEnqueued = true;
+-            await WriteRequestedAuditAsync(query.CompanyId, execution, query.Source, normalizedSeedMode, isRetry: false, cancellationToken);
++            await WriteRequestedAuditAsync(
++                query.CompanyId,
++                execution,
++                query.Source,
++                normalizedSeedMode,
++                actor.ActorType,
++                actor.ActorId,
++                seedStateBefore,
++                FinanceSeedingState.Seeding,
++                isRetry: false,
++                cancellationToken);
+             await _dbContext.SaveChangesAsync(cancellationToken);
+             await EmitRequestedInstrumentationAsync(query, execution, seedStateBefore, FinanceSeedingState.Seeding, cancellationToken);
+             seedOperation = FinanceSeedOperationContractValues.Started;
+@@ -206,7 +225,17 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+                 correlationId: execution.CorrelationId);
+             seedJobEnqueued = true;
+-            await WriteRequestedAuditAsync(query.CompanyId, execution, query.Source, normalizedSeedMode, isRetry: true, cancellationToken);
++            await WriteRequestedAuditAsync(
++                query.CompanyId,
++                execution,
++                query.Source,
++                normalizedSeedMode,
++                actor.ActorType,
++                actor.ActorId,
++                seedStateBefore,
++                FinanceSeedingState.Seeding,
++                isRetry: true,
++                cancellationToken);
+             await _dbContext.SaveChangesAsync(cancellationToken);
+             await EmitRequestedInstrumentationAsync(
+                 query,
+@@ -230,7 +259,17 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+                 correlationId: execution.CorrelationId);
+             _dbContext.BackgroundExecutions.Add(execution);
+             seedJobEnqueued = true;
+-            await WriteRequestedAuditAsync(query.CompanyId, execution, query.Source, normalizedSeedMode, isRetry: false, cancellationToken);
++            await WriteRequestedAuditAsync(
++                query.CompanyId,
++                execution,
++                query.Source,
++                normalizedSeedMode,
++                actor.ActorType,
++                actor.ActorId,
++                seedStateBefore,
++                FinanceSeedingState.Seeding,
++                isRetry: false,
++                cancellationToken);
+             await _dbContext.SaveChangesAsync(cancellationToken);
+             _logger.LogInformation(
+                 "Queued finance seed background execution {ExecutionId} for company {CompanyId}.",
+@@ -246,34 +285,44 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+         {
+             _logger.LogInformation(
+-                "Finance auto-seed request from {TriggerSource} for company {CompanyId} reused existing execution {ExecutionId} because a job is already running with status {JobStatus}.",
++                "Finance seed request from {TriggerSource} in {SeedMode} mode for company {CompanyId} reused existing execution {ExecutionId} because a job is already running with status {JobStatus}. ActorType={ActorType}, ActorId={ActorId}, CorrelationId={CorrelationId}, IdempotencyKey={IdempotencyKey}.",
+                 query.Source,
++                normalizedSeedMode,
+                 query.CompanyId,
+                 execution!.Id,
+-                execution.Status.ToStorageValue());
++                execution.Status.ToStorageValue(),
++                actor.ActorType,
++                actor.ActorId,
++                execution.CorrelationId,
++                execution.IdempotencyKey);
+             seedOperation = FinanceSeedOperationContractValues.Reused;
+             await WriteDecisionAuditAsync(
+                 query.CompanyId,
+                 execution,
+                 FinanceSeedSkippedAction,
+                 "skipped",
+                 "Finance seed request reused an already active background execution.",
+                 query.Source,
+                 normalizedSeedMode,
++                actor.ActorType,
++                actor.ActorId,
+                 cancellationToken,
+                 new Dictionary<string, string?> { ["reason"] = "job_already_active" });
+         }
+         else if (query.ForceSeed || query.RetryOnFailure || fallbackTriggered)
+         {
+             seedOperation = FinanceSeedOperationContractValues.Skipped;
+             _logger.LogInformation(
+-                "Finance seed request from {TriggerSource} for company {CompanyId} was skipped because finance data was already ready.",
++                "Finance seed request from {TriggerSource} in {SeedMode} mode for company {CompanyId} was skipped because finance data was already ready. ActorType={ActorType}, ActorId={ActorId}, CorrelationId={CorrelationId}, IdempotencyKey={IdempotencyKey}.",
+                 query.Source,
+-                query.CompanyId);
++                normalizedSeedMode,
++                query.CompanyId,
++                actor.ActorType,
++                actor.ActorId,
++                execution?.CorrelationId,
++                execution?.IdempotencyKey);
+             await WriteDecisionAuditAsync(
+                 query.CompanyId,
+                 execution,
+                 FinanceSeedSkippedAction,
+                 "skipped",
+                 "Finance seed request was skipped because the company finance dataset was already initialized.",
+                 query.Source,
+                 normalizedSeedMode,
++                actor.ActorType,
++                actor.ActorId,
+                 cancellationToken,
+                 new Dictionary<string, string?> { ["reason"] = "already_initialized" });
+         }
+@@ -305,6 +354,10 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+         BackgroundExecution execution,
+         string source,
+         string seedMode,
++        string actorType,
++        Guid? actorId,
++        FinanceSeedingState seedStateBefore,
++        FinanceSeedingState seedStateAfter,
+         bool isRetry,
+         CancellationToken cancellationToken)
+     {
+@@ -312,7 +365,7 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+             new AuditEventWriteRequest(
+                 companyId,
+-                AuditActorTypes.System,
+-                null,
++                actorType,
++                actorId,
+                 FinanceSeedRequestedAction,
+                 BackgroundExecutionRelatedEntityTypes.FinanceSeed,
+                 execution.Id.ToString("D"),
+@@ -321,6 +374,8 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+                     ? "Finance entry requested a retry for the finance seed background job."
+                     : "Finance entry requested the finance seed background job.",
+                 Metadata: new Dictionary<string, string?>
+                 {
++                    ["triggerSource"] = source,
+                     ["source"] = source,
++                    ["actorType"] = actorType,
++                    ["actorId"] = actorId?.ToString("D"),
+                     ["companyId"] = companyId.ToString("D"),
+                     ["executionId"] = execution.Id.ToString("D"),
+                     ["jobStatus"] = execution.Status.ToStorageValue(),
+@@ -328,7 +383,9 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+                     ["correlationId"] = execution.CorrelationId,
+                     ["mode"] = seedMode,
+-                    ["isRetry"] = isRetry ? "true" : "false"
++                    ["isRetry"] = isRetry ? "true" : "false",
++                    ["seedStateBefore"] = seedStateBefore.ToStorageValue(),
++                    ["seedStateAfter"] = seedStateAfter.ToStorageValue()
+                 },
+                 CorrelationId: execution.CorrelationId,
+                 OccurredUtc: _timeProvider.GetUtcNow().UtcDateTime),
+@@ -342,6 +399,8 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+         string outcome,
+         string rationale,
+         string source,
+         string seedMode,
++        string actorType,
++        Guid? actorId,
+         CancellationToken cancellationToken,
+         IReadOnlyDictionary<string, string?>? extraMetadata = null)
+     {
+@@ -349,7 +408,10 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+         {
++            ["triggerSource"] = source,
+             ["source"] = source,
++            ["actorType"] = actorType,
++            ["actorId"] = actorId?.ToString("D"),
+             ["companyId"] = companyId.ToString("D"),
+             ["executionId"] = execution?.Id.ToString("D"),
+             ["jobStatus"] = execution?.Status.ToStorageValue(),
+@@ -369,8 +431,8 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+             new AuditEventWriteRequest(
+                 companyId,
+-                AuditActorTypes.System,
+-                null,
++                actorType,
++                actorId,
+                 action,
+                 BackgroundExecutionRelatedEntityTypes.FinanceSeed,
+                 execution?.Id.ToString("D") ?? companyId.ToString("D"),
+@@ -387,12 +449,16 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+         FinanceSeedingState seedStateAfter,
+         CancellationToken cancellationToken)
+     {
++        var actor = ResolveActor(query.Source);
+         _logger.LogInformation(
+-            "Finance auto-seed job requested from {TriggerSource} in {SeedMode} mode for company {CompanyId} by user {UserId}. Execution {ExecutionId} moved from {SeedStateBefore} to {SeedStateAfter}.",
++            "Finance seed orchestration requested from {TriggerSource} in {SeedMode} mode for company {CompanyId} by {ActorType} {ActorId}. Execution {ExecutionId} with correlation {CorrelationId} and idempotency key {IdempotencyKey} moved from {SeedStateBefore} to {SeedStateAfter}.",
+             query.Source,
+             FinanceSeedRequestModes.Normalize(query.SeedMode),
+             query.CompanyId,
+-            _currentUserAccessor?.UserId,
++            actor.ActorType,
++            actor.ActorId,
+             execution.Id,
++            execution.CorrelationId,
++            execution.IdempotencyKey,
+             seedStateBefore.ToStorageValue(),
+             seedStateAfter.ToStorageValue());
+ 
+@@ -405,7 +471,24 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
+                 query.Source,
+                 seedStateBefore,
+                 seedStateAfter,
+-                _currentUserAccessor?.UserId),
++                _currentUserAccessor?.UserId,
++                SeedMode: FinanceSeedRequestModes.Normalize(query.SeedMode),
++                ActorType: actor.ActorType,
++                ActorId: actor.ActorId),
+             cancellationToken);
+     }
++
++    private (string ActorType, Guid? ActorId) ResolveActor(string source)
++    {
++        if (string.Equals(source, FinanceEntrySources.FallbackRead, StringComparison.OrdinalIgnoreCase) ||
++            string.Equals(source, FinanceEntrySources.Backfill, StringComparison.OrdinalIgnoreCase))
++        {
++            return (AuditActorTypes.System, null);
++        }
++
++        if (_currentUserAccessor?.UserId is Guid userId)
++        {
++            return (AuditActorTypes.User, userId);
++        }
++
++        return (AuditActorTypes.System, null);
++    }
+ 
+     private async Task<Company> GetCompanyAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs
+@@ -112,13 +112,18 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+             _logger.LogInformation(
+-                "Finance auto-seed job started from {TriggerSource} for company {CompanyId}. Execution {ExecutionId} attempt {Attempt} of {MaxAttempts}.",
++                "Finance seed orchestration started from {TriggerSource} in {SeedMode} mode for company {CompanyId}. Execution {ExecutionId} attempt {Attempt} of {MaxAttempts}. CorrelationId={CorrelationId}, IdempotencyKey={IdempotencyKey}, ActorType={ActorType}.",
+                 triggerSource,
++                FinanceSeedRequestModes.Replace,
+                 execution.CompanyId,
+                 execution.Id,
+                 attempt,
+-                maxAttempts);
++                maxAttempts,
++                execution.CorrelationId,
++                execution.IdempotencyKey,
++                AuditActorTypes.System);
+ 
+             await _financeSeedTelemetry.TrackAsync(
+                 FinanceSeedTelemetryEventNames.Started,
+                 new FinanceSeedTelemetryContext(
+                     execution.CompanyId,
+@@ -131,7 +136,10 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+                     FinanceSeedingState.Seeding,
+                     null,
+                     false,
+                     attempt,
+-                    maxAttempts),
++                    maxAttempts,
++                    SeedMode: FinanceSeedRequestModes.Replace,
++                    ActorType: AuditActorTypes.System,
++                    ActorId: null),
+                 cancellationToken);
+@@ -226,11 +234,15 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+                 if (string.Equals(terminalEventName, FinanceSeedTelemetryEventNames.Completed, StringComparison.Ordinal))
+                 {
+                     _logger.LogInformation(
+-                        "Finance auto-seed job completed for company {CompanyId}. Execution {ExecutionId} attempt {Attempt} finished in {DurationMs} ms.",
++                        "Finance seed orchestration completed for company {CompanyId}. Execution {ExecutionId} attempt {Attempt} finished in {DurationMs} ms. TriggerSource={TriggerSource}, SeedMode={SeedMode}, CorrelationId={CorrelationId}, IdempotencyKey={IdempotencyKey}.",
+                         execution.CompanyId,
+                         execution.Id,
+                         attempt,
+-                        durationMs);
++                        durationMs,
++                        triggerSource,
++                        FinanceSeedRequestModes.Replace,
++                        execution.CorrelationId,
++                        execution.IdempotencyKey);
+                 }
+                 else
+                 {
+                     _logger.LogWarning(
+-                        "Finance auto-seed job failed for company {CompanyId}. Execution {ExecutionId} attempt {Attempt} ended with {ErrorType} after {DurationMs} ms.",
++                        "Finance seed orchestration failed for company {CompanyId}. Execution {ExecutionId} attempt {Attempt} ended with {ErrorType} after {DurationMs} ms. TriggerSource={TriggerSource}, SeedMode={SeedMode}, CorrelationId={CorrelationId}, IdempotencyKey={IdempotencyKey}.",
+                         execution.CompanyId,
+                         execution.Id,
+                         attempt,
+                         errorType,
+-                        durationMs);
++                        durationMs,
++                        triggerSource,
++                        FinanceSeedRequestModes.Replace,
++                        execution.CorrelationId,
++                        execution.IdempotencyKey);
+                 }
+ 
+                 await _financeSeedTelemetry.TrackAsync(
+@@ -247,7 +259,10 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+                         attempt,
+                         maxAttempts,
+                         durationMs,
+                         errorType,
+-                        errorMessageSafe),
++                        errorMessageSafe,
++                        SeedMode: FinanceSeedRequestModes.Replace,
++                        ActorType: AuditActorTypes.System,
++                        ActorId: null),
+                     cancellationToken);
+             }
+         }
+@@ -279,6 +294,9 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+                 Metadata: new Dictionary<string, string?>
+                 {
++                    ["triggerSource"] = triggerSource,
+                     ["source"] = triggerSource,
++                    ["mode"] = FinanceSeedRequestModes.Replace,
++                    ["actorType"] = AuditActorTypes.System,
+                     ["companyId"] = execution.CompanyId.ToString("D"),
+                     ["executionId"] = execution.Id.ToString("D"),
+                     ["jobStatus"] = execution.Status.ToStorageValue(),
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceSeedTelemetry.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceSeedTelemetry.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceSeedTelemetry.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceSeedTelemetry.cs
+@@ -27,6 +27,9 @@ public sealed class FinanceSeedTelemetry : IFinanceSeedTelemetry
+             ["ErrorType"] = context.ErrorType,
+-            ["ErrorMessageSafe"] = context.ErrorMessageSafe
++            ["ErrorMessageSafe"] = context.ErrorMessageSafe,
++            ["SeedMode"] = context.SeedMode,
++            ["ActorType"] = context.ActorType,
++            ["ActorId"] = context.ActorId
+         });
+ 
+         _logger.LogInformation(
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -2705,12 +2705,14 @@ public sealed class InternalFinanceController : ControllerBase
+         _logger.LogInformation(
+-            "Finance request for company {CompanyId} returned not_initialized on {RequestPath}. FallbackTriggered={FallbackTriggered}, SeedRequested={SeedRequested}, ProgressState={ProgressState}.",
++            "Finance request for company {CompanyId} returned not_initialized on {RequestPath}. TriggerSource={TriggerSource}, CorrelationId={CorrelationId}, FallbackTriggered={FallbackTriggered}, SeedRequested={SeedRequested}, ProgressState={ProgressState}.",
+             exception.CompanyId,
+             HttpContext.Request.Path,
++            response.FallbackTriggered ? FinanceEntrySources.FallbackRead : FinanceEntrySources.FinanceEntry,
++            response.CorrelationId,
+             response.FallbackTriggered,
+             response.SeedRequested,
+             response.ProgressState);
+ 
+         await _auditEventWriter.WriteAsync(
+@@ -2728,6 +2730,7 @@ public sealed class InternalFinanceController : ControllerBase
+                 Metadata: new Dictionary<string, string?>
+                 {
++                    ["triggerSource"] = response.FallbackTriggered ? FinanceEntrySources.FallbackRead : FinanceEntrySources.FinanceEntry,
+                     ["requestPath"] = HttpContext.Request.Path,
+                     ["requestMethod"] = HttpContext.Request.Method,
+                     ["code"] = response.Code,
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceEntryInitializationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceEntryInitializationIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceEntryInitializationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceEntryInitializationIntegrationTests.cs
+@@ -1,5 +1,6 @@
+ using System.Net;
+ using System.Net.Http.Json;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -239,16 +240,20 @@ public sealed class FinanceEntryInitializationIntegrationTests : IClassFixture<T
+         var snapshot = await _factory.ExecuteDbContextAsync(async dbContext =>
+         {
+             var company = dbContext.Companies.Single(x => x.Id == seed.CompanyId);
+             var jobs = dbContext.BackgroundExecutions
+                 .Where(x => x.CompanyId == seed.CompanyId && x.ExecutionType == BackgroundExecutionType.FinanceSeed)
+                 .ToList();
+-            return new { Company = company, Jobs = jobs };
++            var audit = dbContext.AuditEvents.Single(x =>
++                x.CompanyId == seed.CompanyId &&
++                x.Action == "finance.seed.job.requested");
++            return new { Company = company, Jobs = jobs, Audit = audit };
+         });
+ 
+         var job = Assert.Single(snapshot.Jobs);
+         Assert.Equal(FinanceSeedingState.Seeding, snapshot.Company.FinanceSeedStatus);
+         Assert.Equal(BackgroundExecutionStatus.Pending, job.Status);
++        Assert.Equal(AuditActorTypes.User, snapshot.Audit.ActorType);
++        Assert.NotNull(snapshot.Audit.ActorId);
+ 
+         var telemetryEvent = Assert.Single(_factory.FinanceSeedTelemetry.Events
+             .Where(x => x.EventName == FinanceSeedTelemetryEventNames.Requested && x.Context.CompanyId == seed.CompanyId));
+         Assert.Equal(FinanceEntrySources.ManualSeed, telemetryEvent.Context.TriggerSource);
+         Assert.Equal(job.Id, telemetryEvent.Context.JobId);
++        Assert.Equal(AuditActorTypes.User, telemetryEvent.Context.ActorType);
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -206,12 +206,18 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+             await Task.FromResult(new
+             {
+                 JobCount = dbContext.BackgroundExecutions.Count(x =>
+                     x.CompanyId == seed.CompanyId &&
+                     x.ExecutionType == BackgroundExecutionType.FinanceSeed),
++                RequestedAuditCount = dbContext.AuditEvents.Count(x =>
++                    x.CompanyId == seed.CompanyId &&
++                    x.Action == "finance.seed.job.requested" &&
++                    x.ActorType == "system"),
+                 AuditCount = dbContext.AuditEvents.Count(x =>
+                     x.CompanyId == seed.CompanyId &&
+                     x.Action == "finance.request.not_initialized")
+             }));
+ 
+         Assert.Equal(1, snapshot.JobCount);
++        Assert.Equal(1, snapshot.RequestedAuditCount);
+         Assert.Equal(1, snapshot.AuditCount);
+         var telemetryEvent = Assert.Single(_factory.FinanceSeedTelemetry.Events
+             .Where(x => x.EventName == FinanceSeedTelemetryEventNames.Requested && x.Context.CompanyId == seed.CompanyId));
+         Assert.Equal(FinanceEntrySources.FallbackRead, telemetryEvent.Context.TriggerSource);
++        Assert.Equal("system", telemetryEvent.Context.ActorType);
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceEntryServiceTelemetryTests.cs b/tests/VirtualCompany.Api.Tests/FinanceEntryServiceTelemetryTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceEntryServiceTelemetryTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceEntryServiceTelemetryTests.cs
+@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auditing;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+@@ -39,6 +40,9 @@ public sealed class FinanceEntryServiceTelemetryTests
+         Assert.Equal(FinanceSeedingState.NotSeeded, telemetryEvent.Context.SeedStateBefore);
+         Assert.Equal(FinanceSeedingState.Seeding, telemetryEvent.Context.SeedStateAfter);
+         Assert.False(telemetryEvent.Context.JobAlreadyRunning);
++        Assert.Equal(FinanceSeedRequestModes.Replace, telemetryEvent.Context.SeedMode);
++        Assert.Equal(AuditActorTypes.User, telemetryEvent.Context.ActorType);
++        Assert.Equal(userId, telemetryEvent.Context.ActorId);
+ 
+-        var logEntry = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Finance auto-seed job requested", StringComparison.Ordinal)));
++        var logEntry = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Finance seed orchestration requested", StringComparison.Ordinal)));
+         Assert.Equal(FinanceEntrySources.FinanceEntry, Assert.IsType<string>(logEntry.State["TriggerSource"]));
+         Assert.Equal(companyId, Assert.IsType<Guid>(logEntry.State["CompanyId"]));
+-        Assert.Equal(userId, Assert.IsType<Guid>(logEntry.State["UserId"]));
++        Assert.Equal(AuditActorTypes.User, Assert.IsType<string>(logEntry.State["ActorType"]));
++        Assert.Equal(userId, Assert.IsType<Guid>(logEntry.State["ActorId"]));
++        Assert.Equal(FinanceSeedRequestModes.Replace, Assert.IsType<string>(logEntry.State["SeedMode"]));
+         Assert.Equal("not_seeded", Assert.IsType<string>(logEntry.State["SeedStateBefore"]));
+         Assert.Equal("seeding", Assert.IsType<string>(logEntry.State["SeedStateAfter"]));
+     }
+@@ -76,6 +80,8 @@ public sealed class FinanceEntryServiceTelemetryTests
+         Assert.Equal(FinanceEntrySources.FinanceEntry, Assert.IsType<string>(duplicateLog.State["TriggerSource"]));
+         Assert.Equal(companyId, Assert.IsType<Guid>(duplicateLog.State["CompanyId"]));
+         Assert.Equal("pending", Assert.IsType<string>(duplicateLog.State["JobStatus"]));
++        Assert.Equal(FinanceSeedRequestModes.Replace, Assert.IsType<string>(duplicateLog.State["SeedMode"]));
++        Assert.Equal(AuditActorTypes.User, Assert.IsType<string>(duplicateLog.State["ActorType"]));
+         Assert.NotEqual(Guid.Empty, Assert.IsType<Guid>(duplicateLog.State["ExecutionId"]));
+     }
+@@ -108,6 +114,8 @@ public sealed class FinanceEntryServiceTelemetryTests
+ 
+         Assert.True(state.DataAlreadyExists);
+         Assert.True(state.ConfirmationRequired);
+         Assert.Equal(FinanceSeedOperationContractValues.Rejected, state.SeedOperation);
+         Assert.Empty(telemetry.Events);
+-        Assert.Single(logger.Entries.Where(x => x.Message.Contains("explicit confirmation was not provided", StringComparison.OrdinalIgnoreCase)));
++        var logEntry = Assert.Single(logger.Entries.Where(x => x.Message.Contains("explicit confirmation was not provided", StringComparison.OrdinalIgnoreCase)));
++        Assert.Equal(AuditActorTypes.User, Assert.IsType<string>(logEntry.State["ActorType"]));
++        Assert.Equal(FinanceSeedRequestModes.Replace, Assert.IsType<string>(logEntry.State["SeedMode"]));
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedJobRunnerTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedJobRunnerTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedJobRunnerTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedJobRunnerTests.cs
+@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging.Abstractions;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+@@ -68,6 +69,8 @@ public sealed class FinanceSeedJobRunnerTests
+         Assert.Equal(FinanceSeedingState.NotSeeded, startedEvent.Context.SeedStateBefore);
+         Assert.Equal(FinanceSeedingState.Seeding, startedEvent.Context.SeedStateAfter);
+         Assert.Equal(1, startedEvent.Context.Attempt);
++        Assert.Equal(FinanceSeedRequestModes.Replace, startedEvent.Context.SeedMode);
++        Assert.Equal(AuditActorTypes.System, startedEvent.Context.ActorType);
+ 
+         var completedEvent = Assert.Single(telemetry.Events.Where(x => x.EventName == FinanceSeedTelemetryEventNames.Completed));
+         Assert.Equal(companyId, completedEvent.Context.CompanyId);
+@@ -75,6 +78,8 @@ public sealed class FinanceSeedJobRunnerTests
+         Assert.Equal(FinanceSeedingState.Seeded, completedEvent.Context.SeedStateAfter);
+         Assert.NotNull(completedEvent.Context.DurationMs);
+         Assert.True(completedEvent.Context.DurationMs >= 0);
++        Assert.Equal(FinanceSeedRequestModes.Replace, completedEvent.Context.SeedMode);
++        Assert.Equal(AuditActorTypes.System, completedEvent.Context.ActorType);
+ 
+-        var startedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Finance auto-seed job started", StringComparison.Ordinal)));
++        var startedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Finance seed orchestration started", StringComparison.Ordinal)));
+         Assert.Equal(companyId, Assert.IsType<Guid>(startedLog.State["CompanyId"]));
+         Assert.Equal(FinanceEntrySources.FinanceEntry, Assert.IsType<string>(startedLog.State["TriggerSource"]));
++        Assert.Equal(FinanceSeedRequestModes.Replace, Assert.IsType<string>(startedLog.State["SeedMode"]));
+         Assert.Equal(1, Assert.IsType<int>(startedLog.State["Attempt"]));
+ 
+-        var completedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Finance auto-seed job completed", StringComparison.Ordinal)));
++        var completedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Finance seed orchestration completed", StringComparison.Ordinal)));
+         Assert.Equal(companyId, Assert.IsType<Guid>(completedLog.State["CompanyId"]));
+         Assert.Equal(1, Assert.IsType<int>(completedLog.State["Attempt"]));
++        Assert.Equal(FinanceSeedRequestModes.Replace, Assert.IsType<string>(completedLog.State["SeedMode"]));
+         Assert.NotNull(completedLog.State["DurationMs"]);
+     }
+@@ -146,11 +151,15 @@ public sealed class FinanceSeedJobRunnerTests
+         Assert.Equal(nameof(InvalidOperationException), failedEvent.Context.ErrorType);
+         Assert.Contains("Configured finance seed failure.", failedEvent.Context.ErrorMessageSafe ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+         Assert.NotNull(failedEvent.Context.DurationMs);
+         Assert.True(failedEvent.Context.DurationMs >= 0);
++        Assert.Equal(FinanceSeedRequestModes.Replace, failedEvent.Context.SeedMode);
++        Assert.Equal(AuditActorTypes.System, failedEvent.Context.ActorType);
+ 
+-        var failedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Finance auto-seed job failed", StringComparison.Ordinal)));
++        var failedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Finance seed orchestration failed", StringComparison.Ordinal)));
+         Assert.Equal(companyId, Assert.IsType<Guid>(failedLog.State["CompanyId"]));
+         Assert.Equal(1, Assert.IsType<int>(failedLog.State["Attempt"]));
+         Assert.Equal(nameof(InvalidOperationException), Assert.IsType<string>(failedLog.State["ErrorType"]));
++        Assert.Equal(FinanceSeedRequestModes.Replace, Assert.IsType<string>(failedLog.State["SeedMode"]));
+         Assert.NotNull(failedLog.State["DurationMs"]);
+     }
+END_OF_PATCH

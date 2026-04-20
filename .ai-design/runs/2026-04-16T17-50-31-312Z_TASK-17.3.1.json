@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-17.3.1",
+  "promptPath": ".ai-design/prompts/TASK-17.3.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T17:50:31.312Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T17-50-31-312Z_TASK-17.3.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T17-50-31-312Z_TASK-17.3.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T18:00:45.145Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "} = [];\n+        public LinkedDocumentAccessResponse LinkedDocument { get; set; } = new();\n+    }\n+\n+    private sealed class InvoiceDetailResponse\n+    {\n+        public Guid Id { get; set; }\n+        public string Status { get; set; } = string.Empty;\n+        public InvoiceWorkflowContextResponse? WorkflowContext { get; set; }\n+        public LinkedDocumentAccessResponse LinkedDocument { get; set; } = new();\n+    }\n+\n+    private sealed class InvoiceWorkflowContextResponse\n+    {\n+        public Guid? WorkflowInstanceId { get; set; }\n+        public Guid TaskId { get; set; }\n+        public Guid? ApprovalRequestId { get; set; }\n+        public string Classification { get; set; } = string.Empty;\n+        public string RiskLevel { get; set; } = string.Empty;\n+        public string RecommendedAction { get; set; } = string.Empty;\n+        public string Rationale { get; set; } = string.Empty;\n+    }\n+\n     private sealed class SeedAnomalyResponse\n     {\n         public Guid Id { get; set; }\ndiff --git a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs\n--- a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs\n@@ -10,7 +10,9 @@ public sealed class FinanceRouteRegistrationTests\n     [Theory]\n     [InlineData(typeof(FinancePage), FinanceRoutes.Home)]\n     [InlineData(typeof(CashPositionPage), FinanceRoutes.CashPosition)]\n     [InlineData(typeof(TransactionsPage), FinanceRoutes.Transactions)]\n+    [InlineData(typeof(TransactionsPage), FinanceRoutes.TransactionDetail)]\n     [InlineData(typeof(InvoicesPage), FinanceRoutes.Invoices)]\n+    [InlineData(typeof(InvoicesPage), FinanceRoutes.InvoiceDetail)]\n     [InlineData(typeof(BalancesPage), FinanceRoutes.Balances)]\n     [InlineData(typeof(MonthlySummaryPage), FinanceRoutes.MonthlySummary)]\n     [InlineData(typeof(AnomaliesPage), FinanceRoutes.Anomalies)]\nEND_OF_PATCH\n",
+  "stderrTail": "lic LinkedDocumentAccessResponse LinkedDocument { get; set; } = new();\n+    }\n+\n+    private sealed class InvoiceDetailResponse\n+    {\n+        public Guid Id { get; set; }\n+        public string Status { get; set; } = string.Empty;\n+        public InvoiceWorkflowContextResponse? WorkflowContext { get; set; }\n+        public LinkedDocumentAccessResponse LinkedDocument { get; set; } = new();\n+    }\n+\n+    private sealed class InvoiceWorkflowContextResponse\n+    {\n+        public Guid? WorkflowInstanceId { get; set; }\n+        public Guid TaskId { get; set; }\n+        public Guid? ApprovalRequestId { get; set; }\n+        public string Classification { get; set; } = string.Empty;\n+        public string RiskLevel { get; set; } = string.Empty;\n+        public string RecommendedAction { get; set; } = string.Empty;\n+        public string Rationale { get; set; } = string.Empty;\n+    }\n+\n     private sealed class SeedAnomalyResponse\n     {\n         public Guid Id { get; set; }\ndiff --git a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs\n--- a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs\n@@ -10,7 +10,9 @@ public sealed class FinanceRouteRegistrationTests\n     [Theory]\n     [InlineData(typeof(FinancePage), FinanceRoutes.Home)]\n     [InlineData(typeof(CashPositionPage), FinanceRoutes.CashPosition)]\n     [InlineData(typeof(TransactionsPage), FinanceRoutes.Transactions)]\n+    [InlineData(typeof(TransactionsPage), FinanceRoutes.TransactionDetail)]\n     [InlineData(typeof(InvoicesPage), FinanceRoutes.Invoices)]\n+    [InlineData(typeof(InvoicesPage), FinanceRoutes.InvoiceDetail)]\n     [InlineData(typeof(BalancesPage), FinanceRoutes.Balances)]\n     [InlineData(typeof(MonthlySummaryPage), FinanceRoutes.MonthlySummary)]\n     [InlineData(typeof(AnomaliesPage), FinanceRoutes.Anomalies)]\nEND_OF_PATCH\ntokens used\n137,034\n",
+  "verbosityMode": "summary"
+}

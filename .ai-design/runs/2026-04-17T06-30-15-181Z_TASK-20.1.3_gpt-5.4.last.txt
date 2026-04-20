@@ -1,0 +1,690 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 8d62f7f..9b57df8 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -568,12 +568,18 @@ public sealed record FinanceSeedValidationErrorDto(
+     string Message);
+ 
+ public sealed record FinanceSeedingStateDiagnosticsDto(
+     bool MetadataPresent,
++    FinanceSeedingState? PersistedState,
+     FinanceSeedingState? MetadataState,
+     bool MetadataIndicatesComplete,
++    bool UsedFastPath,
++    string Reason,
+     bool HasAccounts,
+     bool HasCounterparties,
+     bool HasTransactions,
+     bool HasBalances,
+     bool HasPolicyConfiguration,
+     bool HasInvoices,
+     bool HasBills);
+ 
++public static class FinanceSeedingStateDerivedFromValues
++{
++    public const string Metadata = "metadata";
++    public const string RecordChecks = "record_checks";
++}
++
+ public sealed record FinanceSeedingStateResultDto(
+     Guid CompanyId,
+     FinanceSeedingState State,
++    string DerivedFrom,
++    DateTime CheckedAtUtc,
+     FinanceSeedingStateDiagnosticsDto Diagnostics);
+ 
+ public interface IFinanceSeedBootstrapService
+ {
+     Task<FinanceSeedBootstrapResultDto> GenerateAsync(FinanceSeedBootstrapCommand command, CancellationToken cancellationToken);
+@@ -592,7 +598,13 @@ public interface IFinanceTransactionAnomalyDetectionService
+ {
+     Task<FinanceTransactionAnomalyEvaluationDto> EvaluateAsync(EvaluateFinanceTransactionAnomalyCommand command, CancellationToken cancellationToken);
+ }
+ 
+-public interface IFinanceSeedingStateResolver
++public interface IFinanceSeedingStateService
++{
++    Task<FinanceSeedingStateResultDto> GetCompanyFinanceSeedingStateAsync(Guid companyId, CancellationToken cancellationToken = default);
++}
++
++public interface IFinanceSeedingStateResolver : IFinanceSeedingStateService
+ {
+     Task<FinanceSeedingStateResultDto> ResolveAsync(Guid companyId, CancellationToken cancellationToken = default);
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index b7c1558..beef289 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -26,7 +26,7 @@ public sealed class InternalFinanceController : ControllerBase
+     private readonly IAuditQueryService _auditQueryService;
+     private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
+     private readonly IFinanceSeedBootstrapService _financeSeedBootstrapService;
+     private readonly IInvoiceReviewWorkflowService _invoiceReviewWorkflowService;
+-    private readonly IFinanceSeedingStateResolver _financeSeedingStateResolver;
++    private readonly IFinanceSeedingStateService _financeSeedingStateService;
+     private readonly IApprovalRequestService _approvalRequestService;
+     private readonly IFinanceTransactionAnomalyDetectionService _anomalyDetectionService;
+     private readonly IFinanceCashPositionWorkflowService _cashPositionWorkflowService;
+@@ -41,7 +41,7 @@ public sealed class InternalFinanceController : ControllerBase
+         IFinanceCommandService financeCommandService,
+         IAuditQueryService auditQueryService,
+         IFinancePolicyConfigurationService financePolicyConfigurationService,
+         IFinanceSeedBootstrapService financeSeedBootstrapService,
+-        IFinanceSeedingStateResolver financeSeedingStateResolver,
++        IFinanceSeedingStateService financeSeedingStateService,
+         IInvoiceReviewWorkflowService invoiceReviewWorkflowService,
+         IApprovalRequestService approvalRequestService,
+         IFinanceTransactionAnomalyDetectionService anomalyDetectionService,
+@@ -58,7 +58,7 @@ public sealed class InternalFinanceController : ControllerBase
+         _financeCommandService = financeCommandService;
+         _auditQueryService = auditQueryService;
+         _financePolicyConfigurationService = financePolicyConfigurationService;
+         _financeSeedBootstrapService = financeSeedBootstrapService;
+-        _financeSeedingStateResolver = financeSeedingStateResolver;
++        _financeSeedingStateService = financeSeedingStateService;
+         _invoiceReviewWorkflowService = invoiceReviewWorkflowService;
+         _approvalRequestService = approvalRequestService;
+         _anomalyDetectionService = anomalyDetectionService;
+@@ -117,8 +117,22 @@ public sealed class InternalFinanceController : ControllerBase
+         Guid companyId,
+         CancellationToken cancellationToken) =>
+         await ExecuteReadAsync(async () =>
+         {
+-            var result = await _financeSeedingStateResolver.ResolveAsync(companyId, cancellationToken);
+-            return new FinanceSeedingStateResponse(result.State);
++            var result = await _financeSeedingStateService.GetCompanyFinanceSeedingStateAsync(companyId, cancellationToken);
++            return new FinanceSeedingStateResponse
++            {
++                CompanyId = result.CompanyId,
++                SeedingState = result.State.ToStorageValue(),
++                DerivedFrom = result.DerivedFrom,
++                CheckedAtUtc = result.CheckedAtUtc,
++                Diagnostics = new FinanceSeedingStateDiagnosticsResponse
++                {
++                    PersistedState = result.Diagnostics.PersistedState?.ToStorageValue(),
++                    MetadataState = result.Diagnostics.MetadataState?.ToStorageValue(),
++                    MetadataPresent = result.Diagnostics.MetadataPresent,
++                    MetadataIndicatesComplete = result.Diagnostics.MetadataIndicatesComplete,
++                    UsedFastPath = result.Diagnostics.UsedFastPath,
++                    Reason = result.Diagnostics.Reason
++                }.WithRecordChecks(result.Diagnostics)
++            };
+         });
+@@ -2725,8 +2739,6 @@ public sealed class InternalFinanceController : ControllerBase
+     }
+ }
+ 
+-public sealed record FinanceSeedingStateResponse(FinanceSeedingState State);
+-
+ public sealed record FinanceInvoiceDetailResponse(
+     Guid Id,
+     Guid CounterpartyId,
+@@ -2838,3 +2850,20 @@ public sealed record FinanceSandboxSimulationRunStepResponse(
+     int EventsEmitted,
+     DateTime CreatedUtc);
+ 
++internal static class FinanceSeedingStateResponseMappings
++{
++    public static FinanceSeedingStateDiagnosticsResponse WithRecordChecks(
++        this FinanceSeedingStateDiagnosticsResponse response,
++        FinanceSeedingStateDiagnosticsDto diagnostics)
++    {
++        response.HasAccounts = diagnostics.HasAccounts;
++        response.HasCounterparties = diagnostics.HasCounterparties;
++        response.HasTransactions = diagnostics.HasTransactions;
++        response.HasBalances = diagnostics.HasBalances;
++        response.HasPolicyConfiguration = diagnostics.HasPolicyConfiguration;
++        response.HasInvoices = diagnostics.HasInvoices;
++        response.HasBills = diagnostics.HasBills;
++
++        return response;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 7c4a5e4..0e8c673 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -319,6 +319,7 @@ public static class DependencyInjection
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+         services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
+         services.AddScoped<IFinanceSeedBootstrapService, CompanyFinanceSeedBootstrapService>();
++        services.AddScoped<IFinanceSeedingStateService, CompanyFinanceSeedingStateResolver>();
+         services.AddScoped<IFinanceSeedingStateResolver, CompanyFinanceSeedingStateResolver>();
+         services.AddScoped<IInvoiceReviewWorkflowService, CompanyInvoiceReviewWorkflowService>();
+         services.AddScoped<IFinanceTransactionAnomalyDetectionService, CompanyFinanceTransactionAnomalyDetectionService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedingStateResolver.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedingStateResolver.cs
+index 2748c6e..017f3b0 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedingStateResolver.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedingStateResolver.cs
+@@ -8,20 +8,26 @@ namespace VirtualCompany.Infrastructure.Finance;
+ public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateResolver
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyContextAccessor? _companyContextAccessor;
++    private readonly TimeProvider _timeProvider;
+ 
+     public CompanyFinanceSeedingStateResolver(VirtualCompanyDbContext dbContext)
+-        : this(dbContext, null)
++        : this(dbContext, null, TimeProvider.System)
+     {
+     }
+ 
+     public CompanyFinanceSeedingStateResolver(
+         VirtualCompanyDbContext dbContext,
+-        ICompanyContextAccessor? companyContextAccessor)
++        ICompanyContextAccessor? companyContextAccessor)
++        : this(dbContext, companyContextAccessor, TimeProvider.System)
++    {
++    }
++
++    public CompanyFinanceSeedingStateResolver(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor? companyContextAccessor,
++        TimeProvider timeProvider)
+     {
+         _dbContext = dbContext;
+         _companyContextAccessor = companyContextAccessor;
++        _timeProvider = timeProvider;
+     }
+ 
+     public async Task<FinanceSeedingStateResultDto> ResolveAsync(Guid companyId, CancellationToken cancellationToken = default)
+@@ -42,25 +48,61 @@ public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateResolver
+         }
+ 
+         var metadata = FinanceSeedingMetadata.Read(company);
+-        var recordChecks = await LoadRecordChecksAsync(companyId, cancellationToken);
+         var persistedState = company.FinanceSeedStatus;
+-
+-        // Fully seeded means foundational finance configuration is present without scanning datasets:
+-        // accounts, balances, counterparties, policy configuration, and at least one posted transaction.
+-        var state = ResolveState(metadata, recordChecks);
++        var checkedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
++
++        if (TryResolveFromMetadata(persistedState, metadata, out var metadataState, out var metadataReason))
++        {
++            var metadataChecks = FinanceSeedRecordChecks.FromMetadata(metadata);
++            return BuildResult(
++                companyId,
++                metadataState,
++                FinanceSeedingStateDerivedFromValues.Metadata,
++                checkedAtUtc,
++                metadata,
++                persistedState,
++                metadataChecks,
++                usedFastPath: true,
++                metadataReason);
++        }
++
++        var recordChecks = await LoadRecordChecksAsync(companyId, cancellationToken);
++        var state = ResolveState(persistedState, metadata, recordChecks);
++        var reason = recordChecks.IsComplete
++            ? "Foundational finance indicators were confirmed through lightweight record existence checks."
++            : recordChecks.HasAnyRecords
++                ? "Some finance indicators exist, but the foundational seeded dataset is incomplete."
++                : persistedState == FinanceSeedingState.FullySeeded || metadata?.State == FinanceSeedingState.FullySeeded
++                    ? "Metadata indicates finance seeding started, but foundational records could not be fully confirmed."
++                    : "No finance seed metadata or finance indicators were found.";
++
++        return BuildResult(
++            companyId,
++            state,
++            FinanceSeedingStateDerivedFromValues.RecordChecks,
++            checkedAtUtc,
++            metadata,
++            persistedState,
++            recordChecks,
++            usedFastPath: false,
++            reason);
++    }
++
++    public Task<FinanceSeedingStateResultDto> GetCompanyFinanceSeedingStateAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        ResolveAsync(companyId, cancellationToken);
++
++    private FinanceSeedingStateResultDto BuildResult(
++        Guid companyId,
++        FinanceSeedingState state,
++        string derivedFrom,
++        DateTime checkedAtUtc,
++        FinanceSeedingMetadataSnapshot? metadata,
++        FinanceSeedingState persistedState,
++        FinanceSeedRecordChecks recordChecks,
++        bool usedFastPath,
++        string reason)
++    {
++        var metadataPresent = metadata?.HasExtensionMetadata == true || persistedState != FinanceSeedingState.NotSeeded || metadata?.SeededAtUtc is not null;
+ 
+         return new FinanceSeedingStateResultDto(
+             companyId,
+             state,
++            derivedFrom,
++            checkedAtUtc,
+             new FinanceSeedingStateDiagnosticsDto(
+-                metadata is not null,
++                metadataPresent,
++                persistedState,
+                 metadata?.State,
+-                persistedState == FinanceSeedingState.FullySeeded || metadata?.State == FinanceSeedingState.FullySeeded,
++                metadata?.State == FinanceSeedingState.FullySeeded || persistedState == FinanceSeedingState.FullySeeded,
++                usedFastPath,
++                reason,
+                 recordChecks.HasAccounts,
+                 recordChecks.HasCounterparties,
+                 recordChecks.HasTransactions,
+@@ -69,6 +111,38 @@ public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateResolver
+                 recordChecks.HasInvoices,
+                 recordChecks.HasBills));
+     }
++
++    private static bool TryResolveFromMetadata(
++        FinanceSeedingState persistedState,
++        FinanceSeedingMetadataSnapshot? metadata,
++        out FinanceSeedingState state,
++        out string reason)
++    {
++        state = FinanceSeedingState.NotSeeded;
++        reason = string.Empty;
++
++        if (metadata is null || !metadata.HasExtensionMetadata || !IsMetadataConsistent(persistedState, metadata))
++        {
++            return false;
++        }
++
++        if (metadata.State == FinanceSeedingState.FullySeeded && metadata.HasCompleteFoundationalChecks)
++        {
++            state = FinanceSeedingState.FullySeeded;
++            reason = "Finance seed metadata marks all foundational finance indicators as complete.";
++            return true;
++        }
++
++        if (metadata.State == FinanceSeedingState.PartiallySeeded)
++        {
++            state = FinanceSeedingState.PartiallySeeded;
++            reason = "Finance seed metadata marks the company as partially seeded.";
++            return true;
++        }
++
++        if (metadata.State == FinanceSeedingState.NotSeeded && !metadata.HasAnyPositiveChecks)
++        {
++            state = FinanceSeedingState.NotSeeded;
++            reason = "Finance seed metadata marks the company as not seeded.";
++            return true;
++        }
++
++        return false;
++    }
+ 
+     private void EnsureTenant(Guid companyId)
+     {
+@@ -106,18 +180,38 @@ public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateResolver
+             hasBills);
+     }
+ 
++    private static bool IsMetadataConsistent(FinanceSeedingState persistedState, FinanceSeedingMetadataSnapshot metadata)
++    {
++        if (persistedState != FinanceSeedingState.NotSeeded && persistedState != metadata.State)
++        {
++            return false;
++        }
++
++        return metadata.State switch
++        {
++            FinanceSeedingState.FullySeeded => metadata.HasCompleteFoundationalChecks,
++            FinanceSeedingState.NotSeeded => !metadata.HasAnyPositiveChecks,
++            _ => true
++        };
++    }
++
+     private static FinanceSeedingState ResolveState(
+         FinanceSeedingState persistedState,
+         FinanceSeedingMetadataSnapshot? metadata,
+         FinanceSeedRecordChecks recordChecks)
+     {
+-        if (persistedState == FinanceSeedingState.FullySeeded || metadata?.State == FinanceSeedingState.FullySeeded)
++        if (recordChecks.IsComplete)
+         {
+-            return recordChecks.IsComplete
+-                ? FinanceSeedingState.FullySeeded
+-                : FinanceSeedingState.PartiallySeeded;
++            return FinanceSeedingState.FullySeeded;
+         }
+ 
+-        if (recordChecks.IsComplete)
++        if (persistedState == FinanceSeedingState.FullySeeded ||
++            metadata?.State == FinanceSeedingState.FullySeeded)
++        {
++            return FinanceSeedingState.PartiallySeeded;
++        }
++
++        if (persistedState == FinanceSeedingState.PartiallySeeded ||
++            metadata?.State == FinanceSeedingState.PartiallySeeded ||
++            recordChecks.HasAnyRecords)
+         {
+-            return FinanceSeedingState.FullySeeded;
++            return FinanceSeedingState.PartiallySeeded;
+         }
+ 
+-        if (persistedState == FinanceSeedingState.PartiallySeeded || metadata?.State == FinanceSeedingState.PartiallySeeded)
+-        {
+-            return FinanceSeedingState.PartiallySeeded;
+-        }
+-
+-        if (recordChecks.HasAnyRecords)
+-        {
+-            return FinanceSeedingState.PartiallySeeded;
+-        }
+-
+         return FinanceSeedingState.NotSeeded;
+     }
+ 
+@@ -128,6 +222,19 @@ public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateResolver
+         bool HasPolicyConfiguration,
+         bool HasInvoices,
+         bool HasBills)
+     {
++        public static FinanceSeedRecordChecks FromMetadata(FinanceSeedingMetadataSnapshot metadata) =>
++            new(
++                metadata.Accounts == true,
++                metadata.Counterparties == true,
++                metadata.Transactions == true,
++                metadata.Balances == true,
++                metadata.PolicyConfiguration == true,
++                metadata.Invoices == true,
++                metadata.Bills == true);
++
+         public bool IsComplete => HasAccounts && HasCounterparties && HasTransactions && HasBalances && HasPolicyConfiguration;
+         public bool HasAnyRecords => HasAccounts || HasCounterparties || HasTransactions || HasBalances || HasPolicyConfiguration || HasInvoices || HasBills;
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceSeedingMetadata.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceSeedingMetadata.cs
+index c44cf44..a331878 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceSeedingMetadata.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceSeedingMetadata.cs
+@@ -20,6 +20,7 @@ internal static class FinanceSeedingMetadata
+         }
+ 
+         return new FinanceSeedingMetadataSnapshot(
++            extensionSnapshot is not null,
+             company.FinanceSeedStatus,
+             extensionSnapshot?.Accounts,
+             extensionSnapshot?.Counterparties,
+@@ -45,6 +46,7 @@ internal static class FinanceSeedingMetadata
+         }
+ 
+         var recordChecks = metadata[RecordChecksKey] as JsonObject;
+         return new FinanceSeedingMetadataSnapshot(
++            true,
+             state,
+             ReadBool(recordChecks, "accounts"),
+             ReadBool(recordChecks, "counterparties"),
+@@ -149,6 +151,7 @@ internal static class FinanceSeedingMetadata
+ }
+ 
+ internal sealed record FinanceSeedingMetadataSnapshot(
++    bool HasExtensionMetadata,
+     FinanceSeedingState State,
+     bool? Accounts,
+     bool? Counterparties,
+@@ -158,6 +161,15 @@ internal sealed record FinanceSeedingMetadataSnapshot(
+     bool? Invoices,
+     bool? Bills,
+     string? SeedVersion,
+     DateTime? SeededAtUtc,
+-    DateTime? StatusUpdatedAtUtc);
++    DateTime? StatusUpdatedAtUtc)
++{
++    public bool HasCompleteFoundationalChecks =>
++        Accounts == true &&
++        Counterparties == true &&
++        Transactions == true &&
++        Balances == true &&
++        PolicyConfiguration == true;
++
++    public bool HasAnyPositiveChecks =>
++        Accounts == true || Counterparties == true || Transactions == true || Balances == true || PolicyConfiguration == true || Invoices == true || Bills == true;
++}
+diff --git a/src/VirtualCompany.Shared/FinanceSeedingContracts.cs b/src/VirtualCompany.Shared/FinanceSeedingContracts.cs
+new file mode 100644
+index 0000000..c0218ee
+--- /dev/null
++++ b/src/VirtualCompany.Shared/FinanceSeedingContracts.cs
+@@ -0,0 +1,33 @@
++namespace VirtualCompany.Shared;
++
++public sealed class FinanceSeedingStateDiagnosticsResponse
++{
++    public string? PersistedState { get; set; }
++    public string? MetadataState { get; set; }
++    public bool MetadataPresent { get; set; }
++    public bool MetadataIndicatesComplete { get; set; }
++    public bool UsedFastPath { get; set; }
++    public string Reason { get; set; } = string.Empty;
++    public bool HasAccounts { get; set; }
++    public bool HasCounterparties { get; set; }
++    public bool HasTransactions { get; set; }
++    public bool HasBalances { get; set; }
++    public bool HasPolicyConfiguration { get; set; }
++    public bool HasInvoices { get; set; }
++    public bool HasBills { get; set; }
++}
++
++public sealed class FinanceSeedingStateResponse
++{
++    public Guid CompanyId { get; set; }
++    public string SeedingState { get; set; } = string.Empty;
++    public string DerivedFrom { get; set; } = string.Empty;
++    public DateTime CheckedAtUtc { get; set; }
++    public FinanceSeedingStateDiagnosticsResponse Diagnostics { get; set; } = new();
++}
++
++public static class FinanceSeedingStateContractValues
++{
++    public const string NotSeeded = "not_seeded";
++    public const string PartiallySeeded = "partially_seeded";
++    public const string FullySeeded = "fully_seeded";
++}
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 73a5106..b5d1009 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -76,6 +76,14 @@ public sealed class FinanceApiClient
+             ? Task.FromResult<FinanceSandboxDatasetGenerationResponse?>(null)
+             : GetAsync<FinanceSandboxDatasetGenerationResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/dataset-generation", allowNotFound: true, cancellationToken);
+ 
++    public Task<FinanceSeedingStateResponse?> GetSeedingStateAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinanceSeedingStateResponse?>(new FinanceSeedingStateResponse
++            {
++                CompanyId = companyId,
++                SeedingState = FinanceSeedingStateContractValues.NotSeeded
++            })
++            : GetAsync<FinanceSeedingStateResponse>(companyId, $"internal/companies/{companyId}/finance/seeding-state", allowNotFound: true, cancellationToken);
++
+     public Task<FinanceSandboxSeedGenerationResponse> GenerateSandboxSeedDatasetAsync(
+         Guid companyId,
+         FinanceSandboxSeedGenerationRequest request,
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+index 3e4e2da..1843b3d 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -4,6 +4,7 @@ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Shared;
+ using VirtualCompany.Web.Services;
+ using Xunit;
+ 
+@@ -46,9 +47,15 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebAppli
+         var seedingStateResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/seeding-state");
+         Assert.Equal(HttpStatusCode.OK, seedingStateResponse.StatusCode);
+         var seedingState = await seedingStateResponse.Content.ReadFromJsonAsync<FinanceSeedingStateResponse>();
++
+         Assert.NotNull(seedingState);
+-        Assert.Equal("fully_seeded", seedingState!.State);
++        Assert.Equal(seed.CompanyId, seedingState!.CompanyId);
++        Assert.Equal(FinanceSeedingStateContractValues.FullySeeded, seedingState.SeedingState);
++        Assert.Equal("record_checks", seedingState.DerivedFrom);
++        Assert.True(seedingState.CheckedAtUtc > DateTime.MinValue);
++        Assert.NotNull(seedingState.Diagnostics);
++        Assert.True(seedingState.Diagnostics.HasAccounts);
++        Assert.True(seedingState.Diagnostics.HasPolicyConfiguration);
+ 
+         var profitAndLossResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/profit-and-loss/monthly?year=2025&month=12");
+         Assert.Equal(HttpStatusCode.OK, profitAndLossResponse.StatusCode);
+@@ -433,11 +440,6 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebAppli
+         public string Rationale { get; set; } = string.Empty;
+     }
+ 
+-    private sealed class FinanceSeedingStateResponse
+-    {
+-        public string State { get; set; } = string.Empty;
+-    }
+-
+     private sealed class MonthlyProfitAndLossResponse
+     {
+         public Guid CompanyId { get; set; }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedingStateResolverTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedingStateResolverTests.cs
+index 0a91d95..ec64a73 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedingStateResolverTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedingStateResolverTests.cs
+@@ -29,8 +29,13 @@ public sealed class FinanceSeedingStateResolverTests
+         var result = await resolver.ResolveAsync(companyId, CancellationToken.None);
+ 
+         Assert.Equal(FinanceSeedingState.NotSeeded, result.State);
+-        Assert.False(result.Diagnostics.MetadataPresent);
++        Assert.Equal(FinanceSeedingState.NotSeeded, result.Diagnostics.PersistedState);
++        Assert.False(result.Diagnostics.MetadataPresent);
++        Assert.False(result.Diagnostics.UsedFastPath);
++        Assert.Equal(FinanceSeedingStateDerivedFromValues.RecordChecks, result.DerivedFrom);
+         Assert.False(result.Diagnostics.HasAccounts);
++        Assert.False(result.Diagnostics.HasCounterparties);
++        Assert.False(result.Diagnostics.HasBills);
+         Assert.False(result.Diagnostics.HasTransactions);
+         Assert.False(result.Diagnostics.HasBalances);
+         Assert.False(result.Diagnostics.HasPolicyConfiguration);
+@@ -57,8 +62,10 @@ public sealed class FinanceSeedingStateResolverTests
+         var result = await resolver.ResolveAsync(companyId, CancellationToken.None);
+ 
+         Assert.Equal(FinanceSeedingState.PartiallySeeded, result.State);
++        Assert.Equal(FinanceSeedingStateDerivedFromValues.RecordChecks, result.DerivedFrom);
+         Assert.False(result.Diagnostics.MetadataPresent);
++        Assert.False(result.Diagnostics.UsedFastPath);
+         Assert.True(result.Diagnostics.HasAccounts);
++        Assert.Equal("Some finance indicators exist, but the foundational seeded dataset is incomplete.", result.Diagnostics.Reason);
+         Assert.False(result.Diagnostics.HasTransactions);
+         Assert.False(result.Diagnostics.HasBalances);
+         Assert.False(result.Diagnostics.HasPolicyConfiguration);
+@@ -83,8 +90,10 @@ public sealed class FinanceSeedingStateResolverTests
+         var result = await resolver.ResolveAsync(companyId, CancellationToken.None);
+ 
+         Assert.Equal(FinanceSeedingState.FullySeeded, result.State);
++        Assert.Equal(FinanceSeedingStateDerivedFromValues.RecordChecks, result.DerivedFrom);
+         Assert.False(result.Diagnostics.MetadataPresent);
+         Assert.True(result.Diagnostics.HasAccounts);
++        Assert.False(result.Diagnostics.UsedFastPath);
+         Assert.True(result.Diagnostics.HasCounterparties);
+         Assert.True(result.Diagnostics.HasTransactions);
+         Assert.True(result.Diagnostics.HasBalances);
+@@ -110,10 +119,12 @@ public sealed class FinanceSeedingStateResolverTests
+         var result = await resolver.ResolveAsync(companyId, CancellationToken.None);
+ 
+         Assert.Equal(FinanceSeedingState.FullySeeded, result.State);
++        Assert.Equal(FinanceSeedingStateDerivedFromValues.Metadata, result.DerivedFrom);
+         Assert.True(result.Diagnostics.MetadataPresent);
++        Assert.True(result.Diagnostics.UsedFastPath);
+         Assert.Equal(FinanceSeedingState.FullySeeded, result.Diagnostics.MetadataState);
+         Assert.True(result.Diagnostics.MetadataIndicatesComplete);
+     }
+ 
+     [Fact]
+-    public async Task ResolveAsync_returns_partially_seeded_when_metadata_claims_full_but_records_are_missing()
++    public async Task ResolveAsync_returns_partially_seeded_when_metadata_claims_full_but_record_check_metadata_is_inconsistent()
+     {
+         var companyId = Guid.NewGuid();
+ 
+@@ -122,6 +133,12 @@ public sealed class FinanceSeedingStateResolverTests
+         await dbContext.Database.EnsureCreatedAsync();
+ 
+         var company = new Company(companyId, "Inconsistent Metadata Company");
++        company.SetFinanceSeedStatus(FinanceSeedingState.FullySeeded, DateTime.UtcNow, DateTime.UtcNow);
++        company.Settings.Extensions["financeSeeding"] = new JsonObject
++        {
++            ["state"] = JsonValue.Create(FinanceSeedingState.FullySeeded.ToStorageValue()),
++            ["recordChecks"] = new JsonObject()
++        };
+-        ApplyMetadata(company, FinanceSeedingState.FullySeeded);
+         dbContext.Companies.Add(company);
+         await dbContext.SaveChangesAsync();
+ 
+@@ -129,10 +146,12 @@ public sealed class FinanceSeedingStateResolverTests
+         var result = await resolver.ResolveAsync(companyId, CancellationToken.None);
+ 
+         Assert.Equal(FinanceSeedingState.PartiallySeeded, result.State);
++        Assert.Equal(FinanceSeedingStateDerivedFromValues.RecordChecks, result.DerivedFrom);
+         Assert.True(result.Diagnostics.MetadataPresent);
++        Assert.False(result.Diagnostics.UsedFastPath);
+         Assert.Equal(FinanceSeedingState.FullySeeded, result.Diagnostics.MetadataState);
+         Assert.False(result.Diagnostics.HasAccounts);
+         Assert.False(result.Diagnostics.HasTransactions);
+     }
+ 
+@@ -166,8 +185,10 @@ public sealed class FinanceSeedingStateResolverTests
+         var result = await resolver.ResolveAsync(companyId, CancellationToken.None);
+ 
+         Assert.Equal(FinanceSeedingState.FullySeeded, result.State);
++        Assert.Equal(FinanceSeedingStateDerivedFromValues.RecordChecks, result.DerivedFrom);
+         Assert.True(result.Diagnostics.MetadataPresent);
+         Assert.Equal(FinanceSeedingState.FullySeeded, result.Diagnostics.MetadataState);
++        Assert.False(result.Diagnostics.UsedFastPath);
+         Assert.True(result.Diagnostics.MetadataIndicatesComplete);
+     }
+ 
+@@ -199,10 +220,39 @@ public sealed class FinanceSeedingStateResolverTests
+         var result = await resolver.ResolveAsync(companyId, CancellationToken.None);
+ 
+         Assert.Equal(FinanceSeedingState.PartiallySeeded, result.State);
++        Assert.Equal(FinanceSeedingStateDerivedFromValues.Metadata, result.DerivedFrom);
+         Assert.True(result.Diagnostics.MetadataPresent);
+         Assert.Equal(FinanceSeedingState.PartiallySeeded, result.Diagnostics.MetadataState);
++        Assert.True(result.Diagnostics.UsedFastPath);
+         Assert.True(result.Diagnostics.HasAccounts);
+         Assert.False(result.Diagnostics.HasTransactions);
+     }
+ 
++    [Fact]
++    public async Task ResolveAsync_returns_not_seeded_from_metadata_fast_path_when_metadata_explicitly_marks_not_seeded()
++    {
++        var companyId = Guid.NewGuid();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Not Seeded Metadata Company");
++        company.SetFinanceSeedStatus(FinanceSeedingState.NotSeeded, new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc));
++        company.Settings.Extensions["financeSeeding"] = new JsonObject
++        {
++            ["state"] = JsonValue.Create(FinanceSeedingState.NotSeeded.ToStorageValue()),
++            ["recordChecks"] = new JsonObject
++            {
++                ["accounts"] = JsonValue.Create(false),
++                ["counterparties"] = JsonValue.Create(false),
++                ["transactions"] = JsonValue.Create(false),
++                ["balances"] = JsonValue.Create(false),
++                ["policyConfiguration"] = JsonValue.Create(false)
++            }
++        };
++        dbContext.Companies.Add(company);
++        await dbContext.SaveChangesAsync();
++
++        var result = await CreateResolver(dbContext, companyId).ResolveAsync(companyId, CancellationToken.None);
++
++        Assert.Equal(FinanceSeedingState.NotSeeded, result.State);
++        Assert.Equal(FinanceSeedingStateDerivedFromValues.Metadata, result.DerivedFrom);
++        Assert.True(result.Diagnostics.UsedFastPath);
++    }
++
+     [Fact]
+     public async Task ResolveAsync_honors_active_company_context()
+     {
+ END_OF_PATCH

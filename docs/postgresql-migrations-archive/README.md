@@ -1,3 +1,10 @@
+
+## Finance Seed Bootstrap
+
+The finance seed generator can be invoked through the internal API with
+`POST /internal/companies/{companyId}/finance/bootstrap/seed` and a body containing
+`seedValue`, optional `seedAnchorUtc`, and optional `replaceExisting`. The same bootstrap path is
+available from the API host CLI with `seed-finance --company-id <guid> --seed <integer> [--anchor-utc <datetime>] [--replace|--append]`.
 # PostgreSQL Migration Archive
 
 These files are the previous PostgreSQL/Npgsql migration source files preserved as historical reference during the SQL Server migration reset.

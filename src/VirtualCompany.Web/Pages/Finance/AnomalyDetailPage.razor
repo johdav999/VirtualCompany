@@ -1,0 +1,184 @@
+@page "/finance/anomalies/{AnomalyId:guid}"
+@inherits FinancePageBase
+@using VirtualCompany.Web.Services
+
+<PageTitle>Finance Anomaly Detail</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Finance anomaly detail"
+    Description="Inspect anomaly evidence, related records, and follow-up tasks without losing the workbench state."
+    LoadingMessage="Loading finance anomaly detail...">
+    @if (IsDetailLoading)
+    {
+        <section class="wizard-card">
+            <h2 class="h5 mb-2">Loading anomaly</h2>
+            <p class="text-body-secondary mb-0">Fetching the latest anomaly evidence and follow-up references.</p>
+        </section>
+    }
+    else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
+    {
+        <section class="wizard-card">
+            <div class="alert alert-danger mb-3">@DetailErrorMessage</div>
+            <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync">Retry</button>
+        </section>
+    }
+    else if (Detail is not null)
+    {
+        <div class="dashboard-actions mb-4">
+            <a class="btn btn-outline-secondary" href="@BackToListHref">Back to workbench</a>
+        </div>
+
+        <section class="finance-detail-grid">
+            <article class="wizard-card finance-metric-card finance-metric-card--hero">
+                <span class="dashboard-kicker">Anomaly</span>
+                <h2 class="mb-3">@FinanceAnomalyPresentation.FormatLabel(Detail.AnomalyType)</h2>
+                <div class="d-flex flex-wrap gap-2 mb-3">
+                    <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(Detail.Status)">@FinanceAnomalyPresentation.FormatLabel(Detail.Status)</span>
+                    <span class="finance-risk-pill finance-risk-pill--warning">@FinanceAnomalyPresentation.FormatConfidence(Detail.Confidence)</span>
+                </div>
+                <p class="mb-0 text-body-secondary">@Detail.Explanation</p>
+            </article>
+
+            <article class="wizard-card finance-state-card">
+                <span class="dashboard-kicker">Affected record</span>
+                @if (Detail.AffectedRecord is not null)
+                {
+                    <h3 class="h5">@Detail.AffectedRecord.Reference</h3>
+                    <dl class="cockpit-kpi-list mb-0">
+                        <div>
+                            <dt>Supplier</dt>
+                            <dd>@(Detail.SupplierName ?? Detail.AffectedRecord.SupplierName ?? "n/a")</dd>
+                        </div>
+                        <div>
+                            <dt>Occurred</dt>
+                            <dd>@FinanceAnomalyPresentation.FormatDateTime(Detail.AffectedRecord.OccurredAtUtc)</dd>
+                        </div>
+                        <div>
+                            <dt>Amount</dt>
+                            <dd>@FinanceAnomalyPresentation.FormatCurrency(Detail.AffectedRecord.Amount, Detail.AffectedRecord.Currency)</dd>
+                        </div>
+                    </dl>
+                    <div class="dashboard-actions mt-3">
+                        <a class="btn btn-outline-secondary" href="@TransactionHref">Open transaction</a>
+                        @if (InvoiceHref is not null)
+                        {
+                            <a class="btn btn-outline-secondary" href="@InvoiceHref">Open invoice</a>
+                        }
+                        @if (BillHref is not null)
+                        {
+                            <a class="btn btn-outline-secondary" href="@BillHref">Open bill</a>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <p class="text-body-secondary mb-0">The underlying finance record could not be resolved for this anomaly.</p>
+                }
+            </article>
+
+            <article class="wizard-card finance-state-card">
+                <span class="dashboard-kicker">Recommended action</span>
+                <h3 class="h5">@Detail.RecommendedAction</h3>
+                <p class="text-body-secondary mb-0">Detected @FinanceAnomalyPresentation.FormatDateTime(Detail.DetectedAtUtc).</p>
+            </article>
+        </section>
+
+        @if (Detail.Deduplication is { } deduplication && FinanceAnomalyPresentation.HasDeduplicationMetadata(deduplication))
+        {
+            <section class="wizard-card finance-anomaly-section mt-4">
+                <h2 class="h5">Deduplication metadata</h2>
+                <dl class="cockpit-kpi-list mb-0">
+                    @if (!string.IsNullOrWhiteSpace(deduplication.Key))
+                    {
+                        <div>
+                            <dt>Key</dt>
+                            <dd>@deduplication.Key</dd>
+                        </div>
+                    }
+                    @if (deduplication.WindowStartUtc.HasValue || deduplication.WindowEndUtc.HasValue)
+                    {
+                        <div>
+                            <dt>Window</dt>
+                            <dd>@FinanceAnomalyPresentation.FormatWindow(deduplication.WindowStartUtc, deduplication.WindowEndUtc)</dd>
+                        </div>
+                    }
+                </dl>
+            </section>
+        }
+
+        @if (Detail.RelatedRecordLinks.Count > 0)
+        {
+            <section class="wizard-card finance-anomaly-section mt-4">
+                <div class="finance-anomaly-section__header">
+                    <div>
+                        <h2 class="h5 mb-1">Underlying records</h2>
+                        <p class="text-body-secondary mb-0">Navigate to the related finance records without losing the current workbench filters.</p>
+                    </div>
+                </div>
+                <div class="finance-anomaly-task-list">
+                    @foreach (var record in Detail.RelatedRecordLinks)
+                    {
+                        var recordHref = BuildRecordHref(record);
+
+                        <article class="finance-anomaly-task">
+                            <div class="d-flex flex-wrap justify-content-between gap-2">
+                                <strong>@FinanceAnomalyPresentation.FormatLabel(record.RecordType)</strong>
+                                @if (recordHref is not null)
+                                {
+                                    <a class="btn btn-outline-secondary btn-sm" href="@recordHref">Open @FinanceAnomalyPresentation.FormatLabel(record.RecordType)</a>
+                                }
+                            </div>
+                            <div class="small text-body-secondary mt-2">@record.Reference</div>
+                            @if (record.OccurredAtUtc.HasValue || record.Amount.HasValue)
+                            {
+                                <div class="small text-body-secondary mt-1">
+                                    @if (record.OccurredAtUtc.HasValue)
+                                    {
+                                        <span>@FinanceAnomalyPresentation.FormatDateTime(record.OccurredAtUtc)</span>
+                                    }
+                                    @if (record.Amount.HasValue && !string.IsNullOrWhiteSpace(record.Currency))
+                                    {
+                                        <span class="ms-2">@FinanceAnomalyPresentation.FormatCurrency(record.Amount.Value, record.Currency!)</span>
+                                    }
+                                </div>
+                            }
+                        </article>
+                    }
+                </div>
+            </section>
+        }
+
+        <section class="wizard-card finance-anomaly-section mt-4">
+            <div class="finance-anomaly-section__header">
+                <div>
+                    <h2 class="h5 mb-1">Follow-up tasks</h2>
+                    <p class="text-body-secondary mb-0">Related work items stay linked through the anomaly correlation id.</p>
+                </div>
+            </div>
+            @if (Detail.FollowUpTasks.Count == 0)
+            {
+                <p class="text-body-secondary mb-0">No follow-up tasks are currently linked to this anomaly.</p>
+            }
+            else
+            {
+                <div class="finance-anomaly-task-list">
+                    @foreach (var task in Detail.FollowUpTasks)
+                    {
+                        <a class="finance-anomaly-task text-decoration-none text-reset" href="@BuildTaskHref(task.Id)">
+                            <div class="d-flex flex-wrap justify-content-between gap-2">
+                                <strong>@task.Title</strong>
+                                <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(task.Status)">@FinanceAnomalyPresentation.FormatLabel(task.Status)</span>
+                            </div>
+                            <div class="small text-body-secondary mt-2">
+                                Updated @FinanceAnomalyPresentation.FormatDateTime(task.UpdatedUtc)
+                            </div>
+                        </a>
+                    }
+                </div>
+            }
+        </section>
+    }
+</FinancePageLayout>

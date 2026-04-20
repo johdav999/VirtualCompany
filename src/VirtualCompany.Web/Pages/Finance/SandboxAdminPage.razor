@@ -1,0 +1,1109 @@
+@page "/finance/sandbox-admin"
+@rendermode InteractiveServer
+@inherits FinancePageBase
+
+<PageTitle>Finance sandbox admin</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Finance sandbox admin"
+    Description="Inspect the finance sandbox posture for dataset generation, anomaly injection, simulation diagnostics, simulation controls, tool execution visibility, and domain events."
+    LoadingMessage="Loading finance sandbox administration shell...">
+    @if (!HasSandboxAdminAccess)
+    {
+        <ForbiddenState
+            Title="Finance sandbox admin access required"
+            Message="Finance sandbox administration is limited to company admins and testers."
+            ReturnHref="@BuildFinanceHomeHref()"
+            ReturnText="Back to finance" />
+    }
+    else
+    {
+        <section class="finance-summary-stack" aria-label="Finance sandbox administration sections">
+            <article class="wizard-card">
+                <div class="mb-3">
+                    <span class="dashboard-kicker">Seed generation</span>
+                    <h2 class="h5 mb-2">Generate sandbox seed dataset</h2>
+                    <p class="text-body-secondary mb-0">Generate a finance sandbox seed dataset for the active company, review the generation summary, and inspect validation issues inline before retrying.</p>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(_seedGenerationErrorMessage))
+                {
+                    <div class="alert alert-danger" role="alert">
+                        @_seedGenerationErrorMessage
+                    </div>
+                }
+
+                <EditForm EditContext="@_seedGenerationEditContext" OnValidSubmit="@HandleSeedGenerationSubmitAsync">
+                    <DataAnnotationsValidator />
+                    <ValidationSummary />
+
+                    <div id="seed-generation-form" class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label" for="seed-company">Company</label>
+                            <InputSelect id="seed-company"
+                                         class="form-select"
+                                         Value="_seedGenerationForm.CompanyId"
+                                         ValueChanged="@(EventCallback.Factory.Create<Guid>(this, HandleCompanySelectionChangedAsync))"
+                                         ValueExpression="() => _seedGenerationForm.CompanyId"
+                                         disabled="@(_isSubmittingSeedGeneration || _companyOptions.Count <= 1)">
+                                @foreach (var option in _companyOptions)
+                                {
+                                    <option value="@option.CompanyId">@option.CompanyName</option>
+                                }
+                            </InputSelect>
+                            <ValidationMessage For="@(() => _seedGenerationForm.CompanyId)" />
+                            <div class="form-text">@CompanySelectionDescription</div>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label" for="seed-value">Seed value</label>
+                            <InputNumber id="seed-value" class="form-control" @bind-Value="_seedGenerationForm.SeedValue" disabled="@_isSubmittingSeedGeneration" />
+                            <ValidationMessage For="@(() => _seedGenerationForm.SeedValue)" />
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label" for="anchor-date">Anchor date</label>
+                            <InputDate id="anchor-date" class="form-control" @bind-Value="_seedGenerationForm.AnchorDateUtc" disabled="@_isSubmittingSeedGeneration" />
+                            <ValidationMessage For="@(() => _seedGenerationForm.AnchorDateUtc)" />
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="generation-mode">Generation mode</label>
+                            <InputSelect id="generation-mode" class="form-select" @bind-Value="_seedGenerationForm.GenerationMode" disabled="@_isSubmittingSeedGeneration">
+                                @foreach (var option in _generationModeOptions)
+                                {
+                                    <option value="@option.Value">@option.Label</option>
+                                }
+                            </InputSelect>
+                            <div class="form-text">@SelectedGenerationModeDescription</div>
+                            <ValidationMessage For="@(() => _seedGenerationForm.GenerationMode)" />
+                        </div>
+                        <div class="col-12 d-flex align-items-center gap-3">
+                            <button id="seed-generate-submit" type="submit" class="btn btn-primary" disabled="@_isSubmittingSeedGeneration">
+                                @(_isSubmittingSeedGeneration ? "Generating dataset..." : "Generate seed dataset")
+                            </button>
+                            @if (_isSubmittingSeedGeneration)
+                            {
+                                <span class="text-body-secondary">Duplicate submissions are disabled until the current request completes.</span>
+                            }
+                        </div>
+                    </div>
+                </EditForm>
+
+                @if (_seedGenerationResult is not null)
+                {
+                    <div class="mt-4" aria-live="polite">
+                        <div class="alert @(_seedGenerationResult.Succeeded ? "alert-success" : "alert-danger")" role="status">
+                            @_seedGenerationResult.Message
+                        </div>
+                        <section class="border rounded p-3 mb-3" aria-labelledby="generation-summary-title">
+                            <h3 id="generation-summary-title" class="h6 mb-3">Generation summary</h3>
+                            <div class="row g-3 mb-3">
+                                <div class="col-sm-6 col-lg-3">
+                                    <div class="border rounded p-3 h-100">
+                                        <div class="text-body-secondary small">Created</div>
+                                        <div class="fs-4 fw-semibold">@_seedGenerationResult.CreatedCount</div>
+                                    </div>
+                                </div>
+                                <div class="col-sm-6 col-lg-3">
+                                    <div class="border rounded p-3 h-100">
+                                        <div class="text-body-secondary small">Updated</div>
+                                        <div class="fs-4 fw-semibold">@_seedGenerationResult.UpdatedCount</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <dl class="row mb-0">
+                                <dt class="col-sm-3">Company</dt>
+                                <dd class="col-sm-9">@_seedGenerationForm.CompanyName</dd>
+                                <dt class="col-sm-3">Seed value</dt>
+                                <dd class="col-sm-9">@_seedGenerationResult.SeedValue</dd>
+                                <dt class="col-sm-3">Anchor date</dt>
+                                <dd class="col-sm-9">@_seedGenerationResult.AnchorDateUtc.ToString("yyyy-MM-dd")</dd>
+                                <dt class="col-sm-3">Generation mode</dt>
+                                <dd class="col-sm-9">@GetGenerationModeLabel(_seedGenerationResult.GenerationMode)</dd>
+                            </dl>
+                        </section>
+
+                        <section class="border rounded p-3" aria-labelledby="validation-results-title">
+                            <h3 id="validation-results-title" class="h6 mb-3">Validation results</h3>
+
+                            @if (_seedGenerationResult.ReferentialIntegrityErrors.Count > 0)
+                            {
+                                <div class="mb-3">
+                                    <h4 class="h6 text-danger">Referential integrity errors</h4>
+                                    <ul class="mb-0">
+                                        @foreach (var issue in _seedGenerationResult.ReferentialIntegrityErrors)
+                                        {
+                                            <li>
+                                                @if (!string.IsNullOrWhiteSpace(issue.Code))
+                                                {
+                                                    <span class="fw-semibold">@issue.Code:</span>
+                                                    <span> </span>
+                                                }
+                                                @issue.Message
+                                            </li>
+                                        }
+                                    </ul>
+                                </div>
+                            }
+
+                            @if (_seedGenerationResult.Errors.Count > 0)
+                            {
+                                <div class="mb-3">
+                                    <h4 class="h6 text-danger">Validation errors</h4>
+                                    <ul class="mb-0">
+                                        @foreach (var issue in _seedGenerationResult.Errors)
+                                        {
+                                            <li>
+                                                @if (!string.IsNullOrWhiteSpace(issue.Code))
+                                                {
+                                                    <span class="fw-semibold">@issue.Code:</span>
+                                                    <span> </span>
+                                                }
+                                                @issue.Message
+                                            </li>
+                                        }
+                                    </ul>
+                                </div>
+                            }
+
+                            @if (_seedGenerationResult.Warnings.Count > 0)
+                            {
+                                <div class="mb-0">
+                                    <h4 class="h6 text-warning-emphasis">Warnings</h4>
+                                    <ul class="mb-0">
+                                        @foreach (var issue in _seedGenerationResult.Warnings)
+                                        {
+                                            <li>
+                                                @if (!string.IsNullOrWhiteSpace(issue.Code))
+                                                {
+                                                    <span class="fw-semibold">@issue.Code:</span>
+                                                    <span> </span>
+                                                }
+                                                @issue.Message
+                                            </li>
+                                        }
+                                    </ul>
+                                </div>
+                            }
+                            else if (_seedGenerationResult.Succeeded && _seedGenerationResult.Errors.Count == 0 && _seedGenerationResult.ReferentialIntegrityErrors.Count == 0)
+                            {
+                                <p class="text-success mb-0">Validation completed without errors or warnings.</p>
+                            }
+                        </section>
+                    </div>
+                }
+            </article>
+
+            <div @key="_datasetGenerationSectionVersion">
+                <FinanceSandboxAdminSection TSection="FinanceSandboxDatasetGenerationViewModel"
+                                            CompanyId="@AccessState.CompanyId!.Value"
+                                            Kicker="Sandbox dataset"
+                                            Title="Dataset generation"
+                                            Description="Review the active seed profile, cadence, and data coverage used by the finance sandbox."
+                                            LoadingTitle="Loading dataset generation"
+                                            LoadingMessage="Resolving the current sandbox dataset generation profile."
+                                            EmptyTitle="Dataset generation is not configured"
+                                            EmptyMessage="No dataset generation profile is available for the active company."
+                                            ErrorTitle="Dataset generation is unavailable"
+                                            Loader="@LoadDatasetGenerationAsync">
+                    <ChildContent Context="dataset">
+                        <dl class="row mb-0">
+                            <dt class="col-sm-4">Profile</dt>
+                            <dd class="col-sm-8">@dataset.ProfileName</dd>
+                        <dt class="col-sm-4">Last refresh</dt>
+                        <dd class="col-sm-8">@dataset.LastGeneratedUtc.ToString("u")</dd>
+                        <dt class="col-sm-4">Coverage</dt>
+                        <dd class="col-sm-8">@dataset.CoverageSummary</dd>
+                    </dl>
+                    <div class="mt-3">
+                        <strong class="d-block mb-2">Available dataset profiles</strong>
+                        <ul class="mb-0">
+                            @foreach (var profile in dataset.AvailableProfiles)
+                            {
+                                <li>@profile</li>
+                            }
+                        </ul>
+                    </div>
+                    </ChildContent>
+                </FinanceSandboxAdminSection>
+            </div>
+
+            <div @key="_anomalyInjectionSectionVersion">
+                <FinanceSandboxAdminSection TSection="FinanceSandboxAnomalyInjectionViewModel"
+                                            CompanyId="@AccessState.CompanyId!.Value"
+                                            Kicker="Sandbox anomaly"
+                                            Title="Anomaly injection"
+                                            Description="Submit anomaly registrations for a scenario profile and review the tenant-scoped registry inline."
+                                            LoadingTitle="Loading anomaly injection"
+                                            LoadingMessage="Fetching configured anomaly profiles and registry entries."
+                                            EmptyTitle="No anomaly injections configured"
+                                            EmptyMessage="No anomaly injection scenarios are configured."
+                                            ErrorTitle="Anomaly injection is unavailable"
+                                            Loader="@LoadAnomalyInjectionAsync">
+                    <ChildContent Context="injection">
+                        <div class="row g-4">
+                            <div class="col-lg-5">
+                                <dl class="row mb-3">
+                                    <dt class="col-sm-4">Mode</dt>
+                                    <dd class="col-sm-8">@injection.Mode</dd>
+                                    <dt class="col-sm-4">Last seeded</dt>
+                                    <dd class="col-sm-8">@injection.LastInjectedUtc.ToString("u")</dd>
+                                    <dt class="col-sm-4">Observation</dt>
+                                    <dd class="col-sm-8">@injection.Observation</dd>
+                                </dl>
+
+                                @if (!string.IsNullOrWhiteSpace(_anomalyInjectionErrorMessage))
+                                {
+                                    <div class="alert alert-danger" role="alert">
+                                        @_anomalyInjectionErrorMessage
+                                    </div>
+                                }
+
+                                @if (!string.IsNullOrWhiteSpace(_anomalyInjectionSuccessMessage))
+                                {
+                                    <div class="alert alert-success" role="status">
+                                        @_anomalyInjectionSuccessMessage
+                                    </div>
+                                }
+
+                                <EditForm id="anomaly-injection-form" EditContext="@_anomalyInjectionEditContext" OnValidSubmit="@HandleAnomalyInjectionSubmitAsync">
+                                    <DataAnnotationsValidator />
+                                    <ValidationSummary />
+
+                                    <div class="row g-3">
+                                        <div class="col-12">
+                                            <label class="form-label" for="anomaly-profile">Scenario profile</label>
+                                            <InputSelect id="anomaly-profile" class="form-select" @bind-Value="_anomalyInjectionForm.ScenarioProfileCode" disabled="@_isSubmittingAnomalyInjection">
+                                                <option value="">Select scenario profile</option>
+                                                @foreach (var profile in injection.AvailableScenarioProfiles)
+                                                {
+                                                    <option value="@profile.Code">@profile.Name</option>
+                                                }
+                                            </InputSelect>
+                                            <ValidationMessage For="@(() => _anomalyInjectionForm.ScenarioProfileCode)" />
+                                            <div class="form-text">@SelectedScenarioProfileDescription(injection)</div>
+                                        </div>
+                                        <div class="col-12 d-flex align-items-center gap-3">
+                                            <button id="anomaly-inject-submit" type="submit" class="btn btn-primary" disabled="@_isSubmittingAnomalyInjection">
+                                                @(_isSubmittingAnomalyInjection ? "Registering anomaly..." : "Inject anomaly")
+                                            </button>
+                                            @if (_isSubmittingAnomalyInjection)
+                                            {
+                                                <span class="text-body-secondary">Scenario submission is disabled until the current request finishes.</span>
+                                            }
+                                        </div>
+                                    </div>
+                                </EditForm>
+
+                                @if (injection.ActiveScenarios.Count > 0)
+                                {
+                                    <div class="mt-3">
+                                        <strong class="d-block mb-2">Active scenarios</strong>
+                                        <ul class="mb-0">
+                                            @foreach (var scenario in injection.ActiveScenarios)
+                                            {
+                                                <li>@scenario</li>
+                                            }
+                                        </ul>
+                                    </div>
+                                }
+                            </div>
+
+                            <div class="col-lg-7">
+                                <div class="d-flex justify-content-between align-items-center mb-3">
+                                    <div>
+                                        <h3 class="h6 mb-1">Registry</h3>
+                                        <p class="text-body-secondary mb-0">Select a registry entry to inspect scenario metadata and related finance record links.</p>
+                                    </div>
+                                </div>
+
+                                @if (injection.RegistryEntries.Count == 0)
+                                {
+                                    <p class="text-body-secondary mb-0">No anomaly registry entries are available for the active company.</p>
+                                }
+                                else
+                                {
+                                    <div class="table-responsive">
+                                        <table class="table finance-table mb-0">
+                                            <thead>
+                                                <tr>
+                                                    <th scope="col">Id</th>
+                                                    <th scope="col">Type</th>
+                                                    <th scope="col">Status</th>
+                                                    <th scope="col">Affected record</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var entry in injection.RegistryEntries)
+                                                {
+                                                    <tr class="@(_selectedAnomalyId == entry.Id ? "table-active" : null)">
+                                                        <td class="text-nowrap">
+                                                            <button type="button" class="btn btn-link p-0 fw-semibold text-decoration-none text-start" @onclick="() => HandleAnomalySelectionAsync(entry.Id)">
+                                                                @entry.Id.ToString("D")[..8]
+                                                            </button>
+                                                        </td>
+                                                        <td>
+                                                            <div class="fw-semibold">@FinanceAnomalyPresentation.FormatLabel(entry.Type)</div>
+                                                            <div class="small text-body-secondary">@entry.ScenarioProfileName</div>
+                                                        </td>
+                                                        <td>
+                                                            <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(entry.Status)">
+                                                                @FinanceAnomalyPresentation.FormatLabel(entry.Status)
+                                                            </span>
+                                                        </td>
+                                                        <td>@entry.AffectedRecordReference</td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+
+                        <section class="border rounded p-3 mt-4" aria-labelledby="sandbox-anomaly-detail-title">
+                            <h3 id="sandbox-anomaly-detail-title" class="h6 mb-3">Selected anomaly detail</h3>
+
+                            @if (_isLoadingSelectedAnomaly)
+                            {
+                                <p class="text-body-secondary mb-0">Loading anomaly detail...</p>
+                            }
+                            else if (!string.IsNullOrWhiteSpace(_selectedAnomalyErrorMessage))
+                            {
+                                <div class="alert alert-danger mb-0">@_selectedAnomalyErrorMessage</div>
+                            }
+                            else if (_selectedAnomalyDetail is null)
+                            {
+                                <p class="text-body-secondary mb-0">Select a registry entry to inspect scenario metadata, affected finance records, and backend messages.</p>
+                            }
+                            else
+                            {
+                                <dl class="row mb-0">
+                                    <dt class="col-sm-4">Scenario profile</dt>
+                                    <dd class="col-sm-8">@_selectedAnomalyDetail.ScenarioProfileName</dd>
+                                    <dt class="col-sm-4">Created</dt>
+                                    <dd class="col-sm-8">@_selectedAnomalyDetail.CreatedUtc.ToString("u")</dd>
+                                    <dt class="col-sm-4">Affected record</dt>
+                                    <dd class="col-sm-8">
+                                        @if (BuildAffectedRecordHref(_selectedAnomalyDetail) is string affectedRecordHref)
+                                        {
+                                            <a href="@affectedRecordHref">@_selectedAnomalyDetail.AffectedRecordReference</a>
+                                        }
+                                        else
+                                        {
+                                            @_selectedAnomalyDetail.AffectedRecordReference
+                                        }
+                                    </dd>
+                                    <dt class="col-sm-4">Scenario metadata</dt>
+                                    <dd class="col-sm-8"><code>@_selectedAnomalyDetail.ExpectedDetectionMetadataJson</code></dd>
+                                </dl>
+
+                                @if (_selectedAnomalyDetail.Messages.Count > 0)
+                                {
+                                    <div class="mt-3">
+                                        @foreach (var message in _selectedAnomalyDetail.Messages)
+                                        {
+                                            <div class="@ResolveBackendMessageAlertClass(message.Severity)" role="alert">
+                                                @if (!string.IsNullOrWhiteSpace(message.Code))
+                                                {
+                                                    <span class="fw-semibold">@message.Code:</span>
+                                                    <span> </span>
+                                                }
+                                                @message.Message
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </section>
+                    </ChildContent>
+                </FinanceSandboxAdminSection>
+            </div>
+            @if (SimulationUiVisible)
+            {
+                <div @key="_simulationDiagnosticsSectionVersion">
+                    <FinanceSandboxAdminSection TSection="FinanceSandboxSimulationDiagnosticsViewModel"
+                                                CompanyId="@AccessState.CompanyId!.Value"
+                                                Kicker="Simulation diagnostics"
+                                                Title="Simulation history and error state"
+                                                Description="Review tenant-scoped simulation sessions, feature gate state, lifecycle transitions, and per-day generation logs before triggering more sandbox activity."
+                                                LoadingTitle="Loading simulation diagnostics"
+                                                LoadingMessage="Reading the latest company simulation history and feature gate state."
+                                                EmptyTitle="Simulation diagnostics are not available"
+                                                EmptyMessage="No simulation diagnostics were returned for the active company."
+                                                ErrorTitle="Simulation diagnostics are unavailable"
+                                                Loader="@LoadSimulationDiagnosticsAsync">
+                        <ChildContent Context="diagnostics">
+                            @{
+                                var latestRun = diagnostics.RecentHistory.OrderByDescending(run => run.LastUpdatedUtc).FirstOrDefault();
+                            }
+
+                            <div class="row g-3 mb-3">
+                                <div class="col-sm-6 col-xl-3">
+                                    <div class="border rounded p-3 h-100">
+                                        <div class="text-body-secondary small">UI visibility</div>
+                                        <div class="fs-6 fw-semibold">@(diagnostics.UiVisible ? "Visible" : "Hidden")</div>
+                                    </div>
+                                </div>
+                                <div class="col-sm-6 col-xl-3">
+                                    <div class="border rounded p-3 h-100">
+                                        <div class="text-body-secondary small">Backend execution</div>
+                                        <div class="fs-6 fw-semibold">@(diagnostics.BackendExecutionEnabled ? "Enabled" : "Disabled")</div>
+                                    </div>
+                                </div>
+                                <div class="col-sm-6 col-xl-3">
+                                    <div class="border rounded p-3 h-100">
+                                        <div class="text-body-secondary small">Background jobs</div>
+                                        <div class="fs-6 fw-semibold">@(diagnostics.BackgroundJobsEnabled ? "Enabled" : "Disabled")</div>
+                                    </div>
+                                </div>
+                                <div class="col-sm-6 col-xl-3">
+                                    <div class="border rounded p-3 h-100">
+                                        <div class="text-body-secondary small">Current session</div>
+                                        <div class="fs-6 fw-semibold">@(diagnostics.ActiveSessionId?.ToString("N")[..8] ?? "None")</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            @if (!string.IsNullOrWhiteSpace(diagnostics.DisabledReason))
+                            {
+                                <div class="alert alert-warning" role="alert">@diagnostics.DisabledReason</div>
+                            }
+
+                            <div class="@ResolveSimulationSnapshotAlertClass(latestRun)" role="alert">
+                                <div class="fw-semibold">Current or last error state</div>
+                                <div class="text-body-secondary">
+                                    @(latestRun is null
+                                        ? "No simulation session has been recorded for the active company yet."
+                                        : FormatSimulationSnapshotMessage(latestRun.InjectedAnomalies, latestRun.Warnings, latestRun.Errors))
+                                </div>
+                            </div>
+
+                            @if (diagnostics.RecentHistory.Count == 0)
+                            {
+                                <p class="text-body-secondary mt-3 mb-0">No simulation sessions have been recorded for the active company yet.</p>
+                            }
+                            else
+                            {
+                                <div class="d-flex flex-column gap-3 mt-3">
+                                    @foreach (var run in diagnostics.RecentHistory)
+                                    {
+                                        <details class="border rounded p-3" open="@(ReferenceEquals(run, latestRun) ? true : false)">
+                                            <summary class="d-flex flex-wrap align-items-center gap-2">
+                                                <span class="fw-semibold">Session @run.SessionId.ToString("N")[..8]</span>
+                                                <span class="@ResolveSimulationLifecycleBadgeClass(run.Status)">@ResolveSimulationLifecycleLabel(run.Status)</span>
+                                                <span class="text-body-secondary">Started @run.StartedUtc.ToString("u")</span>
+                                                <span class="text-body-secondary">Seed @run.Seed</span>
+                                            </summary>
+
+                                            <div class="row g-3 mt-2">
+                                                <div class="col-lg-4">
+                                                    <dl class="row mb-0">
+                                                        <dt class="col-sm-5">Simulated start</dt>
+                                                        <dd class="col-sm-7">@run.StartSimulatedDateTime.ToString("u")</dd>
+                                                        <dt class="col-sm-5">Current time</dt>
+                                                        <dd class="col-sm-7">@(run.CurrentSimulatedDateTime?.ToString("u") ?? "Unavailable")</dd>
+                                                        <dt class="col-sm-5">Completed</dt>
+                                                        <dd class="col-sm-7">@(run.CompletedUtc?.ToString("u") ?? "In progress")</dd>
+                                                        <dt class="col-sm-5">Generation</dt>
+                                                        <dd class="col-sm-7">@(run.GenerationEnabled ? "Enabled" : "Disabled")</dd>
+                                                    </dl>
+                                                </div>
+                                                <div class="col-lg-8">
+                                                    <div class="mb-3">
+                                                        <h4 class="h6 mb-2">Status transitions</h4>
+                                                        @if (run.StatusTransitions.Count == 0)
+                                                        {
+                                                            <p class="text-body-secondary mb-0">No lifecycle transitions were captured for this session.</p>
+                                                        }
+                                                        else
+                                                        {
+                                                            <ul class="mb-0">
+                                                                @foreach (var transition in run.StatusTransitions.OrderBy(item => item.TransitionedUtc))
+                                                                {
+                                                                    <li>
+                                                                        <span class="fw-semibold">@ResolveSimulationLifecycleLabel(transition.Status)</span>
+                                                                        <span> | @transition.TransitionedUtc.ToString("u")</span>
+                                                                        @if (!string.IsNullOrWhiteSpace(transition.Message))
+                                                                        {
+                                                                            <span> | @transition.Message</span>
+                                                                        }
+                                                                    </li>
+                                                                }
+                                                            </ul>
+                                                        }
+                                                    </div>
+                                                    <div class="table-responsive">
+                                                        <table class="table finance-table mb-0">
+                                                            <thead>
+                                                                <tr>
+                                                                    <th scope="col">Simulated day</th>
+                                                                    <th scope="col">Generated records</th>
+                                                                    <th scope="col">Alerts</th>
+                                                                    <th scope="col">Anomalies</th>
+                                                                    <th scope="col">Warnings</th>
+                                                                    <th scope="col">Errors</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                @foreach (var day in run.DayLogs.OrderBy(item => item.SimulatedDateUtc))
+                                                                {
+                                                                    <tr>
+                                                                        <td>@day.SimulatedDateUtc.ToString("yyyy-MM-dd")</td>
+                                                                        <td>@day.GeneratedRecordCount</td>
+                                                                        <td>@day.AlertsGenerated</td>
+                                                                        <td>@(day.InjectedAnomalies.Count == 0 ? "None" : string.Join(", ", day.InjectedAnomalies))</td>
+                                                                        <td>@(day.Warnings.Count == 0 ? "None" : string.Join(" | ", day.Warnings))</td>
+                                                                        <td>@(day.Errors.Count == 0 ? "None" : string.Join(" | ", day.Errors))</td>
+                                                                    </tr>
+                                                                }
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </details>
+                                    }
+                                </div>
+                            }
+                        </ChildContent>
+                </FinanceSandboxAdminSection>
+            </div>
+            }
+
+            <div @key="_simulationControlsSectionVersion">
+                @if (SimulationUiVisible)
+                {
+                    <FinanceSandboxAdminSection TSection="FinanceSandboxSimulationControlsViewModel"
+                                                CompanyId="@AccessState.CompanyId!.Value"
+                                                Kicker="Simulation clock"
+                                                Title="Simulation controls"
+                                                Description="Advance the sandbox clock, start a progression run, and inspect run output without leaving the admin workspace."
+                                                LoadingTitle="Loading simulation controls"
+                                                LoadingMessage="Inspecting the sandbox simulation clock."
+                                                EmptyTitle="Simulation controls are not configured"
+                                                EmptyMessage="No simulation controls are configured for the active company."
+                                                ErrorTitle="Simulation controls are unavailable"
+                                                Loader="@LoadSimulationControlsAsync">
+                        <ChildContent Context="simulation">
+                        @{
+                            var displayedSimulation = _latestSimulationControls ?? simulation;
+                            var displayedRun = _latestProgressionRun ?? displayedSimulation.CurrentRun ?? displayedSimulation.RunHistory.FirstOrDefault();
+                        }
+
+                        <div class="row g-4">
+                            <div class="col-lg-5">
+                                <dl class="row mb-3">
+                                    <dt class="col-sm-4">Clock mode</dt>
+                                    <dd class="col-sm-8">@displayedSimulation.ClockMode</dd>
+                                    <dt class="col-sm-4">Reference time</dt>
+                                    <dd class="col-sm-8">@displayedSimulation.ReferenceUtc.ToString("u")</dd>
+                                    <dt class="col-sm-4">Checkpoint</dt>
+                                    <dd class="col-sm-8">@displayedSimulation.CheckpointLabel</dd>
+                                    <dt class="col-sm-4">Observation</dt>
+                                    <dd class="col-sm-8">@displayedSimulation.Observation</dd>
+                                </dl>
+
+                                @if (!string.IsNullOrWhiteSpace(_simulationActionErrorMessage))
+                                {
+                                    <div class="alert alert-danger" role="alert">@_simulationActionErrorMessage</div>
+                                }
+
+                                @if (!string.IsNullOrWhiteSpace(_simulationActionSuccessMessage))
+                                {
+                                    <div class="alert alert-success" role="status">@_simulationActionSuccessMessage</div>
+                                }
+
+                                @if (!string.IsNullOrWhiteSpace(_simulationRefreshErrorMessage))
+                                {
+                                    <div class="alert alert-warning" role="alert">@_simulationRefreshErrorMessage</div>
+                                }
+
+                                <EditForm EditContext="@_simulationControlsEditContext">
+                                    <DataAnnotationsValidator />
+                                    <ValidationSummary />
+
+                                    <div class="row g-3">
+                                        <div class="col-md-6">
+                                            <label class="form-label" for="simulation-advance-hours">Advance by hours</label>
+                                            <InputNumber id="simulation-advance-hours" class="form-control" @bind-Value="_simulationControlsForm.AdvanceHours" disabled="@IsSimulationBusy" />
+                                            <ValidationMessage For="@(() => _simulationControlsForm.AdvanceHours)" />
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label class="form-label" for="progression-run-hours">Progression run hours</label>
+                                            <InputNumber id="progression-run-hours" class="form-control" @bind-Value="_simulationControlsForm.ProgressionRunHours" disabled="@IsSimulationBusy" />
+                                            <ValidationMessage For="@(() => _simulationControlsForm.ProgressionRunHours)" />
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label class="form-label" for="simulation-step-hours">Execution step hours</label>
+                                            <InputNumber id="simulation-step-hours" class="form-control" @bind-Value="_simulationControlsForm.ExecutionStepHours" disabled="@IsSimulationBusy" />
+                                            <ValidationMessage For="@(() => _simulationControlsForm.ExecutionStepHours)" />
+                                        </div>
+                                        <div class="col-md-6 d-flex align-items-end">
+                                            <div class="form-check mb-2">
+                                                <InputCheckbox id="simulation-accelerated" class="form-check-input" @bind-Value="_simulationControlsForm.Accelerated" disabled="@IsSimulationBusy" />
+                                                <label class="form-check-label" for="simulation-accelerated">Accelerated progression</label>
+                                            </div>
+                                        </div>
+                                        <div class="col-12 d-flex flex-wrap gap-3">
+                                            <button id="simulation-advance-submit" type="button" class="btn btn-primary" disabled="@IsSimulationBusy" @onclick="HandleAdvanceSimulationAsync">
+                                                @(_isAdvancingSimulation ? "Advancing time..." : "Advance simulation time")
+                                            </button>
+                                            <button id="progression-run-submit" type="button" class="btn btn-outline-primary" disabled="@IsSimulationBusy" @onclick="HandleStartProgressionRunAsync">
+                                                @(_isStartingProgressionRun
+                                                    ? "Starting progression run..."
+                                                    : HasActiveProgressionRun
+                                                        ? "Progression run in progress"
+                                                        : "Start progression run")
+                                            </button>
+                                            <button id="simulation-refresh-submit" type="button" class="btn btn-outline-secondary" disabled="@_isRefreshingSimulationControls" @onclick="HandleRefreshSimulationControlsAsync">
+                                                @(_isRefreshingSimulationControls ? "Refreshing status..." : "Refresh status")
+                                            </button>
+                                        </div>
+                                        <div class="col-12 d-flex flex-wrap gap-3 text-body-secondary">
+                                            @if (_lastSimulationRefreshUtc.HasValue)
+                                            {
+                                                <span>Last updated @_lastSimulationRefreshUtc.Value.ToString("u")</span>
+                                            }
+                                            @if (_isPollingSimulationControls)
+                                            {
+                                                <span>Status refresh is active while the latest progression run is still in progress.</span>
+                                            }
+                                            @if (HasActiveProgressionRun && !IsSimulationBusy)
+                                            {
+                                                <span>Duplicate progression runs are disabled until the current run reaches a terminal status.</span>
+                                            }
+                                        </div>
+                                    </div>
+                                </EditForm>
+                            </div>
+
+                            <div class="col-lg-7">
+                                <h3 class="h6 mb-3">Latest progression output</h3>
+
+                                @if (displayedRun is null)
+                                {
+                                    <p class="text-body-secondary mb-0">No progression run has been recorded for the active company yet.</p>
+                                }
+                                else
+                                {
+                                    <div class="row g-3 mb-3">
+                                        <div class="col-sm-6 col-xl-3">
+                                            <div class="border rounded p-3 h-100">
+                                                <div class="text-body-secondary small">Status</div>
+                                                <div class="mt-1">
+                                                    <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(displayedRun.Status)">
+                                                        @FinanceAnomalyPresentation.FormatLabel(displayedRun.Status)
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="col-sm-6 col-xl-3">
+                                            <div class="border rounded p-3 h-100">
+                                                <div class="text-body-secondary small">Generated records</div>
+                                                <div class="fs-5 fw-semibold">@displayedRun.GeneratedRecordCount</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-sm-6 col-xl-3">
+                                            <div class="border rounded p-3 h-100">
+                                                <div class="text-body-secondary small">Events emitted</div>
+                                                <div class="fs-5 fw-semibold">@displayedRun.EventsEmitted</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-sm-6 col-xl-3">
+                                            <div class="border rounded p-3 h-100">
+                                                <div class="text-body-secondary small">Advanced hours</div>
+                                                <div class="fs-5 fw-semibold">@displayedRun.AdvancedHours</div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    @foreach (var message in displayedRun.Messages)
+                                    {
+                                        <div class="@ResolveBackendMessageAlertClass(message.Severity)" role="alert">
+                                            @if (!string.IsNullOrWhiteSpace(message.Code))
+                                            {
+                                                <span class="fw-semibold">@message.Code:</span>
+                                                <span> </span>
+                                            }
+                                            @message.Message
+                                        </div>
+                                    }
+
+                                    @if (displayedRun.Steps.Count == 0)
+                                    {
+                                        <p class="text-body-secondary mb-0">The backend did not return step history for this run.</p>
+                                    }
+                                    else
+                                    {
+                                        <div class="table-responsive">
+                                            <table class="table finance-table mb-0">
+                                                <thead>
+                                                    <tr>
+                                                        <th scope="col">Window</th>
+                                                        <th scope="col">Transactions</th>
+                                                        <th scope="col">Invoices</th>
+                                                        <th scope="col">Bills</th>
+                                                        <th scope="col">Generated records</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    @foreach (var step in displayedRun.Steps)
+                                                    {
+                                                        <tr>
+                                                            <td>@step.WindowStartUtc.ToString("u") - @step.WindowEndUtc.ToString("u")</td>
+                                                            <td>@step.TransactionsGenerated</td>
+                                                            <td>@step.InvoicesGenerated</td>
+                                                            <td>@step.BillsGenerated</td>
+                                                            <td>@(step.TransactionsGenerated + step.InvoicesGenerated + step.BillsGenerated + step.RecurringExpenseInstancesGenerated)</td>
+                                                        </tr>
+                                                    }
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    }
+
+                                    <div class="mt-4">
+                                        <h4 class="h6 mb-3">Run history</h4>
+
+                                        @if (displayedSimulation.RunHistory.Count == 0)
+                                        {
+                                            <p class="text-body-secondary mb-0">No completed runs are available in backend history yet.</p>
+                                        }
+                                        else
+                                        {
+                                            <div class="table-responsive">
+                                                <table class="table finance-table mb-0">
+                                                    <thead>
+                                                        <tr>
+                                                            <th scope="col">Run type</th>
+                                                            <th scope="col">Completed</th>
+                                                            <th scope="col">Status</th>
+                                                            <th scope="col">Generated records</th>
+                                                            <th scope="col">Messages</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var run in displayedSimulation.RunHistory)
+                                                        {
+                                                            <tr>
+                                                                <td>@FinanceAnomalyPresentation.FormatLabel(run.RunType)</td>
+                                                                <td>@run.CompletedUtc.ToString("u")</td>
+                                                                <td>@FinanceAnomalyPresentation.FormatLabel(run.Status)</td>
+                                                                <td>@run.GeneratedRecordCount</td>
+                                                                <td>@(run.Messages.Count == 0 ? "No backend messages" : string.Join(" | ", run.Messages.Select(message => message.Message)))</td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                        </ChildContent>
+                    </FinanceSandboxAdminSection>
+                }
+            </div>
+
+            <FinanceSandboxAdminSection TSection="FinanceTransparencyToolManifestListViewModel"
+                                        CompanyId="@AccessState.CompanyId!.Value"
+                                        Kicker="Tool manifests"
+                                        Title="Finance tool manifests"
+                                        Description="Inspect finance tool name, version metadata, schema summary, and provider adapter identity for the active company."
+                                        LoadingTitle="Loading finance tool manifests"
+                                        LoadingMessage="Resolving registered finance tool manifests."
+                                        EmptyTitle="No tool manifests available"
+                                        EmptyMessage="No finance tool manifests are currently registered."
+                                        ErrorTitle="Finance tool manifests are unavailable"
+                                        Loader="@LoadTransparencyToolManifestsAsync">
+                <ChildContent Context="manifests">
+                    <p class="mb-3">@manifests.Summary</p>
+                    <div class="table-responsive">
+                        <table class="table finance-table mb-0">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Tool</th>
+                                    <th scope="col">Version</th>
+                                    <th scope="col">Contract summary</th>
+                                    <th scope="col">Provider adapter</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var item in manifests.Items)
+                                {
+                                    <tr>
+                                        <td>@item.ToolName</td>
+                                        <td>@item.Version</td>
+                                        <td>@item.ContractSummary</td>
+                                        <td>@item.ProviderAdapterIdentity</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </ChildContent>
+            </FinanceSandboxAdminSection>
+
+            <FinanceSandboxAdminSection TSection="FinanceTransparencyExecutionHistoryViewModel"
+                                        CompanyId="@AccessState.CompanyId!.Value"
+                                        Kicker="Execution history"
+                                        Title="Finance tool executions"
+                                        Description="Review lifecycle state, request and response summaries, execution timestamps, and related identifiers for recent finance tool runs."
+                                        LoadingTitle="Loading finance tool executions"
+                                        LoadingMessage="Reading recent finance tool execution history."
+                                        EmptyTitle="No finance tool executions available"
+                                        EmptyMessage="No finance tool executions are recorded for the active company."
+                                        ErrorTitle="Finance tool executions are unavailable"
+                                        Loader="@LoadTransparencyToolExecutionsAsync">
+                <ChildContent Context="executions">
+                    <p class="mb-3">@executions.Summary</p>
+                    <div class="table-responsive">
+                        <table class="table finance-table mb-0">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Tool</th>
+                                    <th scope="col">State</th>
+                                    <th scope="col">Request</th>
+                                    <th scope="col">Response</th>
+                                    <th scope="col">Executed</th>
+                                    <th scope="col">Correlation</th>
+                                    <th scope="col"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var item in executions.Items)
+                                {
+                                    <tr>
+                                        <td>
+                                            <div class="fw-semibold">@item.ToolName</div>
+                                            <small class="text-body-secondary">@item.ToolVersion</small>
+                                        </td>
+                                        <td>@NormalizeTransparencyToken(item.LifecycleState)</td>
+                                        <td>@item.RequestSummary</td>
+                                        <td>@item.ResponseSummary</td>
+                                        <td>@item.ExecutionTimestampUtc.ToString("u")</td>
+                                        <td>@(string.IsNullOrWhiteSpace(item.CorrelationId) ? "Unavailable" : item.CorrelationId)</td>
+                                        <td class="text-end">
+                                            <button id="@($"transparency-execution-{item.ExecutionId:D}")"
+                                                    type="button"
+                                                    class="btn btn-sm btn-outline-secondary"
+                                                    @onclick="() => HandleTransparencyExecutionSelectionAsync(item.ExecutionId)">
+                                                View detail
+                                            </button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @if (_isLoadingSelectedTransparencyExecution)
+                    {
+                        <div class="border rounded p-3 mt-3 text-body-secondary">
+                            Loading execution detail...
+                        </div>
+                    }
+                    else if (!string.IsNullOrWhiteSpace(_selectedTransparencyExecutionErrorMessage))
+                    {
+                        <div class="alert alert-warning mt-3 mb-0">@_selectedTransparencyExecutionErrorMessage</div>
+                    }
+                    else if (_selectedTransparencyExecutionDetail is not null)
+                    {
+                        var originatingHref = BuildOriginatingEntityHref(_selectedTransparencyExecutionDetail);
+
+                        <section class="border rounded p-3 mt-3" aria-live="polite" aria-label="Finance tool execution detail">
+                            <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+                                <div>
+                                    <span class="dashboard-kicker">Execution detail</span>
+                                    <h3 class="h6 mb-1">@_selectedTransparencyExecutionDetail.ToolName</h3>
+                                    <p class="text-body-secondary mb-0">@_selectedTransparencyExecutionDetail.ResponseSummary</p>
+                                </div>
+                                <span class="badge text-bg-light">@NormalizeTransparencyToken(_selectedTransparencyExecutionDetail.LifecycleState)</span>
+                            </div>
+
+                            <dl class="row mb-3">
+                                <dt class="col-sm-4">Version</dt>
+                                <dd class="col-sm-8">@_selectedTransparencyExecutionDetail.ToolVersion</dd>
+                                <dt class="col-sm-4">Correlation ID</dt>
+                                <dd class="col-sm-8">@(string.IsNullOrWhiteSpace(_selectedTransparencyExecutionDetail.CorrelationId) ? "Unavailable" : _selectedTransparencyExecutionDetail.CorrelationId)</dd>
+                                <dt class="col-sm-4">Execution timestamp</dt>
+                                <dd class="col-sm-8">@_selectedTransparencyExecutionDetail.ExecutionTimestampUtc.ToString("u")</dd>
+                                <dt class="col-sm-4">Request summary</dt>
+                                <dd class="col-sm-8">@_selectedTransparencyExecutionDetail.RequestSummary</dd>
+                            </dl>
+
+                            <div class="d-flex flex-column gap-2">
+                                @if (_selectedTransparencyExecutionDetail.ApprovalRequestId is Guid approvalRequestId)
+                                {
+                                    <div>
+                                        <a class="btn btn-sm btn-outline-secondary" href="@BuildApprovalInboxHref()">Open approval inbox</a>
+                                        <span class="ms-2 text-body-secondary">Approval request @approvalRequestId</span>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="text-body-secondary">No related approval request.</div>
+                                }
+
+                                @if (originatingHref is not null)
+                                {
+                                    <div>
+                                        <a class="btn btn-sm btn-outline-secondary" href="@originatingHref">Open originating finance record</a>
+                                        <span class="ms-2 text-body-secondary">@_selectedTransparencyExecutionDetail.OriginatingEntityReference</span>
+                                    </div>
+                                }
+                                else if (!string.IsNullOrWhiteSpace(_selectedTransparencyExecutionDetail.OriginatingEntityReference))
+                                {
+                                    <div class="text-body-secondary">@_selectedTransparencyExecutionDetail.OriginatingEntityReference</div>
+                                }
+                                else
+                                {
+                                    <div class="text-body-secondary">Originating finance action unavailable.</div>
+                                }
+
+                                @if (_selectedTransparencyExecutionDetail.TaskId is Guid taskId)
+                                {
+                                    <div>
+                                        <a class="btn btn-sm btn-outline-secondary" href="@BuildTasksHref()">Open task workspace</a>
+                                        <span class="ms-2 text-body-secondary">Task @taskId</span>
+                                    </div>
+                                }
+
+                                @if (_selectedTransparencyExecutionDetail.WorkflowInstanceId is Guid workflowInstanceId)
+                                {
+                                    <div>
+                                        <a class="btn btn-sm btn-outline-secondary" href="@BuildWorkflowsHref()">Open workflows</a>
+                                        <span class="ms-2 text-body-secondary">Workflow instance @workflowInstanceId</span>
+                                    </div>
+                                }
+                            </div>
+                        </section>
+                    }
+                    else
+                    {
+                        <p class="text-body-secondary mt-3 mb-0">Select an execution to inspect approval and originating action links.</p>
+                    }
+                </ChildContent>
+            </FinanceSandboxAdminSection>
+
+            <FinanceSandboxAdminSection TSection="FinanceTransparencyEventStreamViewModel"
+                                        CompanyId="@AccessState.CompanyId!.Value"
+                                        Kicker="Event stream"
+                                        Title="Finance domain events"
+                                        Description="Review finance event type, timestamp, correlation, affected entity reference, and inspect detailed payload tracing when backend data exists."
+                                        LoadingTitle="Loading finance domain events"
+                                        LoadingMessage="Reading the finance event stream."
+                                        EmptyTitle="No finance events available"
+                                        EmptyMessage="No finance domain events are available for the active company."
+                                        ErrorTitle="Finance domain events are unavailable"
+                                        Loader="@LoadTransparencyEventsAsync">
+                <ChildContent Context="events">
+                    <p class="mb-3">@events.Summary</p>
+                    <div class="table-responsive">
+                        <table class="table finance-table mb-0">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Event type</th>
+                                    <th scope="col">Occurred</th>
+                                    <th scope="col">Correlation</th>
+                                    <th scope="col">Affected entity</th>
+                                    <th scope="col"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var item in events.Items)
+                                {
+                                    <tr>
+                                        <td>@NormalizeTransparencyToken(item.EventType)</td>
+                                        <td>@item.OccurredAtUtc.ToString("u")</td>
+                                        <td>@(string.IsNullOrWhiteSpace(item.CorrelationId) ? "Unavailable" : item.CorrelationId)</td>
+                                        <td>@item.EntityReference</td>
+                                        <td class="text-end">
+                                            <button id="@($"transparency-event-{item.Id:D}")"
+                                                    type="button"
+                                                    class="btn btn-sm btn-outline-secondary"
+                                                    @onclick="() => HandleTransparencyEventSelectionAsync(item.Id)">
+                                                View detail
+                                            </button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @if (_isLoadingSelectedTransparencyEvent)
+                    {
+                        <div class="border rounded p-3 mt-3 text-body-secondary">
+                            Loading event detail...
+                        </div>
+                    }
+                    else if (!string.IsNullOrWhiteSpace(_selectedTransparencyEventErrorMessage))
+                    {
+                        <div class="alert alert-warning mt-3 mb-0">@_selectedTransparencyEventErrorMessage</div>
+                    }
+                    else if (_selectedTransparencyEventDetail is not null)
+                    {
+                        <section class="border rounded p-3 mt-3" aria-live="polite" aria-label="Finance event detail">
+                            <div class="mb-3">
+                                <span class="dashboard-kicker">Event detail</span>
+                                <h3 class="h6 mb-1">@NormalizeTransparencyToken(_selectedTransparencyEventDetail.EventType)</h3>
+                                <p class="text-body-secondary mb-0">@_selectedTransparencyEventDetail.PayloadSummary</p>
+                            </div>
+
+                            <dl class="row mb-3">
+                                <dt class="col-sm-4">Occurred</dt>
+                                <dd class="col-sm-8">@_selectedTransparencyEventDetail.OccurredAtUtc.ToString("u")</dd>
+                                <dt class="col-sm-4">Correlation ID</dt>
+                                <dd class="col-sm-8">@(string.IsNullOrWhiteSpace(_selectedTransparencyEventDetail.CorrelationId) ? "Unavailable" : _selectedTransparencyEventDetail.CorrelationId)</dd>
+                                <dt class="col-sm-4">Entity type</dt>
+                                <dd class="col-sm-8">@NormalizeTransparencyToken(_selectedTransparencyEventDetail.EntityType)</dd>
+                                <dt class="col-sm-4">Entity reference</dt>
+                                <dd class="col-sm-8">@_selectedTransparencyEventDetail.EntityReference</dd>
+                            </dl>
+
+                            <div>
+                                <h4 class="h6 mb-2">Trigger consumption trace</h4>
+                                @if (_selectedTransparencyEventDetail.TriggerConsumptionTrace.Count == 0)
+                                {
+                                    <p class="text-body-secondary mb-0">No trigger consumption trace available.</p>
+                                }
+                                else
+                                {
+                                    <ul class="mb-0">
+                                        @foreach (var trace in _selectedTransparencyEventDetail.TriggerConsumptionTrace)
+                                        {
+                                            <li>
+                                                @NormalizeTransparencyToken(trace.SourceType)
+                                                @if (!string.IsNullOrWhiteSpace(trace.DisplayName))
+                                                {
+                                                    <span> | @trace.DisplayName</span>
+                                                }
+                                                @if (!string.IsNullOrWhiteSpace(trace.SourceId))
+                                                {
+                                                    <span> | @trace.SourceId</span>
+                                                }
+                                                @if (!string.IsNullOrWhiteSpace(trace.Reference))
+                                                {
+                                                    <span> | @trace.Reference</span>
+                                                }
+                                            </li>
+                                        }
+                                    </ul>
+                                }
+                            </div>
+                        </section>
+                    }
+                    else
+                    {
+                        <p class="text-body-secondary mt-3 mb-0">Select an event to inspect payload summary and trigger consumption tracing.</p>
+                    }
+                </ChildContent>
+            </FinanceSandboxAdminSection>
+        </section>
+    }
+</FinancePageLayout>

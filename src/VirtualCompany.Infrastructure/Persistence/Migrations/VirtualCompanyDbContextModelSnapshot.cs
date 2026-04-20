@@ -575,6 +575,22 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasMaxLength(16)
                         .HasColumnType("nvarchar(16)");
 
+                    b.Property<string>("FinanceSeedStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("finance_seed_status")
+                        .HasDefaultValue("not_seeded");
+
+                    b.Property<DateTime?>("FinanceSeededUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("finance_seeded_at");
+
+                    b.Property<DateTime>("FinanceSeedStatusUpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("finance_seed_status_updated_at");
+
                     b.Property<string>("Industry")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
@@ -630,11 +646,16 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("FinanceSeedStatus");
+
                     b.HasIndex("OnboardingCompletedUtc");
 
                     b.HasIndex("OnboardingStatus");
 
-                    b.ToTable("companies", (string)null);
+                    b.ToTable("companies", (string)null, t =>
+                        {
+                            t.HasCheckConstraint("CK_companies_finance_seed_status", "finance_seed_status IN ('not_seeded', 'seeding', 'seeded', 'failed')");
+                        });
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyInvitation", b =>

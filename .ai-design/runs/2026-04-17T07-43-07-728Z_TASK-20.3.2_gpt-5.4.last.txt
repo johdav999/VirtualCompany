@@ -1,0 +1,624 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 4b2b9c1..8f52f6a 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -382,13 +382,18 @@ public sealed record FinanceSeedBackfillAttemptDto(
+     FinanceSeedBackfillAttemptStatus Status,
+     DateTime StartedAtUtc,
+     DateTime? CompletedAtUtc,
+     string? SkipReason,
++    string? ErrorCode,
+     string? ErrorDetails,
++    int RetryCount,
++    Guid? BackgroundExecutionId,
++    string? IdempotencyKey,
+     FinanceSeedingState SeedStateBefore,
+     FinanceSeedingState? SeedStateAfter);
+ 
+ public sealed record FinanceEntryStateDto(
+     Guid CompanyId,
+     string InitializationStatus,
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 8d09d77..0c05fe0 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -95,9 +95,15 @@ public static class DependencyInjection
+             .Bind(configuration.GetSection(FinanceSeedBackfillWorkerOptions.SectionName))
+             .PostConfigure(options =>
+             {
+                 options.ScanPageSize = Math.Max(1, options.ScanPageSize);
+                 options.EnqueueBatchSize = Math.Max(1, options.EnqueueBatchSize);
+                 options.MaxConcurrentEnqueues = Math.Max(1, options.MaxConcurrentEnqueues);
++                options.RateLimitCount = Math.Max(0, options.RateLimitCount);
++                options.RateLimitWindowSeconds = Math.Max(0, options.RateLimitWindowSeconds);
++                options.MaxRetries = Math.Max(0, options.MaxRetries);
++                options.BaseRetryDelaySeconds = Math.Max(0, options.BaseRetryDelaySeconds);
++                options.RetryBackoffMultiplier = options.RetryBackoffMultiplier < 1d ? 1d : options.RetryBackoffMultiplier;
++                options.MaxRetryDelaySeconds = Math.Max(options.BaseRetryDelaySeconds, options.MaxRetryDelaySeconds);
+             });
+ 
+         services.AddOptions<KnowledgeChunkingOptions>()
+             .Bind(configuration.GetSection(KnowledgeChunkingOptions.SectionName));
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs
+index c3d21c8..42eafdb 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs
+@@ -34,6 +34,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+     private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
+     private readonly IFinanceSeedTelemetry _financeSeedTelemetry;
+     private readonly IAuditEventWriter _auditEventWriter;
++    private readonly IOptions<FinanceSeedBackfillWorkerOptions> _backfillOptions;
+     private readonly IOptions<FinanceSeedWorkerOptions> _options;
+     private readonly TimeProvider _timeProvider;
+     private readonly ILogger<CompanyFinanceSeedJobRunner> _logger;
+@@ -47,6 +48,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+         ICompanyExecutionScopeFactory companyExecutionScopeFactory,
+         IFinanceSeedTelemetry financeSeedTelemetry,
+         IAuditEventWriter auditEventWriter,
++        IOptions<FinanceSeedBackfillWorkerOptions> backfillOptions,
+         IOptions<FinanceSeedWorkerOptions> options,
+         TimeProvider timeProvider,
+         ILogger<CompanyFinanceSeedJobRunner> logger)
+@@ -58,6 +60,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+         _companyExecutionScopeFactory = companyExecutionScopeFactory;
+         _financeSeedTelemetry = financeSeedTelemetry;
+         _auditEventWriter = auditEventWriter;
++        _backfillOptions = backfillOptions;
+         _options = options;
+         _timeProvider = timeProvider;
+         _logger = logger;
+@@ -75,7 +78,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+             var maxAttempts = Math.Max(1, execution.MaxAttempts);
+             var company = await _dbContext.Companies
+                 .IgnoreQueryFilters()
+                 .SingleAsync(x => x.Id == execution.CompanyId, cancellationToken);
+ 
+             var triggerSource = ResolveTriggerSource(company);
+             var seedStateBeforeStart = company.FinanceSeedStatus;
+             var backfillAttempt = await FindBackfillAttemptAsync(execution.Id, cancellationToken);
++            var retryDelay = ResolveRetryDelay(backfillAttempt, attempt);
+             if (backfillAttempt is not null)
+             {
+                 backfillAttempt.MarkInProgress(
+                     _timeProvider.GetUtcNow().UtcDateTime,
+                     FinanceSeedingState.Seeding);
+@@ -156,6 +159,12 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+                     FinanceSeedingMetadata.MarkSeeding(
+                         company,
+                         nowUtc,
+                         triggerSource: triggerSource,
+                         jobId: execution.Id,
+                         correlationId: execution.CorrelationId);
++                    backfillAttempt?.MarkQueued(
++                        execution.Id,
++                        execution.IdempotencyKey,
++                        nowUtc,
++                        FinanceSeedingState.Seeding);
+                     break;
+                 case BackgroundJobExecutionOutcome.Blocked:
+                 case BackgroundJobExecutionOutcome.PermanentFailure:
+                 case BackgroundJobExecutionOutcome.RetryExhausted:
+@@ -311,6 +320,23 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+         return value == 0 ? 913 : value;
+     }
+ 
++    private TimeSpan ResolveRetryDelay(FinanceSeedBackfillAttempt? backfillAttempt, int attempt)
++    {
++        if (backfillAttempt is null)
++        {
++            return _retryPolicy.GetRetryDelay(attempt);
++        }
++
++        var options = _backfillOptions.Value;
++        var baseDelaySeconds = Math.Max(0, options.BaseRetryDelaySeconds);
++        if (baseDelaySeconds == 0)
++        {
++            return TimeSpan.Zero;
++        }
++
++        var multiplier = Math.Pow(options.RetryBackoffMultiplier < 1d ? 1d : options.RetryBackoffMultiplier, Math.Max(0, attempt - 1));
++        return TimeSpan.FromSeconds(Math.Min(baseDelaySeconds * multiplier, Math.Max(baseDelaySeconds, options.MaxRetryDelaySeconds)));
++    }
++
+     private static long? CalculateDurationMilliseconds(DateTime? startedUtc, DateTime? completedUtc)
+     {
+         if (!startedUtc.HasValue || !completedUtc.HasValue)
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceSeedBackfillCampaign.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceSeedBackfillCampaign.cs
+index 6d3b5ec..c7e6289 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceSeedBackfillCampaign.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceSeedBackfillCampaign.cs
+@@ -16,12 +16,31 @@ public sealed class FinanceSeedBackfillWorkerOptions
+     public bool Enabled { get; set; } = true;
+     public int PollIntervalSeconds { get; set; } = 300;
+     public int ScanPageSize { get; set; } = 100;
+     public int EnqueueBatchSize { get; set; } = 20;
+     public int MaxCompaniesPerRun { get; set; } = 200;
+     public int MaxConcurrentEnqueues { get; set; } = 4;
++    public int RateLimitCount { get; set; } = 4;
++    public int RateLimitWindowSeconds { get; set; } = 1;
++    public int MaxRetries { get; set; } = 4;
++    public int BaseRetryDelaySeconds { get; set; } = 30;
++    public double RetryBackoffMultiplier { get; set; } = 2d;
++    public int MaxRetryDelaySeconds { get; set; } = 900;
+     public int DelayBetweenBatchesMs { get; set; } = 250;
+     public int LockTtlSeconds { get; set; } = 600;
+     public string LockKey { get; set; } = "finance-seed-backfill";
++
++    public int BatchSize
++    {
++        get => EnqueueBatchSize;
++        set => EnqueueBatchSize = value;
++    }
++
++    public int MaxConcurrency
++    {
++        get => MaxConcurrentEnqueues;
++        set => MaxConcurrentEnqueues = value;
++    }
+ }
+@@ -96,6 +115,7 @@ public sealed class FinanceSeedBackfillExecutionScheduler : IFinanceSeedBackfillExecutionScheduler
+ {
+     private readonly IServiceScopeFactory _scopeFactory;
+     private readonly TimeProvider _timeProvider;
++    private readonly IOptions<FinanceSeedBackfillWorkerOptions> _options;
+     private readonly ILogger<FinanceSeedBackfillExecutionScheduler> _logger;
+ 
+     public FinanceSeedBackfillExecutionScheduler(
+         IServiceScopeFactory scopeFactory,
++        IOptions<FinanceSeedBackfillWorkerOptions> options,
+         TimeProvider timeProvider,
+         ILogger<FinanceSeedBackfillExecutionScheduler> logger)
+     {
+         _scopeFactory = scopeFactory;
++        _options = options;
+         _timeProvider = timeProvider;
+         _logger = logger;
+     }
+@@ -162,7 +182,7 @@ public sealed class FinanceSeedBackfillExecutionScheduler : IFinanceSeedBackfillExecutionScheduler
+             request.RunId.ToString("D"),
+             identity.CorrelationId,
+             identity.IdempotencyKey,
+-            maxAttempts: 5);
++            maxAttempts: Math.Max(1, _options.Value.MaxRetries + 1));
+ 
+         FinanceSeedingMetadata.MarkSeeding(
+             company,
+@@ -220,11 +240,15 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
+                 options.ScanPageSize,
+                 options.EnqueueBatchSize,
+                 options.MaxCompaniesPerRun,
+                 options.MaxConcurrentEnqueues,
++                options.RateLimitCount,
++                options.RateLimitWindowSeconds,
++                options.MaxRetries,
++                options.BaseRetryDelaySeconds,
++                options.RetryBackoffMultiplier,
++                options.MaxRetryDelaySeconds,
+                 options.DelayBetweenBatchesMs
+             }));
+-
+         _dbContext.FinanceSeedBackfillRuns.Add(run);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         try
+@@ -263,6 +287,7 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
+         FinanceSeedBackfillWorkerOptions options,
+         CancellationToken cancellationToken)
+     {
+         var pageIndex = 0;
++        var pacingState = new FinanceBackfillDispatchPacingState(_timeProvider.GetUtcNow().UtcDateTime);
+ 
+         while (!cancellationToken.IsCancellationRequested && run.QueuedCount < options.MaxCompaniesPerRun)
+         {
+             var page = await LoadPageAsync(pageIndex, options.ScanPageSize, cancellationToken);
+             if (page.Count == 0)
+@@ -338,7 +363,7 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
+ 
+             for (var index = 0; index < eligible.Count; index += options.EnqueueBatchSize)
+             {
+                 var batch = eligible.Skip(index).Take(options.EnqueueBatchSize).ToArray();
+-                var results = await ScheduleBatchAsync(run.Id, batch, options.MaxConcurrentEnqueues, cancellationToken);
++                var results = await ScheduleBatchAsync(run.Id, batch, options, pacingState, cancellationToken);
+ 
+                 foreach (var result in results)
+                 {
+@@ -400,13 +425,16 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
+     private async Task<IReadOnlyList<FinanceSeedBackfillScheduleResult>> ScheduleBatchAsync(
+         Guid runId,
+         IReadOnlyList<FinanceSeedBackfillCandidate> candidates,
+-        int maxConcurrentEnqueues,
++        FinanceSeedBackfillWorkerOptions options,
++        FinanceBackfillDispatchPacingState pacingState,
+         CancellationToken cancellationToken)
+     {
+-        var concurrency = Math.Max(1, maxConcurrentEnqueues);
++        var concurrency = Math.Max(1, options.MaxConcurrentEnqueues);
+         using var gate = new SemaphoreSlim(concurrency, concurrency);
+-        var tasks = candidates.Select(async candidate =>
++        var tasks = new List<Task<FinanceSeedBackfillScheduleResult>>(candidates.Count);
++
++        foreach (var candidate in candidates)
+         {
++            await WaitForDispatchWindowAsync(options, pacingState, cancellationToken);
+             await gate.WaitAsync(cancellationToken);
+-            try
++            tasks.Add(Task.Run(async () =>
+             {
+-                return await _scheduler.ScheduleAsync(
++                try
++                {
++                    return await _scheduler.ScheduleAsync(
+                     new FinanceSeedBackfillScheduleRequest(
+                         runId,
+                         candidate.CompanyId,
+                         candidate.SeedStateBefore,
+                         candidate.EligibilityReason),
+                     cancellationToken);
+-            }
+-            finally
+-            {
+-                gate.Release();
+-            }
+-        }).ToArray();
++                }
++                finally
++                {
++                    gate.Release();
++                }
++            }, cancellationToken));
++        }
+ 
+         return await Task.WhenAll(tasks);
+     }
+@@ -420,7 +448,7 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
+         await _dbContext.Companies
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x => x.FinanceSeedStatus == FinanceSeedingState.NotSeeded || x.FinanceSeedStatus == FinanceSeedingState.Seeding)
++            .Where(x => x.FinanceSeedStatus != FinanceSeedingState.Seeded)
+             .OrderBy(x => x.CreatedUtc)
+             .ThenBy(x => x.Id)
+             .Skip(pageIndex * pageSize)
+@@ -428,6 +456,31 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
+             .Select(x => new FinanceBackfillCompanySnapshot(
+                 x.Id,
+                 x.FinanceSeedStatus,
+                 x.FinanceSeededUtc,
+                 x.Settings))
+             .ToListAsync(cancellationToken);
++
++    private async Task WaitForDispatchWindowAsync(
++        FinanceSeedBackfillWorkerOptions options,
++        FinanceBackfillDispatchPacingState pacingState,
++        CancellationToken cancellationToken)
++    {
++        var minimumInterval = ResolveMinimumDispatchInterval(options);
++        if (minimumInterval <= TimeSpan.Zero)
++        {
++            return;
++        }
++
++        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        if (pacingState.NextDispatchUtc > nowUtc)
++        {
++            await _delayStrategy.DelayAsync(pacingState.NextDispatchUtc - nowUtc, cancellationToken);
++            nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        }
++
++        pacingState.NextDispatchUtc = nowUtc.Add(minimumInterval);
++    }
++
++    private static TimeSpan ResolveMinimumDispatchInterval(FinanceSeedBackfillWorkerOptions options) =>
++        options.RateLimitCount <= 0 || options.RateLimitWindowSeconds <= 0
++            ? TimeSpan.Zero
++            : TimeSpan.FromTicks(TimeSpan.FromSeconds(options.RateLimitWindowSeconds).Ticks / options.RateLimitCount);
+@@ -516,21 +569,46 @@ public sealed class FinanceSeedBackfillQueryService : IFinanceSeedBackfillQueryS
+             .ToListAsync(cancellationToken);
+ 
+     public async Task<IReadOnlyList<FinanceSeedBackfillAttemptDto>> GetAttemptsAsync(Guid runId, CancellationToken cancellationToken) =>
+-        await _dbContext.FinanceSeedBackfillAttempts
++    {
++        var attempts = await _dbContext.FinanceSeedBackfillAttempts
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.RunId == runId)
+             .OrderBy(x => x.StartedUtc)
+-            .Select(x => new FinanceSeedBackfillAttemptDto(
+-                x.Id,
+-                x.RunId,
+-                x.CompanyId,
+-                x.Status,
+-                x.StartedUtc,
+-                x.CompletedUtc,
+-                x.SkipReason,
+-                x.ErrorDetails,
+-                x.SeedStateBefore,
+-                x.SeedStateAfter))
++            .ToListAsync(cancellationToken);
++
++        var executionIds = attempts
++            .Where(x => x.BackgroundExecutionId.HasValue)
++            .Select(x => x.BackgroundExecutionId!.Value)
++            .Distinct()
++            .ToArray();
++
++        var executionLookup = executionIds.Length == 0
++            ? new Dictionary<Guid, BackgroundExecution>()
++            : await _dbContext.BackgroundExecutions
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => executionIds.Contains(x.Id))
++                .ToDictionaryAsync(x => x.Id, cancellationToken);
++
++        return attempts
++            .Select(x =>
++            {
++                executionLookup.TryGetValue(x.BackgroundExecutionId ?? Guid.Empty, out var execution);
++                var status = execution?.Status == BackgroundExecutionStatus.RetryScheduled ? FinanceSeedBackfillAttemptStatus.Queued : x.Status;
++
++                return new FinanceSeedBackfillAttemptDto(
++                    x.Id,
++                    x.RunId,
++                    x.CompanyId,
++                    status,
++                    x.StartedUtc,
++                    x.CompletedUtc,
++                    x.SkipReason,
++                    execution?.FailureCode,
++                    x.ErrorDetails ?? execution?.FailureMessage,
++                    Math.Max(0, (execution?.AttemptCount ?? 1) - 1),
++                    x.BackgroundExecutionId,
++                    x.IdempotencyKey,
++                    x.SeedStateBefore,
++                    x.SeedStateAfter);
++            })
+             .ToListAsync(cancellationToken);
++    }
+ }
+@@ -595,6 +673,11 @@ internal sealed record FinanceBackfillRecordChecks(
+         HasBalances ||
+         HasPolicyConfiguration ||
+         HasInvoices ||
+         HasBills;
+ }
++
++internal sealed class FinanceBackfillDispatchPacingState
++{
++    public FinanceBackfillDispatchPacingState(DateTime nextDispatchUtc) => NextDispatchUtc = nextDispatchUtc;
++    public DateTime NextDispatchUtc { get; set; }
++}
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index f1d22e7..0560ca7 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -56,8 +56,14 @@
+     "PollIntervalSeconds": 300,
+     "ScanPageSize": 100,
+     "EnqueueBatchSize": 20,
+     "MaxCompaniesPerRun": 200,
+     "MaxConcurrentEnqueues": 4,
++    "RateLimitCount": 4,
++    "RateLimitWindowSeconds": 1,
++    "MaxRetries": 4,
++    "BaseRetryDelaySeconds": 30,
++    "RetryBackoffMultiplier": 2.0,
++    "MaxRetryDelaySeconds": 900,
+     "DelayBetweenBatchesMs": 250,
+     "LockTtlSeconds": 600,
+     "LockKey": "finance-seed-backfill"
+   },
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedBackfillOrchestratorTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedBackfillOrchestratorTests.cs
+index 2a58db0..89b2fb2 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedBackfillOrchestratorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedBackfillOrchestratorTests.cs
+@@ -82,7 +82,7 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+         Assert.All(secondRunAttempts, attempt => Assert.Equal(FinanceSeedBackfillAttemptStatus.Skipped, attempt.Status));
+         Assert.All(secondRunAttempts, attempt => Assert.Equal(FinanceSeedBackfillSkipReasons.ActiveExecution, attempt.SkipReason));
+     }
+ 
+     [Fact]
+-    public async Task Backfill_honors_enqueue_batch_delay_and_concurrency_limits()
++    public async Task Backfill_honors_rate_limit_batch_delay_and_concurrency_limits()
+     {
+         await using var connection = await OpenConnectionAsync();
+         await using var dbContext = CreateContext(connection);
+@@ -104,6 +104,8 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+                 EnqueueBatchSize = 2,
+                 MaxCompaniesPerRun = 10,
+                 MaxConcurrentEnqueues = 2,
++                RateLimitCount = 2,
++                RateLimitWindowSeconds = 1,
+                 DelayBetweenBatchesMs = 25
+             });
+ 
+@@ -111,8 +113,13 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+         Assert.Equal(5, run.QueuedCount);
+         Assert.Equal(0, run.FailedCount);
+         Assert.Equal(2, delayStrategy.Delays.Count);
+-        Assert.All(delayStrategy.Delays, delay => Assert.Equal(TimeSpan.FromMilliseconds(25), delay));
+         Assert.True(scheduler.MaxObservedConcurrency <= 2);
++
++        var batchDelays = delayStrategy.Delays.Count(x => x == TimeSpan.FromMilliseconds(25));
++        var pacingDelays = delayStrategy.Delays.Count(x => x == TimeSpan.FromMilliseconds(500));
++
++        Assert.Equal(2, batchDelays);
++        Assert.Equal(4, pacingDelays);
+     }
+ 
+     [Fact]
+@@ -164,6 +171,56 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+         Assert.Equal(failingCompanyId, failedAttempt.CompanyId);
+         Assert.Contains("configured backfill enqueue failure", failedAttempt.ErrorDetails ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+     }
++
++    [Fact]
++    public async Task Query_service_projects_retry_metadata_from_background_execution()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(Guid.NewGuid(), "Retry Projection Company");
++        dbContext.Companies.Add(company);
++
++        var run = new FinanceSeedBackfillRun(Guid.NewGuid(), DateTime.UtcNow, "{}");
++        dbContext.FinanceSeedBackfillRuns.Add(run);
++
++        var execution = new BackgroundExecution(
++            Guid.NewGuid(),
++            company.Id,
++            BackgroundExecutionType.FinanceSeed,
++            BackgroundExecutionRelatedEntityTypes.FinanceSeed,
++            run.Id.ToString("D"),
++            "finance-seed-backfill-retry",
++            $"finance-seed-backfill:{company.Id:N}",
++            maxAttempts: 5);
++        execution.StartAttempt("finance-seed-backfill-retry", 2, 5);
++        execution.ScheduleRetry(
++            DateTime.UtcNow.AddSeconds(30),
++            BackgroundExecutionFailureCategory.ExternalDependencyTimeout,
++            nameof(TimeoutException),
++            "Transient timeout while dispatching the finance seed job.");
++
++        var attempt = new FinanceSeedBackfillAttempt(
++            Guid.NewGuid(),
++            run.Id,
++            company.Id,
++            DateTime.UtcNow,
++            FinanceSeedingState.NotSeeded);
++        attempt.MarkQueued(execution.Id, execution.IdempotencyKey, DateTime.UtcNow, FinanceSeedingState.Seeding);
++
++        dbContext.BackgroundExecutions.Add(execution);
++        dbContext.FinanceSeedBackfillAttempts.Add(attempt);
++        await dbContext.SaveChangesAsync();
++
++        var queryService = new FinanceSeedBackfillQueryService(dbContext);
++        var projectedAttempt = Assert.Single(await queryService.GetAttemptsAsync(run.Id, CancellationToken.None));
++
++        Assert.Equal(FinanceSeedBackfillAttemptStatus.Queued, projectedAttempt.Status);
++        Assert.Equal(1, projectedAttempt.RetryCount);
++        Assert.Equal(nameof(TimeoutException), projectedAttempt.ErrorCode);
++        Assert.Equal(execution.Id, projectedAttempt.BackgroundExecutionId);
++        Assert.Equal(execution.IdempotencyKey, projectedAttempt.IdempotencyKey);
++        Assert.Contains("Transient timeout", projectedAttempt.ErrorDetails ?? string.Empty, StringComparison.OrdinalIgnoreCase);
++    }
+ 
+     private static FinanceSeedBackfillOrchestrator CreateOrchestrator(
+         VirtualCompanyDbContext dbContext,
+@@ -199,6 +256,7 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+         public List<TimeSpan> Delays { get; } = [];
+ 
+         public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+         {
+             Delays.Add(delay);
+             return Task.CompletedTask;
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedJobRunnerTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedJobRunnerTests.cs
+index 86581d7..4a27939 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedJobRunnerTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedJobRunnerTests.cs
+@@ -144,6 +144,59 @@ public sealed class FinanceSeedJobRunnerTests
+         Assert.NotNull(failedLog.State["DurationMs"]);
+     }
+ 
++    [Fact]
++    public async Task Runner_uses_backfill_retry_policy_and_keeps_backfill_attempt_queued_for_transient_failures()
++    {
++        var companyId = Guid.NewGuid();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        dbContext.Companies.Add(new Company(companyId, "Finance Seed Retry Company"));
++
++        var run = new FinanceSeedBackfillRun(Guid.NewGuid(), DateTime.UtcNow, "{}");
++        var execution = new BackgroundExecution(
++            Guid.NewGuid(),
++            companyId,
++            BackgroundExecutionType.FinanceSeed,
++            BackgroundExecutionRelatedEntityTypes.FinanceSeed,
++            run.Id.ToString("D"),
++            "finance-seed-backfill-retry",
++            $"finance-seed:{companyId:N}",
++            maxAttempts: 5);
++
++        var attempt = new FinanceSeedBackfillAttempt(
++            Guid.NewGuid(),
++            run.Id,
++            companyId,
++            DateTime.UtcNow,
++            FinanceSeedingState.NotSeeded);
++        attempt.MarkQueued(execution.Id, execution.IdempotencyKey, DateTime.UtcNow, FinanceSeedingState.Seeding);
++
++        dbContext.FinanceSeedBackfillRuns.Add(run);
++        dbContext.BackgroundExecutions.Add(execution);
++        dbContext.FinanceSeedBackfillAttempts.Add(attempt);
++        await dbContext.SaveChangesAsync();
++
++        var telemetry = new TestFinanceSeedTelemetry();
++        var logger = new ScopeCapturingLogger<CompanyFinanceSeedJobRunner>();
++        var runner = CreateRunner(
++            dbContext,
++            new TimeoutFinanceSeedBootstrapService(),
++            new AuditEventWriter(dbContext),
++            telemetry,
++            logger,
++            new BackgroundExecutionOptions { BaseRetryDelaySeconds = 0, MaxRetryDelaySeconds = 0 },
++            new FinanceSeedBackfillWorkerOptions { BaseRetryDelaySeconds = 7, RetryBackoffMultiplier = 3d, MaxRetryDelaySeconds = 90 });
++
++        var handled = await runner.RunDueAsync(CancellationToken.None);
++
++        Assert.Equal(0, handled);
++
++        var refreshedExecution = await dbContext.BackgroundExecutions.SingleAsync(x => x.Id == execution.Id);
++        Assert.Equal(BackgroundExecutionStatus.RetryScheduled, refreshedExecution.Status);
++        Assert.NotNull(refreshedExecution.NextRetryUtc);
++        Assert.InRange((refreshedExecution.NextRetryUtc!.Value - refreshedExecution.UpdatedUtc).TotalSeconds, 6.5d, 7.5d);
++        Assert.Equal(FinanceSeedBackfillAttemptStatus.Queued, (await dbContext.FinanceSeedBackfillAttempts.SingleAsync(x => x.Id == attempt.Id)).Status);
++    }
++
+     private static CompanyFinanceSeedJobRunner CreateRunner(
+         VirtualCompanyDbContext dbContext,
+         IFinanceSeedBootstrapService bootstrapService,
+@@ -151,7 +204,9 @@ public sealed class FinanceSeedJobRunnerTests
+         IFinanceSeedTelemetry telemetry,
+-        ScopeCapturingLogger<CompanyFinanceSeedJobRunner> logger)
++        ScopeCapturingLogger<CompanyFinanceSeedJobRunner> logger,
++        BackgroundExecutionOptions? executionOptions = null,
++        FinanceSeedBackfillWorkerOptions? backfillOptions = null)
+     {
+         var companyContextAccessor = new RequestCompanyContextAccessor();
+         return new CompanyFinanceSeedJobRunner(
+@@ -164,11 +219,12 @@ public sealed class FinanceSeedJobRunnerTests
+                 NullLogger<BackgroundJobExecutor>.Instance,
+                 new DefaultBackgroundJobFailureClassifier(),
+                 new DefaultBackgroundExecutionIdentityFactory()),
+-            new ExponentialBackgroundExecutionRetryPolicy(Options.Create(new BackgroundExecutionOptions
+-            {
+-                BaseRetryDelaySeconds = 0,
+-                MaxRetryDelaySeconds = 0
+-            })),
++            new ExponentialBackgroundExecutionRetryPolicy(Options.Create(executionOptions ?? new BackgroundExecutionOptions
++            {
++                BaseRetryDelaySeconds = 0,
++                MaxRetryDelaySeconds = 0
++            })),
+             new CompanyExecutionScopeFactory(companyContextAccessor),
+             telemetry,
+             auditEventWriter,
++            Options.Create(backfillOptions ?? new FinanceSeedBackfillWorkerOptions()),
+             Options.Create(new FinanceSeedWorkerOptions
+             {
+                 BatchSize = 10,
+@@ -188,4 +244,10 @@ public sealed class FinanceSeedJobRunnerTests
+         public Task<FinanceSeedBootstrapResultDto> GenerateAsync(FinanceSeedBootstrapCommand command, CancellationToken cancellationToken) =>
+             throw new InvalidOperationException("Configured finance seed failure.");
+     }
++
++    private sealed class TimeoutFinanceSeedBootstrapService : IFinanceSeedBootstrapService
++    {
++        public Task<FinanceSeedBootstrapResultDto> GenerateAsync(FinanceSeedBootstrapCommand command, CancellationToken cancellationToken) =>
++            throw new TimeoutException("Transient finance seed timeout.");
++    }
+ }
+END_OF_PATCH

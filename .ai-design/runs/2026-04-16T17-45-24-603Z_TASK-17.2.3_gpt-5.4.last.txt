@@ -1,0 +1,302 @@
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceDataState.razor b/src/VirtualCompany.Web/Components/Finance/FinanceDataState.razor
+--- a/src/VirtualCompany.Web/Components/Finance/FinanceDataState.razor
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceDataState.razor
+@@ -1,26 +1,12 @@
+ @if (IsLoading)
+ {
+-    <section class="wizard-card finance-state-card" aria-live="polite">
+-        <h2 class="h5 mb-2">@LoadingTitle</h2>
+-        <p class="text-body-secondary mb-0">@LoadingMessage</p>
+-    </section>
++    <FinanceLoadingState Title="@LoadingTitle" Message="@LoadingMessage" />
+ }
+ else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+ {
+-    <section class="wizard-card finance-state-card" role="alert">
+-        <h2 class="h5 mb-2">@ErrorTitle</h2>
+-        <p class="mb-3">@ErrorMessage</p>
+-        @if (OnRetry.HasDelegate)
+-        {
+-            <button class="btn btn-outline-danger" type="button" @onclick="(() => OnRetry.InvokeAsync())">@RetryText</button>
+-        }
+-    </section>
++    <FinanceErrorState Title="@ErrorTitle" Message="@ErrorMessage!" RetryText="@RetryText" OnRetry="@OnRetry" />
+ }
+ else if (IsEmpty)
+ {
+-    <section class="wizard-card finance-state-card">
+-        <h2 class="h5 mb-2">@EmptyTitle</h2>
+-        <p class="text-body-secondary mb-0">@EmptyMessage</p>
+-    </section>
++    <FinanceEmptyState Title="@EmptyTitle" Message="@EmptyMessage" />
+ }
+ else if (ChildContent is not null)
+ {
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceEmptyState.razor b/src/VirtualCompany.Web/Components/Finance/FinanceEmptyState.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceEmptyState.razor
+@@ -0,0 +1,12 @@
++<section class="wizard-card finance-state-card">
++    <h2 class="h5 mb-2">@Title</h2>
++    <p class="text-body-secondary mb-0">@Message</p>
++</section>
++
++@code {
++    [Parameter]
++    public string Title { get; set; } = "Nothing to show";
++
++    [Parameter]
++    public string Message { get; set; } = "No finance data is available for the active tenant.";
++}
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceErrorState.razor b/src/VirtualCompany.Web/Components/Finance/FinanceErrorState.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceErrorState.razor
+@@ -0,0 +1,24 @@
++<section class="wizard-card finance-state-card" role="alert">
++    <h2 class="h5 mb-2">@Title</h2>
++    <p class="mb-3">@Message</p>
++    @if (OnRetry.HasDelegate)
++    {
++        <button class="btn btn-outline-danger" type="button" @onclick="(() => OnRetry.InvokeAsync())">@RetryText</button>
++    }
++</section>
++
++@code {
++    [Parameter]
++    public string Title { get; set; } = "Finance data is unavailable";
++
++    [Parameter]
++    public string Message { get; set; } = "The finance request failed.";
++
++    [Parameter]
++    public string RetryText { get; set; } = "Retry";
++
++    [Parameter]
++    public EventCallback OnRetry { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceLoadingState.razor b/src/VirtualCompany.Web/Components/Finance/FinanceLoadingState.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceLoadingState.razor
+@@ -0,0 +1,18 @@
++<section class="wizard-card finance-state-card" aria-live="polite" aria-busy="true">
++    <div class="d-flex align-items-center gap-3">
++        <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
++        <div>
++            <h2 class="h5 mb-2">@Title</h2>
++            <p class="text-body-secondary mb-0">@Message</p>
++        </div>
++    </div>
++</section>
++
++@code {
++    [Parameter]
++    public string Title { get; set; } = "Loading finance summary";
++
++    [Parameter]
++    public string Message { get; set; } = "Fetching the latest tenant-scoped finance data.";
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor b/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/MonthlySummaryPage.razor
+@@ -59,6 +59,12 @@
+                             </table>
+                         </div>
+                     </article>
++                }
++                else
++                {
++                    <article class="wizard-card">
++                        <h2 class="h5">Expense breakdown by category</h2>
++                        <p class="text-body-secondary mb-0">The finance backend returned no category aggregates for this reporting period.</p>
++                    </article>
+                 }
+             </section>
+         }
+diff --git a/src/VirtualCompany.Web/Services/FinanceSummaryPresenter.cs b/src/VirtualCompany.Web/Services/FinanceSummaryPresenter.cs
+--- a/src/VirtualCompany.Web/Services/FinanceSummaryPresenter.cs
++++ b/src/VirtualCompany.Web/Services/FinanceSummaryPresenter.cs
+@@ -54,27 +54,24 @@ public static class FinanceSummaryPresenter
+         {
+             return null;
+         }
+-
+-        var hasCategoryBreakdown = response.ExpenseBreakdown?.Categories is { Count: > 0 };
+-        var hasMeaningfulTotals =
+-            response.ProfitAndLoss.Revenue != 0m ||
+-            response.ProfitAndLoss.Expenses != 0m ||
+-            response.ProfitAndLoss.NetResult != 0m ||
+-            hasCategoryBreakdown;
+-
+-        if (!hasMeaningfulTotals)
+-        {
+-            return null;
+-        }
++        
++        // A reported month with zero totals is still a valid backend summary for the active tenant.
++        var expenseBreakdown = response.ExpenseBreakdown;
++        var totalExpenses = expenseBreakdown?.TotalExpenses ?? 0m;
+ 
+-        var categoryItems = (response.ExpenseBreakdown?.Categories ?? [])
++        var categoryItems = (expenseBreakdown?.Categories ?? [])
+             .OrderByDescending(category => category.Amount)
+             .Select(category => new MonthlyExpenseCategoryViewModel(
+-                NormalizeLabel(category.Category),
+-                FormatCurrency(category.Amount, category.Currency),
+-                FormatPercentage(response.ExpenseBreakdown!.TotalExpenses == 0m ? 0m : category.Amount / response.ExpenseBreakdown.TotalExpenses)))
++                category.Category,
++                FormatCurrency(category.Amount, ResolveCurrency(category.Currency, expenseBreakdown?.Currency ?? response.ProfitAndLoss.Currency)),
++                FormatPercentage(totalExpenses == 0m ? 0m : category.Amount / totalExpenses)))
+             .ToArray();
+ 
+         return new MonthlySummaryViewModel(
+             response.CompanyId,
+@@ -137,6 +134,9 @@ public static class FinanceSummaryPresenter
+         return alertState.IsLowCash ? "Low cash detected" : "No active alert";
+     }
+ 
++    private static string ResolveCurrency(string? currency, string fallbackCurrency) =>
++        string.IsNullOrWhiteSpace(currency) ? fallbackCurrency : currency;
++
+     private static string SummarizeMetadata(string metadataJson)
+     {
+         if (string.IsNullOrWhiteSpace(metadataJson))
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -26,6 +26,15 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         Assert.Equal("USD", cashBalance.Currency);
+         Assert.NotEmpty(cashBalance.Accounts);
+ 
++        var cashPositionResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/cash-position?asOfUtc={Uri.EscapeDataString(asOfUtc.ToString("O"))}");
++        Assert.Equal(HttpStatusCode.OK, cashPositionResponse.StatusCode);
++        var cashPosition = await cashPositionResponse.Content.ReadFromJsonAsync<CashPositionResponse>();
++        Assert.NotNull(cashPosition);
++        Assert.Equal(seed.CompanyId, cashPosition!.CompanyId);
++        Assert.Equal(cashBalance.Amount, cashPosition.AvailableBalance);
++        Assert.Equal(cashBalance.Currency, cashPosition.Currency);
++        Assert.NotNull(cashPosition.Thresholds);
++
+         var profitAndLossResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/profit-and-loss/monthly?year=2025&month=12");
+         Assert.Equal(HttpStatusCode.OK, profitAndLossResponse.StatusCode);
+         var profitAndLoss = await profitAndLossResponse.Content.ReadFromJsonAsync<MonthlyProfitAndLossResponse>();
+@@ -171,6 +180,27 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         public List<AccountBalanceResponse> Accounts { get; set; } = [];
+     }
+ 
++    private sealed class CashPositionResponse
++    {
++        public Guid CompanyId { get; set; }
++        public DateTime AsOfUtc { get; set; }
++        public decimal AvailableBalance { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public decimal AverageMonthlyBurn { get; set; }
++        public int? EstimatedRunwayDays { get; set; }
++        public CashPositionThresholdsResponse Thresholds { get; set; } = new();
++        public CashPositionAlertStateResponse AlertState { get; set; } = new();
++    }
++
++    private sealed class CashPositionThresholdsResponse
++    {
++        public int WarningRunwayDays { get; set; }
++        public int CriticalRunwayDays { get; set; }
++        public decimal? WarningCashAmount { get; set; }
++        public decimal? CriticalCashAmount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++    }
++
+     private sealed class AccountBalanceResponse
+     {
+         public Guid AccountId { get; set; }
+@@ -181,6 +211,17 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         public string Currency { get; set; } = string.Empty;
+         public DateTime AsOfUtc { get; set; }
+     }
++
++    private sealed class CashPositionAlertStateResponse
++    {
++        public bool IsLowCash { get; set; }
++        public string RiskLevel { get; set; } = string.Empty;
++        public bool AlertCreated { get; set; }
++        public bool AlertDeduplicated { get; set; }
++        public Guid? AlertId { get; set; }
++        public string? AlertStatus { get; set; }
++        public string Rationale { get; set; } = string.Empty;
++    }
+ 
+     private sealed class MonthlyProfitAndLossResponse
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSummaryUiContractIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSummaryUiContractIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceSummaryUiContractIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSummaryUiContractIntegrationTests.cs
+@@ -25,6 +25,8 @@ public sealed class FinanceSummaryUiContractIntegrationTests : IClassFixture<Tes
+         Assert.Equal(seed.CompanyAId, cashPosition!.CompanyId);
+         Assert.Equal(seed.CompanyAId, cashViewModel!.CompanyId);
+         Assert.Equal($"USD {cashPosition.AvailableBalance.ToString("N2", CultureInfo.InvariantCulture)}", cashViewModel.AvailableBalance);
++        Assert.Equal(FormatCurrency(cashPosition.AverageMonthlyBurn, cashPosition.Currency), cashViewModel.AverageMonthlyBurn);
++        Assert.Equal(FormatCurrency(cashPosition.Thresholds.WarningCashAmount!.Value, cashPosition.Thresholds.Currency), cashViewModel.WarningThreshold);
+         Assert.Equal(cashPosition.EstimatedRunwayDays is int runwayDays ? $"{runwayDays} days" : "n/a", cashViewModel.EstimatedRunway);
+ 
+         var balances = await financeClient.GetBalancesAsync(seed.CompanyAId, seed.CompanyAReferenceUtc);
+@@ -32,6 +34,14 @@ public sealed class FinanceSummaryUiContractIntegrationTests : IClassFixture<Tes
+         Assert.NotNull(balancesViewModel);
+         Assert.Equal($"USD {balances.Sum(balance => balance.Amount).ToString("N2", CultureInfo.InvariantCulture)}", balancesViewModel!.TotalBalance);
+         Assert.All(balancesViewModel.Accounts, account => Assert.Contains(account.AccountId, seed.CompanyAAccountIds));
++        var orderedBalances = balances.OrderBy(account => account.AccountCode, StringComparer.OrdinalIgnoreCase).ToArray();
++        for (var i = 0; i < orderedBalances.Length; i++)
++        {
++            Assert.Equal(orderedBalances[i].AccountCode, balancesViewModel.Accounts[i].AccountCode);
++            Assert.Equal(orderedBalances[i].AccountName, balancesViewModel.Accounts[i].AccountName);
++            Assert.Equal(FormatCurrency(orderedBalances[i].Amount, orderedBalances[i].Currency), balancesViewModel.Accounts[i].Amount);
++            Assert.Equal(FormatDate(orderedBalances[i].AsOfUtc), balancesViewModel.Accounts[i].AsOf);
++        }
+ 
+         var monthlySummary = await financeClient.GetMonthlySummaryAsync(seed.CompanyAId, seed.CompanyAMonthReferenceUtc);
+         var monthlyViewModel = FinanceSummaryPresenter.ToMonthlySummaryViewModel(monthlySummary);
+@@ -41,6 +51,14 @@ public sealed class FinanceSummaryUiContractIntegrationTests : IClassFixture<Tes
+         Assert.Equal($"USD {monthlySummary!.ProfitAndLoss.Revenue.ToString("N2", CultureInfo.InvariantCulture)}", monthlyViewModel.Revenue);
+         Assert.NotEmpty(monthlyViewModel.ExpenseCategories);
+         Assert.Equal(monthlySummary.ExpenseBreakdown!.Categories.Count, monthlyViewModel.ExpenseCategories.Count);
+-        Assert.Equal(monthlySummary.ExpenseBreakdown.Categories[0].Category, monthlyViewModel.ExpenseCategories[0].Category);
++        var orderedCategories = monthlySummary.ExpenseBreakdown.Categories.OrderByDescending(category => category.Amount).ToArray();
++        for (var i = 0; i < orderedCategories.Length; i++)
++        {
++            var backendCategory = orderedCategories[i];
++            var viewCategory = monthlyViewModel.ExpenseCategories[i];
++            Assert.Equal(backendCategory.Category, viewCategory.Category);
++            Assert.Equal(FormatCurrency(backendCategory.Amount, backendCategory.Currency), viewCategory.Amount);
++            Assert.Equal(FormatPercentage(monthlySummary.ExpenseBreakdown.TotalExpenses == 0m ? 0m : backendCategory.Amount / monthlySummary.ExpenseBreakdown.TotalExpenses), viewCategory.Share);
++        }
+ 
+         var anomalies = await financeClient.GetAnomaliesAsync(seed.CompanyAId);
+         var anomaliesViewModel = FinanceSummaryPresenter.ToAnomaliesViewModel(seed.CompanyAId, anomalies);
+@@ -48,6 +66,10 @@ public sealed class FinanceSummaryUiContractIntegrationTests : IClassFixture<Tes
+         Assert.Equal(seed.CompanyAId, anomaliesViewModel!.CompanyId);
+         Assert.Contains(anomaliesViewModel.Items, item => item.Id == seed.CompanyAAnomalyId);
+         Assert.DoesNotContain(anomaliesViewModel.Items, item => item.Id == seed.CompanyBAnomalyId);
++        var anomaly = Assert.Single(anomalies, item => item.Id == seed.CompanyAAnomalyId);
++        var anomalyViewModel = Assert.Single(anomaliesViewModel.Items, item => item.Id == seed.CompanyAAnomalyId);
++        Assert.Equal(anomaly.AffectedRecordIds.Count == 1 ? "1 record" : $"{anomaly.AffectedRecordIds.Count} records", anomalyViewModel.AffectedRecords);
++        Assert.Contains("expectedDetector", anomalyViewModel.DetectorSummary, StringComparison.OrdinalIgnoreCase);
+ 
+         var companyBCashPosition = await financeClient.GetCashPositionAsync(seed.CompanyBId, seed.CompanyBReferenceUtc);
+         var companyBCashViewModel = FinanceSummaryPresenter.ToCashPositionViewModel(companyBCashPosition);
+@@ -144,4 +166,13 @@ public sealed class FinanceSummaryUiContractIntegrationTests : IClassFixture<Tes
+         DateTime EmptyCompanyReferenceUtc,
+         DateTime CompanyAMonthReferenceUtc,
+         IReadOnlyList<Guid> CompanyAAccountIds,
+         Guid CompanyAAnomalyId,
+         Guid CompanyBAnomalyId);
++
++    private static string FormatCurrency(decimal amount, string currency) =>
++        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
++
++    private static string FormatDate(DateTime utcDateTime) =>
++        utcDateTime.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture);
++
++    private static string FormatPercentage(decimal percentage) =>
++        percentage.ToString("P0", CultureInfo.InvariantCulture);
+ }
+END_OF_PATCH

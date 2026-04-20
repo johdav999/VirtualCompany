@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-18.2.1",
+  "promptPath": ".ai-design/prompts/TASK-18.2.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T19:24:43.721Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T19-24-43-721Z_TASK-18.2.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T19-24-43-721Z_TASK-18.2.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T19:30:27.992Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ActorOrSourceDisplayName = \"User finance-approver\",\r\n+                        OccurredAtUtc = new DateTime(2026, 4, 16, 8, 45, 0, DateTimeKind.Utc),\r\n+                        RelatedApprovalId = approvalId\r\n+                    }\r\n+                ],\r\n+                Actions = new FinanceInvoiceReviewActionAvailabilityResponse()\r\n+            }));\r\n+\r\n+        Assert.Contains(\"Recommendation details\", cut.Markup);\r\n+        Assert.Contains(\"Classification\", cut.Markup);\r\n+        Assert.Contains(\"Overdue invoice\", cut.Markup);\r\n+        Assert.Contains(\"Workflow history\", cut.Markup);\r\n+        Assert.Contains(\"Tool event\", cut.Markup);\r\n+        Assert.Contains(\"Approval\", cut.Markup);\r\n+        Assert.Contains($\"/audit/{auditId:D}?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72\", cut.Markup);\r\n+        Assert.Contains($\"/approvals?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72&approvalId={approvalId:D}\", cut.Markup);\r\n+    }\r\n+\r\n+    [Fact]\r\n+    public void Invoice_review_detail_component_renders_non_blocking_empty_states_for_recommendation_and_history()\r\n+    {\r\n+        using var context = new TestContext();\r\n+\r\n+        var cut = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters\r\n+            .Add(x => x.BackToListHref, \"/finance/reviews?companyId=1\")\r\n+            .Add(x => x.Detail, new FinanceInvoiceReviewDetailResponse\r\n+            {\r\n+                Id = Guid.NewGuid(),\r\n+                InvoiceNumber = \"INV-6\",\r\n+                SupplierName = \"Northwind\",\r\n+                Actions = new FinanceInvoiceReviewActionAvailabilityResponse()\r\n+            }));\r\n+\r\n+        Assert.Contains(\"No recommendation details available yet.\", cut.Markup);\r\n+        Assert.Contains(\"No workflow history available yet.\", cut.Markup);\r\n+        Assert.Contains(\"INV-6\", cut.Markup);\r\n+    }\r\n+\r\n     [Fact]\r\n     public void Invoice_review_detail_component_omits_optional_navigation_links_when_related_records_are_unavailable()\r\n     {\r\nEND_OF_PATCH\n",
+  "stderrTail": "Name = \"User finance-approver\",\r\n+                        OccurredAtUtc = new DateTime(2026, 4, 16, 8, 45, 0, DateTimeKind.Utc),\r\n+                        RelatedApprovalId = approvalId\r\n+                    }\r\n+                ],\r\n+                Actions = new FinanceInvoiceReviewActionAvailabilityResponse()\r\n+            }));\r\n+\r\n+        Assert.Contains(\"Recommendation details\", cut.Markup);\r\n+        Assert.Contains(\"Classification\", cut.Markup);\r\n+        Assert.Contains(\"Overdue invoice\", cut.Markup);\r\n+        Assert.Contains(\"Workflow history\", cut.Markup);\r\n+        Assert.Contains(\"Tool event\", cut.Markup);\r\n+        Assert.Contains(\"Approval\", cut.Markup);\r\n+        Assert.Contains($\"/audit/{auditId:D}?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72\", cut.Markup);\r\n+        Assert.Contains($\"/approvals?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72&approvalId={approvalId:D}\", cut.Markup);\r\n+    }\r\n+\r\n+    [Fact]\r\n+    public void Invoice_review_detail_component_renders_non_blocking_empty_states_for_recommendation_and_history()\r\n+    {\r\n+        using var context = new TestContext();\r\n+\r\n+        var cut = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters\r\n+            .Add(x => x.BackToListHref, \"/finance/reviews?companyId=1\")\r\n+            .Add(x => x.Detail, new FinanceInvoiceReviewDetailResponse\r\n+            {\r\n+                Id = Guid.NewGuid(),\r\n+                InvoiceNumber = \"INV-6\",\r\n+                SupplierName = \"Northwind\",\r\n+                Actions = new FinanceInvoiceReviewActionAvailabilityResponse()\r\n+            }));\r\n+\r\n+        Assert.Contains(\"No recommendation details available yet.\", cut.Markup);\r\n+        Assert.Contains(\"No workflow history available yet.\", cut.Markup);\r\n+        Assert.Contains(\"INV-6\", cut.Markup);\r\n+    }\r\n+\r\n     [Fact]\r\n     public void Invoice_review_detail_component_omits_optional_navigation_links_when_related_records_are_unavailable()\r\n     {\r\nEND_OF_PATCH\ntokens used\n128,480\n",
+  "verbosityMode": "summary"
+}

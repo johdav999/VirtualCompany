@@ -1,0 +1,752 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs
+@@ -96,6 +96,8 @@ public sealed class CompanySimulationService : ICompanySimulationService
+         var recurringExpenseInstancesGenerated = 0;
+         var eventsEmitted = 0;
+         var cursorUtc = previousUtc;
++        var runId = Guid.NewGuid();
++        var stepNumber = 0;
+ 
+         if (_dbContext.Database.IsRelational())
+         {
+@@ -105,6 +107,23 @@ public sealed class CompanySimulationService : ICompanySimulationService
+                 var stepEndUtc = cursorUtc.AddHours(Math.Min(executionStepHours, (int)Math.Ceiling((targetUtc - cursorUtc).TotalHours)));
+                 var step = await AdvanceWindowAsync(company, state, simulationContext, cursorUtc, stepEndUtc, cancellationToken);
+ 
++                stepNumber++;
++                _dbContext.FinanceSimulationStepLogs.Add(new FinanceSimulationStepLog(
++                    Guid.NewGuid(),
++                    command.CompanyId,
++                    runId,
++                    stepNumber,
++                    step.WindowStartUtc,
++                    step.WindowEndUtc,
++                    executionStepHours,
++                    totalHoursProcessed,
++                    command.Accelerated,
++                    step.TransactionsGenerated,
++                    step.InvoicesGenerated,
++                    step.BillsGenerated,
++                    step.RecurringExpenseInstancesGenerated,
++                    step.EventsEmitted,
++                    createdUtc: step.WindowEndUtc));
++
+                 logs.Add(step);
+                 transactionsGenerated += step.TransactionsGenerated;
+                 invoicesGenerated += step.InvoicesGenerated;
+@@ -127,6 +146,23 @@ public sealed class CompanySimulationService : ICompanySimulationService
+                 var stepEndUtc = cursorUtc.AddHours(Math.Min(executionStepHours, (int)Math.Ceiling((targetUtc - cursorUtc).TotalHours)));
+                 var step = await AdvanceWindowAsync(company, state, simulationContext, cursorUtc, stepEndUtc, cancellationToken);
+ 
++                stepNumber++;
++                _dbContext.FinanceSimulationStepLogs.Add(new FinanceSimulationStepLog(
++                    Guid.NewGuid(),
++                    command.CompanyId,
++                    runId,
++                    stepNumber,
++                    step.WindowStartUtc,
++                    step.WindowEndUtc,
++                    executionStepHours,
++                    totalHoursProcessed,
++                    command.Accelerated,
++                    step.TransactionsGenerated,
++                    step.InvoicesGenerated,
++                    step.BillsGenerated,
++                    step.RecurringExpenseInstancesGenerated,
++                    step.EventsEmitted,
++                    createdUtc: step.WindowEndUtc));
++
+                 logs.Add(step);
+                 transactionsGenerated += step.TransactionsGenerated;
+                 invoicesGenerated += step.InvoicesGenerated;
+diff --git a/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs b/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
+--- a/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
++++ b/src/VirtualCompany.Shared/FinanceSandboxAdminContracts.cs
+@@ -140,10 +140,12 @@ public sealed class FinanceSandboxSimulationControlsResponse
+     public DateTime ReferenceUtc { get; set; }
+     public string CheckpointLabel { get; set; } = string.Empty;
+     public string Observation { get; set; } = string.Empty;
++    public FinanceSandboxProgressionRunSummaryResponse? CurrentRun { get; set; }
++    public IReadOnlyList<FinanceSandboxProgressionRunSummaryResponse> RunHistory { get; set; } = [];
+ }
+ 
+ public sealed class FinanceSandboxSimulationAdvanceRequest
+ {
+     public Guid CompanyId { get; set; }
+     public int IncrementHours { get; set; }
+     public int? ExecutionStepHours { get; set; }
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -114,6 +114,13 @@ public sealed class FinanceApiClient
+         EnsureOnlineMutation();
+         return SendCompanyScopedAsync<FinanceSandboxSimulationAdvanceRequest, FinanceSandboxProgressionRunSummaryResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/sandbox-admin/simulation-controls/advance", request, cancellationToken);
+     }
++
++    public Task<FinanceSandboxProgressionRunSummaryResponse> StartSandboxProgressionRunAsync(Guid companyId, FinanceSandboxSimulationAdvanceRequest request, CancellationToken cancellationToken = default)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<FinanceSandboxSimulationAdvanceRequest, FinanceSandboxProgressionRunSummaryResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/sandbox-admin/simulation-controls/progression-run", request, cancellationToken);
++    }
++
+ 
+     public Task<FinanceSandboxToolExecutionVisibilityResponse?> GetSandboxToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+diff --git a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+--- a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
++++ b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+@@ -8,6 +8,7 @@ public interface IFinanceSandboxAdminService
+     Task<FinanceSandboxAnomalyDetailViewModel?> GetAnomalyDetailAsync(Guid companyId, Guid anomalyId, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxAnomalyDetailViewModel> InjectAnomalyAsync(FinanceSandboxAnomalyInjectionCommand command, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxSimulationControlsViewModel?> GetSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<FinanceSandboxProgressionRunViewModel> StartProgressionRunAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxProgressionRunViewModel> AdvanceSimulationAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxToolExecutionVisibilityViewModel?> GetToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default);
+     Task<FinanceSandboxDomainEventsViewModel?> GetDomainEventsAsync(Guid companyId, CancellationToken cancellationToken = default);
+@@ -91,25 +92,25 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             CompanyId = command.CompanyId,
+             IncrementHours = command.IncrementHours,
+             ExecutionStepHours = command.ExecutionStepHours,
+             Accelerated = command.Accelerated
+         }, cancellationToken);
+ 
+-        return new FinanceSandboxProgressionRunViewModel
+-        {
+-            RunType = response.RunType,
+-            Status = response.Status,
+-            StartedUtc = response.StartedUtc,
+-            CompletedUtc = response.CompletedUtc,
+-            AdvancedHours = response.AdvancedHours,
+-            ExecutionStepHours = response.ExecutionStepHours,
+-            TransactionsGenerated = response.TransactionsGenerated,
+-            InvoicesGenerated = response.InvoicesGenerated,
+-            BillsGenerated = response.BillsGenerated,
+-            RecurringExpenseInstancesGenerated = response.RecurringExpenseInstancesGenerated,
+-            EventsEmitted = response.EventsEmitted,
+-            Messages = response.Messages.Select(MapBackendMessage).ToArray(),
+-            Steps = response.Steps.Select(MapProgressionStep).ToArray()
+-        };
++        return MapProgressionRun(response);
++    }
++
++    public async Task<FinanceSandboxProgressionRunViewModel> StartProgressionRunAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default)
++    {
++        var response = await _financeApiClient.StartSandboxProgressionRunAsync(command.CompanyId, new FinanceSandboxSimulationAdvanceRequest
++        {
++            CompanyId = command.CompanyId,
++            IncrementHours = command.IncrementHours,
++            ExecutionStepHours = command.ExecutionStepHours,
++            Accelerated = command.Accelerated
++        }, cancellationToken);
++
++        return MapProgressionRun(response);
+     }
+ 
+     public async Task<FinanceSandboxSimulationControlsViewModel?> GetSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default)
+     {
+         var response = await _financeApiClient.GetSandboxSimulationControlsAsync(companyId, cancellationToken);
+@@ -118,7 +119,9 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             ClockMode = response.ClockMode,
+             ReferenceUtc = response.ReferenceUtc,
+             CheckpointLabel = response.CheckpointLabel,
+-            Observation = response.Observation
++            Observation = response.Observation,
++            CurrentRun = response.CurrentRun is null ? null : MapProgressionRun(response.CurrentRun),
++            RunHistory = response.RunHistory.Select(MapProgressionRun).ToArray()
+         };
+     }
+ 
+@@ -197,6 +200,24 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             CreatedUtc = response.CreatedUtc,
+             ExpectedDetectionMetadataJson = response.ExpectedDetectionMetadataJson,
+             Messages = response.Messages.Select(MapBackendMessage).ToArray()
++        };
++
++    private static FinanceSandboxProgressionRunViewModel MapProgressionRun(FinanceSandboxProgressionRunSummaryResponse response) =>
++        new()
++        {
++            RunType = response.RunType,
++            Status = response.Status,
++            StartedUtc = response.StartedUtc,
++            CompletedUtc = response.CompletedUtc,
++            AdvancedHours = response.AdvancedHours,
++            ExecutionStepHours = response.ExecutionStepHours,
++            TransactionsGenerated = response.TransactionsGenerated,
++            InvoicesGenerated = response.InvoicesGenerated,
++            BillsGenerated = response.BillsGenerated,
++            RecurringExpenseInstancesGenerated = response.RecurringExpenseInstancesGenerated,
++            EventsEmitted = response.EventsEmitted,
++            Messages = response.Messages.Select(MapBackendMessage).ToArray(),
++            Steps = response.Steps.Select(MapProgressionStep).ToArray()
+         };
+ 
+     private static FinanceSandboxProgressionRunStepViewModel MapProgressionStep(FinanceSandboxProgressionRunStepResponse response) =>
+@@ -257,6 +278,8 @@ public sealed class FinanceSandboxSimulationControlsViewModel
+     public DateTime ReferenceUtc { get; set; }
+     public string CheckpointLabel { get; set; } = string.Empty;
+     public string Observation { get; set; } = string.Empty;
++    public FinanceSandboxProgressionRunViewModel? CurrentRun { get; set; }
++    public IReadOnlyList<FinanceSandboxProgressionRunViewModel> RunHistory { get; set; } = [];
+ }
+ 
+ public sealed class FinanceSandboxProgressionRunViewModel
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+@@ -284,14 +284,22 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         try
+         {
+-            _latestProgressionRun = await SandboxAdminService.AdvanceSimulationAsync(new FinanceSandboxSimulationAdvanceCommand
+-            {
+-                CompanyId = companyId,
+-                IncrementHours = incrementHours,
+-                ExecutionStepHours = _simulationControlsForm.ExecutionStepHours,
+-                Accelerated = _simulationControlsForm.Accelerated
+-            });
++            var command = new FinanceSandboxSimulationAdvanceCommand
++            {
++                CompanyId = companyId,
++                IncrementHours = incrementHours,
++                ExecutionStepHours = _simulationControlsForm.ExecutionStepHours,
++                Accelerated = _simulationControlsForm.Accelerated
++            };
++
++            _latestProgressionRun = string.Equals(runType, "advance", StringComparison.OrdinalIgnoreCase)
++                ? await SandboxAdminService.AdvanceSimulationAsync(command)
++                : await SandboxAdminService.StartProgressionRunAsync(command);
+ 
+             _simulationActionSuccessMessage = string.Equals(runType, "advance", StringComparison.OrdinalIgnoreCase)
+                 ? $"Simulation advanced by {incrementHours} hour(s)."
+                 : $"Progression run completed for {incrementHours} hour(s).";
+             _simulationControlsSectionVersion++;
+             _anomalyInjectionSectionVersion++;
+@@ -347,9 +355,6 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+     private Task<FinanceSandboxSimulationControlsViewModel?> LoadSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken) =>
+         SandboxAdminService.GetSimulationControlsAsync(companyId, cancellationToken);
+ 
+-    private static DateTime NormalizeAnchorDate(DateTime value) =>
+-        DateTime.SpecifyKind(value.Date, DateTimeKind.Utc);
+-
+     private IReadOnlyList<CompanyOption> GetSandboxAdminCompanyOptions() =>
+         (CurrentUserContext?.Memberships ?? [])
+             .Where(membership =>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+@@ -122,8 +122,8 @@
+                                         }
+                                     </dd>
+-                                    <dt class="col-sm-4">Expected metadata</dt>
+-                                    <dd class="col-sm-8"><code>@_selectedAnomalyDetail.ExpectedDetectionMetadataJson</code></dd>
++                                    <dt class="col-sm-4">Scenario metadata</dt>
++                                    <dd class="col-sm-8"><code>@_selectedAnomalyDetail.ExpectedDetectionMetadataJson</code></dd>
+                                 </dl>
+ 
+                                 @if (_selectedAnomalyDetail.Messages.Count > 0)
+@@ -217,16 +217,19 @@
+                             <div class="col-lg-7">
+                                 <h3 class="h6 mb-3">Latest progression output</h3>
+ 
+-                                @if (_latestProgressionRun is null)
++                                @{
++                                    var displayedRun = _latestProgressionRun ?? simulation.CurrentRun;
++                                }
++
++                                @if (displayedRun is null)
+                                 {
+-                                    <p class="text-body-secondary mb-0">No progression run has been started from this admin session yet.</p>
++                                    <p class="text-body-secondary mb-0">No progression run has been recorded for the active company yet.</p>
+                                 }
+                                 else
+                                 {
+                                     <div class="row g-3 mb-3">
+                                         <div class="col-sm-6 col-xl-3">
+                                             <div class="border rounded p-3 h-100">
+                                                 <div class="text-body-secondary small">Status</div>
+                                                 <div class="mt-1">
+-                                                    <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(_latestProgressionRun.Status)">
+-                                                        @FinanceAnomalyPresentation.FormatLabel(_latestProgressionRun.Status)
++                                                    <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(displayedRun.Status)">
++                                                        @FinanceAnomalyPresentation.FormatLabel(displayedRun.Status)
+                                                     </span>
+                                                 </div>
+                                             </div>
+@@ -234,28 +237,28 @@
+                                         <div class="col-sm-6 col-xl-3">
+                                             <div class="border rounded p-3 h-100">
+                                                 <div class="text-body-secondary small">Generated records</div>
+-                                                <div class="fs-5 fw-semibold">@_latestProgressionRun.GeneratedRecordCount</div>
++                                                <div class="fs-5 fw-semibold">@displayedRun.GeneratedRecordCount</div>
+                                             </div>
+                                         </div>
+                                         <div class="col-sm-6 col-xl-3">
+                                             <div class="border rounded p-3 h-100">
+                                                 <div class="text-body-secondary small">Events emitted</div>
+-                                                <div class="fs-5 fw-semibold">@_latestProgressionRun.EventsEmitted</div>
++                                                <div class="fs-5 fw-semibold">@displayedRun.EventsEmitted</div>
+                                             </div>
+                                         </div>
+                                         <div class="col-sm-6 col-xl-3">
+                                             <div class="border rounded p-3 h-100">
+                                                 <div class="text-body-secondary small">Advanced hours</div>
+-                                                <div class="fs-5 fw-semibold">@_latestProgressionRun.AdvancedHours</div>
++                                                <div class="fs-5 fw-semibold">@displayedRun.AdvancedHours</div>
+                                             </div>
+                                         </div>
+                                     </div>
+ 
+-                                    @foreach (var message in _latestProgressionRun.Messages)
++                                    @foreach (var message in displayedRun.Messages)
+                                     {
+                                         <div class="@ResolveBackendMessageAlertClass(message.Severity)" role="alert">
+                                             @message.Message
+                                         </div>
+                                     }
+ 
+-                                    @if (_latestProgressionRun.Steps.Count == 0)
++                                    @if (displayedRun.Steps.Count == 0)
+                                     {
+                                         <p class="text-body-secondary mb-0">The backend did not return step history for this run.</p>
+                                     }
+@@ -271,7 +274,7 @@
+                                                 </thead>
+                                                 <tbody>
+-                                                    @foreach (var step in _latestProgressionRun.Steps)
++                                                    @foreach (var step in displayedRun.Steps)
+                                                     {
+                                                         <tr>
+                                                             <td>@step.WindowStartUtc.ToString("u") - @step.WindowEndUtc.ToString("u")</td>
+@@ -285,6 +288,40 @@
+                                             </table>
+                                         </div>
+                                     }
++
++                                    <div class="mt-4">
++                                        <h4 class="h6 mb-3">Run history</h4>
++
++                                        @if (simulation.RunHistory.Count == 0)
++                                        {
++                                            <p class="text-body-secondary mb-0">No completed runs are available in backend history yet.</p>
++                                        }
++                                        else
++                                        {
++                                            <div class="table-responsive">
++                                                <table class="table finance-table mb-0">
++                                                    <thead>
++                                                        <tr>
++                                                            <th scope="col">Run type</th>
++                                                            <th scope="col">Completed</th>
++                                                            <th scope="col">Status</th>
++                                                            <th scope="col">Generated records</th>
++                                                            <th scope="col">Messages</th>
++                                                        </tr>
++                                                    </thead>
++                                                    <tbody>
++                                                        @foreach (var run in simulation.RunHistory)
++                                                        {
++                                                            <tr>
++                                                                <td>@FinanceAnomalyPresentation.FormatLabel(run.RunType)</td>
++                                                                <td>@run.CompletedUtc.ToString("u")</td>
++                                                                <td>@FinanceAnomalyPresentation.FormatLabel(run.Status)</td>
++                                                                <td>@run.GeneratedRecordCount</td>
++                                                                <td>@(run.Messages.Count == 0 ? "No backend messages" : string.Join(" | ", run.Messages.Select(message => message.Message)))</td>
++                                                            </tr>
++                                                        }
++                                                    </tbody>
++                                                </table>
++                                            </div>
++                                        }
++                                    </div>
+                                 }
+                             </div>
+                         </div>
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -8,6 +8,7 @@ using VirtualCompany.Shared;
+ using VirtualCompany.Infrastructure.Tenancy;
+ using VirtualCompany.Infrastructure.Persistence;
+ using System.Text.Json.Nodes;
++using System.Text.Json;
+ 
+ namespace VirtualCompany.Api.Controllers;
+ 
+@@ -21,6 +22,10 @@ public sealed class InternalFinanceController : ControllerBase
+ {
++    private const string FinanceSimulationCurrentRunKey = "financeSimulationLatestRun";
++    private const string FinanceSimulationRunHistoryKey = "financeSimulationRunHistory";
++    private static readonly JsonSerializerOptions SandboxSerializerOptions = new(JsonSerializerDefaults.Web);
++
+     private readonly IFinanceReadService _financeReadService;
+     private readonly IFinanceCommandService _financeCommandService;
+     private readonly IAuditQueryService _auditQueryService;
+@@ -565,7 +570,7 @@ public sealed class InternalFinanceController : ControllerBase
+             new AdvanceCompanySimulationTimeCommand(companyId, request.IncrementHours, request.ExecutionStepHours, request.Accelerated),
+             cancellationToken);
+ 
+-        return Ok(BuildSandboxProgressionRunSummary("progression_run", result));
++        return Ok(BuildSandboxProgressionRunSummary("advance", result));
+     }
+ 
+     private static readonly FinanceSandboxAnomalyScenarioProfileResponse[] SandboxScenarioProfiles =
+@@ -605,6 +610,29 @@ public sealed class InternalFinanceController : ControllerBase
+         if (request.ExecutionStepHours is <= 0) errors[nameof(FinanceSandboxSimulationAdvanceRequest.ExecutionStepHours)] = ["Enter a positive execution step size."];
+         return errors;
+     }
++
++    [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
++    [HttpPost("sandbox-admin/simulation-controls/progression-run")]
++    public async Task<ActionResult<FinanceSandboxProgressionRunSummaryResponse>> StartSandboxProgressionRunAsync(
++        Guid companyId,
++        [FromBody] FinanceSandboxSimulationAdvanceRequest request,
++        CancellationToken cancellationToken)
++    {
++        var validationErrors = ValidateSandboxSimulationAdvanceRequest(companyId, request);
++        if (validationErrors.Count > 0)
++        {
++            return ValidationProblem(new ValidationProblemDetails(validationErrors)
++            {
++                Title = "Finance validation failed",
++                Detail = "Update the simulation control request and try again.",
++                Status = StatusCodes.Status400BadRequest,
++                Instance = HttpContext.Request.Path
++            });
++        }
++
++        var result = await _companySimulationService.AdvanceAsync(
++            new AdvanceCompanySimulationTimeCommand(companyId, request.IncrementHours, request.ExecutionStepHours, request.Accelerated),
++            cancellationToken);
++        return Ok(BuildSandboxProgressionRunSummary("progression_run", result));
++    }
+ 
+     [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
+     [HttpGet("sandbox-admin/tool-execution-visibility")]
+@@ -695,14 +723,10 @@ public sealed class InternalFinanceController : ControllerBase
+             .OrderByDescending(x => x.CreatedUtc)
+             .Take(10)
+             .ToListAsync(cancellationToken);
+-
+-        if (anomalies.Count == 0)
+-        {
+-            return null;
+-        }
++        var lastInjectedUtc = anomalies.Count == 0 ? DateTime.UtcNow : anomalies.Max(x => x.CreatedUtc);
+ 
+         return new FinanceSandboxAnomalyInjectionResponse
+         {
+             Mode = "Seed anomaly scenarios",
+-            LastInjectedUtc = anomalies.Max(x => x.CreatedUtc),
++            LastInjectedUtc = lastInjectedUtc,
+             Observation = $"{anomalies.Count} sandbox anomaly scenario(s) are currently registered for validation coverage.",
+             ActiveScenarios = anomalies
+                 .Select(x => $"{x.AnomalyType} ({x.ScenarioProfile})")
+@@ -751,6 +775,7 @@ public sealed class InternalFinanceController : ControllerBase
+             AffectedRecordId = affectedRecord?.RecordId,
+             AffectedRecordReference = affectedRecord?.Reference ?? anomaly.GetAffectedRecordIds().FirstOrDefault().ToString("D"),
+             CreatedUtc = anomaly.CreatedUtc,
++            ScenarioMetadataJson = anomaly.ExpectedDetectionMetadataJson,
+             ExpectedDetectionMetadataJson = anomaly.ExpectedDetectionMetadataJson,
+             Messages =
+             [
+@@ -768,22 +793,30 @@ public sealed class InternalFinanceController : ControllerBase
+         Guid companyId,
+         CancellationToken cancellationToken)
+     {
++        var company = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == companyId, cancellationToken);
+         var clock = await _companySimulationService.GetClockAsync(
+             new GetCompanySimulationClockQuery(companyId),
+             cancellationToken);
+-        var latestStep = await _dbContext.FinanceSimulationStepLogs
+-            .Where(x => x.CompanyId == companyId)
+-            .OrderByDescending(x => x.CreatedUtc)
+-            .FirstOrDefaultAsync(cancellationToken);
++        var runHistory = await BuildSandboxRunHistoryAsync(companyId, cancellationToken);
++        var currentRun = runHistory.FirstOrDefault();
+ 
+         return new FinanceSandboxSimulationControlsResponse
+         {
+             ClockMode = clock.Enabled ? "Simulated clock enabled" : "Live clock fallback",
+             ReferenceUtc = clock.SimulatedUtc,
+-            CheckpointLabel = latestStep is null
+-                ? "No simulation advance has been recorded for the current sandbox."
+-                : $"Step {latestStep.StepNumber} processed {latestStep.TotalHoursProcessed}h between {latestStep.WindowStartUtc:u} and {latestStep.WindowEndUtc:u}.",
+-            Observation = latestStep is null
+-                ? "Simulation controls are read-only until mutation workflows are introduced."
++            CheckpointLabel = currentRun is null
++                ? "No simulation run has been recorded for the current sandbox."
++                : $"{HumanizeReviewToken(currentRun.RunType)} completed {currentRun.AdvancedHours}h with {currentRun.Steps.Count} step(s).",
++            Observation = currentRun is null
++                ? "Advance simulation time or start a progression run to populate backend status and history."
++                : currentRun.Messages.FirstOrDefault()?.Message
++                    ?? "The latest simulation run completed without backend messages.",
++            CurrentRun = currentRun,
++            RunHistory = runHistory
++        };
++    }
++
++    private async Task<IReadOnlyList<FinanceSandboxProgressionRunSummaryResponse>> BuildSandboxRunHistoryAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var rows = await _dbContext.FinanceSimulationStepLogs
++            .Where(x => x.CompanyId == companyId)
++            .OrderByDescending(x => x.CreatedUtc)
++            .Select(x => new SandboxSimulationRunStepRow(
++                x.RunId,
++                x.StepNumber,
++                x.WindowStartUtc,
++                x.WindowEndUtc,
++                x.ExecutionStepHours,
++                x.TotalHoursProcessed,
++                x.IsAccelerated,
++                x.TransactionsGenerated,
++                x.InvoicesGenerated,
++                x.BillsGenerated,
++                x.RecurringExpenseInstancesGenerated,
++                x.EventsEmitted,
++                x.CreatedUtc))
++            .ToListAsync(cancellationToken);
++
++        return rows
++            .GroupBy(x => x.RunId)
++            .OrderByDescending(group => group.Max(step => step.CreatedUtc))
++            .Take(10)
++            .Select(BuildSandboxProgressionRunSummary)
++            .ToArray();
++    }
++
++    private static FinanceSandboxProgressionRunSummaryResponse BuildSandboxProgressionRunSummary(IGrouping<Guid, SandboxSimulationRunStepRow> run)
++    {
++        var orderedSteps = run.OrderBy(step => step.StepNumber).ToArray();
++        var firstStep = orderedSteps[0];
++        var lastStep = orderedSteps[^1];
++        var transactionsGenerated = orderedSteps.Sum(step => step.TransactionsGenerated);
++        var invoicesGenerated = orderedSteps.Sum(step => step.InvoicesGenerated);
++        var billsGenerated = orderedSteps.Sum(step => step.BillsGenerated);
++        var recurringExpenseInstancesGenerated = orderedSteps.Sum(step => step.RecurringExpenseInstancesGenerated);
++        var eventsEmitted = orderedSteps.Sum(step => step.EventsEmitted);
++        var generatedRecordCount = transactionsGenerated + invoicesGenerated + billsGenerated + recurringExpenseInstancesGenerated;
++
++        return new FinanceSandboxProgressionRunSummaryResponse
++        {
++            RunType = firstStep.IsAccelerated ? "progression_run" : "advance",
++            Status = "completed",
++            StartedUtc = firstStep.WindowStartUtc,
++            CompletedUtc = lastStep.WindowEndUtc,
++            AdvancedHours = firstStep.TotalHoursProcessed,
++            ExecutionStepHours = firstStep.ExecutionStepHours,
++            TransactionsGenerated = transactionsGenerated,
++            InvoicesGenerated = invoicesGenerated,
++            BillsGenerated = billsGenerated,
++            RecurringExpenseInstancesGenerated = recurringExpenseInstancesGenerated,
++            EventsEmitted = eventsEmitted,
++            Messages = generatedRecordCount == 0
++                ? [new FinanceSandboxBackendMessageResponse { Severity = "warning", Code = "sandbox.progression.no_output", Message = "The simulation run completed without generating new finance records." }]
++                : [new FinanceSandboxBackendMessageResponse { Severity = "info", Code = "sandbox.progression.completed", Message = $"The simulation run completed and generated {generatedRecordCount} finance record(s)." }],
++            Steps = orderedSteps.Select(step => new FinanceSandboxProgressionRunStepResponse
++            {
++                WindowStartUtc = step.WindowStartUtc,
++                WindowEndUtc = step.WindowEndUtc,
++                TransactionsGenerated = step.TransactionsGenerated,
++                InvoicesGenerated = step.InvoicesGenerated,
++                BillsGenerated = step.BillsGenerated,
++                RecurringExpenseInstancesGenerated = step.RecurringExpenseInstancesGenerated,
++                EventsEmitted = step.EventsEmitted
++            }).ToArray()
++        };
++    }
++
++    private sealed record SandboxSimulationRunStepRow(
++        Guid RunId,
++        int StepNumber,
++        DateTime WindowStartUtc,
++        DateTime WindowEndUtc,
++        int ExecutionStepHours,
++        int TotalHoursProcessed,
++        bool IsAccelerated,
++        int TransactionsGenerated,
++        int InvoicesGenerated,
++        int BillsGenerated,
++        int RecurringExpenseInstancesGenerated,
++        int EventsEmitted,
++        DateTime CreatedUtc);
+-                    ? "The latest simulation run used accelerated progression."
+-                    : "The latest simulation run used standard progression."
+-        };
+-    }
+ 
+     private async Task<SandboxFinanceRecordCandidate?> ResolveSandboxFinanceRecordAsync(
+         Guid companyId,
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+@@ -122,6 +122,45 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+         Assert.Contains("positive seed value", payload.Errors[nameof(FinanceSandboxSeedGenerationRequest.SeedValue)][0], StringComparison.OrdinalIgnoreCase);
+         Assert.Contains("supported generation mode", payload.Errors[nameof(FinanceSandboxSeedGenerationRequest.GenerationMode)][0], StringComparison.OrdinalIgnoreCase);
+     }
++
++    [Fact]
++    public async Task Progression_run_endpoint_populates_simulation_status_and_history()
++    {
++        var seed = await SeedSandboxAdminCompanyAsync();
++        var identity = seed.GetIdentity("owner");
++        using var client = CreateAuthenticatedClient(identity.Subject, identity.Email, identity.DisplayName);
++
++        var progressionResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/simulation-controls/progression-run",
++            new FinanceSandboxSimulationAdvanceRequest
++            {
++                CompanyId = seed.CompanyId,
++                IncrementHours = 24,
++                ExecutionStepHours = 24,
++                Accelerated = true
++            });
++
++        Assert.Equal(HttpStatusCode.OK, progressionResponse.StatusCode);
++
++        var progressionPayload = await progressionResponse.Content.ReadFromJsonAsync<FinanceSandboxProgressionRunSummaryResponse>();
++        Assert.NotNull(progressionPayload);
++        Assert.Equal("progression_run", progressionPayload!.RunType);
++        Assert.NotEmpty(progressionPayload.Steps);
++
++        var controlsResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/simulation-controls");
++
++        Assert.Equal(HttpStatusCode.OK, controlsResponse.StatusCode);
++
++        var controlsPayload = await controlsResponse.Content.ReadFromJsonAsync<FinanceSandboxSimulationControlsResponse>();
++        Assert.NotNull(controlsPayload);
++        Assert.NotNull(controlsPayload!.CurrentRun);
++        Assert.NotEmpty(controlsPayload.RunHistory);
++        Assert.Equal(controlsPayload.CurrentRun!.CompletedUtc, controlsPayload.RunHistory[0].CompletedUtc);
++        Assert.NotEmpty(controlsPayload.CurrentRun.Messages);
++    }
++
++    [Fact]
++    public async Task Anomaly_injection_endpoint_returns_profiles_even_when_registry_is_empty()
++    {
++        var companyId = Guid.NewGuid();
++        var owner = TestIdentity.Create("Empty Sandbox Owner");
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(owner.UserId, owner.Email, owner.DisplayName, "dev-header", owner.Subject));
++            dbContext.Companies.Add(new Company(companyId, "Empty Sandbox Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, owner.UserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(owner.Subject, owner.Email, owner.DisplayName);
++        var response = await client.GetAsync($"/internal/companies/{companyId}/finance/sandbox-admin/anomaly-injection");
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<FinanceSandboxAnomalyInjectionResponse>();
++        Assert.NotNull(payload);
++        Assert.NotEmpty(payload!.AvailableScenarioProfiles);
++        Assert.Empty(payload.RegistryEntries);
++    }
+ 
+     private async Task<SandboxAdminEndpointSeed> SeedSandboxAdminCompanyAsync()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+@@ -306,7 +306,7 @@ public sealed class FinanceSandboxAdminPageTests
+         cut.WaitForAssertion(() =>
+         {
+-            Assert.Contains("The web app could not reach the finance backend. Start the API project and retry the request.", cut.Markup));
++            Assert.Contains("The web app could not reach the finance backend. Start the API project and retry the request.", cut.Markup);
+             Assert.False(cut.Find("#seed-generate-submit").HasAttribute("disabled"));
+             Assert.DoesNotContain("Generating dataset...", cut.Markup);
+         });
+@@ -413,6 +413,32 @@ public sealed class FinanceSandboxAdminPageTests
+         });
+     }
+ 
++    [Fact]
++    public void Sandbox_admin_page_renders_backend_run_history_from_simulation_controls()
++    {
++        var companyId = Guid.Parse("483f9850-f887-4b31-a448-d1c4f94832ef");
++        var sandboxService = new StubFinanceSandboxAdminService
++        {
++            OnGetSimulationControlsAsync = (_, _) => Task.FromResult<FinanceSandboxSimulationControlsViewModel?>(new FinanceSandboxSimulationControlsViewModel
++            {
++                ClockMode = "Simulated clock enabled",
++                ReferenceUtc = new DateTime(2026, 4, 16, 10, 0, 0, DateTimeKind.Utc),
++                CheckpointLabel = "Latest run completed 24h with 1 step.",
++                Observation = "The simulation run completed and generated 8 finance record(s).",
++                CurrentRun = new FinanceSandboxProgressionRunViewModel
++                {
++                    RunType = "progression_run",
++                    Status = "completed",
++                    CompletedUtc = new DateTime(2026, 4, 16, 11, 0, 0, DateTimeKind.Utc),
++                    TransactionsGenerated = 4,
++                    InvoicesGenerated = 2,
++                    BillsGenerated = 1,
++                    RecurringExpenseInstancesGenerated = 1
++                },
++                RunHistory = [new FinanceSandboxProgressionRunViewModel { RunType = "progression_run", Status = "completed", CompletedUtc = new DateTime(2026, 4, 16, 11, 0, 0, DateTimeKind.Utc), TransactionsGenerated = 4, InvoicesGenerated = 2, BillsGenerated = 1, RecurringExpenseInstancesGenerated = 1 }]
++            })
++        };
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        var cut = RenderSandboxAdmin(harness, companyId);
++        cut.WaitForAssertion(() => Assert.Contains("Run history", cut.Markup));
++        Assert.Contains("generated 8 finance record(s)", cut.Markup);
++    }
++
+     private static IRenderedComponent<SandboxAdminPage> RenderSandboxAdmin(SandboxAdminHarness harness, Guid companyId)
+     {
+         harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+@@ -461,8 +487,7 @@ public sealed class FinanceSandboxAdminPageTests
+             ];
+         var activeMembership = resolvedMemberships.First(membership => membership.CompanyId == companyId);
+ 
+-        return new CurrentUserContextViewModel
+-        new()
++        return new CurrentUserContextViewModel
+         {
+             Memberships = resolvedMemberships,
+             ActiveCompany = new ResolvedCompanyContextViewModel
+@@ -493,6 +518,7 @@ public sealed class FinanceSandboxAdminPageTests
+         public Func<Guid, CancellationToken, Task<FinanceSandboxDomainEventsViewModel?>>? OnGetDomainEventsAsync { get; init; }
+         public Func<FinanceSandboxSeedGenerationCommand, CancellationToken, Task<FinanceSandboxSeedGenerationViewModel>>? OnGenerateSeedDatasetAsync { get; init; }
+         public Func<FinanceSandboxSimulationAdvanceCommand, CancellationToken, Task<FinanceSandboxProgressionRunViewModel>>? OnAdvanceSimulationAsync { get; init; }
++        public Func<FinanceSandboxSimulationAdvanceCommand, CancellationToken, Task<FinanceSandboxProgressionRunViewModel>>? OnStartProgressionRunAsync { get; init; }
+ 
+         public int DatasetGenerationCalls { get; private set; }
+         public int AnomalyInjectionCalls { get; private set; }
+@@ -502,6 +528,7 @@ public sealed class FinanceSandboxAdminPageTests
+ 
+         public int InjectAnomalyCalls { get; private set; }
+         public int GenerateSeedDatasetCalls { get; private set; }
++        public int StartProgressionRunCalls { get; private set; }
+         public int AdvanceSimulationCalls { get; private set; }
+         public int TotalCalls =>
+             DatasetGenerationCalls +
+@@ -547,12 +574,20 @@ public sealed class FinanceSandboxAdminPageTests
+                 ? OnInjectAnomalyAsync(command, cancellationToken)
+                 : Task.FromResult(new FinanceSandboxAnomalyDetailViewModel());
+         }
+ 
+         public Task<FinanceSandboxProgressionRunViewModel> AdvanceSimulationAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default)
+         {
+             AdvanceSimulationCalls++;
+             return OnAdvanceSimulationAsync is not null
+                 ? OnAdvanceSimulationAsync(command, cancellationToken)
+                 : Task.FromResult(new FinanceSandboxProgressionRunViewModel());
+         }
+ 
++        public Task<FinanceSandboxProgressionRunViewModel> StartProgressionRunAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default)
++        {
++            StartProgressionRunCalls++;
++            return OnStartProgressionRunAsync is not null
++                ? OnStartProgressionRunAsync(command, cancellationToken)
++                : Task.FromResult(new FinanceSandboxProgressionRunViewModel());
++        }
++
+         public Task<FinanceSandboxToolExecutionVisibilityViewModel?> GetToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default)
+         {
+             ToolExecutionVisibilityCalls++;
+-END_OF_PATCH
+             return OnGetToolExecutionVisibilityAsync is not null
+                 ? OnGetToolExecutionVisibilityAsync(companyId, cancellationToken)
+                 : Task.FromResult<FinanceSandboxToolExecutionVisibilityViewModel?>(null);

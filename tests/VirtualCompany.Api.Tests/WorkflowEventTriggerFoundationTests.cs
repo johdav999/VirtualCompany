@@ -32,6 +32,9 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
         Assert.Contains(SupportedPlatformEventTypeRegistry.TaskCreated, registry.SupportedEventTypes);
         Assert.Contains(SupportedPlatformEventTypeRegistry.TaskUpdated, registry.SupportedEventTypes);
         Assert.Contains(SupportedPlatformEventTypeRegistry.DocumentUploaded, registry.SupportedEventTypes);
+        Assert.Contains(SupportedPlatformEventTypeRegistry.FinanceTransactionCreated, registry.SupportedEventTypes);
+        Assert.Contains(SupportedPlatformEventTypeRegistry.FinanceInvoiceCreated, registry.SupportedEventTypes);
+        Assert.Contains(SupportedPlatformEventTypeRegistry.FinanceThresholdBreached, registry.SupportedEventTypes);
         Assert.Contains(SupportedPlatformEventTypeRegistry.WorkflowStateChanged, registry.SupportedEventTypes);
         Assert.True(registry.IsSupported("TASK_CREATED"));
         Assert.False(registry.IsSupported("task.deleted"));

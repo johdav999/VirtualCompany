@@ -1,0 +1,154 @@
+@page "/finance/admin/transparency/tool-executions"
+@page "/finance/admin/transparency/tool-executions/{ExecutionId:guid}"
+@inherits FinanceTransparencyPageBase
+
+<PageTitle>Finance Tool Executions</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Finance tool execution history"
+    Description="Review recent finance tool execution history, lifecycle state, and related approval or originating action links."
+    LoadingMessage="Loading finance tool execution history...">
+    @if (!HasTransparencyAccess)
+    {
+        <ForbiddenState
+            Title="Finance transparency access required"
+            Message="Finance transparency pages are limited to company admins and testers."
+            ReturnHref="@BuildFinanceHomeHref()"
+            ReturnText="Back to finance" />
+    }
+    else
+    {
+        <div class="row g-4 align-items-start">
+            <div class="col-xl-7">
+                <div class="wizard-card wizard-card--compact">
+                    <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
+                        <div>
+                            <h2 class="h5 mb-1">Finance tool execution history</h2>
+                            <p class="text-body-secondary mb-0">@(string.IsNullOrWhiteSpace(Summary) ? "Recent finance executions show lifecycle state plus concise request and response summaries." : Summary)</p>
+                        </div>
+                        <span class="badge text-bg-light">@Items.Count item@(Items.Count == 1 ? string.Empty : "s")</span>
+                    </div>
+
+                    <FinanceDataState
+                        IsLoading="@IsListLoading"
+                        IsEmpty="@IsListEmpty"
+                        ErrorMessage="@ListErrorMessage"
+                        LoadingTitle="Loading finance tool executions"
+                        LoadingMessage="Reading recent finance tool execution history."
+                        EmptyTitle="No finance tool executions available"
+                        EmptyMessage="No finance tool executions are recorded for the active company."
+                        ErrorTitle="Finance tool executions are unavailable"
+                        OnRetry="@ReloadAsync">
+                        <div class="table-responsive">
+                            <table class="table finance-table mb-0">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Tool</th>
+                                        <th scope="col">State</th>
+                                        <th scope="col">Request</th>
+                                        <th scope="col">Response</th>
+                                        <th scope="col">Executed</th>
+                                        <th scope="col">Correlation</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var item in Items)
+                                    {
+                                        <tr class="@(ExecutionId == item.ExecutionId ? "table-active" : null)">
+                                            <td class="text-nowrap">
+                                                <a id="@($"finance-execution-{item.ExecutionId:D}")" class="btn btn-link p-0 text-start text-decoration-none fw-semibold" href="@BuildExecutionDetailHref(item.ExecutionId)">@item.ToolName</a>
+                                                <div class="small text-body-secondary">@item.ToolVersion</div>
+                                            </td>
+                                            <td class="text-nowrap"><span class="badge text-bg-light">@FormatLabel(item.LifecycleState)</span></td>
+                                            <td>@item.RequestSummary</td>
+                                            <td>@item.ResponseSummary</td>
+                                            <td class="text-nowrap">@FormatTimestamp(item.ExecutionTimestampUtc)</td>
+                                            <td>@FormatValue(item.CorrelationId)</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </FinanceDataState>
+                </div>
+            </div>
+
+            <div class="col-xl-5">
+                <div class="wizard-card wizard-card--compact">
+                    @if (IsDetailLoading)
+                    {
+                        <FinanceLoadingState Title="Loading execution detail" Message="Resolving the selected finance tool execution from the route." />
+                    }
+                    else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
+                    {
+                        <FinanceErrorState Title="Execution detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                    }
+                    else if (SelectedExecution is null)
+                    {
+                        <FinanceEmptyState Title="No execution selected" Message="Select a tool execution to inspect approval and originating action links." />
+                    }
+                    else
+                    {
+
+                        <h2 class="h5">Execution detail</h2>
+                        <dl class="mb-4">
+                            <dt>Tool</dt>
+                            <dd>@SelectedExecution.ToolName (@SelectedExecution.ToolVersion)</dd>
+                            <dt>Lifecycle state</dt>
+                            <dd>@FormatLabel(SelectedExecution.LifecycleState)</dd>
+                            <dt>Executed</dt>
+                            <dd>@FormatTimestamp(SelectedExecution.ExecutionTimestampUtc)</dd>
+                            <dt>Approval request</dt>
+                            <dd>@FormatValue(SelectedExecution.ApprovalRequestDisplay)</dd>
+                            <dt>Correlation</dt>
+                            <dd>@FormatValue(SelectedExecution.CorrelationId)</dd>
+                            <dt>Originating finance action</dt>
+                            <dd>@FormatValue(SelectedExecution.OriginatingFinanceActionDisplay)</dd>
+                            <dt>Originating entity</dt>
+                            <dd>@FormatValue(SelectedExecution.OriginatingEntityReference)</dd>
+                        </dl>
+
+                        <h3 class="h6">Request summary</h3>
+                        <p>@SelectedExecution.RequestSummary</p>
+
+                        <h3 class="h6">Response summary</h3>
+                        <p class="mb-4">@SelectedExecution.ResponseSummary</p>
+
+                        <h3 class="h6">Related records</h3>
+                        @if (SelectedExecution.RelatedRecords.Count == 0)
+                        {
+                            <p class="text-body-secondary mb-0">No related approval request, event, or originating finance action link is available for this execution.</p>
+                        }
+                        else
+                        {
+                            @foreach (var record in SelectedExecution.RelatedRecords)
+                            {
+                                var href = BuildRelatedRecordHref(record);
+
+                                <div class="border rounded p-3 mb-2">
+                                    <div class="d-flex justify-content-between gap-3 align-items-start">
+                                        <div>
+                                            <div class="fw-semibold">@BuildRelatedRecordTitle(record)</div>
+                                            @if (!string.IsNullOrWhiteSpace(record.Reference))
+                                            {
+                                                <div class="small text-body-secondary">@record.Reference</div>
+                                            }
+                                            <div class="small text-body-secondary">Resolved via @FormatLabel(record.ResolutionSource)</div>
+                                        </div>
+                                        @if (!string.IsNullOrWhiteSpace(href))
+                                        {
+                                            <a class="btn btn-outline-secondary btn-sm" href="@href">Open</a>
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+    }
+</FinancePageLayout>

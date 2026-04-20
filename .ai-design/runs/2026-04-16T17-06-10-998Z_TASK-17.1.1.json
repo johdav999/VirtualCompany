@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-17.1.1",
+  "promptPath": ".ai-design/prompts/TASK-17.1.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T17:06:10.998Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T17-06-10-998Z_TASK-17.1.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T17-06-10-998Z_TASK-17.1.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T17:13:56.972Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "e = companyName, MembershipRole = role, Status = status };\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs\nnew file mode 100644\n--- /dev/null\n+++ b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs\n@@ -0,0 +1,43 @@\n+using Microsoft.AspNetCore.Components;\n+using VirtualCompany.Web.Pages.Finance;\n+using VirtualCompany.Web.Services;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class FinanceRouteRegistrationTests\n+{\n+    [Theory]\n+    [InlineData(typeof(FinancePage), FinanceRoutes.Home)]\n+    [InlineData(typeof(CashPositionPage), FinanceRoutes.CashPosition)]\n+    [InlineData(typeof(TransactionsPage), FinanceRoutes.Transactions)]\n+    [InlineData(typeof(InvoicesPage), FinanceRoutes.Invoices)]\n+    [InlineData(typeof(BalancesPage), FinanceRoutes.Balances)]\n+    [InlineData(typeof(MonthlySummaryPage), FinanceRoutes.MonthlySummary)]\n+    [InlineData(typeof(AnomaliesPage), FinanceRoutes.Anomalies)]\n+    public void Finance_pages_register_expected_routes(Type componentType, string expectedRoute)\n+    {\n+        var routes = componentType.GetCustomAttributes(inherit: false)\n+            .OfType<RouteAttribute>()\n+            .Select(attribute => attribute.Template)\n+            .ToArray();\n+\n+        Assert.Contains(expectedRoute, routes);\n+    }\n+\n+    [Fact]\n+    public void Finance_landing_page_defines_required_shell_links()\n+    {\n+        var routes = FinanceRoutes.SectionPages.Select(route => route.Path).ToArray();\n+\n+        Assert.Equal(6, routes.Length);\n+        Assert.Contains(FinanceRoutes.CashPosition, routes);\n+        Assert.Contains(FinanceRoutes.Transactions, routes);\n+        Assert.Contains(FinanceRoutes.Invoices, routes);\n+        Assert.Contains(FinanceRoutes.Balances, routes);\n+        Assert.Contains(FinanceRoutes.MonthlySummary, routes);\n+        Assert.Contains(FinanceRoutes.Anomalies, routes);\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "mbershipRole = role, Status = status };\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs\nnew file mode 100644\n--- /dev/null\n+++ b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs\n@@ -0,0 +1,43 @@\n+using Microsoft.AspNetCore.Components;\n+using VirtualCompany.Web.Pages.Finance;\n+using VirtualCompany.Web.Services;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class FinanceRouteRegistrationTests\n+{\n+    [Theory]\n+    [InlineData(typeof(FinancePage), FinanceRoutes.Home)]\n+    [InlineData(typeof(CashPositionPage), FinanceRoutes.CashPosition)]\n+    [InlineData(typeof(TransactionsPage), FinanceRoutes.Transactions)]\n+    [InlineData(typeof(InvoicesPage), FinanceRoutes.Invoices)]\n+    [InlineData(typeof(BalancesPage), FinanceRoutes.Balances)]\n+    [InlineData(typeof(MonthlySummaryPage), FinanceRoutes.MonthlySummary)]\n+    [InlineData(typeof(AnomaliesPage), FinanceRoutes.Anomalies)]\n+    public void Finance_pages_register_expected_routes(Type componentType, string expectedRoute)\n+    {\n+        var routes = componentType.GetCustomAttributes(inherit: false)\n+            .OfType<RouteAttribute>()\n+            .Select(attribute => attribute.Template)\n+            .ToArray();\n+\n+        Assert.Contains(expectedRoute, routes);\n+    }\n+\n+    [Fact]\n+    public void Finance_landing_page_defines_required_shell_links()\n+    {\n+        var routes = FinanceRoutes.SectionPages.Select(route => route.Path).ToArray();\n+\n+        Assert.Equal(6, routes.Length);\n+        Assert.Contains(FinanceRoutes.CashPosition, routes);\n+        Assert.Contains(FinanceRoutes.Transactions, routes);\n+        Assert.Contains(FinanceRoutes.Invoices, routes);\n+        Assert.Contains(FinanceRoutes.Balances, routes);\n+        Assert.Contains(FinanceRoutes.MonthlySummary, routes);\n+        Assert.Contains(FinanceRoutes.Anomalies, routes);\n+    }\n+}\nEND_OF_PATCH\ntokens used\n91,842\n",
+  "verbosityMode": "summary"
+}

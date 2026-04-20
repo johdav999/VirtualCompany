@@ -1,0 +1,202 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceTransactionAnomalyDetectionService.cs
+@@ -47,6 +47,7 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+         var baseline = await LoadHistoricalBaselineAsync(command.CompanyId, transaction, cancellationToken);
+         var decisions = BuildDecisions(transaction, policy, baseline);
+         var sourceAgentId = command.AgentId ?? await ResolveLauraAgentIdAsync(command.CompanyId, cancellationToken);
++        var dedupeWindow = BuildDedupeWindow(evaluatedUtc);
+         var anomalies = new List<FinanceTransactionAnomalyDto>();
+ 
+         foreach (var decision in decisions)
+@@ -58,6 +59,7 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+                 decision,
+                 sourceAgentId,
+                 evaluatedUtc,
++                dedupeWindow,
+                 cancellationToken);
+             var task = await CreateOrReuseFollowUpTaskAsync(
+                 command,
+@@ -67,6 +69,7 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+                 decision,
+                 alert.Alert.Id,
+                 sourceAgentId,
++                dedupeWindow,
+                 cancellationToken);
+ 
+             anomalies.Add(new FinanceTransactionAnomalyDto(
+@@ -183,19 +186,22 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+         AnomalyDecision decision,
+         Guid? sourceAgentId,
+         DateTime evaluatedUtc,
++        DedupeWindow dedupeWindow,
+         CancellationToken cancellationToken)
+     {
+-        var fingerprint = BuildFingerprint(command.CompanyId, command.TransactionId, decision.AnomalyType);
+-        var correlationId = BuildCorrelationId(command.CompanyId, command.TransactionId, decision.AnomalyType);
+-        var evidence = BuildEvidence(transaction, policy, baseline, decision, evaluatedUtc);
+-        var metadata = BuildMetadata(command, transaction, baseline, decision);
+-        var dedupeCutoffUtc = evaluatedUtc.AddHours(-Math.Max(1, _options.DeduplicationWindowHours));
++        var baseFingerprint = BuildDedupeKey(command.CompanyId, command.TransactionId, decision.AnomalyType);
++        var windowedFingerprint = BuildWindowedFingerprint(baseFingerprint, dedupeWindow);
++        var windowedFingerprintPrefix = $"{baseFingerprint}:window:";
++        var correlationId = BuildCorrelationId(command.CompanyId, command.TransactionId, decision.AnomalyType, dedupeWindow);
++        var evidence = BuildEvidence(transaction, policy, baseline, decision, evaluatedUtc, dedupeWindow);
++        var metadata = BuildMetadata(command, transaction, baseline, decision, dedupeWindow);
++        var dedupeCutoffUtc = evaluatedUtc.AddHours(-dedupeWindow.Hours);
+ 
+         var existing = await _dbContext.Alerts
+             .IgnoreQueryFilters()
+             .Where(x =>
+                 x.CompanyId == command.CompanyId &&
+-                x.Fingerprint == fingerprint &&
++                (x.Fingerprint == baseFingerprint || x.Fingerprint.StartsWith(windowedFingerprintPrefix)) &&
+                 (x.Status == AlertStatus.Open || x.Status == AlertStatus.Acknowledged) &&
+                 (x.LastDetectedUtc ?? x.CreatedUtc) >= dedupeCutoffUtc)
+             .OrderByDescending(x => x.LastDetectedUtc ?? x.CreatedUtc)
+@@ -222,7 +228,7 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+             decision.Explanation,
+             evidence,
+             correlationId,
+-            fingerprint,
++            windowedFingerprint,
+             AlertStatus.Open,
+             sourceAgentId,
+             metadata);
+@@ -238,9 +244,10 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+         AnomalyDecision decision,
+         Guid alertId,
+         Guid? sourceAgentId,
++        DedupeWindow dedupeWindow,
+         CancellationToken cancellationToken)
+     {
+-        var correlationId = BuildCorrelationId(command.CompanyId, command.TransactionId, decision.AnomalyType);
++        var correlationId = BuildCorrelationId(command.CompanyId, command.TransactionId, decision.AnomalyType, dedupeWindow);
+         var existingTask = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+             .Where(x =>
+@@ -257,7 +264,7 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+             return existingTask;
+         }
+ 
+-        var payload = BuildTaskPayload(command, transaction, policy, baseline, decision, alertId);
++        var payload = BuildTaskPayload(command, transaction, policy, baseline, decision, alertId, dedupeWindow);
+         var task = new WorkTask(
+             Guid.NewGuid(),
+             command.CompanyId,
+@@ -280,7 +287,7 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+             sourceAgentId,
+             FinanceWorkflowQueue,
+             "Laura detected a finance transaction anomaly that requires queue follow-up.",
+-            $"{command.TransactionId:N}:{decision.AnomalyType}",
++            $"{command.TransactionId:N}:{decision.AnomalyType}:{dedupeWindow.StartUtc:yyyyMMddHH}",
+             WorkTaskStatus.New);
+ 
+         task.SetDueDate(DateTime.UtcNow.AddBusinessDays(2));
+@@ -311,7 +318,8 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+         FinancePolicyConfigurationDto policy,
+         HistoricalBaseline baseline,
+         AnomalyDecision decision,
+-        DateTime evaluatedUtc) =>
++        DateTime evaluatedUtc,
++        DedupeWindow dedupeWindow) =>
+         new(StringComparer.OrdinalIgnoreCase)
+         {
+             ["transactionId"] = JsonValue.Create(transaction.Id),
+@@ -333,7 +341,10 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+             ["anomalyType"] = JsonValue.Create(decision.AnomalyType),
+             ["confidence"] = JsonValue.Create(decision.Confidence),
+             ["recommendedAction"] = JsonValue.Create(decision.RecommendedAction),
+-            ["evaluatedUtc"] = JsonValue.Create(evaluatedUtc)
++            ["evaluatedUtc"] = JsonValue.Create(evaluatedUtc),
++            ["deduplicationWindowStartUtc"] = JsonValue.Create(dedupeWindow.StartUtc),
++            ["deduplicationWindowEndUtc"] = JsonValue.Create(dedupeWindow.EndUtc),
++            ["deduplicationWindowHours"] = JsonValue.Create(dedupeWindow.Hours)
+         };
+ 
+     private static Dictionary<string, JsonNode?> BuildMetadata(
+@@ -341,7 +352,8 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+         TransactionRow transaction,
+         HistoricalBaseline baseline,
+-        AnomalyDecision decision) =>
++        AnomalyDecision decision,
++        DedupeWindow dedupeWindow) =>
+         new(StringComparer.OrdinalIgnoreCase)
+         {
+             ["source"] = JsonValue.Create("finance_anomaly_detection"),
+@@ -350,7 +362,11 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+             ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
+             ["transactionDescription"] = JsonValue.Create(transaction.Description),
+             ["baselineSampleSize"] = JsonValue.Create(baseline.SampleSize),
+-            ["anomalyType"] = JsonValue.Create(decision.AnomalyType)
++            ["anomalyType"] = JsonValue.Create(decision.AnomalyType),
++            ["dedupeKey"] = JsonValue.Create(BuildDedupeKey(command.CompanyId, command.TransactionId, decision.AnomalyType)),
++            ["deduplicationWindowStartUtc"] = JsonValue.Create(dedupeWindow.StartUtc),
++            ["deduplicationWindowEndUtc"] = JsonValue.Create(dedupeWindow.EndUtc),
++            ["deduplicationWindowHours"] = JsonValue.Create(dedupeWindow.Hours)
+         };
+ 
+     private static Dictionary<string, JsonNode?> BuildTaskPayload(
+@@ -360,7 +376,8 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+         HistoricalBaseline baseline,
+         AnomalyDecision decision,
+-        Guid alertId) =>
++        Guid alertId,
++        DedupeWindow dedupeWindow) =>
+         new(StringComparer.OrdinalIgnoreCase)
+         {
+             ["companyId"] = JsonValue.Create(command.CompanyId),
+@@ -378,7 +395,10 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+             ["policyLowerBound"] = JsonValue.Create(policy.AnomalyDetectionLowerBound),
+             ["policyUpperBound"] = JsonValue.Create(policy.AnomalyDetectionUpperBound),
+             ["historicalBaseline"] = BuildBaselineNode(baseline),
+-            ["assignedQueue"] = JsonValue.Create(FinanceWorkflowQueue)
++            ["assignedQueue"] = JsonValue.Create(FinanceWorkflowQueue),
++            ["deduplicationWindowStartUtc"] = JsonValue.Create(dedupeWindow.StartUtc),
++            ["deduplicationWindowEndUtc"] = JsonValue.Create(dedupeWindow.EndUtc),
++            ["deduplicationWindowHours"] = JsonValue.Create(dedupeWindow.Hours)
+         };
+ 
+     private static JsonObject BuildBaselineNode(HistoricalBaseline baseline) =>
+@@ -397,12 +417,30 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+     private static string BuildAlertTitle(TransactionRow transaction, AnomalyDecision decision) =>
+         $"Finance anomaly: {decision.AnomalyType.Replace('_', ' ')} on {transaction.ExternalReference}";
+ 
+-    private static string BuildFingerprint(Guid companyId, Guid transactionId, string anomalyType) =>
++    private DedupeWindow BuildDedupeWindow(DateTime evaluatedUtc)
++    {
++        var hours = Math.Max(1, _options.DeduplicationWindowHours);
++        var windowTicks = TimeSpan.FromHours(hours).Ticks;
++        var windowStartTicks = evaluatedUtc.Ticks - evaluatedUtc.Ticks % windowTicks;
++        var windowStartUtc = new DateTime(windowStartTicks, DateTimeKind.Utc);
++        return new DedupeWindow(windowStartUtc, windowStartUtc.AddHours(hours), hours);
++    }
++
++    private static string BuildDedupeKey(Guid companyId, Guid transactionId, string anomalyType) =>
+         $"{CorrelationPrefix}:{companyId:N}:{transactionId:N}:{anomalyType}".ToLowerInvariant();
+ 
+-    private static string BuildCorrelationId(Guid companyId, Guid transactionId, string anomalyType) =>
+-        $"{CorrelationPrefix}:{companyId:N}:{transactionId:N}:{anomalyType}";
++    private static string BuildWindowedFingerprint(string baseFingerprint, DedupeWindow dedupeWindow) =>
++        $"{baseFingerprint}:window:{dedupeWindow.StartUtc:yyyyMMddHH}".ToLowerInvariant();
+ 
++    private static string BuildCorrelationId(
++        Guid companyId,
++        Guid transactionId,
++        string anomalyType,
++        DedupeWindow dedupeWindow) =>
++        $"fin-anom:{companyId:N}:{transactionId:N}:{anomalyType.ToLowerInvariant()}:{dedupeWindow.StartUtc:yyyyMMddHH}";
++
+     private static void Validate(EvaluateFinanceTransactionAnomalyCommand command)
+     {
+         if (command.CompanyId == Guid.Empty)
+@@ -460,6 +498,8 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
+         string RecommendedAction,
+         AlertSeverity Severity);
+ 
++    private sealed record DedupeWindow(DateTime StartUtc, DateTime EndUtc, int Hours);
++
+     private sealed record AlertMutation(Alert Alert, bool Created, bool Deduplicated);
+ }
+END_OF_PATCH

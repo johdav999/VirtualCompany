@@ -1,0 +1,218 @@
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+index 998a3b8..b0818c9 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor
+@@ -33,6 +33,7 @@
+                         <div class="col-md-6">
+                             <label class="form-label" for="seed-company">Company</label>
+                             <input id="seed-company" class="form-control" value="@_seedGenerationForm.CompanyName" disabled />
++                            <div class="form-text">The active finance company context is applied automatically for seed generation.</div>
+                             <ValidationMessage For="@(() => _seedGenerationForm.CompanyId)" />
+                         </div>
+                         <div class="col-md-3">
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+index 0d95d2f..2f9fbd7 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SandboxAdminPage.razor.cs
+@@ -149,7 +149,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+         _seedGenerationEditContext.OnFieldChanged -= HandleSeedGenerationFieldChanged;
+     }
+ 
+-    private sealed class SeedGenerationFormModel
++    private sealed class SeedGenerationFormModel : IValidatableObject
+     {
+         public Guid CompanyId { get; set; }
+         public string CompanyName { get; set; } = string.Empty;
+@@ -163,6 +163,22 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
+ 
+         [Required(ErrorMessage = "Select a generation mode.")]
+         public string GenerationMode { get; set; } = FinanceSandboxSeedGenerationModes.Refresh;
++
++        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
++        {
++            if (CompanyId == Guid.Empty)
++            {
++                yield return new ValidationResult("Select a company before generating a seed dataset.", [nameof(CompanyId)]);
++            }
++
++            if (AnchorDateUtc == default)
++            {
++                yield return new ValidationResult("Select an anchor date.", [nameof(AnchorDateUtc)]);
++            }
++
++            if (!FinanceSandboxSeedGenerationModes.IsSupported(GenerationMode))
++            {
++                yield return new ValidationResult("Select a supported generation mode.", [nameof(GenerationMode)]);
++            }
++        }
+     }
+ 
+     private sealed record GenerationModeOption(
+diff --git a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+index 12d1d44..d5e5db3 100644
+--- a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
++++ b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+@@ -96,6 +96,13 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             Items = response.Items.Select(MapDomainEventItem).ToArray()
+         };
+     }
++
++    private static FinanceSandboxSeedGenerationIssueViewModel MapSeedGenerationIssue(FinanceSandboxSeedGenerationIssueResponse response) =>
++        new()
++        {
++            Code = response.Code,
++            Message = response.Message
++        };
+ 
+     private static FinanceSandboxToolExecutionItemViewModel MapToolExecutionItem(FinanceSandboxToolExecutionItemResponse response) =>
+         new()
+@@ -111,13 +118,6 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             OccurredAtUtc = response.OccurredAtUtc
+         };
+ }
+-
+-    private static FinanceSandboxSeedGenerationIssueViewModel MapSeedGenerationIssue(FinanceSandboxSeedGenerationIssueResponse response) =>
+-        new()
+-        {
+-            Code = response.Code,
+-            Message = response.Message
+-        };
+ 
+ public sealed record FinanceSandboxSectionState<TSection>(bool IsLoading, string? ErrorMessage, TSection? Value)
+     where TSection : class
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+index e2ef8be..77ce621 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminEndpointIntegrationTests.cs
+@@ -1,4 +1,5 @@
+ using System.Net;
++using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+@@ -96,6 +97,37 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
+         Assert.NotEmpty(payload.Warnings);
+     }
+ 
++    [Fact]
++    public async Task Seed_generation_endpoint_rejects_invalid_requests_with_structured_validation_errors()
++    {
++        var seed = await SeedSandboxAdminCompanyAsync();
++        var identity = seed.GetIdentity("owner");
++        using var client = CreateAuthenticatedClient(identity.Subject, identity.Email, identity.DisplayName);
++
++        var response = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/seed-generation",
++            new FinanceSandboxSeedGenerationRequest
++            {
++                CompanyId = Guid.NewGuid(),
++                SeedValue = 0,
++                AnchorDateUtc = default,
++                GenerationMode = "unsupported_mode"
++            });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(payload);
++        Assert.Equal("Finance validation failed", payload!.Title);
++        Assert.Equal("Update the seed generation request and try again.", payload.Detail);
++        Assert.Contains(nameof(FinanceSandboxSeedGenerationRequest.CompanyId), payload.Errors.Keys);
++        Assert.Contains(nameof(FinanceSandboxSeedGenerationRequest.SeedValue), payload.Errors.Keys);
++        Assert.Contains(nameof(FinanceSandboxSeedGenerationRequest.AnchorDateUtc), payload.Errors.Keys);
++        Assert.Contains(nameof(FinanceSandboxSeedGenerationRequest.GenerationMode), payload.Errors.Keys);
++        Assert.Contains("does not match the active company context", payload.Errors[nameof(FinanceSandboxSeedGenerationRequest.CompanyId)][0], StringComparison.OrdinalIgnoreCase);
++        Assert.Contains("positive seed value", payload.Errors[nameof(FinanceSandboxSeedGenerationRequest.SeedValue)][0], StringComparison.OrdinalIgnoreCase);
++        Assert.Contains("supported generation mode", payload.Errors[nameof(FinanceSandboxSeedGenerationRequest.GenerationMode)][0], StringComparison.OrdinalIgnoreCase);
++    }
++
+     private async Task<SandboxAdminEndpointSeed> SeedSandboxAdminCompanyAsync()
+     {
+         var companyId = Guid.NewGuid();
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+index ed4fd91..08ef65f 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSandboxAdminPageTests.cs
+@@ -98,6 +98,28 @@ public sealed class FinanceSandboxAdminPageTests
+         Assert.Equal(1, sandboxService.DomainEventsCalls);
+     }
+ 
++    [Fact]
++    public void Sandbox_admin_page_blocks_seed_generation_submit_when_form_is_invalid()
++    {
++        var companyId = Guid.Parse("4bfb1eb0-cbe8-4ee8-a56b-32a56326707a");
++        var sandboxService = new StubFinanceSandboxAdminService();
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId));
++
++        cut.Find("#seed-value").Change("0");
++        cut.Find("form").Submit();
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Enter a positive seed value.", cut.Markup);
++            Assert.DoesNotContain("Generating dataset...", cut.Markup);
++        });
++
++        Assert.Equal(0, sandboxService.GenerateSeedDatasetCalls);
++    }
++
+     [Fact]
+     public void Sandbox_admin_page_submits_seed_generation_once_and_disables_duplicate_submissions_while_pending()
+     {
+@@ -196,6 +218,32 @@ public sealed class FinanceSandboxAdminPageTests
+         });
+     }
+ 
++    [Fact]
++    public void Sandbox_admin_page_shows_backend_validation_errors_inline_when_seed_generation_api_rejects_request()
++    {
++        var companyId = Guid.Parse("8d7169ca-2b36-48cf-8aa2-d30530d2ce47");
++        var sandboxService = new StubFinanceSandboxAdminService
++        {
++            OnGenerateSeedDatasetAsync = (_, _) => throw new FinanceApiValidationException(
++                "Update the highlighted fields and retry the request.",
++                new Dictionary<string, string[]>
++                {
++                    [nameof(FinanceSandboxSeedGenerationRequest.SeedValue)] = ["The backend requires a seed value greater than zero."],
++                    [nameof(FinanceSandboxSeedGenerationRequest.GenerationMode)] = ["Select a supported generation mode."]
++                })
++        };
++
++        using var harness = CreateHarness(companyId, "admin", sandboxService);
++        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId));
++
++        cut.Find("form").Submit();
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Update the highlighted fields and retry the request.", cut.Markup);
++            Assert.Contains("The backend requires a seed value greater than zero.", cut.Markup);
++            Assert.Contains("Select a supported generation mode.", cut.Markup);
++            Assert.False(cut.Find("#seed-generate-submit").HasAttribute("disabled"));
++        });
++    }
++
+     [Fact]
+     public void Sandbox_admin_page_shows_inline_error_when_seed_generation_api_fails()
+     {
+@@ -214,7 +262,11 @@ public sealed class FinanceSandboxAdminPageTests
+         cut.Find("form").Submit();
+ 
+         cut.WaitForAssertion(() =>
++        {
+             Assert.Contains("The web app could not reach the finance backend. Start the API project and retry the request.", cut.Markup));
++            Assert.False(cut.Find("#seed-generate-submit").HasAttribute("disabled"));
++            Assert.DoesNotContain("Generating dataset...", cut.Markup);
++        });
+     }
+ 
+     private static SandboxAdminHarness CreateHarness(Guid companyId, string membershipRole, StubFinanceSandboxAdminService sandboxService)
+END_OF_PATCH

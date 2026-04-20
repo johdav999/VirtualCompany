@@ -38,6 +38,9 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
     public const string WorkflowStateChanged = "workflow_state_changed";
     public const string ApprovalUpdated = "approval_updated";
     public const string AgentStatusUpdated = "agent_status_updated";
+    public const string FinanceTransactionCreated = "finance.transaction.created";
+    public const string FinanceInvoiceCreated = "finance.invoice.created";
+    public const string FinanceThresholdBreached = "finance.threshold.breached";
 
     private static readonly string[] EventTypes =
     [
@@ -68,6 +71,10 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
         ToolExecutionDenied,
         MemoryItemCreated,
         ConversationMessageSent
+        ,
+        FinanceTransactionCreated,
+        FinanceInvoiceCreated,
+        FinanceThresholdBreached
     ];
 
     private static readonly HashSet<string> EventTypeSet =

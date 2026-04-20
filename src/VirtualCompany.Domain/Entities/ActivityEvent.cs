@@ -27,7 +27,8 @@ public sealed class ActivityEvent : ICompanyOwnedEntity
         IReadOnlyDictionary<string, JsonNode?>? sourceMetadata,
         string? department = null,
         Guid? taskId = null,
-        Guid? auditEventId = null)
+        Guid? auditEventId = null,
+        DateTime? createdUtc = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -51,7 +52,7 @@ public sealed class ActivityEvent : ICompanyOwnedEntity
         TaskId = taskId == Guid.Empty ? throw new ArgumentException("TaskId cannot be empty.", nameof(taskId)) : taskId;
         AuditEventId = auditEventId == Guid.Empty ? throw new ArgumentException("AuditEventId cannot be empty.", nameof(auditEventId)) : auditEventId;
         SourceMetadata = CloneNodes(sourceMetadata);
-        CreatedUtc = DateTime.UtcNow;
+        CreatedUtc = NormalizeUtc(createdUtc ?? OccurredUtc, nameof(createdUtc));
     }
 
     public Guid Id { get; private set; }

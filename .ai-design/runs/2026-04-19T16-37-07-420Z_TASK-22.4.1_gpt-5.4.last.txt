@@ -1,0 +1,1674 @@
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -1,289 +1,356 @@
+ @page "/dashboard"
+ @rendermode InteractiveServer
++@implements IAsyncDisposable
+ @inject OnboardingApiClient ApiClient
+ @inject NavigationManager Navigation
++@inject IJSRuntime JS
+ @using Microsoft.AspNetCore.Components
++@using Microsoft.JSInterop
++@using VirtualCompany.Web.Services
+ 
+ <PageTitle>Dashboard</PageTitle>
+ 
+ @if (isLoading)
+ {
+@@ -62,147 +65,111 @@
+ else
+ {
+     <section class="py-4 dashboard-hero">
+-        <div class="company-dashboard-layout">
++        <div class="company-dashboard-layout company-dashboard-layout--single">
+             <div class="company-dashboard-main">
+-                <div class="wizard-card dashboard-summary dashboard-summary--workspace">
+-                    <span class="dashboard-kicker">Workspace overview</span>
++                <section class="wizard-card dashboard-summary dashboard-summary--workspace" data-testid="company-health-banner">
++                    <span class="dashboard-kicker">Company health</span>
+                     <h1>@(companyAccess?.CompanyName ?? "Workspace dashboard")</h1>
+                     <p class="lead mb-2">
+                         @(showStarterGuidance
+                             ? "Your company workspace is live. Start with the next recommended actions below."
+-                            : "Your company workspace is ready for the next setup actions.")
++                            : "The dashboard is arranged for action-first operating work across approvals, finance, activity, and departments.")
+                     </p>
+                     <p class="text-body-secondary mb-0">
+                         @(companyAccess is null
+                             ? "Use onboarding to create or resume a workspace."
+                             : $"Role: {companyAccess.MembershipRole} | Access: {companyAccess.Status}")
+                     </p>
+ 
+                     <div class="workspace-overview-grid mt-4">
+                         <article class="workspace-overview-card">
+-                            <span class="dashboard-kicker">Operations</span>
+-                            <strong>Prioritized action list</strong>
+-                            <p class="text-body-secondary mb-0">The inline queue below keeps the five highest-priority actions visible in the main dashboard flow.</p>
++                            <span class="dashboard-kicker">Briefings</span>
++                            <strong>@BriefingStatus</strong>
++                            <p class="text-body-secondary mb-0">Daily and weekly summaries keep the company context readable before you act.</p>
+                         </article>
+                         <article class="workspace-overview-card">
+-                            <span class="dashboard-kicker">Briefings</span>
+-                            <strong>@(briefings?.Daily is not null || briefings?.Weekly is not null ? "Ready" : "Pending")</strong>
+-                            <p class="text-body-secondary mb-0">Daily and weekly summaries keep the company context readable at a glance.</p>
++                            <span class="dashboard-kicker">Actions</span>
++                            <strong>Priority queue ready</strong>
++                            <p class="text-body-secondary mb-0">Today’s focus and the top action queue stay above the fold for fast triage.</p>
+                         </article>
+                         <article class="workspace-overview-card">
+-                            <span class="dashboard-kicker">Workspace</span>
+-                            <strong>Central cockpit</strong>
+-                            <p class="text-body-secondary mb-0">The main panel below is now reserved for live operating data instead of static welcome copy.</p>
++                            <span class="dashboard-kicker">Telemetry</span>
++                            <strong>Session tracked</strong>
++                            <p class="text-body-secondary mb-0">The dashboard records focus clicks, first action timing, and session scroll depth.</p>
+                         </article>
+                     </div>
+ 
++                    @if (PrimaryBriefing is not null)
++                    {
++                        <div class="dashboard-briefing-preview mt-4">
++                            <span class="dashboard-kicker">Latest briefing</span>
++                            <h2 class="h5 mt-2 mb-1">@PrimaryBriefing.Title</h2>
++                            <div class="text-body-secondary">@PrimaryBriefing.GeneratedUtc.ToLocalTime():g</div>
++                            <p class="mt-3 mb-0">@FirstParagraph(PrimaryBriefing.SummaryBody)</p>
++                            @if (PrimaryBriefing.SourceReferences.Count > 0)
++                            {
++                                <div class="text-body-secondary mt-2">@FormatBriefingReferences(PrimaryBriefing.SourceReferences)</div>
++                            }
++                        </div>
++                    }
++
+                     @if (showStarterGuidance)
+                     {
+                         <div class="dashboard-welcome mt-4">
+                             <span class="dashboard-kicker">Onboarding complete</span>
+-                            <h2 class="h4 mt-2">Starter guidance for the first dashboard visit</h2>
++                            <h2 class="h4 mt-2">Starter guidance for the first dashboard visit</h2>
+                             <p class="text-body-secondary mb-0">
+                                 @(dashboardEntry?.OnboardingCompletedUtc is DateTime completedUtc
+                                     ? $"Workspace setup finished on {completedUtc.ToLocalTime():g}. These actions keep the new company context moving."
+                                     : "Workspace setup finished successfully. These actions keep the new company context moving.")
+                             </p>
+                             <ul class="dashboard-checklist mt-4 mb-0">
+                                 @foreach (var item in StarterGuidance)
+                                 {
+                                     <li>@item</li>
+                                 }
+                             </ul>
+                             <div class="dashboard-actions mt-4">
+                                 <a class="btn btn-primary" href="@DashboardPath">Continue in dashboard</a>
+                                 <a class="btn btn-outline-primary" href="@AgentRosterPath">Open agent roster</a>
+                                 <a class="btn btn-outline-secondary" href="onboarding">Review setup defaults</a>
+                             </div>
+                         </div>
+                     }
+ 
+                     @if (!string.IsNullOrWhiteSpace(errorMessage))
+                     {
+                         <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                     }
+-                </div>
++                </section>
+ 
+                 @if (CompanyId is Guid selectedCompanyId && currentUser?.User.Id is Guid currentUserId)
+                 {
+-                    <TodayFocusPanel CompanyId="selectedCompanyId" UserId="currentUserId" />
++                    <TodayFocusPanel CompanyId="selectedCompanyId"
++                                     UserId="currentUserId"
++                                     OnActionClick="HandleDashboardActionAsync" />
+                 }
+ 
+                 @if (CompanyId is Guid selectedCompanyIdForQueue)
+                 {
+-                    <TopActionsList CompanyId="selectedCompanyIdForQueue" Count="5" />
++                    <TopActionsList CompanyId="selectedCompanyIdForQueue"
++                                    Count="5"
++                                    OnActionClick="HandleDashboardActionAsync" />
+                 }
+ 
+                 @if (CompanyId is Guid selectedCompanyId)
+                 {
+-                    <ExecutiveCockpitDashboard CompanyId="selectedCompanyId" CompanyName="companyAccess?.CompanyName" />
+-                }
+-            </div>
+-
+-            <aside class="company-dashboard-rail">
+-                <div class="wizard-card wizard-card--compact">
+-                    <h2 class="h5">Executive briefings</h2>
+-                    @if (briefings?.Daily is null && briefings?.Weekly is null)
+-                    {
+-                        <p class="text-body-secondary mb-0">No briefing has been generated for this workspace yet.</p>
+-                    }
+-                    else
+-                    {
+-                        @if (briefings?.Daily is not null)
+-                        {
+-                            <article class="mb-4">
+-                                <strong>@briefings.Daily.Title</strong>
+-                                <div class="text-body-secondary">@briefings.Daily.GeneratedUtc.ToLocalTime():g</div>
+-                                <p class="mt-2 mb-2">@FirstParagraph(briefings.Daily.SummaryBody)</p>
+-                                @if (briefings.Daily.SourceReferences.Count > 0)
+-                                {
+-                                    <div class="text-body-secondary">@FormatBriefingReferences(briefings.Daily.SourceReferences)</div>
+-                                }
+-                            </article>
+-                        }
+-
+-                        @if (briefings?.Weekly is not null)
+-                        {
+-                            <article>
+-                                <strong>@briefings.Weekly.Title</strong>
+-                                <div class="text-body-secondary">@briefings.Weekly.GeneratedUtc.ToLocalTime():g</div>
+-                                <p class="mt-2 mb-2">@FirstParagraph(briefings.Weekly.SummaryBody)</p>
+-                                @if (briefings.Weekly.SourceReferences.Count > 0)
+-                                {
+-                                    <div class="text-body-secondary">@FormatBriefingReferences(briefings.Weekly.SourceReferences)</div>
+-                                }
+-                            </article>
+-                        }
+-                    }
+-                </div>
+-
+-                <div class="wizard-card wizard-card--compact">
+-                    <h2 class="h5">@((showStarterGuidance ? "Next recommended steps" : "Workspace context"))</h2>
+-                    @if (showStarterGuidance)
+-                    {
+-                        <ul class="mb-0">
+-                            <li>Invite teammates who need access to the new workspace.</li>
+-                            <li>Upload the first company notes or documents to move beyond the starter state.</li>
+-                            <li>Reopen onboarding only if workspace defaults need to change.</li>
+-                        </ul>
+-                    }
+-                    else
+-                    {
+-                        <ul class="mb-0">
+-                            <li>Use onboarding to create or resume a workspace if no company is selected.</li>
+-                            <li>Open the company-specific dashboard route to keep the tenant context explicit.</li>
+-                            @if (CompanyId is Guid)
+-                            {
+-                                <li><a href="@AgentRosterPath">Open the agent roster to start a direct chat.</a></li>
+-                            }
+-                            <li>Starter guidance appears on redirected dashboard entry for newly completed onboarding.</li>
+-                        </ul>
+-                    }
+-                </div>
+-            </aside>
+-
+-    private bool isLoading = true;
++                    <ExecutiveCockpitDashboard CompanyId="selectedCompanyId"
++                                               CompanyName="companyAccess?.CompanyName"
++                                               OnActionClick="HandleDashboardActionAsync" />
++                }
++            </div>
++        </div>
++    </section>
++}
++
++@code {
++    [Parameter]
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    [Parameter]
++    [SupplyParameterFromQuery(Name = "welcome")]
++    public string? Welcome { get; set; }
++
++    private bool isLoading = true;
+     private CurrentUserContextViewModel? currentUser;
+     private OnboardingProgressViewModel? onboardingProgress;
+     private CompanyAccessViewModel? companyAccess;
+     private CompanyDashboardEntryViewModel? dashboardEntry;
+     private DashboardBriefingCardViewModel? briefings;
+     private string? errorMessage;
++    private DashboardTelemetrySession? telemetrySession;
++    private Guid? telemetryCompanyId;
++    private IJSObjectReference? telemetryModule;
++    private DotNetObjectReference<Dashboard>? dotNetReference;
++    private string? scrollTrackerId;
+     private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
+     private string AgentRosterPath => CompanyId is Guid companyId ? $"/agents?companyId={companyId}" : "/agents";
++    private string BriefingStatus => PrimaryBriefing is null ? "Pending" : "Ready";
++    private BriefingCardViewModel? PrimaryBriefing => briefings?.Daily ?? briefings?.Weekly;
+     private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
+         currentUser?.Memberships
+             .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+@@ -223,11 +190,23 @@
+     private bool showStarterGuidance =>
+         companyAccess is not null &&
+         dashboardEntry?.ShowStarterGuidance == true &&
+         IsWelcomeEntry();
++
+     protected override async Task OnParametersSetAsync()
+     {
+         isLoading = true;
+         errorMessage = null;
++        if (telemetryCompanyId != CompanyId)
++        {
++            telemetryCompanyId = CompanyId;
++            telemetrySession = CompanyId is Guid selectedCompanyId
++                ? new DashboardTelemetrySession("dashboard", selectedCompanyId)
++                : null;
++        }
+ 
+         try
+         {
+             currentUser = await ApiClient.GetCurrentUserContextAsync();
+             onboardingProgress = await ApiClient.GetProgressAsync();
+@@ -260,6 +239,39 @@
+             if (dashboardEntry?.RequiresOnboarding == true)
+             {
+                 Navigation.NavigateTo("/onboarding", replace: true);
+                 return;
+             }
+         }
+@@ -279,6 +291,54 @@
+         }
+     }
+ 
++    protected override async Task OnAfterRenderAsync(bool firstRender)
++    {
++        if (CompanyId is not Guid || !string.IsNullOrWhiteSpace(scrollTrackerId))
++        {
++            return;
++        }
++
++        try
++        {
++            telemetryModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/dashboardTelemetry.js");
++            dotNetReference ??= DotNetObjectReference.Create(this);
++            scrollTrackerId = await telemetryModule.InvokeAsync<string>("registerDashboardScrollTracker", dotNetReference);
++        }
++        catch
++        {
++            // Ignore telemetry bootstrapping failures in prerender and tests.
++        }
++    }
++
++    [JSInvokable]
++    public Task OnDashboardScrollDepthChanged(double depthPercentage)
++    {
++        telemetrySession?.RecordScrollDepth(depthPercentage);
++        return Task.CompletedTask;
++    }
++
++    private Task HandleDashboardActionAsync(DashboardActionTelemetryContext context)
++    {
++        if (telemetrySession is null)
++        {
++            return Task.CompletedTask;
++        }
++
++        if (string.Equals(context.Area, "today-focus", StringComparison.OrdinalIgnoreCase))
++        {
++            telemetrySession.RecordFocusItemClick(context.ItemId, context.SourceType, context.Target, context.Label);
++            return Task.CompletedTask;
++        }
++
++        telemetrySession.RecordAction(context);
++        return Task.CompletedTask;
++    }
++
++    public async ValueTask DisposeAsync()
++    {
++        try
++        {
++            if (telemetryModule is not null && !string.IsNullOrWhiteSpace(scrollTrackerId))
++            {
++                await telemetryModule.InvokeVoidAsync("disposeDashboardScrollTracker", scrollTrackerId);
++            }
++        }
++        catch
++        {
++        }
++        dotNetReference?.Dispose();
++    }
++
+     private bool IsWelcomeEntry() => string.Equals(Welcome, "onboarding", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "true", StringComparison.OrdinalIgnoreCase);
+ 
+     private static string FirstParagraph(string value)
+     {
+@@ -315,4 +375,4 @@
+         string.IsNullOrWhiteSpace(reference.Status)
+             ? reference.Label
+             : $"{reference.Label} ({reference.Status})";
+-
+ }
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 3333333..4444444 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -1,499 +1,529 @@
+ @using System.Diagnostics
+ @using System.Diagnostics.Metrics
+ @inject ExecutiveCockpitApiClient ApiClient
+ @inject ILogger<ExecutiveCockpitDashboard> Logger
+ @inject FinanceApiClient FinanceApiClient
+ @inject NavigationManager Navigation
+ 
+-<section class="cockpit-panel">
+-    @if (isLoading)
+-    {
+-        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+-            <h2 class="h5">Executive cockpit</h2>
+-            <p class="text-body-secondary mb-0">Loading company-wide dashboard...</p>
+-        </div>
+-    }
+-    else if (!string.IsNullOrWhiteSpace(errorMessage))
+-    {
+-        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+-            <h2 class="h5">Executive cockpit</h2>
+-            <div class="alert alert-danger mb-0">@errorMessage</div>
+-        </div>
+-    }
+-    else if (dashboard is null)
+-    {
+-        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+-            <h2 class="h5">Executive cockpit</h2>
+-            <p class="text-body-secondary mb-0">Dashboard access is not available for this company.</p>
+-        </div>
+-    }
+-    else
+-    {
+-        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+-            <div class="cockpit-card__header">
+-                <div>
+-                    <span class="dashboard-kicker">Executive cockpit</span>
+-                    <h2 class="h4 mt-2 mb-1">@ResolvedCompanyName</h2>
+-                    <p class="text-body-secondary mb-0">Generated @dashboard.GeneratedAtUtc.ToLocalTime():g</p>
+-                </div>
+-                <div class="cockpit-toolbar">
+-                    <button class="btn btn-outline-secondary" @onclick="RefreshDashboardWidgetsAsync" disabled="@IsAnyWidgetLoading">Refresh cockpit</button>
+-                    <a class="btn btn-outline-primary" href="@AgentsPath">Agents</a>
+-                    <a class="btn btn-outline-primary" href="@TasksPath">Tasks</a>
+-                    <a class="btn btn-outline-primary" href="@WorkflowsPath">Workflows</a>
+-                    <a class="btn btn-outline-primary" href="@ApprovalsPath">Approvals</a>
+-                </div>
+-            </div>
+-        </div>
+-
+-        <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+-            <div class="cockpit-card__header">
+-                <div>
+-                    <h3 class="h5 mb-1">Business signals</h3>
+-                    <p class="text-body-secondary mb-0">Threshold-based operating signals for the current company.</p>
+-                </div>
+-                <button class="btn btn-outline-secondary btn-sm" @onclick="RefreshBusinessSignalsAsync" disabled="@IsWidgetLoading("business-signals")">Refresh</button>
+-            </div>
+-            @WidgetStatus("business-signals")
+-            <div class="mt-3">
+-                <BusinessSignalsPanel Signals="dashboard.BusinessSignals" />
+-            </div>
+-        </article>
+-
+-        <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+-            <div class="cockpit-card__header">
+-                <div>
+-                    <h3 class="h5 mb-1">Finance snapshot</h3>
+-                    <p class="text-body-secondary mb-0">Cash, burn, runway, and a simple risk badge for the active company.</p>
+-                </div>
+-                <button class="btn btn-outline-secondary btn-sm" @onclick="RefreshFinanceSnapshotAsync" disabled="@IsWidgetLoading("finance-snapshot")">Refresh</button>
+-            </div>
+-            @WidgetStatus("finance-snapshot")
+-            <div class="mt-3">
+-                <FinanceSnapshotCard Snapshot="financeSnapshot" CompanyId="CompanyId" />
+-            </div>
+-        </article>
+-
+-        @if (dashboard.Finance is not null)
+-        {
+-            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide" data-testid="executive-cockpit-finance-widget">
+-                <div class="cockpit-card__header">
+-                    <div>
+-                        <h3 class="h5 mb-1">Finance health</h3>
+-                        <p class="text-body-secondary mb-0">Cash coverage, runway status, and finance workflow entry points for the current company.</p>
+-                    </div>
+-                    <button class="btn btn-outline-secondary btn-sm" @onclick="RefreshFinanceWidgetAsync" disabled="@IsWidgetLoading("finance")">Refresh</button>
+-                </div>
+-                @WidgetStatus("finance")
+-
+-                @if (dashboard.Finance.LowCashAlert is not null)
+-                {
+-                    <section class="wizard-card mt-3" data-testid="executive-cockpit-low-cash-alert">
+-                        <div class="cockpit-card__header">
+-                            <div>
+-                                <span class="@SeverityBadgeClass(dashboard.Finance.LowCashAlert.Severity)">@dashboard.Finance.LowCashAlert.Severity</span>
+-                                <h4 class="h6 mt-2 mb-1">Low-cash alert</h4>
+-                                <p class="mb-0">@dashboard.Finance.LowCashAlert.Summary</p>
+-                            </div>
+-                            <a class="btn btn-outline-secondary btn-sm" href="@dashboard.Finance.LowCashAlert.Route" data-testid="executive-cockpit-low-cash-alert-open-detail">Open detail</a>
+-                        </div>
+-                        @if (dashboard.Finance.LowCashAlert.ContributingFactors.Count > 0)
+-                        {
+-                            <ul class="mt-3 mb-0">
+-                                @foreach (var factor in dashboard.Finance.LowCashAlert.ContributingFactors)
+-                                {
+-                                    <li>@factor</li>
+-                                }
+-                            </ul>
+-                        }
+-                    </section>
+-                }
+-
+-                @if (dashboard.Finance.DeepLinks.Count > 0)
+-                {
+-                    <div class="dashboard-actions mt-3">
+-                        @foreach (var link in dashboard.Finance.DeepLinks)
+-                        {
+-                            <a class="btn btn-outline-secondary" href="@link.Route" data-testid="@($"finance-deep-link-{NormalizeCssToken(link.Key)}")">@link.Label</a>
+-                        }
+-                    </div>
+-                }
+-
+-                @if (dashboard.Finance.AvailableActions.Count > 0)
+-                {
+-                    <div class="dashboard-actions mt-3">
+-                        @foreach (var action in dashboard.Finance.AvailableActions)
+-                        {
+-                            @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && HasDrillRoute(action.Route))
+-                            {
+-                                <a class="btn btn-outline-primary" href="@action.Route" data-testid="@($"finance-action-{NormalizeCssToken(action.Key)}")">@action.Label</a>
+-                            }
+-                            else
+-                            {
+-                                <button class="btn btn-outline-primary"
+-                                        type="button"
+-                                        data-testid="@($"finance-action-{NormalizeCssToken(action.Key)}")"
+-                                        @onclick="() => ExecuteFinanceActionAsync(action)"
+-                                        disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
+-                            }
+-                        }
+-                    </div>
+-                }
+-
+-                @if (!string.IsNullOrWhiteSpace(financeActionStatusMessage))
+-                {
+-                    <div class="alert alert-success mt-3 mb-0">@financeActionStatusMessage</div>
+-                }
+-
+-                @if (!string.IsNullOrWhiteSpace(financeActionErrorMessage))
+-                {
+-                    <div class="alert alert-warning mt-3 mb-0">@financeActionErrorMessage</div>
+-                </div>
+-            </article>
+-        }
+-
+-        @if (dashboard.DepartmentSections.Count > 0)
+-        {
+-            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+-                <div class="cockpit-card__header">
+-                    <div>
+-                        <h3 class="h5 mb-1">Department sections</h3>
+-                        <p class="text-body-secondary mb-0">Department dashboards are configured by the backend for this company and role.</p>
+-                    </div>
+-                </div>
+-                <div class="cockpit-kpi-grid">
+-                    @foreach (var section in dashboard.DepartmentSections)
+-                    {
+-                        <section class="summary-pill department-section-card" aria-label="@(section.DisplayName)">
+-                            <div class="department-section-card__header">
+-                                <div>
+-                                    <span class="dashboard-kicker">@section.DisplayName</span>
+-                                    <strong>@section.DisplayName</strong>
+-                                </div>
+-                                <a class="department-section-card__link" href="@SafeDrillRoute(section.Navigation.Route, AgentsPath)">@(section.Navigation.Label)</a>
+-                            </div>
+-                            <dl class="cockpit-kpi-list department-section-card__metrics mb-0 mt-3">
+-                                @foreach (var count in SectionSummaryCounts(section))
+-                                {
+-                                    <div><dt>@FormatSummaryLabel(count.Key)</dt><dd>@count.Value</dd></div>
+-                                }
+-                            </dl>
+-                            @if (section.IsEmpty)
+-                            {
+-                                <div class="text-body-secondary mt-3">
+-                                    <strong class="d-block">@(section.EmptyState.Title)</strong>
+-                                    <span>@(section.EmptyState.Message)</span>
+-                                </div>
+-                            }
+-                            @if (section.Widgets.Count > 0)
+-                            {
+-                                <div class="cockpit-empty-grid mt-3">
+-                                    @foreach (var widget in section.Widgets)
+-                                    {
+-                                        <a class="agent-analytics-placeholder-card text-decoration-none text-reset" href="@SafeDrillRoute(widget.Navigation.Route, section.Navigation.Route)">
+-                                            <strong>@widget.Title</strong>
+-                                            <div class="h4 mt-2 mb-1">@widget.SummaryValue</div>
+-                                            <p class="text-body-secondary mb-0">@(widget.IsEmpty ? widget.EmptyState.Message : widget.Navigation.Label)</p>
+-                                        </a>
+-                                    }
+-                                </div>
+-                            }
+-                        </section>
+-                    }
+-                </div>
+-            </article>
+-        }
+-    }
++<section class="dashboard-detail-stack">
++    @if (isLoading)
++    {
++        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++            <h2 class="h5">Executive cockpit</h2>
++            <p class="text-body-secondary mb-0">Loading company-wide dashboard...</p>
++        </div>
++    }
++    else if (!string.IsNullOrWhiteSpace(errorMessage))
++    {
++        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++            <h2 class="h5">Executive cockpit</h2>
++            <div class="alert alert-danger mb-0">@errorMessage</div>
++        </div>
++    }
++    else if (dashboard is null)
++    {
++        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++            <h2 class="h5">Executive cockpit</h2>
++            <p class="text-body-secondary mb-0">Dashboard access is not available for this company.</p>
++        </div>
++    }
++    else
++    {
++        <div class="dashboard-snapshot-grid" data-testid="dashboard-snapshot-grid">
++            <article class="wizard-card wizard-card--compact cockpit-card dashboard-snapshot-panel" data-testid="executive-cockpit-finance-widget">
++                <div class="cockpit-card__header">
++                    <div>
++                        <h2 class="h5 mb-1">Finance snapshot</h2>
++                        <p class="text-body-secondary mb-0">Cash, runway, and finance entry points for the active company.</p>
++                    </div>
++                    <div class="cockpit-toolbar">
++                        <button class="btn btn-outline-secondary btn-sm" @onclick="RefreshFinanceSnapshotAsync" disabled="@IsWidgetLoading("finance-snapshot")">Refresh snapshot</button>
++                        @if (dashboard.Finance is not null)
++                        {
++                            <button class="btn btn-outline-secondary btn-sm" @onclick="RefreshFinanceWidgetAsync" disabled="@IsWidgetLoading("finance")">Refresh finance</button>
++                        }
++                    </div>
++                </div>
++                @WidgetStatus("finance-snapshot")
++                <div class="mt-3">
++                    <FinanceSnapshotCard Snapshot="financeSnapshot"
++                                         CompanyId="CompanyId"
++                                         OnActionClick="OnActionClick" />
++                </div>
++
++                @if (dashboard.Finance is not null)
++                {
++                    @WidgetStatus("finance")
++
++                    @if (dashboard.Finance.LowCashAlert is not null)
++                    {
++                        <section class="wizard-card mt-3" data-testid="executive-cockpit-low-cash-alert">
++                            <div class="cockpit-card__header">
++                                <div>
++                                    <span class="@SeverityBadgeClass(dashboard.Finance.LowCashAlert.Severity)">@dashboard.Finance.LowCashAlert.Severity</span>
++                                    <h4 class="h6 mt-2 mb-1">Low-cash alert</h4>
++                                    <p class="mb-0">@dashboard.Finance.LowCashAlert.Summary</p>
++                                </div>
++                                <a class="btn btn-outline-secondary btn-sm"
++                                   href="@ResolveRoute(dashboard.Finance.LowCashAlert.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId))"
++                                   data-testid="executive-cockpit-low-cash-alert-open-detail"
++                                   @onclick="() => NavigateToAsync(dashboard.Finance.LowCashAlert.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId), "finance", "low-cash-alert")"
++                                   @onclick:preventDefault="true">Open detail</a>
++                            </div>
++                            @if (dashboard.Finance.LowCashAlert.ContributingFactors.Count > 0)
++                            {
++                                <ul class="mt-3 mb-0">
++                                    @foreach (var factor in dashboard.Finance.LowCashAlert.ContributingFactors)
++                                    {
++                                        <li>@factor</li>
++                                    }
++                                </ul>
++                            }
++                        </section>
++                    }
++
++                    @if (dashboard.Finance.DeepLinks.Count > 0)
++                    {
++                        <div class="dashboard-actions mt-3">
++                            @foreach (var link in dashboard.Finance.DeepLinks)
++                            {
++                                <a class="btn btn-outline-secondary"
++                                   href="@ResolveRoute(link.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId))"
++                                   data-testid="@($"finance-deep-link-{NormalizeCssToken(link.Key)}")"
++                                   @onclick="() => NavigateToAsync(link.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId), "finance", link.Key, link.Label)"
++                                   @onclick:preventDefault="true">@link.Label</a>
++                            }
++                        </div>
++                    }
++
++                    @if (dashboard.Finance.AvailableActions.Count > 0)
++                    {
++                        <div class="dashboard-actions mt-3">
++                            @foreach (var action in dashboard.Finance.AvailableActions)
++                            {
++                                @if (string.Equals(action.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) && HasDrillRoute(action.Route))
++                                {
++                                    <a class="btn btn-outline-primary"
++                                       href="@ResolveRoute(action.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId))"
++                                       data-testid="@($"finance-action-{NormalizeCssToken(action.Key)}")"
++                                       @onclick="() => NavigateToAsync(action.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId), "finance", action.Key, action.Label)"
++                                       @onclick:preventDefault="true">@action.Label</a>
++                                }
++                                else
++                                {
++                                    <button class="btn btn-outline-primary"
++                                            type="button"
++                                            data-testid="@($"finance-action-{NormalizeCssToken(action.Key)}")"
++                                            @onclick="() => ExecuteFinanceActionAsync(action)"
++                                            disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
++                                }
++                            }
++                        </div>
++                    }
++                }
++
++                @if (!string.IsNullOrWhiteSpace(financeActionStatusMessage))
++                {
++                    <div class="alert alert-success mt-3 mb-0">@financeActionStatusMessage</div>
++                }
++
++                @if (!string.IsNullOrWhiteSpace(financeActionErrorMessage))
++                {
++                    <div class="alert alert-warning mt-3 mb-0">@financeActionErrorMessage</div>
++                }
++            </article>
++
++            <article class="wizard-card wizard-card--compact cockpit-card dashboard-snapshot-panel" data-testid="operations-snapshot-panel">
++                <div class="cockpit-card__header">
++                    <div>
++                        <h2 class="h5 mb-1">Operations snapshot</h2>
++                        <p class="text-body-secondary mb-0">Actionable operating counts and threshold-based business signals.</p>
++                    </div>
++                    <div class="cockpit-toolbar">
++                        <button class="btn btn-outline-secondary btn-sm" @onclick="RefreshBusinessSignalsAsync" disabled="@IsWidgetLoading("business-signals")">Refresh operations</button>
++                        <a class="btn btn-outline-primary btn-sm"
++                           href="@QueuePath"
++                           @onclick="() => NavigateToAsync(QueuePath, QueuePath, "operations-snapshot", "open-queue", "Open queue")"
++                           @onclick:preventDefault="true">Open queue</a>
++                    </div>
++                </div>
++                @WidgetStatus("business-signals")
++
++                <div class="cockpit-summary-kpi-grid mt-3">
++                    @foreach (var item in OperationSummaryItems())
++                    {
++                        <article class="cockpit-summary-kpi">
++                            <span class="cockpit-summary-kpi__label">@item.Label</span>
++                            <strong class="cockpit-summary-kpi__value">@item.Value</strong>
++                            <span class="text-body-secondary">@item.Description</span>
++                            <a class="btn btn-sm btn-outline-secondary mt-2 align-self-start"
++                               href="@item.Route"
++                               @onclick="() => NavigateToAsync(item.Route, item.Route, "operations-snapshot", item.ActionKey, item.Label)"
++                               @onclick:preventDefault="true">@item.ActionLabel</a>
++                        </article>
++                    }
++                </div>
++
++                <div class="mt-4">
++                    <BusinessSignalsPanel Signals="VisibleBusinessSignals"
++                                          CompanyId="CompanyId"
++                                          OnActionClick="OnActionClick" />
++                </div>
++            </article>
++        </div>
++
++        <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide" data-testid="agent-activity-panel">
++            <div class="cockpit-card__header">
++                <div>
++                    <h2 class="h5 mb-1">Agent activity</h2>
++                    <p class="text-body-secondary mb-0">Recent dashboard-visible activity from agents, workflows, and operating systems.</p>
++                </div>
++                <a class="btn btn-outline-primary btn-sm"
++                   href="@ActivityFeedPath"
++                   @onclick="() => NavigateToAsync(ActivityFeedPath, ActivityFeedPath, "agent-activity", "open-activity-feed", "Activity feed")"
++                   @onclick:preventDefault="true">Open activity feed</a>
++            </div>
++
++            @if (dashboard.RecentActivity.Count == 0)
++            {
++                <p class="text-body-secondary mt-3 mb-0">No recent activity has been captured for this dashboard session yet.</p>
++            }
++            else
++            {
++                <div class="activity-list mt-3">
++                    @foreach (var item in dashboard.RecentActivity.OrderByDescending(x => x.OccurredUtc).Take(5))
++                    {
++                        <article class="activity-item">
++                            <div class="d-flex justify-content-between align-items-start gap-3">
++                                <div>
++                                    <strong>@item.Title</strong>
++                                    <div class="text-body-secondary mt-1">@item.Summary</div>
++                                    <small class="text-body-secondary">@item.ActivityType | @item.OccurredUtc.ToLocalTime():g</small>
++                                </div>
++                                <a class="btn btn-sm btn-outline-secondary"
++                                   href="@ResolveRoute(item.Route, ActivityFeedPath)"
++                                   @onclick="() => NavigateToAsync(item.Route, ActivityFeedPath, "agent-activity", NormalizeCssToken(item.ActivityType), item.Title)"
++                                   @onclick:preventDefault="true">Open</a>
++                            </div>
++                        </article>
++                    }
++                </div>
++            }
++        </article>
++
++        <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide" data-testid="department-cards-panel">
++            <div class="cockpit-card__header">
++                <div>
++                    <h2 class="h5 mb-1">Department cards</h2>
++                    <p class="text-body-secondary mb-0">Department dashboards remain compact, showing only the most meaningful non-zero signals.</p>
++                </div>
++            </div>
++            <div class="cockpit-kpi-grid mt-3">
++                @foreach (var section in VisibleDepartmentSections)
++                {
++                    var signals = DepartmentSignals(section).ToList();
++                    <section class="summary-pill department-section-card" aria-label="@section.DisplayName">
++                        <div class="department-section-card__header">
++                            <div>
++                                <span class="dashboard-kicker">@section.DisplayName</span>
++                                <strong>@section.DisplayName</strong>
++                            </div>
++                            <a class="department-section-card__link"
++                               href="@ResolveRoute(section.Navigation.Route, AgentsPath)"
++                               @onclick="() => NavigateToAsync(section.Navigation.Route, AgentsPath, "department-card", section.DepartmentKey, section.DisplayName)"
++                               @onclick:preventDefault="true">@section.Navigation.Label</a>
++                        </div>
++
++                        @if (signals.Count > 0)
++                        {
++                            <dl class="cockpit-kpi-list department-section-card__metrics mb-0 mt-3">
++                                @foreach (var signal in signals)
++                                {
++                                    <div><dt>@FormatSummaryLabel(signal.Key)</dt><dd>@signal.Value</dd></div>
++                                }
++                            </dl>
++                        }
++                        else
++                        {
++                            <div class="text-body-secondary mt-3">
++                                <strong class="d-block">@section.EmptyState.Title</strong>
++                                <span>@section.EmptyState.Message</span>
++                            </div>
++                        }
++                    </section>
++                }
++            </div>
++        </article>
++    }
+ </section>
+ 
+ @code {
+     [Parameter]
+     public Guid CompanyId { get; set; }
+@@ -502,13 +532,23 @@
+     [Parameter]
+     public string? CompanyName { get; set; }
+ 
++    [Parameter]
++    public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
++
+     private bool isLoading = true;
+     private string? errorMessage;
+     private ExecutiveCockpitDashboardViewModel? dashboard;
+     private DashboardFinanceSnapshotViewModel? financeSnapshot;
+     private readonly HashSet<string> loadingWidgets = new(StringComparer.OrdinalIgnoreCase);
+     private readonly Dictionary<string, string> widgetErrors = new(StringComparer.OrdinalIgnoreCase);
+@@ -519,14 +559,18 @@
+     private static readonly Histogram<double> WidgetFetchTiming = WebMeter.CreateHistogram<double>("executive_cockpit_widget_fetch_ms", "ms");
+     private static readonly Histogram<double> WidgetRenderTiming = WebMeter.CreateHistogram<double>("executive_cockpit_widget_render_ms", "ms");
+ 
+-    private string DashboardPath => $"/dashboard?companyId={CompanyId}";
+-    private string AgentsPath => $"/agents?companyId={CompanyId}";
+-    private string TasksPath => $"/tasks?companyId={CompanyId}";
+-    private string WorkflowsPath => $"/workflows?companyId={CompanyId}";
+-    private string ApprovalsPath => $"/approvals?companyId={CompanyId}";
+-    private string KnowledgePath => "/onboarding";
+-    private string BriefingPreferencesPath => $"/briefing-preferences?companyId={CompanyId}";
++    private string DashboardPath => DashboardRoutes.EnsureCompanyContext("/dashboard", CompanyId, "/dashboard");
++    private string AgentsPath => DashboardRoutes.EnsureCompanyContext("/agents", CompanyId, "/agents");
++    private string TasksPath => DashboardRoutes.EnsureCompanyContext("/tasks", CompanyId, "/tasks");
++    private string WorkflowsPath => DashboardRoutes.EnsureCompanyContext("/workflows", CompanyId, "/workflows");
++    private string ApprovalsPath => DashboardRoutes.EnsureCompanyContext("/approvals", CompanyId, "/approvals");
++    private string QueuePath => QueueRoutes.BuildPath(CompanyId);
++    private string ActivityFeedPath => DashboardRoutes.EnsureCompanyContext("/activity-feed", CompanyId, "/activity-feed");
+     private string ResolvedCompanyName => !string.IsNullOrWhiteSpace(CompanyName)
+         ? CompanyName!
+         : dashboard?.CompanyName ?? "Workspace dashboard";
+     private bool IsAnyWidgetLoading => loadingWidgets.Count > 0;
++    private IReadOnlyList<BusinessSignalViewModel> VisibleBusinessSignals =>
++        dashboard?.BusinessSignals
++            .Take(3)
++            .ToList()
++        ?? [];
++    private IReadOnlyList<DepartmentDashboardSectionViewModel> VisibleDepartmentSections =>
++        dashboard?.DepartmentSections
++            .Where(section => section.IsVisible)
++            .OrderBy(section => section.DisplayOrder)
++            .ToList()
++        ?? [];
+@@ -545,6 +589,33 @@
+ 
+         return Task.CompletedTask;
+     }
++
++    private IReadOnlyList<OperationSummaryItem> OperationSummaryItems()
++    {
++        if (dashboard is null)
++        {
++            return [];
++        }
++
++        return
++        [
++            new("Pending approvals", dashboard.PendingApprovals.TotalCount, "Approvals still waiting on a decision.", ApprovalsPath, "open-approvals", "Review approvals"),
++            new("Recent alerts", dashboard.Alerts.Count, "Alert volume currently visible to this role.", dashboard.Alerts.FirstOrDefault()?.Route is string alertRoute && !string.IsNullOrWhiteSpace(alertRoute) ? ResolveRoute(alertRoute, ActivityFeedPath) : ActivityFeedPath, "open-alerts", "Review alerts"),
++            new("Active agents", dashboard.SetupState.AgentCount, "Agents configured for this company.", AgentsPath, "open-agents", "Open agents")
++        ];
++    }
++
++    private static IEnumerable<KeyValuePair<string, int>> DepartmentSignals(DepartmentDashboardSectionViewModel section) =>
++        section.SummaryCounts
++            .Where(item => item.Value > 0)
++            .Take(3);
+ 
+     private static bool HasDrillRoute(string? route) =>
+         !string.IsNullOrWhiteSpace(route) && route.StartsWith("/", StringComparison.Ordinal);
+ 
+-    private static string SafeDrillRoute(string? route, string fallbackRoute) =>
+-        HasDrillRoute(route) ? route! : fallbackRoute;
++    private string ResolveRoute(string? route, string fallbackRoute) =>
++        DashboardRoutes.EnsureCompanyContext(route, CompanyId, fallbackRoute);
++
++    private async Task NavigateToAsync(string? route, string fallbackRoute, string area, string actionKey, string? label = null)
++    {
++        var resolvedRoute = ResolveRoute(route, fallbackRoute);
++        if (OnActionClick.HasDelegate)
++        {
++            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext(area, actionKey, resolvedRoute, Label: label));
++        }
++        Navigation.NavigateTo(resolvedRoute);
++    }
+ 
+     private static string NormalizeCssToken(string? value) =>
+         string.IsNullOrWhiteSpace(value) ? "neutral" : value.Trim().ToLowerInvariant().Replace("_", "-");
+@@ -684,6 +755,10 @@
+             return;
+         }
+ 
++        if (OnActionClick.HasDelegate)
++        {
++            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext("finance", action.Key, ResolveRoute(action.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)), Label: action.Label));
++        }
+         activeFinanceActionKey = action.Key;
+         financeActionStatusMessage = null;
+         financeActionErrorMessage = null;
+@@ -694,7 +769,7 @@
+             {
+                 if (HasDrillRoute(action.Route))
+                 {
+-                    Navigation.NavigateTo(action.Route!);
++                    Navigation.NavigateTo(ResolveRoute(action.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)));
+                 }
+                 return;
+             }
+@@ -721,7 +796,7 @@
+             await RefreshFinanceWidgetAsync();
+             if (HasDrillRoute(action.Route))
+             {
+-                Navigation.NavigateTo(action.Route!);
++                Navigation.NavigateTo(ResolveRoute(action.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)));
+             }
+         }
+         catch (FinanceApiException ex)
+@@ -741,13 +816,8 @@
+         new("widget", NormalizeCssToken(widgetKey)),
+         new("status", status)
+     ];
+-
+-    private static IEnumerable<KeyValuePair<string, int>> SectionSummaryCounts(DepartmentDashboardSectionViewModel section) =>
+-        section.SummaryCounts.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase);
+ 
+     private static string FormatSummaryLabel(string key) =>
+         string.Join(
+             " ",
+             key.Split('_', StringSplitOptions.RemoveEmptyEntries)
+                 .Select(word => word.Length == 0 ? word : char.ToUpperInvariant(word[0]) + word[1..]));
++
++    private sealed record OperationSummaryItem(string Label, int Value, string Description, string Route, string ActionKey, string ActionLabel);
+ }
+diff --git a/src/VirtualCompany.Web/Components/TodayFocusPanel.razor b/src/VirtualCompany.Web/Components/TodayFocusPanel.razor
+index 5555555..6666666 100644
+--- a/src/VirtualCompany.Web/Components/TodayFocusPanel.razor
++++ b/src/VirtualCompany.Web/Components/TodayFocusPanel.razor
+@@ -1,6 +1,7 @@
+ @implements IDisposable
+ @inject TodayFocusApiClient TodayFocusApiClient
+ @inject NavigationManager Navigation
+ @inject ILogger<TodayFocusPanel> Logger
++@using VirtualCompany.Web.Services
+ 
+ @if (CompanyId == Guid.Empty)
+ {
+@@ -71,7 +72,7 @@
+                         <div class="mt-3">
+                             <button class="btn btn-outline-primary btn-sm"
+                                     type="button"
+                                     data-testid="today-focus-cta"
+-                                    @onclick="() => NavigateTo(item.NavigationTarget)">
++                                    @onclick="() => NavigateToAsync(item)">
+                                 @ToCallToAction(item.ActionType)
+                             </button>
+                         </div>
+@@ -86,6 +87,7 @@
+ {
+     [Parameter] public Guid CompanyId { get; set; }
+     [Parameter] public Guid UserId { get; set; }
++    [Parameter] public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
+ 
+     private const int MaxVisibleItems = 5;
+     private CancellationTokenSource? loadCancellationTokenSource;
+@@ -134,14 +136,23 @@
+         loadCancellationTokenSource?.Cancel();
+         loadCancellationTokenSource?.Dispose();
+     }
+ 
+-    private void NavigateTo(string navigationTarget)
++    private async Task NavigateToAsync(FocusItemViewModel item)
+     {
+-        if (string.IsNullOrWhiteSpace(navigationTarget))
++        var navigationTarget = DashboardRoutes.NormalizeFocusTarget(item.NavigationTarget, CompanyId);
++        if (string.IsNullOrWhiteSpace(navigationTarget))
+         {
+             return;
+         }
+ 
++        if (OnActionClick.HasDelegate)
++        {
++            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext(
++                "today-focus",
++                string.IsNullOrWhiteSpace(item.ActionType) ? "open" : item.ActionType,
++                navigationTarget,
++                item.Id,
++                item.SourceType,
++                item.Title));
++        }
+         Navigation.NavigateTo(navigationTarget);
+     }
+ 
+     private static string ToCallToAction(string? actionType) =>
+diff --git a/src/VirtualCompany.Web/Components/TopActionsList.razor b/src/VirtualCompany.Web/Components/TopActionsList.razor
+index 7777777..8888888 100644
+--- a/src/VirtualCompany.Web/Components/TopActionsList.razor
++++ b/src/VirtualCompany.Web/Components/TopActionsList.razor
+@@ -1,5 +1,7 @@
+ @implements IDisposable
+ @inject ActionInsightApiClient ActionInsightApiClient
++@inject NavigationManager Navigation
++@using VirtualCompany.Web.Services
+ 
+ @if (CompanyId == Guid.Empty)
+ {
+@@ -16,7 +18,10 @@
+                 <span class="dashboard-kicker">Action queue</span>
+                 <h2 class="h4 mb-1">Top prioritized actions</h2>
+                 <p class="text-body-secondary mb-0">Loading the highest-priority work for this workspace.</p>
+             </div>
+-            <a class="btn btn-outline-primary btn-sm disabled" aria-disabled="true" tabindex="-1">View full queue</a>
++            <a class="btn btn-outline-primary btn-sm disabled"
++               aria-disabled="true"
++               tabindex="-1"
++               href="@QueuePath">View full queue</a>
+         </div>
+         <p class="text-body-secondary mb-0">Loading actions...</p>
+     </section>
+@@ -28,7 +33,10 @@
+                 <span class="dashboard-kicker">Action queue</span>
+                 <h2 class="h4 mb-1">Top prioritized actions</h2>
+             </div>
+-            <a class="btn btn-outline-primary btn-sm" data-testid="view-full-queue-link" href="@QueuePath">View full queue</a>
++            <a class="btn btn-outline-primary btn-sm"
++               data-testid="view-full-queue-link"
++               href="@QueuePath"
++               @onclick="() => NavigateToAsync(QueuePath, "action-queue", "open-full-queue", "View full queue")"
++               @onclick:preventDefault="true">View full queue</a>
+         </div>
+         <div class="alert alert-danger mb-0">@errorMessage</div>
+     </section>
+@@ -43,7 +51,10 @@
+                 <h2 class="h4 mb-1">Top prioritized actions</h2>
+                 <p class="text-body-secondary mb-0">The five highest-priority actions across approvals, tasks, workflows, and alerts.</p>
+             </div>
+-            <a class="btn btn-outline-primary btn-sm" data-testid="view-full-queue-link" href="@QueuePath">View full queue</a>
++            <a class="btn btn-outline-primary btn-sm"
++               data-testid="view-full-queue-link"
++               href="@QueuePath"
++               @onclick="() => NavigateToAsync(QueuePath, "action-queue", "open-full-queue", "View full queue")"
++               @onclick:preventDefault="true">View full queue</a>
+         </div>
+ 
+         @if (items.Count == 0)
+@@ -69,7 +80,11 @@
+                                     <span>@FormatDueState(item)</span>
+                                     <span>Impact: @item.ImpactScore</span>
+                                 </div>
+                             </div>
+-                            <a class="btn btn-sm btn-outline-primary" href="@item.DeepLink">Open work</a>
++                            <a class="btn btn-sm btn-outline-primary"
++                               href="@DashboardRoutes.EnsureCompanyContext(item.DeepLink, CompanyId, QueuePath)"
++                               @onclick="() => NavigateToAsync(item.DeepLink, "action-queue", item.Type, item.Title)"
++                               @onclick:preventDefault="true">Open work</a>
+                         </div>
+                     </article>
+                 }
+@@ -81,6 +96,7 @@
+ {
+     [Parameter] public Guid CompanyId { get; set; }
+     [Parameter] public int Count { get; set; } = 5;
++    [Parameter] public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
+ 
+     private const int MaxVisibleActions = 5;
+     private CancellationTokenSource? loadCancellationTokenSource;
+@@ -127,6 +143,18 @@
+         loadCancellationTokenSource?.Cancel();
+         loadCancellationTokenSource?.Dispose();
+     }
++
++    private async Task NavigateToAsync(string? route, string area, string actionKey, string? label)
++    {
++        var resolvedRoute = DashboardRoutes.EnsureCompanyContext(route, CompanyId, QueuePath);
++        if (OnActionClick.HasDelegate)
++        {
++            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext(area, actionKey, resolvedRoute, Label: label));
++        }
++
++        Navigation.NavigateTo(resolvedRoute);
++    }
+ 
+     private static string FormatPriority(string priority) =>
+         priority.Replace("_", " ", StringComparison.Ordinal).ToUpperInvariant();
+diff --git a/src/VirtualCompany.Web/Components/BusinessSignalsPanel.razor b/src/VirtualCompany.Web/Components/BusinessSignalsPanel.razor
+index 9999999..aaaaaaa 100644
+--- a/src/VirtualCompany.Web/Components/BusinessSignalsPanel.razor
++++ b/src/VirtualCompany.Web/Components/BusinessSignalsPanel.razor
+@@ -1,4 +1,5 @@
+ @using VirtualCompany.Web.Services
++@inject NavigationManager Navigation
+ 
+ @if (Signals is null || Signals.Count == 0)
+ {
+@@ -24,7 +25,12 @@
+                 {
+                     <div class="business-signal__metric">@signal.MetricLabel: @metricValue</div>
+                 }
+                 @if (!string.IsNullOrWhiteSpace(signal.ActionLabel) && !string.IsNullOrWhiteSpace(signal.ActionUrl))
+                 {
+-                    <a class="btn btn-sm btn-outline-secondary align-self-start" href="@signal.ActionUrl">@signal.ActionLabel</a>
++                    <a class="btn btn-sm btn-outline-secondary align-self-start"
++                       href="@DashboardRoutes.EnsureCompanyContext(signal.ActionUrl, CompanyId, "/dashboard")"
++                       @onclick="() => NavigateToAsync(signal)"
++                       @onclick:preventDefault="true">@signal.ActionLabel</a>
+                 }
+             </article>
+         }
+@@ -34,6 +40,8 @@
+ @code {
+     [Parameter]
+     public IReadOnlyList<BusinessSignalViewModel> Signals { get; set; } = [];
++    [Parameter] public Guid? CompanyId { get; set; }
++    [Parameter] public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
+ 
+     private static string CssToken(string? value) =>
+         string.IsNullOrWhiteSpace(value)
+@@ -55,4 +63,17 @@
+             "approval-bottleneck" => "Approval bottleneck",
+             _ => "Business signal"
+         };
++
++    private async Task NavigateToAsync(BusinessSignalViewModel signal)
++    {
++        var route = DashboardRoutes.EnsureCompanyContext(signal.ActionUrl, CompanyId, "/dashboard");
++        if (OnActionClick.HasDelegate)
++        {
++            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext(
++                "operations-snapshot",
++                CssToken(signal.Type),
++                route,
++                Label: signal.Title));
++        }
++
++        Navigation.NavigateTo(route);
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor b/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor
+index bbbbbbb..ccccccc 100644
+--- a/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor
+@@ -1,5 +1,6 @@
+ @using System.Globalization
+ @using VirtualCompany.Web.Services
++@inject NavigationManager Navigation
+ 
+ <article class="wizard-card finance-snapshot-card" data-testid="finance-snapshot-card">
+     <div class="cockpit-card__header">
+@@ -13,7 +14,11 @@
+     {
+         <div class="finance-snapshot-card__empty mt-3" data-testid="finance-snapshot-empty">
+             <p class="text-body-secondary mb-3">Finance data is missing or incomplete for this workspace.</p>
+-            <a class="btn btn-primary" data-testid="connect-accounting-cta" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)">Connect accounting</a>
++            <a class="btn btn-primary"
++               data-testid="connect-accounting-cta"
++               href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)"
++               @onclick="NavigateToFinanceHomeAsync"
++               @onclick:preventDefault="true">Connect accounting</a>
+         </div>
+     }
+     else
+@@ -29,6 +34,18 @@
+             </section>
+         </div>
+         <p class="text-body-secondary mt-3 mb-0">Burn rate: @FormatCurrency(Snapshot.BurnRate, Snapshot.Currency) per day. Snapshot time: @Snapshot.AsOfUtc.ToLocalTime():g</p>
++        <div class="dashboard-actions mt-3">
++            <a class="btn btn-sm btn-outline-primary"
++               href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, CompanyId)"
++               @onclick="NavigateToCashPositionAsync"
++               @onclick:preventDefault="true">Open cash position</a>
++            <a class="btn btn-sm btn-outline-secondary"
++               href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)"
++               @onclick="NavigateToFinanceHomeAsync"
++               @onclick:preventDefault="true">Open finance workspace</a>
++        </div>
+     }
+ </article>
+ 
+ @code {
+@@ -38,6 +55,7 @@
+ 
+     [Parameter]
+     public DashboardFinanceSnapshotViewModel? Snapshot { get; set; }
++    [Parameter] public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
+ 
+     private static string CssToken(string? value) =>
+         string.IsNullOrWhiteSpace(value)
+@@ -54,4 +72,26 @@
+ 
+     private static string FormatCurrency(decimal amount, string currency) =>
+         $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
++
++    private async Task NavigateToFinanceHomeAsync()
++    {
++        var route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId);
++        if (OnActionClick.HasDelegate)
++        {
++            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext("finance-snapshot", "open-finance-home", route, Label: "Finance workspace"));
++        }
++
++        Navigation.NavigateTo(route);
++    }
++
++    private async Task NavigateToCashPositionAsync()
++    {
++        var route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, CompanyId);
++        if (OnActionClick.HasDelegate)
++        {
++            await OnActionClick.InvokeAsync(new DashboardActionTelemetryContext("finance-snapshot", "open-cash-position", route, Label: "Cash position"));
++        }
++
++        Navigation.NavigateTo(route);
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Services/DashboardRoutes.cs b/src/VirtualCompany.Web/Services/DashboardRoutes.cs
+new file mode 100644
+index 0000000..ddddddd
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/DashboardRoutes.cs
+@@ -0,0 +1,68 @@
++namespace VirtualCompany.Web.Services;
++
++public static class DashboardRoutes
++{
++    private static readonly string[] CompanyScopedPrefixes =
++    [
++        "/dashboard",
++        "/approvals",
++        "/tasks",
++        "/workflows",
++        "/agents",
++        "/queue",
++        "/finance",
++        "/activity-feed",
++        "/briefing-preferences"
++    ];
++
++    public static string NormalizeFocusTarget(string? route, Guid? companyId)
++    {
++        var fallback = companyId is Guid resolvedCompanyId
++            ? $"/dashboard?companyId={resolvedCompanyId:D}"
++            : "/dashboard";
++
++        return EnsureCompanyContext(NormalizeKnownRoute(route, companyId), companyId, fallback);
++    }
++
++    public static string EnsureCompanyContext(string? route, Guid? companyId, string fallbackRoute)
++    {
++        var candidate = string.IsNullOrWhiteSpace(route) ? fallbackRoute : route.Trim();
++        if (!candidate.StartsWith("/", StringComparison.Ordinal))
++        {
++            candidate = "/" + candidate.TrimStart('/');
++        }
++
++        candidate = NormalizeKnownRoute(candidate, companyId);
++
++        if (companyId is not Guid resolvedCompanyId ||
++            candidate.Contains("companyId=", StringComparison.OrdinalIgnoreCase) ||
++            !CompanyScopedPrefixes.Any(prefix => candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
++        {
++            return candidate;
++        }
++
++        var separator = candidate.Contains('?', StringComparison.Ordinal) ? "&" : "?";
++        return $"{candidate}{separator}companyId={resolvedCompanyId:D}";
++    }
++
++    private static string NormalizeKnownRoute(string? route, Guid? companyId)
++    {
++        var candidate = string.IsNullOrWhiteSpace(route) ? "/dashboard" : route.Trim();
++
++        if (candidate.StartsWith("/dashboard/briefings", StringComparison.OrdinalIgnoreCase))
++        {
++            return "/briefing-preferences";
++        }
++
++        if (TryExtractGuid(candidate, "/tasks/detail/", out var taskId))
++        {
++            return $"/tasks?taskId={taskId:D}&view=detail";
++        }
++
++        if (TryExtractGuid(candidate, "/finance/invoices/review/", out var invoiceId))
++        {
++            return FinanceRoutes.BuildInvoiceReviewDetailPath(invoiceId, companyId);
++        }
++
++        return candidate;
++    }
++
++    private static bool TryExtractGuid(string route, string prefix, out Guid value) =>
++        Guid.TryParse(route.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
++            ? route[prefix.Length..].Split(['/', '?', '#'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()
++            : null, out value);
++}
+diff --git a/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs b/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs
+new file mode 100644
+index 0000000..eeeeeee
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/DashboardTelemetrySession.cs
+@@ -0,0 +1,97 @@
++using System.Diagnostics.Metrics;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed record DashboardActionTelemetryContext(
++    string Area,
++    string ActionKey,
++    string Target,
++    string? ItemId = null,
++    string? SourceType = null,
++    string? Label = null);
++
++public sealed class DashboardTelemetrySession
++{
++    private static readonly Meter DashboardMeter = new("VirtualCompany.Dashboard.Web");
++    private static readonly Counter<long> FocusClicks = DashboardMeter.CreateCounter<long>("dashboard_focus_item_clicks");
++    private static readonly Counter<long> Actions = DashboardMeter.CreateCounter<long>("dashboard_action_clicks");
++    private static readonly Counter<long> FirstActionTimestamp = DashboardMeter.CreateCounter<long>("dashboard_first_action_timestamp_ms");
++    private static readonly Histogram<double> ScrollDepth = DashboardMeter.CreateHistogram<double>("dashboard_scroll_depth_pct", unit: "%");
++    private static readonly Histogram<double> TimeToFirstAction = DashboardMeter.CreateHistogram<double>("dashboard_time_to_first_action_ms", "ms");
++
++    private readonly DateTime _sessionStartedUtc = DateTime.UtcNow;
++    private double _maxScrollDepthPercentage;
++
++    public DashboardTelemetrySession(string pageName, Guid? companyId)
++    {
++        PageName = pageName;
++        CompanyId = companyId;
++        SessionId = Guid.NewGuid().ToString("N");
++    }
++
++    public string SessionId { get; }
++    public string PageName { get; }
++    public Guid? CompanyId { get; }
++    public DateTime? FirstActionAtUtc { get; private set; }
++    public bool HasRecordedFirstAction => FirstActionAtUtc.HasValue;
++    public double MaxScrollDepthPercentage => _maxScrollDepthPercentage;
++
++    public void RecordFocusItemClick(string? itemId, string? sourceType, string target, string? label)
++    {
++        FocusClicks.Add(1, Tags("today-focus", "focus-item", target, itemId, sourceType, label));
++        RecordAction(new DashboardActionTelemetryContext("today-focus", "focus-item", target, itemId, sourceType, label));
++    }
++
++    public void RecordAction(DashboardActionTelemetryContext context)
++    {
++        Actions.Add(1, Tags(context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label));
++
++        if (FirstActionAtUtc.HasValue)
++        {
++            return;
++        }
++
++        FirstActionAtUtc = DateTime.UtcNow;
++        TimeToFirstAction.Record(Math.Max(0, (FirstActionAtUtc.Value - _sessionStartedUtc).TotalMilliseconds), Tags(context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label));
++        FirstActionTimestamp.Add(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Tags(context.Area, context.ActionKey, context.Target, context.ItemId, context.SourceType, context.Label));
++    }
++
++    public void RecordScrollDepth(double depthPercentage)
++    {
++        var normalizedDepth = Math.Clamp(depthPercentage, 0, 100);
++        if (normalizedDepth <= _maxScrollDepthPercentage)
++        {
++            return;
++        }
++
++        _maxScrollDepthPercentage = normalizedDepth;
++        ScrollDepth.Record(normalizedDepth, Tags("dashboard", "scroll-depth", string.Empty, null, null, null));
++    }
++
++    private KeyValuePair<string, object?>[] Tags(
++        string area,
++        string actionKey,
++        string target,
++        string? itemId,
++        string? sourceType,
++        string? label) =>
++    [
++        new("session_id", SessionId),
++        new("page", PageName),
++        new("company_id", CompanyId?.ToString("D")),
++        new("area", area),
++        new("action_key", actionKey),
++        new("target", target),
++        new("item_id", itemId),
++        new("source_type", sourceType),
++        new("label", label)
++    ];
++}
+diff --git a/src/VirtualCompany.Web/wwwroot/js/dashboardTelemetry.js b/src/VirtualCompany.Web/wwwroot/js/dashboardTelemetry.js
+new file mode 100644
+index 0000000..fffffff
+--- /dev/null
++++ b/src/VirtualCompany.Web/wwwroot/js/dashboardTelemetry.js
+@@ -0,0 +1,42 @@
++const trackers = new Map();
++
++function computeDepth() {
++    const doc = document.documentElement;
++    const body = document.body;
++    const top = window.scrollY || doc.scrollTop || body.scrollTop || 0;
++    const height = Math.max(body.scrollHeight, doc.scrollHeight, body.offsetHeight, doc.offsetHeight, body.clientHeight, doc.clientHeight);
++    const viewport = window.innerHeight || doc.clientHeight || 0;
++    const scrollable = Math.max(height - viewport, 1);
++    return Math.max(0, Math.min(100, Math.round((top / scrollable) * 100)));
++}
++
++export function registerDashboardScrollTracker(dotNetHelper) {
++    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
++    let frame = null;
++    let lastDepth = -1;
++
++    const publish = () => {
++        frame = null;
++        const depth = computeDepth();
++        if (depth <= lastDepth) {
++            return;
++        }
++
++        lastDepth = depth;
++        dotNetHelper.invokeMethodAsync("OnDashboardScrollDepthChanged", depth);
++    };
++
++    const schedule = () => {
++        if (frame !== null) {
++            return;
++        }
++
++        frame = window.requestAnimationFrame(publish);
++    };
++
++    const entry = { schedule };
++    trackers.set(id, entry);
++    window.addEventListener("scroll", schedule, { passive: true });
++    window.addEventListener("resize", schedule, { passive: true });
++    schedule();
++    return id;
++}
++
++export function disposeDashboardScrollTracker(id) { const entry = trackers.get(id); if (!entry) { return; } window.removeEventListener("scroll", entry.schedule); window.removeEventListener("resize", entry.schedule); trackers.delete(id); }
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 1212121..3434343 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -171,6 +171,10 @@
+     gap: 1.25rem;
+ }
+ 
++.company-dashboard-layout--single {
++    grid-template-columns: minmax(0, 1fr);
++}
++
+ .company-dashboard-main,
+ .company-dashboard-rail {
+     min-width: 0;
+@@ -203,6 +207,38 @@
+     min-width: 14rem;
+ }
+ 
++.dashboard-briefing-preview {
++    border-top: 1px solid rgba(15, 23, 42, 0.08);
++    padding-top: 1.5rem;
++}
++
++.dashboard-detail-stack {
++    display: grid;
++    gap: 1.25rem;
++}
++
++.dashboard-snapshot-grid {
++    display: grid;
++    gap: 1.25rem;
++    grid-template-columns: repeat(2, minmax(0, 1fr));
++}
++
++.dashboard-snapshot-panel {
++    min-width: 0;
++}
++
++@media (max-width: 991.98px) {
++    .dashboard-snapshot-grid {
++        grid-template-columns: 1fr;
++    }
++}
++
++.business-signals-grid {
++    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
++}
++
++.department-section-card__metrics div {
++    gap: 0.25rem;
++}
++
+ .agent-layout {
+     display: grid;
+     gap: 1.25rem;
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs b/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs
+index 4545454..5656565 100644
+--- a/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DashboardPageTests.cs
+@@ -8,7 +8,7 @@
+ namespace VirtualCompany.Api.Tests;
+ 
+ public sealed class DashboardPageTests
+ {
+     [Fact]
+-    public void Dashboard_renders_top_actions_inline_below_todays_focus_and_removes_legacy_sidebar_queue()
++    public void Dashboard_renders_required_section_order_for_action_first_layout()
+     {
+         var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+         using var context = CreateContext(companyId);
+@@ -18,16 +18,24 @@
+             .Add(component => component.CompanyId, companyId));
+ 
+         cut.WaitForAssertion(() =>
+         {
++            Assert.NotNull(cut.Find("[data-testid='company-health-banner']"));
+             Assert.NotNull(cut.Find("[data-testid='today-focus-panel']"));
+             Assert.NotNull(cut.Find("[data-testid='top-actions-panel']"));
+-            Assert.NotNull(cut.Find("[data-testid='view-full-queue-link']"));
+-            Assert.DoesNotContain("Prioritized operational work", cut.Markup);
+-            Assert.Empty(cut.FindAll(".action-queue"));
++            Assert.NotNull(cut.Find("[data-testid='dashboard-snapshot-grid']"));
++            Assert.NotNull(cut.Find("[data-testid='agent-activity-panel']"));
++            Assert.NotNull(cut.Find("[data-testid='department-cards-panel']"));
+         });
+ 
+-        Assert.Equal(QueueRoutes.BuildPath(companyId), cut.Find("[data-testid='view-full-queue-link']").GetAttribute("href"));
+         Assert.True(
+-            cut.Markup.IndexOf("data-testid=\"today-focus-panel\"", StringComparison.Ordinal) <
+-            cut.Markup.IndexOf("data-testid=\"top-actions-panel\"", StringComparison.Ordinal));
++            cut.Markup.IndexOf("data-testid=\"company-health-banner\"", StringComparison.Ordinal) <
++            cut.Markup.IndexOf("data-testid=\"today-focus-panel\"", StringComparison.Ordinal) &&
++            cut.Markup.IndexOf("data-testid=\"today-focus-panel\"", StringComparison.Ordinal) <
++            cut.Markup.IndexOf("data-testid=\"top-actions-panel\"", StringComparison.Ordinal) &&
++            cut.Markup.IndexOf("data-testid=\"top-actions-panel\"", StringComparison.Ordinal) <
++            cut.Markup.IndexOf("data-testid=\"dashboard-snapshot-grid\"", StringComparison.Ordinal) &&
++            cut.Markup.IndexOf("data-testid=\"dashboard-snapshot-grid\"", StringComparison.Ordinal) <
++            cut.Markup.IndexOf("data-testid=\"agent-activity-panel\"", StringComparison.Ordinal) &&
++            cut.Markup.IndexOf("data-testid=\"agent-activity-panel\"", StringComparison.Ordinal) <
++            cut.Markup.IndexOf("data-testid=\"department-cards-panel\"", StringComparison.Ordinal));
+     }
+ 
+     private static TestContext CreateContext(Guid companyId)
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+index 6767676..7878787 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+@@ -129,6 +129,41 @@ public sealed class ExecutiveCockpitDashboardPageTests
+         });
+     }
+ 
++    [Fact]
++    public void Executive_cockpit_department_cards_limit_visible_signals_to_three_and_hide_zero_values()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        var dashboard = CreateDashboard(companyId, CreateFinanceSection(companyId, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "warning", "Warning", "65 days"));
++        dashboard.DepartmentSections =
++        [
++            new DepartmentDashboardSectionViewModel
++            {
++                Id = Guid.NewGuid(),
++                DepartmentKey = "operations",
++                DisplayName = "Operations",
++                DisplayOrder = 0,
++                IsVisible = true,
++                SummaryCounts = new Dictionary<string, int>
++                {
++                    ["open_tasks"] = 12,
++                    ["blocked_workflows"] = 3,
++                    ["pending_approvals"] = 2,
++                    ["zero_metric"] = 0,
++                    ["overflow_metric"] = 99
++                },
++                Navigation = new DepartmentDashboardNavigationViewModel
++                {
++                    Label = "Open operations",
++                    Route = $"/tasks?companyId={companyId:D}&view=operations"
++                },
++                EmptyState = new DepartmentDashboardEmptyStateViewModel
++                {
++                    Title = "No department data yet",
++                    Message = "Department metrics will appear after activity is generated."
++                }
++            }
++        ];
++
++        using var harness = CreateDashboardHarness(companyId, dashboard);
++        var cut = RenderDashboard(harness, companyId, dashboard.CompanyName);
++        cut.WaitForAssertion(() => Assert.Equal(3, cut.FindAll(".department-section-card__metrics div").Count));
++        Assert.DoesNotContain("Zero Metric", cut.Markup);
++        Assert.DoesNotContain("Overflow Metric", cut.Markup);
++    }
++
+     [Fact]
+     public void Executive_cockpit_hides_finance_section_when_backend_omits_finance_payload()
+     {
+         var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+diff --git a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs
+index 8989898..9090909 100644
+--- a/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs
++++ b/tests/VirtualCompany.Api.Tests/TopActionsListTests.cs
+@@ -2,6 +2,7 @@
+ using System.Net.Http.Json;
+ using Bunit;
+ using Microsoft.Extensions.DependencyInjection;
++using Bunit.TestDoubles;
+ using VirtualCompany.Web.Components;
+ using VirtualCompany.Web.Services;
+ using Xunit;
+@@ -19,6 +20,7 @@ public sealed class TopActionsListTests
+         };
+ 
+         using var context = CreateContext(_ => CreateJsonResponse(items));
++        var navigation = context.Services.GetRequiredService<FakeNavigationManager>();
+         var cut = context.RenderComponent<TopActionsList>(parameters => parameters
+             .Add(component => component.CompanyId, companyId));
+ 
+@@ -34,6 +36,9 @@ public sealed class TopActionsListTests
+         });
+ 
+         Assert.Equal(QueueRoutes.BuildPath(companyId), cut.Find("[data-testid='view-full-queue-link']").GetAttribute("href"));
++        cut.Find("[data-testid='view-full-queue-link']").Click();
++
++        Assert.Equal($"http://localhost{QueueRoutes.BuildPath(companyId)}", navigation.Uri);
+     }
+ 
+     [Fact]
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs b/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs
+new file mode 100644
+index 0000000..abababa
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/DashboardTelemetrySessionTests.cs
+@@ -0,0 +1,31 @@
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class DashboardTelemetrySessionTests
++{
++    [Fact]
++    public void First_action_is_recorded_once_per_session()
++    {
++        var session = new DashboardTelemetrySession("dashboard", Guid.NewGuid());
++
++        session.RecordAction(new DashboardActionTelemetryContext("action-queue", "open-queue", "/queue"));
++        var firstAction = session.FirstActionAtUtc;
++        session.RecordAction(new DashboardActionTelemetryContext("finance", "open-finance-home", "/finance"));
++
++        Assert.True(session.HasRecordedFirstAction);
++        Assert.Equal(firstAction, session.FirstActionAtUtc);
++    }
++
++    [Fact]
++    public void Scroll_depth_only_moves_forward()
++    {
++        var session = new DashboardTelemetrySession("dashboard", Guid.NewGuid());
++
++        session.RecordScrollDepth(12);
++        session.RecordScrollDepth(8);
++        session.RecordScrollDepth(57);
++
++        Assert.Equal(57, session.MaxScrollDepthPercentage);
++    }
++}
+END_OF_PATCH

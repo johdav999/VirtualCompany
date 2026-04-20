@@ -1,0 +1,1409 @@
+diff --git a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+index 7848d7d..f23db0e 100644
+--- a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
++++ b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+@@ -113,6 +113,24 @@ public sealed class ExecutiveCockpitController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("finance-alerts/{alertId:guid}")]
++    public async Task<ActionResult<ExecutiveCockpitFinanceAlertDetailDto>> GetFinanceAlertDetailAsync(
++        Guid companyId,
++        Guid alertId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _dashboardService.GetFinanceAlertDetailAsync(
++                new GetExecutiveCockpitFinanceAlertDetailQuery(companyId, alertId),
++                cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet("kpis")]
+     public async Task<ActionResult<ExecutiveCockpitKpiDashboardDto>> GetKpisAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 03f5ea0..54d7fd2 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -11,6 +11,8 @@ public sealed record GetExecutiveCockpitWidgetPayloadQuery(
+     DateTime? StartUtc,
+     DateTime? EndUtc);
+ 
++public sealed record GetExecutiveCockpitFinanceAlertDetailQuery(Guid CompanyId, Guid AlertId);
++
+ public sealed record ExecutiveCockpitDashboardDto(
+     Guid CompanyId,
+     string CompanyName,
+@@ -19,6 +21,7 @@ public sealed record ExecutiveCockpitDashboardDto(
+     IReadOnlyList<ExecutiveCockpitSummaryKpiDto> SummaryKpis,
+     ExecutiveCockpitDailyBriefingDto? DailyBriefing,
+     FinanceCashPositionDto? CashPosition,
++    ExecutiveCockpitFinanceDto? Finance,
+     ExecutiveCockpitPendingApprovalsDto PendingApprovals,
+     IReadOnlyList<ExecutiveCockpitAlertDto> Alerts,
+     IReadOnlyList<ExecutiveCockpitDepartmentKpiDto> DepartmentKpis,
+@@ -36,6 +39,7 @@ public static class ExecutiveCockpitWidgetKeys
+     public const string DepartmentSections = "department-sections";
+     public const string CashPosition = "cash-position";
+     public const string RecentActivity = "recent-activity";
++    public const string Finance = "finance";
+     public const string Kpis = "kpis";
+ 
+     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+@@ -57,6 +61,73 @@ public static class ExecutiveCockpitTrendDirections
+     public const string Unknown = "unknown";
+ }
+ 
++public sealed record ExecutiveCockpitFinanceDto(
++    ExecutiveCockpitFinanceCashWidgetDto CashPosition,
++    ExecutiveCockpitFinanceRunwayWidgetDto Runway,
++    ExecutiveCockpitFinanceAlertDetailDto? LowCashAlert,
++    IReadOnlyList<ExecutiveCockpitFinanceActionDto> AvailableActions,
++    IReadOnlyList<ExecutiveCockpitDeepLinkDto> DeepLinks);
++
++public sealed record ExecutiveCockpitFinanceCashWidgetDto(
++    decimal Amount,
++    string Currency,
++    string DisplayValue,
++    string TrendDirection,
++    decimal? TrendAmount,
++    string TrendDisplay,
++    DateTime LastRefreshedUtc,
++    string Route);
++
++public sealed record ExecutiveCockpitFinanceRunwayWidgetDto(
++    int? EstimatedRunwayDays,
++    decimal? EstimatedRunwayMonths,
++    string DisplayValue,
++    FinanceRunwayHealthStatus Status,
++    string StatusLabel,
++    string Route);
++
++public sealed record ExecutiveCockpitFinanceAlertDetailDto(
++    Guid AlertId,
++    string Summary,
++    string Severity,
++    string Status,
++    IReadOnlyList<string> ContributingFactors,
++    IReadOnlyList<ExecutiveCockpitDeepLinkDto> Links,
++    string Route);
++
++public sealed record ExecutiveCockpitFinanceActionDto(
++    string Key,
++    string Label,
++    bool IsEnabled,
++    string? Route,
++    string? OrchestrationEndpoint,
++    string HttpMethod,
++    Guid? TargetId);
++
++public sealed record ExecutiveCockpitDeepLinkDto(
++    string Key,
++    string Label,
++    string Route);
++
++public static class ExecutiveCockpitFinanceRunwayStatusClassifier
++{
++    public static FinanceRunwayHealthStatus Classify(
++        int? estimatedRunwayDays,
++        int warningThresholdDays,
++        int criticalThresholdDays)
++    {
++        if (!estimatedRunwayDays.HasValue)
++        {
++            return FinanceRunwayHealthStatus.Healthy;
++        }
++
++        if (estimatedRunwayDays.Value <= criticalThresholdDays)
++        {
++            return FinanceRunwayHealthStatus.Critical;
++        }
++
++        return estimatedRunwayDays.Value <= warningThresholdDays
++            ? FinanceRunwayHealthStatus.Warning
++            : FinanceRunwayHealthStatus.Healthy;
++    }
++}
++
+ public sealed record ExecutiveCockpitKpiTrend(
+     string Direction,
+     int? DeltaValue,
+@@ -212,6 +283,10 @@ public interface IExecutiveCockpitDashboardService
+     Task<ExecutiveCockpitWidgetPayloadDto> GetWidgetAsync(
+         GetExecutiveCockpitWidgetPayloadQuery query,
+         CancellationToken cancellationToken);
++
++    Task<ExecutiveCockpitFinanceAlertDetailDto?> GetFinanceAlertDetailAsync(
++        GetExecutiveCockpitFinanceAlertDetailQuery query,
++        CancellationToken cancellationToken);
+ }
+ 
+ public sealed record ExecutiveCockpitWidgetPayloadDto(
+@@ -241,3 +316,12 @@ public sealed record CachedExecutiveCockpitWidgetDto<TPayload>(
+     string WidgetKey,
+     DateTime CachedAtUtc,
+     TPayload Payload);
++
++public interface IExecutiveCockpitFinanceAdapter
++{
++    Task<ExecutiveCockpitFinanceDto?> GetAsync(Guid companyId, CancellationToken cancellationToken);
++
++    Task<ExecutiveCockpitFinanceAlertDetailDto?> GetAlertDetailAsync(
++        Guid companyId,
++        Guid alertId,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Domain/Enums/FinanceRunwayHealthStatus.cs b/src/VirtualCompany.Domain/Enums/FinanceRunwayHealthStatus.cs
+new file mode 100644
+index 0000000..0b1cd9f
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/FinanceRunwayHealthStatus.cs
+@@ -0,0 +1,8 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum FinanceRunwayHealthStatus
++{
++    Healthy = 1,
++    Warning = 2,
++    Critical = 3
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 1b2c3f7..0b21393 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -1,8 +1,12 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Http;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Application.Finance;
++using VirtualCompany.Shared;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+@@ -19,6 +23,9 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+     private readonly IDepartmentDashboardConfigurationService _departmentDashboardConfigurationService;
+     private readonly IExecutiveCockpitDashboardCache _cache;
+     private readonly IFinanceCashPositionWorkflowService _financeCashPositionWorkflowService;
++    private readonly IExecutiveCockpitFinanceAdapter _financeAdapter;
++    private readonly IAuthorizationService _authorizationService;
++    private readonly IHttpContextAccessor _httpContextAccessor;
+     private readonly TimeProvider _timeProvider;
+     private readonly ILogger<CompanyExecutiveCockpitDashboardService> _logger;
+ 
+@@ -27,6 +34,9 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         ICompanyMembershipContextResolver membershipContextResolver,
+         IDepartmentDashboardConfigurationService departmentDashboardConfigurationService,
+         IExecutiveCockpitDashboardCache cache,
++        IExecutiveCockpitFinanceAdapter financeAdapter,
++        IAuthorizationService authorizationService,
++        IHttpContextAccessor httpContextAccessor,
+         IFinanceCashPositionWorkflowService financeCashPositionWorkflowService,
+         TimeProvider timeProvider,
+         ILogger<CompanyExecutiveCockpitDashboardService> logger)
+@@ -35,6 +45,9 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         _membershipContextResolver = membershipContextResolver;
+         _departmentDashboardConfigurationService = departmentDashboardConfigurationService;
+         _cache = cache;
++        _financeAdapter = financeAdapter;
++        _authorizationService = authorizationService;
++        _httpContextAccessor = httpContextAccessor;
+         _financeCashPositionWorkflowService = financeCashPositionWorkflowService;
+         _timeProvider = timeProvider;
+         _logger = logger;
+@@ -55,15 +68,20 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         {
+             _logger.LogDebug("Executive cockpit dashboard cache hit for company {CompanyId}.", query.CompanyId);
+             var cachedVisibleSections = await GetVisibleDepartmentSectionsAsync(query.CompanyId, cancellationToken);
+-            var currentCashPosition = await _financeCashPositionWorkflowService.EvaluateAsync(
+-                new EvaluateFinanceCashPositionWorkflowCommand(query.CompanyId),
+-                cancellationToken);
++            var canViewFinance = await CanViewFinanceAsync(query.CompanyId, membership, cancellationToken);
++            var currentCashPosition = canViewFinance
++                ? await _financeCashPositionWorkflowService.EvaluateAsync(
++                    new EvaluateFinanceCashPositionWorkflowCommand(query.CompanyId),
++                    cancellationToken)
++                : null;
++            var finance = canViewFinance
++                ? await _financeAdapter.GetAsync(query.CompanyId, cancellationToken)
++                : null;
+             return cached.Dashboard with
+             {
+                 CacheTimestampUtc = cached.CachedAtUtc,
+                 CashPosition = currentCashPosition,
+-                DepartmentSections = cachedVisibleSections
++                Finance = finance,
++                DepartmentSections = cachedVisibleSections
+             };
+         }
+ 
+@@ -88,6 +106,23 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         var cacheableDashboard = dashboard with { CacheTimestampUtc = null, DepartmentSections = [] };
+         await _cache.SetDashboardAsync(scope, new CachedExecutiveCockpitDashboardDto(query.CompanyId, cachedAtUtc, cacheableDashboard), cancellationToken);
+         return cacheableDashboard with { DepartmentSections = visibleSections };
++    }
++
++    public async Task<ExecutiveCockpitFinanceAlertDetailDto?> GetFinanceAlertDetailAsync(
++        GetExecutiveCockpitFinanceAlertDetailQuery query,
++        CancellationToken cancellationToken)
++    {
++        if (query.CompanyId == Guid.Empty || query.AlertId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id and alert id are required.", nameof(query));
++        }
++
++        var membership = await RequireMembershipAsync(query.CompanyId, cancellationToken);
++        if (!await CanViewFinanceAsync(query.CompanyId, membership, cancellationToken))
++        {
++            throw new UnauthorizedAccessException("Finance detail access requires finance.view permission.");
++        }
++
++        return await _financeAdapter.GetAlertDetailAsync(query.CompanyId, query.AlertId, cancellationToken);
+     }
+ 
+     public async Task<ExecutiveCockpitWidgetPayloadDto> GetWidgetAsync(
+@@ -117,6 +152,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+             ExecutiveCockpitWidgetKeys.DepartmentSections => dashboard.DepartmentSections,
+             ExecutiveCockpitWidgetKeys.CashPosition => dashboard.CashPosition,
+             ExecutiveCockpitWidgetKeys.RecentActivity => dashboard.RecentActivity,
++            ExecutiveCockpitWidgetKeys.Finance => dashboard.Finance,
+             ExecutiveCockpitWidgetKeys.Kpis => dashboard.DepartmentKpis,
+             _ => throw new KeyNotFoundException("Dashboard widget not found.")
+         };
+@@ -183,9 +219,14 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         var summaryKpis = await BuildSummaryKpisAsync(companyId, nowUtc, pendingApprovalCount, cancellationToken);
+-        var cashPosition = await _financeCashPositionWorkflowService.EvaluateAsync(
+-            new EvaluateFinanceCashPositionWorkflowCommand(companyId),
+-            cancellationToken);
++        var canViewFinance = await CanViewFinanceAsync(companyId, await RequireMembershipAsync(companyId, cancellationToken), cancellationToken);
++        var cashPosition = canViewFinance
++            ? await _financeCashPositionWorkflowService.EvaluateAsync(
++                new EvaluateFinanceCashPositionWorkflowCommand(companyId),
++                cancellationToken)
++            : null;
++        var finance = canViewFinance
++            ? await _financeAdapter.GetAsync(companyId, cancellationToken)
++            : null;
+ 
+         var pendingApprovals = new ExecutiveCockpitPendingApprovalsDto(
+             pendingApprovalCount,
+@@ -304,6 +345,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+             summaryKpis,
+             dailyBriefing,
+             cashPosition,
++            finance,
+             pendingApprovals,
+             alerts,
+             departmentKpis,
+@@ -450,6 +492,20 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         return membership;
+     }
++
++    private async Task<bool> CanViewFinanceAsync(
++        Guid companyId,
++        ResolvedCompanyMembershipContext membership,
++        CancellationToken cancellationToken)
++    {
++        if (!FinanceAccess.CanView(membership.MembershipRole.ToStorageValue()))
++        {
++            return false;
++        }
++
++        var principal = _httpContextAccessor.HttpContext?.User;
++        return principal?.Identity?.IsAuthenticated == true &&
++               (await _authorizationService.AuthorizeAsync(principal, companyId, CompanyPolicies.FinanceView)).Succeeded;
++    }
+ }
+ 
+ internal sealed record AgentDashboardRow(Guid Id, string Department, AgentStatus Status);
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index cdeacd0..250c83d 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -228,6 +228,7 @@ public static class DependencyInjection
+         services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
+         services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
++        services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
+         services.AddScoped<IFinanceSeedBootstrapService, CompanyFinanceSeedBootstrapService>();
+         services.AddScoped<IInvoiceReviewWorkflowService, CompanyInvoiceReviewWorkflowService>();
+         services.AddScoped<IFinanceTransactionAnomalyDetectionService, CompanyFinanceTransactionAnomalyDetectionService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
+new file mode 100644
+index 0000000..722d78a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
+@@ -0,0 +1,288 @@
++using System.Globalization;
++using System.Text.Json.Nodes;
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Http;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Shared;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFinanceAdapter
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IFinanceReadService _financeReadService;
++    private readonly IFinanceCashPositionWorkflowService _cashPositionWorkflowService;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly IAuthorizationService _authorizationService;
++    private readonly IHttpContextAccessor _httpContextAccessor;
++    private readonly TimeProvider _timeProvider;
++
++    public CompanyExecutiveCockpitFinanceAdapter(
++        VirtualCompanyDbContext dbContext,
++        IFinanceReadService financeReadService,
++        IFinanceCashPositionWorkflowService cashPositionWorkflowService,
++        ICompanyMembershipContextResolver membershipContextResolver,
++        IAuthorizationService authorizationService,
++        IHttpContextAccessor httpContextAccessor,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _financeReadService = financeReadService;
++        _cashPositionWorkflowService = cashPositionWorkflowService;
++        _membershipContextResolver = membershipContextResolver;
++        _authorizationService = authorizationService;
++        _httpContextAccessor = httpContextAccessor;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<ExecutiveCockpitFinanceDto?> GetAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null || !await CanViewFinanceAsync(companyId, membership, cancellationToken))
++        {
++            return null;
++        }
++
++        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var current = await _cashPositionWorkflowService.EvaluateAsync(
++            new EvaluateFinanceCashPositionWorkflowCommand(companyId),
++            cancellationToken);
++        var previous = await _financeReadService.GetCashPositionAsync(
++            new GetFinanceCashPositionQuery(companyId, nowUtc.AddDays(-7)),
++            cancellationToken);
++        var trendAmount = Math.Round(current.AvailableBalance - previous.AvailableBalance, 2, MidpointRounding.AwayFromZero);
++        var trendDirection = trendAmount switch
++        {
++            > 0m => ExecutiveCockpitTrendDirections.Up,
++            < 0m => ExecutiveCockpitTrendDirections.Down,
++            _ => ExecutiveCockpitTrendDirections.Flat
++        };
++        var runwayStatus = ExecutiveCockpitFinanceRunwayStatusClassifier.Classify(
++            current.EstimatedRunwayDays,
++            current.Thresholds.WarningRunwayDays,
++            current.Thresholds.CriticalRunwayDays);
++        var lowCashAlert = current.AlertState.AlertId.HasValue
++            ? await GetAlertDetailAsync(companyId, current.AlertState.AlertId.Value, cancellationToken)
++            : null;
++
++        return new ExecutiveCockpitFinanceDto(
++            new ExecutiveCockpitFinanceCashWidgetDto(
++                current.AvailableBalance,
++                current.Currency,
++                FormatCurrency(current.AvailableBalance, current.Currency),
++                trendDirection,
++                trendAmount,
++                FormatTrend(trendAmount, current.Currency, trendDirection),
++                current.AsOfUtc,
++                BuildCashPositionRoute(companyId)),
++            new ExecutiveCockpitFinanceRunwayWidgetDto(
++                current.EstimatedRunwayDays,
++                current.EstimatedRunwayDays.HasValue ? Math.Round(current.EstimatedRunwayDays.Value / 30m, 1, MidpointRounding.AwayFromZero) : null,
++                current.EstimatedRunwayDays.HasValue ? $"{current.EstimatedRunwayDays.Value} days" : "Runway unavailable",
++                runwayStatus,
++                runwayStatus.ToString(),
++                BuildCashPositionRoute(companyId)),
++            lowCashAlert,
++            await BuildActionsAsync(companyId, membership.MembershipRole.ToStorageValue(), cancellationToken),
++            BuildDeepLinks(companyId));
++    }
++
++    public async Task<ExecutiveCockpitFinanceAlertDetailDto?> GetAlertDetailAsync(
++        Guid companyId,
++        Guid alertId,
++        CancellationToken cancellationToken)
++    {
++        var alert = await _dbContext.Alerts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == alertId, cancellationToken);
++        if (alert is null || !alert.Fingerprint.StartsWith("finance-cash-position:", StringComparison.OrdinalIgnoreCase))
++        {
++            return null;
++        }
++
++        return new ExecutiveCockpitFinanceAlertDetailDto(
++            alert.Id,
++            alert.Summary,
++            alert.Severity.ToStorageValue(),
++            alert.Status.ToStorageValue(),
++            BuildContributingFactors(alert),
++            BuildDeepLinks(companyId),
++            BuildAlertDetailRoute(companyId, alert.Id));
++    }
++
++    private async Task<IReadOnlyList<ExecutiveCockpitFinanceActionDto>> BuildActionsAsync(
++        Guid companyId,
++        string membershipRole,
++        CancellationToken cancellationToken)
++    {
++        var canView = FinanceAccess.CanView(membershipRole) &&
++                      await AuthorizeAsync(companyId, CompanyPolicies.FinanceView, cancellationToken);
++        if (!canView)
++        {
++            return [];
++        }
++
++        var canApprove = FinanceAccess.CanApproveInvoices(membershipRole) &&
++                         await AuthorizeAsync(companyId, CompanyPolicies.FinanceApproval, cancellationToken);
++        var invoices = await _financeReadService.GetInvoicesAsync(
++            new GetFinanceInvoicesQuery(companyId, null, null, 10),
++            cancellationToken);
++        var reviewInvoice = invoices.FirstOrDefault(invoice =>
++            invoice.Status.Contains("open", StringComparison.OrdinalIgnoreCase) ||
++            invoice.Status.Contains("pending", StringComparison.OrdinalIgnoreCase));
++
++        var flaggedTransactions = await _financeReadService.GetTransactionsAsync(
++            new GetFinanceTransactionsQuery(companyId, null, null, 10, null, "flagged"),
++            cancellationToken);
++        var anomalyTransaction = flaggedTransactions.FirstOrDefault();
++
++        var actions = new List<ExecutiveCockpitFinanceActionDto>(4);
++        if (canApprove && reviewInvoice is not null)
++        {
++            actions.Add(new ExecutiveCockpitFinanceActionDto(
++                "review_invoice",
++                "Review invoice",
++                true,
++                BuildInvoiceReviewRoute(companyId, reviewInvoice.Id),
++                $"/internal/companies/{companyId:D}/finance/invoices/{reviewInvoice.Id:D}/review-workflow",
++                "POST",
++                reviewInvoice.Id));
++        }
++
++        if (anomalyTransaction is not null)
++        {
++            actions.Add(new ExecutiveCockpitFinanceActionDto(
++                "inspect_anomaly",
++                "Inspect anomaly",
++                true,
++                BuildAnomalyWorkbenchRoute(companyId),
++                $"/internal/companies/{companyId:D}/finance/transactions/{anomalyTransaction.Id:D}/anomaly-evaluation",
++                "POST",
++                anomalyTransaction.Id));
++        }
++
++        actions.Add(new ExecutiveCockpitFinanceActionDto(
++            "view_cash_position",
++            "View cash position",
++            true,
++            BuildCashPositionRoute(companyId),
++            $"/internal/companies/{companyId:D}/finance/cash-position/evaluation",
++            "POST",
++            null));
++
++        actions.Add(new ExecutiveCockpitFinanceActionDto(
++            "open_finance_summary",
++            "Open finance summary",
++            true,
++            BuildFinanceSummaryRoute(companyId),
++            null,
++            "GET",
++            null));
++
++        return actions;
++    }
++
++    private async Task<bool> CanViewFinanceAsync(
++        Guid companyId,
++        ResolvedCompanyMembershipContext membership,
++        CancellationToken cancellationToken) =>
++        FinanceAccess.CanView(membership.MembershipRole.ToStorageValue()) &&
++        await AuthorizeAsync(companyId, CompanyPolicies.FinanceView, cancellationToken);
++
++    private async Task<bool> AuthorizeAsync(
++        Guid companyId,
++        string policyName,
++        CancellationToken cancellationToken)
++    {
++        var principal = _httpContextAccessor.HttpContext?.User;
++        if (principal?.Identity?.IsAuthenticated != true)
++        {
++            return false;
++        }
++
++        return (await _authorizationService.AuthorizeAsync(principal, companyId, policyName)).Succeeded;
++    }
++
++    private static IReadOnlyList<string> BuildContributingFactors(Alert alert)
++    {
++        var factors = new List<string>();
++        AddCurrencyFactor(factors, alert.Evidence, "availableBalance", "currency", "Available cash");
++        AddCurrencyFactor(factors, alert.Evidence, "averageMonthlyBurn", "currency", "Average monthly burn");
++
++        if (TryGetInt(alert.Evidence, "estimatedRunwayDays", out var runwayDays))
++        {
++            factors.Add($"Estimated runway is {runwayDays} day(s).");
++        }
++
++        if (TryGetInt(alert.Evidence, "warningRunwayDays", out var warningRunway))
++        {
++            factors.Add($"Warning threshold starts at {warningRunway} day(s) of runway.");
++        }
++
++        if (TryGetInt(alert.Evidence, "criticalRunwayDays", out var criticalRunway))
++        {
++            factors.Add($"Critical threshold starts at {criticalRunway} day(s) of runway.");
++        }
++
++        var recommendation = TryGetString(alert.Metadata, "recommendedAction") ?? TryGetString(alert.Evidence, "recommendedAction");
++        if (!string.IsNullOrWhiteSpace(recommendation))
++        {
++            factors.Add($"Recommended action: {recommendation}.");
++        }
++
++        return factors;
++    }
++
++    private static void AddCurrencyFactor(
++        List<string> factors,
++        IReadOnlyDictionary<string, JsonNode?> values,
++        string amountKey,
++        string currencyKey,
++        string label)
++    {
++        if (TryGetDecimal(values, amountKey, out var amount))
++        {
++            factors.Add($"{label} is {FormatCurrency(amount, TryGetString(values, currencyKey) ?? "USD")}.");
++        }
++    }
++
++    private static IReadOnlyList<ExecutiveCockpitDeepLinkDto> BuildDeepLinks(Guid companyId) =>
++    [
++        new ExecutiveCockpitDeepLinkDto("finance_workspace", "Finance workspace", $"/finance?companyId={companyId:D}"),
++        new ExecutiveCockpitDeepLinkDto("anomaly_workbench", "Anomaly workbench", $"/finance/anomalies?companyId={companyId:D}"),
++        new ExecutiveCockpitDeepLinkDto("cash_detail", "Cash detail", $"/finance/cash-position?companyId={companyId:D}")
++    ];
++
++    private static string BuildCashPositionRoute(Guid companyId) => $"/finance/cash-position?companyId={companyId:D}";
++    private static string BuildAnomalyWorkbenchRoute(Guid companyId) => $"/finance/anomalies?companyId={companyId:D}";
++    private static string BuildFinanceSummaryRoute(Guid companyId) => $"/finance/monthly-summary?companyId={companyId:D}";
++    private static string BuildInvoiceReviewRoute(Guid companyId, Guid invoiceId) => $"/finance/reviews/{invoiceId:D}?companyId={companyId:D}";
++    private static string BuildAlertDetailRoute(Guid companyId, Guid alertId) => $"/finance/alerts/{alertId:D}?companyId={companyId:D}";
++
++    private static string FormatCurrency(decimal amount, string currency) =>
++        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
++
++    private static string FormatTrend(decimal amount, string currency, string trendDirection) =>
++        trendDirection == ExecutiveCockpitTrendDirections.Flat
++            ? "No cash movement vs previous 7 days"
++            : $"{(amount > 0m ? "+" : string.Empty)}{FormatCurrency(amount, currency)} vs previous 7 days";
++
++    private static string? TryGetString(IReadOnlyDictionary<string, JsonNode?>? values, string key) =>
++        values is not null && values.TryGetValue(key, out var node) ? node?.ToString()?.Trim() : null;
++
++    private static bool TryGetInt(IReadOnlyDictionary<string, JsonNode?>? values, string key, out int value) =>
++        int.TryParse(TryGetString(values, key), NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
++
++    private static bool TryGetDecimal(IReadOnlyDictionary<string, JsonNode?>? values, string key, out decimal value) =>
++        decimal.TryParse(TryGetString(values, key), NumberStyles.Number, CultureInfo.InvariantCulture, out value);
++}
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index cbe7d94..6e32203 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -2,6 +2,8 @@
+ @using System.Diagnostics.Metrics
+ @inject ExecutiveCockpitApiClient ApiClient
+ @inject ILogger<ExecutiveCockpitDashboard> Logger
++@inject FinanceApiClient FinanceApiClient
++@inject NavigationManager Navigation
+ 
+ <section class="cockpit-panel">
+     @if (isLoading)
+@@ -102,6 +104,78 @@
+                 </div>
+             </article>
+         }
++
++        @if (dashboard.Finance is not null)
++        {
++            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++                <div class="cockpit-card__header">
++                    <div>
++                        <h3 class="h5 mb-1">Finance health</h3>
++                        <p class="text-body-secondary mb-0">Cash coverage, runway status, and finance workflow entry points for the current company.</p>
++                    </div>
++                    <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<ExecutiveCockpitFinanceViewModel>("finance")' disabled="@IsWidgetLoading("finance")">Refresh</button>
++                </div>
++                @WidgetStatus("finance")
++
++                <div class="finance-summary-grid mt-3">
++                    <article class="wizard-card finance-metric-card finance-metric-card--hero">
++                        <span class="dashboard-kicker">Cash position</span>
++                        <div class="finance-metric-card__value">@dashboard.Finance.CashPosition.DisplayValue</div>
++                        <div class="@SummaryKpiTrendClass(dashboard.Finance.CashPosition.TrendDirection)">
++                            <span aria-hidden="true">@TrendGlyph(dashboard.Finance.CashPosition.TrendDirection)</span>
++                            <span>@dashboard.Finance.CashPosition.TrendDisplay</span>
++                        </div>
++                        <p class="text-body-secondary mb-0">Last refreshed @dashboard.Finance.CashPosition.LastRefreshedUtc.ToLocalTime():g</p>
++                        <a class="mt-3" href="@dashboard.Finance.CashPosition.Route">Open cash detail</a>
++                    </article>
++
++                    <article class="wizard-card finance-metric-card">
++                        <span class="dashboard-kicker">Runway</span>
++                        <div class="finance-metric-card__value finance-metric-card__value--compact">@dashboard.Finance.Runway.DisplayValue</div>
++                        <div class="finance-risk-pill finance-risk-pill--@NormalizeCssToken(dashboard.Finance.Runway.StatusLabel)">@dashboard.Finance.Runway.StatusLabel</div>
++                        <a class="mt-3" href="@dashboard.Finance.Runway.Route">Review runway detail</a>
++                    </article>
++                </div>
++
++                @if (dashboard.Finance.LowCashAlert is not null)
++                {
++                    <section class="wizard-card mt-3">
++                        <div class="cockpit-card__header">
++                            <div>
++                                <span class="badge text-bg-warning">@dashboard.Finance.LowCashAlert.Severity</span>
++                                <h4 class="h6 mt-2 mb-1">Low-cash alert</h4>
++                                <p class="mb-0">@dashboard.Finance.LowCashAlert.Summary</p>
++                            </div>
++                            <a class="btn btn-outline-secondary btn-sm" href="@dashboard.Finance.LowCashAlert.Route">Open detail</a>
++                        </div>
++                        @if (dashboard.Finance.LowCashAlert.ContributingFactors.Count > 0)
++                        {
++                            <ul class="mt-3 mb-0">
++                                @foreach (var factor in dashboard.Finance.LowCashAlert.ContributingFactors)
++                                {
++                                    <li>@factor</li>
++                                }
++                            </ul>
++                        }
++                    </section>
++                }
++
++                @if (!string.IsNullOrWhiteSpace(financeActionStatusMessage))
++                {
++                    <div class="alert alert-success mt-3 mb-0">@financeActionStatusMessage</div>
++                }
++                @if (!string.IsNullOrWhiteSpace(financeActionErrorMessage))
++                {
++                    <div class="alert alert-warning mt-3 mb-0">@financeActionErrorMessage</div>
++                }
++
++                <div class="dashboard-actions mt-3">
++                    @foreach (var action in dashboard.Finance.AvailableActions)
++                    {
++                        <button class="btn btn-outline-primary" type="button" @onclick="() => ExecuteFinanceActionAsync(action)" disabled="@(!action.IsEnabled || IsFinanceActionRunning(action.Key))">@action.Label</button>
++                    }
++                    @foreach (var link in dashboard.Finance.DeepLinks)
++                    {
++                        <a class="btn btn-outline-secondary" href="@link.Route">@link.Label</a>
++                    }
++                </div>
++            </article>
++        }
+ 
+         <article class="wizard-card wizard-card--compact cockpit-card">
+             <div class="cockpit-card__header">
+@@ -274,6 +348,9 @@
+     private readonly Dictionary<string, string> widgetErrors = new(StringComparer.OrdinalIgnoreCase);
+     private readonly Dictionary<string, DateTime> widgetSuccessUtc = new(StringComparer.OrdinalIgnoreCase);
+     private readonly Dictionary<string, DateTime> pendingWidgetRenderStartUtc = new(StringComparer.OrdinalIgnoreCase);
++    private string? financeActionStatusMessage;
++    private string? financeActionErrorMessage;
++    private string? activeFinanceActionKey;
+     private static readonly Meter WebMeter = new("VirtualCompany.ExecutiveCockpit.Web");
+     private static readonly Histogram<double> WidgetFetchTiming = WebMeter.CreateHistogram<double>("executive_cockpit_widget_fetch_ms", "ms");
+     private static readonly Histogram<double> WidgetRenderTiming = WebMeter.CreateHistogram<double>("executive_cockpit_widget_render_ms", "ms");
+@@ -299,6 +376,8 @@
+         dashboard = null;
+         kpiDashboard = null;
+         widgetErrors.Clear();
++        financeActionStatusMessage = null;
++        financeActionErrorMessage = null;
+         widgetSuccessUtc.Clear();
+ 
+         try
+@@ -387,6 +466,7 @@
+             RefreshWidgetAsync<ExecutiveCockpitDailyBriefingViewModel?>("daily-briefing"),
+             RefreshWidgetAsync<ExecutiveCockpitPendingApprovalsViewModel>("pending-approvals"),
+             RefreshWidgetAsync<List<ExecutiveCockpitAlertViewModel>>("alerts"),
++            RefreshWidgetAsync<ExecutiveCockpitFinanceViewModel>("finance"),
+             ReloadKpisCoreAsync());
+     }
+ 
+@@ -442,6 +522,10 @@
+                 dashboard.Alerts = alerts;
+                 dashboard.EmptyStateFlags.NoAlerts = alerts.Count == 0;
+                 break;
++            case "finance" when payload is ExecutiveCockpitFinanceViewModel finance:
++                dashboard.Finance = finance;
++                dashboard.CashPosition = null;
++                break;
+         }
+     }
+ 
+@@ -586,6 +670,59 @@
+         }
+     };
+ 
++    private bool IsFinanceActionRunning(string actionKey) =>
++        string.Equals(activeFinanceActionKey, actionKey, StringComparison.OrdinalIgnoreCase);
++
++    private async Task ExecuteFinanceActionAsync(ExecutiveCockpitFinanceActionViewModel action)
++    {
++        if (CompanyId == Guid.Empty || !action.IsEnabled)
++        {
++            return;
++        }
++
++        activeFinanceActionKey = action.Key;
++        financeActionStatusMessage = null;
++        financeActionErrorMessage = null;
++
++        try
++        {
++            switch (action.Key)
++            {
++                case "review_invoice" when action.TargetId is Guid invoiceId:
++                    await FinanceApiClient.StartInvoiceReviewWorkflowAsync(CompanyId, invoiceId);
++                    financeActionStatusMessage = "Invoice review started.";
++                    break;
++                case "inspect_anomaly" when action.TargetId is Guid transactionId:
++                    await FinanceApiClient.EvaluateTransactionAnomalyAsync(CompanyId, transactionId);
++                    financeActionStatusMessage = "Anomaly inspection submitted.";
++                    break;
++                case "view_cash_position":
++                    await FinanceApiClient.EvaluateCashPositionAsync(CompanyId);
++                    financeActionStatusMessage = "Cash position refreshed.";
++                    break;
++                case "open_finance_summary":
++                    break;
++            }
++
++            await RefreshWidgetAsync<ExecutiveCockpitFinanceViewModel>("finance");
++            if (HasDrillRoute(action.Route))
++            {
++                Navigation.NavigateTo(action.Route!);
++            }
++        }
++        catch (FinanceApiException ex)
++        {
++            financeActionErrorMessage = ex.Message;
++        }
++        finally
++        {
++            activeFinanceActionKey = null;
++        }
++    }
++
+     private static KeyValuePair<string, object?>[] WidgetTags(string widgetKey, string status) =>
+     [
+         new("widget", NormalizeCssToken(widgetKey)),
+diff --git a/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor b/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor
+new file mode 100644
+index 0000000..85836dd
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor
+@@ -0,0 +1,63 @@
++@page "/finance/alerts/{AlertId:guid}"
++
++<PageTitle>Low Cash Alert</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Low-cash alert"
++    Description="Review the current low-cash summary, contributing factors, and finance drill-down links."
++    LoadingMessage="Loading low-cash alert detail...">
++    @if (isDetailLoading)
++    {
++        <section class="wizard-card">
++            <h2 class="h5 mb-2">Loading alert detail</h2>
++            <p class="text-body-secondary mb-0">Fetching the latest finance alert evidence and workspace links.</p>
++        </section>
++    }
++    else if (!string.IsNullOrWhiteSpace(detailErrorMessage))
++    {
++        <section class="wizard-card">
++            <div class="alert alert-danger mb-3">@detailErrorMessage</div>
++            <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync">Retry</button>
++        </section>
++    }
++    else if (detail is not null)
++    {
++        <section class="finance-detail-grid">
++            <article class="wizard-card finance-metric-card finance-metric-card--hero">
++                <span class="dashboard-kicker">@detail.Severity</span>
++                <h2 class="h4 mt-2 mb-2">Low-cash summary</h2>
++                <p class="mb-2">@detail.Summary</p>
++                <small class="text-body-secondary">Status: @detail.Status</small>
++            </article>
++
++            <article class="wizard-card finance-state-card">
++                <span class="dashboard-kicker">Links</span>
++                <div class="dashboard-actions mt-3">
++                    @foreach (var link in detail.Links)
++                    {
++                        <a class="btn btn-outline-secondary" href="@link.Route">@link.Label</a>
++                    }
++                </div>
++            </article>
++        </section>
++
++        <section class="wizard-card finance-anomaly-section mt-4">
++            <h2 class="h5 mb-2">Contributing factors</h2>
++            @if (detail.ContributingFactors.Count == 0)
++            {
++                <p class="text-body-secondary mb-0">No contributing factors were captured for this alert.</p>
++            }
++            else
++            {
++                <ul class="mb-0">
++                    @foreach (var factor in detail.ContributingFactors)
++                    {
++                        <li>@factor</li>
++                    }
++                </ul>
++            }
++        </section>
++    }
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor.cs
+new file mode 100644
+index 0000000..b740123
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/LowCashAlertPage.razor.cs
+@@ -0,0 +1,54 @@
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class LowCashAlertPage : FinancePageBase
++{
++    [Inject] private ExecutiveCockpitApiClient ExecutiveCockpitApiClient { get; set; } = default!;
++
++    [Parameter] public Guid AlertId { get; set; }
++
++    private ExecutiveCockpitFinanceAlertDetailViewModel? detail;
++    private bool isDetailLoading;
++    private string? detailErrorMessage;
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        detail = null;
++        detailErrorMessage = null;
++        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid)
++        {
++            return;
++        }
++
++        await ReloadAsync();
++    }
++
++    private async Task ReloadAsync()
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        isDetailLoading = true;
++        detailErrorMessage = null;
++
++        try
++        {
++            detail = await ExecutiveCockpitApiClient.GetFinanceAlertDetailAsync(companyId, AlertId);
++        }
++        catch (OnboardingApiException ex)
++        {
++            detail = null;
++            detailErrorMessage = ex.Message;
++        }
++        finally
++        {
++            isDetailLoading = false;
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+index d02d45c..c35c42c 100644
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -28,6 +28,22 @@ public sealed class ExecutiveCockpitApiClient
+         return GetKpisCoreAsync(companyId, department, startUtc, endUtc, cancellationToken);
+     }
+ 
++    public async Task<ExecutiveCockpitFinanceAlertDetailViewModel?> GetFinanceAlertDetailAsync(
++        Guid companyId,
++        Guid alertId,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return null;
++        }
++
++        using var response = await _httpClient.GetAsync(
++            $"api/companies/{companyId}/executive-cockpit/finance-alerts/{alertId}",
++            cancellationToken);
++        return response.IsSuccessStatusCode
++            ? await response.Content.ReadFromJsonAsync<ExecutiveCockpitFinanceAlertDetailViewModel>(SerializerOptions, cancellationToken)
++            : throw await CreateExceptionAsync(response, cancellationToken);
++    }
+     public async Task<ExecutiveCockpitWidgetPayloadViewModel<TPayload>?> GetWidgetAsync<TPayload>(
+         Guid companyId,
+         string widgetKey,
+@@ -192,6 +208,40 @@ public sealed class ExecutiveCockpitApiClient
+                 }
+             ],
+             DepartmentSections = OfflineDepartmentComposition(companyId).Sections,
++            Finance = new ExecutiveCockpitFinanceViewModel
++            {
++                CashPosition = new ExecutiveCockpitFinanceCashWidgetViewModel
++                {
++                    Amount = 0m,
++                    Currency = "USD",
++                    DisplayValue = "USD 0.00",
++                    TrendDirection = "flat",
++                    TrendDisplay = "No cash movement vs previous 7 days",
++                    LastRefreshedUtc = DateTime.UtcNow,
++                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)
++                },
++                Runway = new ExecutiveCockpitFinanceRunwayWidgetViewModel
++                {
++                    DisplayValue = "Runway unavailable",
++                    Status = "healthy",
++                    StatusLabel = "Healthy",
++                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)
++                },
++                AvailableActions =
++                [
++                    new ExecutiveCockpitFinanceActionViewModel
++                    {
++                        Key = "open_finance_summary",
++                        Label = "Open finance summary",
++                        IsEnabled = true,
++                        Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId),
++                        HttpMethod = "GET"
++                    }
++                ],
++                DeepLinks =
++                [
++                    new ExecutiveCockpitDeepLinkViewModel { Key = "finance_workspace", Label = "Finance workspace", Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId) }
++                ]
++            },
+             PendingApprovals = new ExecutiveCockpitPendingApprovalsViewModel
+             {
+                 TotalCount = 0,
+@@ -347,6 +397,7 @@ public sealed class ExecutiveCockpitDashboardViewModel
+     public DateTime? CacheTimestampUtc { get; set; }
+     public ExecutiveCockpitDailyBriefingViewModel? DailyBriefing { get; set; }
+     public List<ExecutiveCockpitSummaryKpiViewModel> SummaryKpis { get; set; } = [];
++    public ExecutiveCockpitFinanceViewModel? Finance { get; set; }
+     public ExecutiveCockpitPendingApprovalsViewModel PendingApprovals { get; set; } = new();
+     public List<ExecutiveCockpitAlertViewModel> Alerts { get; set; } = [];
+     public List<ExecutiveCockpitDepartmentKpiViewModel> DepartmentKpis { get; set; } = [];
+@@ -355,6 +406,56 @@ public sealed class ExecutiveCockpitDashboardViewModel
+     public ExecutiveCockpitSetupStateViewModel SetupState { get; set; } = new();
+     public ExecutiveCockpitEmptyStateFlagsViewModel EmptyStateFlags { get; set; } = new();
+     }
++
++public sealed class ExecutiveCockpitFinanceViewModel
++{
++    public ExecutiveCockpitFinanceCashWidgetViewModel CashPosition { get; set; } = new();
++    public ExecutiveCockpitFinanceRunwayWidgetViewModel Runway { get; set; } = new();
++    public ExecutiveCockpitFinanceAlertDetailViewModel? LowCashAlert { get; set; }
++    public List<ExecutiveCockpitFinanceActionViewModel> AvailableActions { get; set; } = [];
++    public List<ExecutiveCockpitDeepLinkViewModel> DeepLinks { get; set; } = [];
++}
++
++public sealed class ExecutiveCockpitFinanceCashWidgetViewModel
++{
++    public decimal Amount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public string DisplayValue { get; set; } = string.Empty;
++    public string TrendDirection { get; set; } = "unknown";
++    public decimal? TrendAmount { get; set; }
++    public string TrendDisplay { get; set; } = string.Empty;
++    public DateTime LastRefreshedUtc { get; set; }
++    public string Route { get; set; } = string.Empty;
++}
++
++public sealed class ExecutiveCockpitFinanceRunwayWidgetViewModel
++{
++    public int? EstimatedRunwayDays { get; set; }
++    public decimal? EstimatedRunwayMonths { get; set; }
++    public string DisplayValue { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string StatusLabel { get; set; } = string.Empty;
++    public string Route { get; set; } = string.Empty;
++}
++
++public sealed class ExecutiveCockpitFinanceAlertDetailViewModel
++{
++    public Guid AlertId { get; set; }
++    public string Summary { get; set; } = string.Empty;
++    public string Severity { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public List<string> ContributingFactors { get; set; } = [];
++    public List<ExecutiveCockpitDeepLinkViewModel> Links { get; set; } = [];
++    public string Route { get; set; } = string.Empty;
++}
++
++public sealed class ExecutiveCockpitFinanceActionViewModel
++{
++    public string Key { get; set; } = string.Empty;
++    public string Label { get; set; } = string.Empty;
++    public bool IsEnabled { get; set; }
++    public string? Route { get; set; }
++    public string? OrchestrationEndpoint { get; set; }
++    public string HttpMethod { get; set; } = "GET";
++    public Guid? TargetId { get; set; }
++}
+ 
+ public sealed class ExecutiveCockpitSummaryKpiViewModel
+ {
+@@ -413,6 +514,13 @@ public sealed class ExecutiveCockpitAlertViewModel
+     public string? Route { get; set; }
+ }
+ 
++public sealed class ExecutiveCockpitDeepLinkViewModel
++{
++    public string Key { get; set; } = string.Empty;
++    public string Label { get; set; } = string.Empty;
++    public string Route { get; set; } = string.Empty;
++}
++
+ public sealed class ExecutiveCockpitDepartmentKpiViewModel
+ {
+     public string Department { get; set; } = string.Empty;
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 4ea9774..8b8b96a 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -29,6 +29,33 @@ public sealed class FinanceApiClient
+             cancellationToken);
+     }
+ 
++    public Task<JsonElement> StartInvoiceReviewWorkflowAsync(
++        Guid companyId,
++        Guid invoiceId,
++        CancellationToken cancellationToken = default)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<object, JsonElement>(
++            companyId,
++            HttpMethod.Post,
++            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/review-workflow",
++            new { },
++            cancellationToken);
++    }
++
++    public Task<JsonElement> EvaluateTransactionAnomalyAsync(Guid companyId, Guid transactionId, CancellationToken cancellationToken = default)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<object, JsonElement>(
++            companyId,
++            HttpMethod.Post,
++            $"internal/companies/{companyId}/finance/transactions/{transactionId}/anomaly-evaluation",
++            new { },
++            cancellationToken);
++    }
++
++    public Task<FinanceCashPositionResponse> EvaluateCashPositionAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        SendCompanyScopedAsync<object, FinanceCashPositionResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/cash-position/evaluation", new { }, cancellationToken);
++
+     public Task<FinanceInvoiceResponse> UpdateInvoiceApprovalStatusAsync(Guid companyId, Guid invoiceId, string status, CancellationToken cancellationToken = default)
+     {
+         EnsureOnlineMutation();
+diff --git a/src/VirtualCompany.Web/Services/FinanceRoutes.cs b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+index b916228..ac8bd6c 100644
+--- a/src/VirtualCompany.Web/Services/FinanceRoutes.cs
++++ b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+@@ -15,6 +15,7 @@ public static class FinanceRoutes
+     public const string MonthlySummary = "/finance/monthly-summary";
+     public const string Anomalies = "/finance/anomalies";
+     public const string AnomalyDetail = "/finance/anomalies/{anomalyId:guid}";
++    public const string AlertDetail = "/finance/alerts/{alertId:guid}";
+ 
+     public static FinanceRouteDefinition HomePage { get; } =
+         new("Finance", Home, "Open the tenant-scoped finance workspace.");
+@@ -54,6 +55,9 @@ public static class FinanceRoutes
+     public static string BuildAnomalyDetailPath(Guid anomalyId, Guid? companyId) =>
+         WithCompanyContext($"/finance/anomalies/{anomalyId:D}", companyId);
+ 
++    public static string BuildAlertDetailPath(Guid alertId, Guid? companyId) =>
++        WithCompanyContext($"/finance/alerts/{alertId:D}", companyId);
++
+     public static string WithCompanyContext(string path, Guid? companyId)
+     {
+         if (companyId is not Guid resolvedCompanyId)
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
+new file mode 100644
+index 0000000..9cce342
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
+@@ -0,0 +1,222 @@
++using System.Net;
++using System.Net.Http.Json;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public ExecutiveCockpitFinanceIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Dashboard_surfaces_finance_widgets_actions_and_low_cash_alert_for_finance_authorized_users()
++    {
++        var seed = await SeedFinanceCockpitCompanyAsync();
++
++        using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, seed.OwnerDisplayName);
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/executive-cockpit");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var dashboard = await response.Content.ReadFromJsonAsync<FinanceCockpitDashboardResponse>();
++
++        Assert.NotNull(dashboard);
++        Assert.NotNull(dashboard!.Finance);
++        Assert.Equal("critical", dashboard.Finance!.Runway.Status, ignoreCase: true);
++        Assert.Equal("USD 400.00", dashboard.Finance.CashPosition.DisplayValue);
++        Assert.NotNull(dashboard.Finance.LowCashAlert);
++        Assert.NotEmpty(dashboard.Finance.LowCashAlert!.ContributingFactors);
++        Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "finance_workspace" && x.Route.Contains("/finance?companyId=", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "anomaly_workbench" && x.Route.Contains("/finance/anomalies", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "cash_detail" && x.Route.Contains("/finance/cash-position", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(dashboard.Finance.AvailableActions, x => x.Key == "review_invoice" && x.OrchestrationEndpoint!.Contains("/review-workflow", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(dashboard.Finance.AvailableActions, x => x.Key == "inspect_anomaly" && x.OrchestrationEndpoint!.Contains("/anomaly-evaluation", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(dashboard.Finance.AvailableActions, x => x.Key == "view_cash_position" && x.OrchestrationEndpoint!.Contains("/cash-position/evaluation", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(dashboard.Finance.AvailableActions, x => x.Key == "open_finance_summary");
++
++        var alertDetailResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/executive-cockpit/finance-alerts/{dashboard.Finance.LowCashAlert.AlertId}");
++        Assert.Equal(HttpStatusCode.OK, alertDetailResponse.StatusCode);
++        var alertDetail = await alertDetailResponse.Content.ReadFromJsonAsync<FinanceAlertDetailResponse>();
++        Assert.NotNull(alertDetail);
++        Assert.Equal(dashboard.Finance.LowCashAlert.AlertId, alertDetail!.AlertId);
++        Assert.NotEmpty(alertDetail.ContributingFactors);
++        Assert.Contains(alertDetail.Links, x => x.Route.Contains("/finance/cash-position", StringComparison.OrdinalIgnoreCase));
++    }
++
++    [Fact]
++    public async Task Dashboard_hides_finance_widgets_and_actions_for_users_without_finance_policy_access()
++    {
++        var seed = await SeedFinanceCockpitCompanyAsync();
++
++        using var client = CreateAuthenticatedClient(seed.EmployeeSubject, seed.EmployeeEmail, seed.EmployeeDisplayName);
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/executive-cockpit");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var dashboard = await response.Content.ReadFromJsonAsync<FinanceCockpitDashboardResponse>();
++
++        Assert.NotNull(dashboard);
++        Assert.Null(dashboard!.Finance);
++        Assert.Null(dashboard.CashPosition);
++    }
++
++    [Fact]
++    public void Runway_classifier_maps_thresholds_to_expected_statuses()
++    {
++        Assert.Equal(FinanceRunwayHealthStatus.Healthy, Application.Cockpit.ExecutiveCockpitFinanceRunwayStatusClassifier.Classify(120, 90, 30));
++        Assert.Equal(FinanceRunwayHealthStatus.Warning, Application.Cockpit.ExecutiveCockpitFinanceRunwayStatusClassifier.Classify(60, 90, 30));
++        Assert.Equal(FinanceRunwayHealthStatus.Critical, Application.Cockpit.ExecutiveCockpitFinanceRunwayStatusClassifier.Classify(20, 90, 30));
++    }
++
++    private async Task<FinanceCockpitSeed> SeedFinanceCockpitCompanyAsync()
++    {
++        var ownerUserId = Guid.NewGuid();
++        var employeeUserId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var ownerSubject = $"cockpit-finance-owner-{Guid.NewGuid():N}";
++        var ownerEmail = $"{ownerSubject}@example.com";
++        const string ownerDisplayName = "Cockpit Finance Owner";
++        var employeeSubject = $"cockpit-finance-employee-{Guid.NewGuid():N}";
++        var employeeEmail = $"{employeeSubject}@example.com";
++        const string employeeDisplayName = "Cockpit Finance Employee";
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            var accountId = Guid.NewGuid();
++            var counterpartyId = Guid.NewGuid();
++            var invoiceId = Guid.NewGuid();
++            var transactionId = Guid.NewGuid();
++
++            dbContext.Users.AddRange(
++                new User(ownerUserId, ownerEmail, ownerDisplayName, "dev-header", ownerSubject),
++                new User(employeeUserId, employeeEmail, employeeDisplayName, "dev-header", employeeSubject));
++            dbContext.Companies.Add(new Company(companyId, "Cockpit Finance Company"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
++
++            dbContext.FinanceAccounts.Add(new FinanceAccount(
++                accountId,
++                companyId,
++                "1000",
++                "Operating Cash",
++                "asset",
++                "USD",
++                0m,
++                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++            dbContext.FinanceCounterparties.Add(new FinanceCounterparty(counterpartyId, companyId, "Vendor", "vendor", "vendor@example.com"));
++            dbContext.FinanceBalances.Add(new FinanceBalance(
++                Guid.NewGuid(),
++                companyId,
++                accountId,
++                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++                400m,
++                "USD"));
++            dbContext.FinanceTransactions.AddRange(
++                new FinanceTransaction(
++                    transactionId,
++                    companyId,
++                    accountId,
++                    counterpartyId,
++                    null,
++                    null,
++                    new DateTime(2026, 3, 20, 0, 0, 0, DateTimeKind.Utc),
++                    "software",
++                    -1200m,
++                    "USD",
++                    "Critical subscription renewal",
++                    "COCKPIT-TX-001"),
++                new FinanceTransaction(
++                    Guid.NewGuid(),
++                    companyId,
++                    accountId,
++                    counterpartyId,
++                    null,
++                    null,
++                    new DateTime(2026, 3, 12, 0, 0, 0, DateTimeKind.Utc),
++                    "rent",
++                    -600m,
++                    "USD",
++                    "Office rent",
++                    "COCKPIT-TX-002"));
++            dbContext.FinanceInvoices.Add(new FinanceInvoice(
++                invoiceId,
++                companyId,
++                counterpartyId,
++                "INV-COCKPIT-001",
++                new DateTime(2026, 3, 18, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
++                950m,
++                "USD",
++                "open"));
++            dbContext.FinanceSeedAnomalies.Add(new FinanceSeedAnomaly(
++                Guid.NewGuid(),
++                companyId,
++                "missing_receipt",
++                "cockpit",
++                [transactionId],
++                """{"expectedDetector":"receipt_completeness"}"""));
++
++            return Task.CompletedTask;
++        });
++
++        return new FinanceCockpitSeed(companyId, ownerSubject, ownerEmail, ownerDisplayName, employeeSubject, employeeEmail, employeeDisplayName);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private sealed record FinanceCockpitSeed(
++        Guid CompanyId,
++        string OwnerSubject,
++        string OwnerEmail,
++        string OwnerDisplayName,
++        string EmployeeSubject,
++        string EmployeeEmail,
++        string EmployeeDisplayName);
++
++    private sealed class FinanceCockpitDashboardResponse
++    {
++        public Guid CompanyId { get; set; }
++        public object? CashPosition { get; set; }
++        public FinanceCockpitSectionResponse? Finance { get; set; }
++    }
++
++    private sealed class FinanceCockpitSectionResponse
++    {
++        public FinanceCockpitCashResponse CashPosition { get; set; } = new();
++        public FinanceCockpitRunwayResponse Runway { get; set; } = new();
++        public FinanceAlertDetailResponse? LowCashAlert { get; set; }
++        public List<FinanceCockpitActionResponse> AvailableActions { get; set; } = [];
++        public List<FinanceCockpitLinkResponse> DeepLinks { get; set; } = [];
++    }
++
++    private sealed class FinanceCockpitCashResponse
++    {
++        public string DisplayValue { get; set; } = string.Empty;
++    }
++
++    private sealed class FinanceCockpitRunwayResponse
++    {
++        public string Status { get; set; } = string.Empty;
++    }
++
++    private sealed class FinanceAlertDetailResponse
++    {
++        public Guid AlertId { get; set; }
++        public List<string> ContributingFactors { get; set; } = [];
++        public List<FinanceCockpitLinkResponse> Links { get; set; } = [];
++    }
++
++    private sealed class FinanceCockpitActionResponse
++    {
++        public string Key { get; set; } = string.Empty;
++        public string? OrchestrationEndpoint { get; set; }
++    }
++
++    private sealed class FinanceCockpitLinkResponse
++    {
++        public string Key { get; set; } = string.Empty;
++        public string Route { get; set; } = string.Empty;
++    }
++}
+END_OF_PATCH

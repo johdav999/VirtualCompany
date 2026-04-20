@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-6.4.4",
+  "promptPath": ".ai-design/prompts/TASK-6.4.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T05:45:02.692Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T05-45-02-692Z_TASK-6.4.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T05-45-02-692Z_TASK-6.4.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T05:47:36.228Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+        var ownerResponse = await ownerClient.GetAsync($\"/api/companies/{seed.CompanyId}/documents/{restrictedDocumentId}\");\n+\n+        Assert.Equal(HttpStatusCode.OK, ownerResponse.StatusCode);\n+        var ownerDocument = await ownerResponse.Content.ReadFromJsonAsync<CompanyDocumentResponse>();\n+        Assert.NotNull(ownerDocument);\n+        Assert.Equal(restrictedDocumentId, ownerDocument!.Id);\n+        Assert.Equal(seed.CompanyId, ownerDocument.CompanyId);\n+\n+        using var employeeClient = CreateAuthenticatedClient(seed.EmployeeSubject, seed.EmployeeEmail, seed.EmployeeDisplayName);\n+        var employeeSharedResponse = await employeeClient.GetAsync($\"/api/companies/{seed.CompanyId}/documents/{sharedDocumentId}\");\n+\n+        Assert.Equal(HttpStatusCode.OK, employeeSharedResponse.StatusCode);\n+\n+        var employeeRestrictedResponse = await employeeClient.GetAsync($\"/api/companies/{seed.CompanyId}/documents/{restrictedDocumentId}\");\n+\n+        Assert.Equal(HttpStatusCode.Forbidden, employeeRestrictedResponse.StatusCode);\n+\n+        var crossTenantResponse = await ownerClient.GetAsync($\"/api/companies/{seed.OtherCompanyId}/documents/{restrictedDocumentId}\");\n+\n+        Assert.Equal(HttpStatusCode.Forbidden, crossTenantResponse.StatusCode);\n+    }\n+\n     private async Task<FinanceEndpointSeed> SeedFinanceCompanyAsync()\n     {\n         var userId = Guid.NewGuid();\n@@ -330,5 +359,13 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb\n         public string OriginalFileName { get; set; } = string.Empty;\n         public string ContentType { get; set; } = string.Empty;\n     }\n+\n+    private sealed class CompanyDocumentResponse\n+    {\n+        public Guid Id { get; set; }\n+        public Guid CompanyId { get; set; }\n+        public string Title { get; set; } = string.Empty;\n+        public string OriginalFileName { get; set; } = string.Empty;\n+    }\n }\nEND_OF_PATCH\n",
+  "stderrTail": "ent(seed.Subject, seed.Email, seed.DisplayName);\n+        var ownerResponse = await ownerClient.GetAsync($\"/api/companies/{seed.CompanyId}/documents/{restrictedDocumentId}\");\n+\n+        Assert.Equal(HttpStatusCode.OK, ownerResponse.StatusCode);\n+        var ownerDocument = await ownerResponse.Content.ReadFromJsonAsync<CompanyDocumentResponse>();\n+        Assert.NotNull(ownerDocument);\n+        Assert.Equal(restrictedDocumentId, ownerDocument!.Id);\n+        Assert.Equal(seed.CompanyId, ownerDocument.CompanyId);\n+\n+        using var employeeClient = CreateAuthenticatedClient(seed.EmployeeSubject, seed.EmployeeEmail, seed.EmployeeDisplayName);\n+        var employeeSharedResponse = await employeeClient.GetAsync($\"/api/companies/{seed.CompanyId}/documents/{sharedDocumentId}\");\n+\n+        Assert.Equal(HttpStatusCode.OK, employeeSharedResponse.StatusCode);\n+\n+        var employeeRestrictedResponse = await employeeClient.GetAsync($\"/api/companies/{seed.CompanyId}/documents/{restrictedDocumentId}\");\n+\n+        Assert.Equal(HttpStatusCode.Forbidden, employeeRestrictedResponse.StatusCode);\n+\n+        var crossTenantResponse = await ownerClient.GetAsync($\"/api/companies/{seed.OtherCompanyId}/documents/{restrictedDocumentId}\");\n+\n+        Assert.Equal(HttpStatusCode.Forbidden, crossTenantResponse.StatusCode);\n+    }\n+\n     private async Task<FinanceEndpointSeed> SeedFinanceCompanyAsync()\n     {\n         var userId = Guid.NewGuid();\n@@ -330,5 +359,13 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb\n         public string OriginalFileName { get; set; } = string.Empty;\n         public string ContentType { get; set; } = string.Empty;\n     }\n+\n+    private sealed class CompanyDocumentResponse\n+    {\n+        public Guid Id { get; set; }\n+        public Guid CompanyId { get; set; }\n+        public string Title { get; set; } = string.Empty;\n+        public string OriginalFileName { get; set; } = string.Empty;\n+    }\n }\nEND_OF_PATCH\ntokens used\n67,709\n",
+  "verbosityMode": "summary"
+}

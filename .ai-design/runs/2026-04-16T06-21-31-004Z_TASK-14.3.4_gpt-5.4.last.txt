@@ -1,0 +1,275 @@
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs b/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs
+index 3f1b9d4..8d5f2a7 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs
+@@ -46,6 +46,8 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+ 
+             Assert.True(registry.TryGetTool(toolName, out var registration));
+             Assert.Equal(definition.Version, registration.Version);
++            Assert.Equal(actionType, Assert.Single(registration.SupportedActions));
++            Assert.Equal("finance", Assert.Single(registration.Scopes));
+             Assert.True(registration.Supports(actionType, "finance"));
+             Assert.False(registration.Supports(actionType == ToolActionType.Execute ? ToolActionType.Read : ToolActionType.Execute, "finance"));
+         }
+@@ -55,13 +57,14 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+     [MemberData(nameof(ValidFinanceRequests))]
+     public async Task Finance_tool_executor_accepts_payloads_matching_declared_input_schema(
+         string toolName,
++        ToolActionType actionType,
+         Dictionary<string, JsonNode?> payload)
+     {
+         var contract = new StubInternalToolContract(validOutput: true);
+         var executor = new NoOpCompanyToolExecutor(new StaticCompanyToolRegistry(), contract);
+ 
+-        var result = await executor.ExecuteAsync(CreateRequest(toolName, payload), CancellationToken.None);
++        var result = await executor.ExecuteAsync(CreateRequest(toolName, actionType, payload), CancellationToken.None);
+ 
+         Assert.True(result.Success);
+         Assert.Equal("executed", result.Status);
+         Assert.Equal(1, contract.ExecutionCount);
+@@ -71,13 +74,14 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+     [MemberData(nameof(InvalidFinanceRequests))]
+     public async Task Finance_tool_executor_rejects_payloads_that_do_not_match_declared_input_schema(
+         string toolName,
++        ToolActionType actionType,
+         Dictionary<string, JsonNode?> payload)
+     {
+         var contract = new StubInternalToolContract(validOutput: true);
+         var executor = new NoOpCompanyToolExecutor(new StaticCompanyToolRegistry(), contract);
+ 
+-        var result = await executor.ExecuteAsync(CreateRequest(toolName, payload), CancellationToken.None);
++        var result = await executor.ExecuteAsync(CreateRequest(toolName, actionType, payload), CancellationToken.None);
+ 
+         Assert.False(result.Success);
+         Assert.Equal("input_payload_schema_validation_failed", result.ErrorCode);
+         Assert.Equal(0, contract.ExecutionCount);
+@@ -87,13 +91,14 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+     [MemberData(nameof(ValidFinanceRequests))]
+     public async Task Finance_tool_executor_rejects_responses_that_do_not_match_declared_output_schema(
+         string toolName,
++        ToolActionType actionType,
+         Dictionary<string, JsonNode?> payload)
+     {
+         var contract = new StubInternalToolContract(validOutput: false);
+         var executor = new NoOpCompanyToolExecutor(new StaticCompanyToolRegistry(), contract);
+ 
+-        var result = await executor.ExecuteAsync(CreateRequest(toolName, payload), CancellationToken.None);
++        var result = await executor.ExecuteAsync(CreateRequest(toolName, actionType, payload), CancellationToken.None);
+ 
+         Assert.False(result.Success);
+         Assert.Equal("output_payload_schema_validation_failed", result.ErrorCode);
+         Assert.Equal(1, contract.ExecutionCount);
+@@ -104,6 +109,7 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+         yield return
+         [
+             "get_cash_balance",
++            ToolActionType.Read,
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["asOfUtc"] = JsonValue.Create("2026-04-16T00:00:00Z")
+@@ -113,6 +119,7 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+         yield return
+         [
+             "list_transactions",
++            ToolActionType.Read,
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["startUtc"] = JsonValue.Create("2026-04-01T00:00:00Z"),
+@@ -124,6 +131,7 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+         yield return
+         [
+             "list_uncategorized_transactions",
++            ToolActionType.Read,
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["limit"] = JsonValue.Create(10)
+@@ -133,6 +141,7 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+         yield return
+         [
+             "list_invoices_awaiting_approval",
++            ToolActionType.Read,
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["limit"] = JsonValue.Create(10)
+@@ -142,6 +151,7 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+         yield return
+         [
+             "get_profit_and_loss_summary",
++            ToolActionType.Read,
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["year"] = JsonValue.Create(2026),
+@@ -149,12 +159,51 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+             }
+         ];
+ 
++        yield return
++        [
++            "recommend_transaction_category",
++            ToolActionType.Recommend,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["transactionId"] = JsonValue.Create(Guid.NewGuid()),
++                ["candidateCategory"] = JsonValue.Create("software")
++            }
++        ];
++
++        yield return
++        [
++            "recommend_invoice_approval_decision",
++            ToolActionType.Recommend,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["invoiceId"] = JsonValue.Create(Guid.NewGuid()),
++                ["candidateStatus"] = JsonValue.Create("approved")
++            }
++        ];
++
++        yield return
++        [
++            "categorize_transaction",
++            ToolActionType.Execute,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["transactionId"] = JsonValue.Create(Guid.NewGuid()),
++                ["category"] = JsonValue.Create("software")
++            }
++        ];
++
++        yield return
++        [
++            "approve_invoice",
++            ToolActionType.Execute,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["invoiceId"] = JsonValue.Create(Guid.NewGuid()),
++                ["status"] = JsonValue.Create("approved")
++            }
++        ];
+     }
+ 
+     public static IEnumerable<object[]> InvalidFinanceRequests()
+     {
+         yield return
+         [
+             "get_cash_balance",
++            ToolActionType.Read,
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["asOfUtc"] = JsonValue.Create("not-a-date")
+@@ -164,6 +213,7 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+         yield return
+         [
+             "list_transactions",
++            ToolActionType.Read,
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["limit"] = JsonValue.Create(0)
+@@ -173,6 +223,7 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+         yield return
+         [
+             "list_uncategorized_transactions",
++            ToolActionType.Read,
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["unexpected"] = JsonValue.Create(true)
+@@ -182,6 +233,7 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+         yield return
+         [
+             "list_invoices_awaiting_approval",
++            ToolActionType.Read,
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["limit"] = JsonValue.Create(501)
+@@ -191,18 +243,55 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+         yield return
+         [
+             "get_profit_and_loss_summary",
++            ToolActionType.Read,
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["year"] = JsonValue.Create(2026),
+                 ["month"] = JsonValue.Create(13)
+             }
+         ];
++
++        yield return
++        [
++            "recommend_transaction_category",
++            ToolActionType.Recommend,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["candidateCategory"] = JsonValue.Create("software")
++            }
++        ];
++
++        yield return
++        [
++            "recommend_invoice_approval_decision",
++            ToolActionType.Recommend,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["invoiceId"] = JsonValue.Create(Guid.NewGuid()),
++                ["candidateStatus"] = JsonValue.Create("needs_more_context")
++            }
++        ];
++
++        yield return
++        [
++            "categorize_transaction",
++            ToolActionType.Execute,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["transactionId"] = JsonValue.Create(Guid.NewGuid())
++            }
++        ];
++
++        yield return
++        [
++            "approve_invoice",
++            ToolActionType.Execute,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["invoiceId"] = JsonValue.Create(Guid.NewGuid()),
++                ["status"] = JsonValue.Create("pending_review")
++            }
++        ];
+     }
+ 
+-    private static ToolExecutionRequest CreateRequest(string toolName, Dictionary<string, JsonNode?> payload) =>
++    private static ToolExecutionRequest CreateRequest(string toolName, ToolActionType actionType, Dictionary<string, JsonNode?> payload) =>
+         new(
+             Guid.NewGuid(),
+             Guid.NewGuid(),
+             toolName,
+-            ToolActionType.Read,
++            actionType,
+             "finance",
+             payload,
+             ExecutionId: Guid.NewGuid());
+@@ -252,6 +341,22 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+                 {
+                     ["profitAndLossSummary"] = new JsonObject { ["netResult"] = JsonValue.Create(42m) }
+                 },
++                "recommend_transaction_category" or "recommend_invoice_approval_decision" => new(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["recommendation"] = new JsonObject
++                    {
++                        ["confidence"] = JsonValue.Create(0.8m)
++                    }
++                },
++                "categorize_transaction" => new(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["transaction"] = new JsonObject { ["category"] = JsonValue.Create("software") }
++                },
++                "approve_invoice" => new(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["invoice"] = new JsonObject
++                    {
++                        ["status"] = JsonValue.Create("approved")
++                    }
++                },
+                 _ => []
+             };
+     }
+END_OF_PATCH

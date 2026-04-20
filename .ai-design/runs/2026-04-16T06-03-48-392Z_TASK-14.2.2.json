@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-14.2.2",
+  "promptPath": ".ai-design/prompts/TASK-14.2.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-16T06:03:48.392Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-16T06-03-48-392Z_TASK-14.2.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-16T06-03-48-392Z_TASK-14.2.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-16T06:06:42.910Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "request.ToolVersion),\n             [\"typedBoundary\"] = JsonValue.Create(true)\n         };\n \ndiff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs\nindex 0000000..0000000 100644\n--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs\n@@ -705,6 +705,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp\n         Assert.Equal(\"get_cash_balance\", dispatchedRequest.ToolName);\n         Assert.Equal(\"finance\", dispatchedRequest.Scope);\n         Assert.Equal(ToolActionType.Read, dispatchedRequest.Context.ActionType);\n+        Assert.Equal(\"1.0.0\", dispatchedRequest.ToolVersion);\n \n         using var scope = _factory.Services.CreateScope();\n         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();\ndiff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\nindex 0000000..0000000 100644\n--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\n+++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\n@@ -176,7 +176,8 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>\n             new(StringComparer.OrdinalIgnoreCase)\n             {\n                 [\"contractName\"] = JsonValue.Create(nameof(TestCompanyToolExecutor)),\n                 [\"companyId\"] = JsonValue.Create(request.CompanyId),\n-                [\"executionId\"] = JsonValue.Create(request.ExecutionId)\n+                [\"executionId\"] = JsonValue.Create(request.ExecutionId),\n+                [\"toolVersion\"] = string.IsNullOrWhiteSpace(request.ToolVersion) ? null : JsonValue.Create(request.ToolVersion)\n             };\n \n         private static bool TryCreateFinanceToolData(string toolName, out Dictionary<string, JsonNode?> data)\nEND_OF_PATCH\n",
+  "stderrTail": ",\n             [\"typedBoundary\"] = JsonValue.Create(true)\n         };\n \ndiff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs\nindex 0000000..0000000 100644\n--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs\n@@ -705,6 +705,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp\n         Assert.Equal(\"get_cash_balance\", dispatchedRequest.ToolName);\n         Assert.Equal(\"finance\", dispatchedRequest.Scope);\n         Assert.Equal(ToolActionType.Read, dispatchedRequest.Context.ActionType);\n+        Assert.Equal(\"1.0.0\", dispatchedRequest.ToolVersion);\n \n         using var scope = _factory.Services.CreateScope();\n         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();\ndiff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\nindex 0000000..0000000 100644\n--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\n+++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\n@@ -176,7 +176,8 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>\n             new(StringComparer.OrdinalIgnoreCase)\n             {\n                 [\"contractName\"] = JsonValue.Create(nameof(TestCompanyToolExecutor)),\n                 [\"companyId\"] = JsonValue.Create(request.CompanyId),\n-                [\"executionId\"] = JsonValue.Create(request.ExecutionId)\n+                [\"executionId\"] = JsonValue.Create(request.ExecutionId),\n+                [\"toolVersion\"] = string.IsNullOrWhiteSpace(request.ToolVersion) ? null : JsonValue.Create(request.ToolVersion)\n             };\n \n         private static bool TryCreateFinanceToolData(string toolName, out Dictionary<string, JsonNode?> data)\nEND_OF_PATCH\ntokens used\n120,517\n",
+  "verbosityMode": "summary"
+}
