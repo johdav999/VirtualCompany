@@ -1,0 +1,112 @@
+@using VirtualCompany.Web.Services
+@using Microsoft.JSInterop
+@inject IJSRuntime JS
+@inject ILogger<ApprovalInbox> Logger
+@implements IAsyncDisposable
+
+@if (Approvals.Count == 0)
+{
+    <p class="text-body-secondary mt-4 mb-0">No approvals are waiting for review.</p>
+}
+else
+{
+    <div class="approvals-list-scroll mt-4" @ref="scrollContainer">
+        <div class="list-group">
+            @foreach (var approval in Approvals)
+            {
+                <button type="button"
+                        id="@GetApprovalElementId(approval.Id)"
+                        class="@GetApprovalListItemClass(approval)"
+                        @onclick="() => OnSelectApproval.InvokeAsync(approval.Id)">
+                    <div class="d-flex w-100 justify-content-between gap-3">
+                        <div class="approvals-list-item__body">
+                            <strong>@approval.DisplayTitle</strong>
+                            <div class="approvals-list-item__meta mt-1">Entity: @approval.DisplayReference</div>
+                            @if (!string.IsNullOrWhiteSpace(approval.DisplayAmount))
+                            {
+                                <div class="approvals-list-item__meta">Amount: @approval.DisplayAmount</div>
+                            }
+                            <div class="approvals-list-item__meta">Reason: @approval.DisplayReason</div>
+                        </div>
+                        <span class="badge text-bg-light align-self-start">@approval.DisplayStatus</span>
+                    </div>
+                </button>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<ApprovalRequestViewModel> Approvals { get; set; } = [];
+
+    [Parameter]
+    public Guid? SelectedApprovalId { get; set; }
+
+    [Parameter, EditorRequired]
+    public EventCallback<Guid> OnSelectApproval { get; set; }
+
+    private ElementReference scrollContainer;
+    private IJSObjectReference? module;
+    private Guid? lastScrolledApprovalId;
+
+    protected override void OnParametersSet()
+    {
+        Logger.LogInformation(
+            "Approval inbox component parameters updated. ApprovalCount: {ApprovalCount}. SelectedApprovalId: {SelectedApprovalId}.",
+            Approvals.Count,
+            SelectedApprovalId);
+    }
+
+    private string GetApprovalListItemClass(ApprovalRequestViewModel approval) =>
+        SelectedApprovalId == approval.Id
+            ? "list-group-item list-group-item-action active"
+            : "list-group-item list-group-item-action";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (SelectedApprovalId is not Guid selectedApprovalId || lastScrolledApprovalId == selectedApprovalId)
+        {
+            if (SelectedApprovalId is Guid skippedApprovalId)
+            {
+                Logger.LogDebug(
+                    "Approval inbox skipped scroll attempt. SelectedApprovalId: {SelectedApprovalId}. LastScrolledApprovalId: {LastScrolledApprovalId}.",
+                    skippedApprovalId,
+                    lastScrolledApprovalId);
+            }
+
+            return;
+        }
+
+        module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/approvalInbox.js");
+        var itemExists = Approvals.Any(approval => approval.Id == selectedApprovalId);
+        Logger.LogInformation(
+            "Attempting approval inbox selection scroll. SelectedApprovalId: {SelectedApprovalId}. ItemExistsInList: {ItemExists}.",
+            selectedApprovalId,
+            itemExists);
+
+        var result = await module.InvokeAsync<string>("scrollApprovalIntoView", scrollContainer, GetApprovalElementId(selectedApprovalId));
+        Logger.LogInformation(
+            "Approval inbox selection scroll completed. SelectedApprovalId: {SelectedApprovalId}. Result: {Result}.",
+            selectedApprovalId,
+            result);
+        lastScrolledApprovalId = selectedApprovalId;
+    }
+
+    private static string GetApprovalElementId(Guid approvalId) =>
+        $"approval-item-{approvalId:D}";
+
+    public async ValueTask DisposeAsync()
+    {
+        if (module is not null)
+        {
+            try
+            {
+                await module.DisposeAsync();
+            }
+            catch
+            {
+            }
+        }
+    }
+}

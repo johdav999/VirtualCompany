@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using VirtualCompany.Application.Approvals;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
@@ -16,17 +17,20 @@ public sealed class CompanyNotificationService : INotificationInboxService
     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
     private readonly IApprovalRequestService _approvalRequestService;
     private readonly IAuditEventWriter _auditEventWriter;
+    private readonly ILogger<CompanyNotificationService> _logger;
 
     public CompanyNotificationService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver membershipContextResolver,
         IApprovalRequestService approvalRequestService,
-        IAuditEventWriter auditEventWriter)
+        IAuditEventWriter auditEventWriter,
+        ILogger<CompanyNotificationService> logger)
     {
         _dbContext = dbContext;
         _membershipContextResolver = membershipContextResolver;
         _approvalRequestService = approvalRequestService;
         _auditEventWriter = auditEventWriter;
+        _logger = logger;
     }
 
     public async Task<NotificationInboxDto> GetInboxAsync(Guid companyId, CancellationToken cancellationToken)
@@ -159,18 +163,44 @@ public sealed class CompanyNotificationService : INotificationInboxService
         CancellationToken cancellationToken)
     {
         var membership = await RequireMembershipAsync(companyId, cancellationToken);
+        _logger.LogInformation(
+            "Resolving approval inbox detail. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. UserId: {UserId}. MembershipRole: {MembershipRole}.",
+            companyId,
+            approvalId,
+            membership.UserId,
+            membership.MembershipRole);
         var approval = await _approvalRequestService.GetAsync(companyId, approvalId, cancellationToken);
 
         if (!string.Equals(approval.Status, ApprovalRequestStatus.Pending.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
         {
+            _logger.LogWarning(
+                "Approval inbox detail rejected because approval is not pending. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. Status: {Status}.",
+                companyId,
+                approvalId,
+                approval.Status);
             throw new KeyNotFoundException("Approval request is not pending.");
         }
 
         if (!IsEligibleApprover(approval, membership))
         {
+            _logger.LogWarning(
+                "Approval inbox detail rejected because current user is not eligible approver. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. UserId: {UserId}. MembershipRole: {MembershipRole}. CurrentStepApproverType: {ApproverType}. CurrentStepApproverRef: {ApproverRef}.",
+                companyId,
+                approvalId,
+                membership.UserId,
+                membership.MembershipRole,
+                approval.CurrentStep?.ApproverType,
+                approval.CurrentStep?.ApproverRef);
             throw new UnauthorizedAccessException("The current user is not an approver for this approval request.");
         }
 
+        _logger.LogInformation(
+            "Approval inbox detail resolved for eligible approver. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. TargetType: {TargetType}. TargetId: {TargetId}. AffectedEntities: {AffectedEntities}.",
+            companyId,
+            approvalId,
+            approval.TargetEntityType,
+            approval.TargetEntityId,
+            approval.AffectedEntities.Count);
         return approval;
     }
 
@@ -181,10 +211,23 @@ public sealed class CompanyNotificationService : INotificationInboxService
         CancellationToken cancellationToken)
     {
         var membership = await RequireMembershipAsync(companyId, cancellationToken);
+        _logger.LogInformation(
+            "Attempting approval inbox decision. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. UserId: {UserId}. MembershipRole: {MembershipRole}. StepId: {StepId}. Decision: {Decision}.",
+            companyId,
+            approvalId,
+            membership.UserId,
+            membership.MembershipRole,
+            command.StepId,
+            command.Decision);
         var approval = await _approvalRequestService.GetAsync(companyId, approvalId, cancellationToken);
 
         if (!string.Equals(approval.Status, ApprovalRequestStatus.Pending.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
         {
+            _logger.LogWarning(
+                "Approval inbox decision rejected because approval is not pending. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. Status: {Status}.",
+                companyId,
+                approvalId,
+                approval.Status);
             throw new ApprovalValidationException(new Dictionary<string, string[]>
             {
                 [nameof(command.Decision)] = [$"Only pending approvals can be decided from the inbox. Current status: {approval.Status}."]
@@ -193,6 +236,14 @@ public sealed class CompanyNotificationService : INotificationInboxService
 
         if (!IsEligibleApprover(approval, membership))
         {
+            _logger.LogWarning(
+                "Approval inbox decision rejected because current user is not eligible approver. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. UserId: {UserId}. MembershipRole: {MembershipRole}. CurrentStepApproverType: {ApproverType}. CurrentStepApproverRef: {ApproverRef}.",
+                companyId,
+                approvalId,
+                membership.UserId,
+                membership.MembershipRole,
+                approval.CurrentStep?.ApproverType,
+                approval.CurrentStep?.ApproverRef);
             throw new UnauthorizedAccessException("The current user is not an approver for this approval request.");
         }
 
@@ -202,13 +253,26 @@ public sealed class CompanyNotificationService : INotificationInboxService
 
         if (normalizedCommand.ApprovalId != approvalId)
         {
+            _logger.LogWarning(
+                "Approval inbox decision rejected because payload approval id did not match route. CompanyId: {CompanyId}. RouteApprovalId: {ApprovalId}. PayloadApprovalId: {PayloadApprovalId}.",
+                companyId,
+                approvalId,
+                normalizedCommand.ApprovalId);
             throw new ApprovalValidationException(new Dictionary<string, string[]>
             {
                 [nameof(command.ApprovalId)] = ["Approval id must match the route."]
             });
         }
 
-        return await _approvalRequestService.DecideAsync(companyId, normalizedCommand, cancellationToken);
+        var result = await _approvalRequestService.DecideAsync(companyId, normalizedCommand, cancellationToken);
+        _logger.LogInformation(
+            "Approval inbox decision persisted. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. Finalized: {Finalized}. Status: {Status}. NextStepId: {NextStepId}.",
+            companyId,
+            approvalId,
+            result.IsFinalized,
+            result.Approval.Status,
+            result.NextStep?.Id);
+        return result;
     }
 
     public async Task<NotificationListItemDto> SetStatusAsync(

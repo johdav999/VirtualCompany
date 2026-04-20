@@ -59,7 +59,7 @@ public sealed class InboxApiClient
 
         return SendAsync<ApprovalDecisionResultViewModel>(
             HttpMethod.Post,
-            $"api/companies/{companyId}/approvals/{approvalId}/decisions",
+            $"api/companies/{companyId}/approvals/inbox/{approvalId}/decisions",
             request,
             cancellationToken);
     }

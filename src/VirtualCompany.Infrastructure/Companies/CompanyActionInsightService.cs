@@ -207,18 +207,59 @@ public sealed class CompanyActionInsightService : IActionInsightService
             })
             .ToListAsync(cancellationToken);
 
+        var awaitingApprovalTaskIds = tasks
+            .Where(task => task.Status == WorkTaskStatus.AwaitingApproval)
+            .Select(task => task.Id)
+            .ToList();
+
+        Dictionary<Guid, Guid> approvalByTaskId;
+        if (awaitingApprovalTaskIds.Count == 0)
+        {
+            approvalByTaskId = new Dictionary<Guid, Guid>();
+        }
+        else
+        {
+            var approvals = await _dbContext.ApprovalRequests
+                .Where(approval =>
+                    approval.CompanyId == companyId &&
+                    approval.Status == ApprovalRequestStatus.Pending &&
+                    approval.TargetEntityType == ApprovalTargetEntityType.Task.ToStorageValue() &&
+                    awaitingApprovalTaskIds.Contains(approval.TargetEntityId))
+                .OrderByDescending(approval => approval.CreatedUtc)
+                .Select(approval => new
+                {
+                    approval.Id,
+                    TaskId = approval.TargetEntityId
+                })
+                .ToListAsync(cancellationToken);
+
+            approvalByTaskId = approvals
+                .GroupBy(x => x.TaskId)
+                .ToDictionary(group => group.Key, group => group.First().Id);
+        }
+
         return tasks
             .Select(task =>
             {
                 var dueUtc = task.DueUtc ?? task.CreatedUtc.AddHours(24);
+                var targetType = ActionInsightTargetType.Task;
+                var targetId = task.Id;
+
+                if (task.Status == WorkTaskStatus.AwaitingApproval &&
+                    approvalByTaskId.TryGetValue(task.Id, out var approvalId))
+                {
+                    targetType = ActionInsightTargetType.Approval;
+                    targetId = approvalId;
+                }
+
                 return new InsightCandidate(
                     InsightKey.For(companyId, ActionInsightType.Task, task.Id, task.SourceLifecycleVersion),
                     task.CompanyId,
                     ActionInsightType.Task,
                     "task",
                     task.Id,
-                    ActionInsightTargetType.Task,
-                    task.Id,
+                    targetType,
+                    targetId,
                     task.Title,
                     ResolveTaskReason(task.Status, task.DueUtc, nowUtc),
                     string.IsNullOrWhiteSpace(task.Owner) ? "Operations" : task.Owner,

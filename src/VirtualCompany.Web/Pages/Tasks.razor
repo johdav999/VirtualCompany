@@ -255,6 +255,12 @@ else
                 selectedTask = TaskId is Guid taskId
                     ? await TaskApiClient.GetAsync(companyId, taskId)
                     : null;
+
+                if (selectedTask is not null &&
+                    tasks.All(task => task.Id != selectedTask.Id))
+                {
+                    tasks.Insert(0, ToListItem(selectedTask));
+                }
             }
         }
         catch (OnboardingApiException ex)
@@ -318,4 +324,21 @@ else
             assignedAgentId: assignedAgentId,
             returnUrl: returnUrl,
             source: source);
+
+    private static TaskListItemViewModel ToListItem(TaskDetailViewModel task) =>
+        new()
+        {
+            Id = task.Id,
+            CompanyId = task.CompanyId,
+            Type = task.Type,
+            Title = task.Title,
+            Priority = task.Priority,
+            Status = task.Status,
+            DueAt = task.DueAt,
+            AssignedAgentId = task.AssignedAgentId,
+            ParentTaskId = task.ParentTaskId,
+            CreatedAt = task.CreatedAt,
+            UpdatedAt = task.UpdatedAt,
+            AssignedAgent = task.AssignedAgent
+        };
 }

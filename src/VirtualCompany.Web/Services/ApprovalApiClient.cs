@@ -184,6 +184,18 @@ public sealed class ApprovalRequestViewModel
     public List<ApprovalAffectedEntityViewModel> AffectedEntities { get; set; } = [];
     public string? ThresholdSummary { get; set; }
     public DateTime CreatedAt { get; set; }
+    public string DisplayType { get; set; } = string.Empty;
+    public string DisplayTitle { get; set; } = string.Empty;
+    public string DisplayStatus { get; set; } = string.Empty;
+    public string DisplayReference { get; set; } = string.Empty;
+    public string? DisplayAmount { get; set; }
+    public string DisplayReason { get; set; } = string.Empty;
+    public string DisplayDecisionSummary { get; set; } = string.Empty;
+    public string DisplayTrigger { get; set; } = string.Empty;
+    public string? DisplayScenario { get; set; }
+    public string? DisplayCounterparty { get; set; }
+    public string? DisplayPaymentActivity { get; set; }
+    public string? DisplayStatusNote { get; set; }
 }
 
 public sealed class ApprovalAffectedEntityViewModel

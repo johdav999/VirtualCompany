@@ -28,7 +28,7 @@
             </NavLink>
         </div>
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="dashboard">
+            <NavLink class="nav-link" href="@dashboardHref">
                 <span class="bi bi-grid-1x2" aria-hidden="true"></span> Dashboard
             </NavLink>
         </div>
@@ -41,37 +41,37 @@
             </div>
         }
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="agents">
+            <NavLink class="nav-link" href="@agentsHref">
                 <span class="bi bi-people" aria-hidden="true"></span> Agents
             </NavLink>
         </div>
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="workflows">
+            <NavLink class="nav-link" href="@workflowsHref">
                 <span class="bi bi-diagram-3" aria-hidden="true"></span> Workflows
             </NavLink>
         </div>
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="inbox">
+            <NavLink class="nav-link" href="@inboxHref">
                 <span class="bi bi-bell" aria-hidden="true"></span> Inbox
             </NavLink>
         </div>
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="activity-feed">
+            <NavLink class="nav-link" href="@activityHref">
                 <span class="bi bi-activity" aria-hidden="true"></span> Activity
             </NavLink>
         </div>
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="approvals">
+            <NavLink class="nav-link" href="@approvalsHref">
                 <span class="bi bi-check2-square" aria-hidden="true"></span> Approvals
             </NavLink>
         </div>
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="audit">
+            <NavLink class="nav-link" href="@auditHref">
                 <span class="bi bi-list-check" aria-hidden="true"></span> Audit
             </NavLink>
         </div>
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="briefing-preferences">
+            <NavLink class="nav-link" href="@briefingHref">
                 <span class="bi bi-bell" aria-hidden="true"></span> Briefing delivery
             </NavLink>
         </div>
@@ -81,7 +81,16 @@
 @code {
     private bool collapseNavMenu = true;
     private string? financeHref;
+    private Guid? currentCompanyId;
     private CurrentUserContextViewModel? currentUser;
+    private string dashboardHref = "/dashboard";
+    private string agentsHref = "/agents";
+    private string workflowsHref = "/workflows";
+    private string inboxHref = "/inbox";
+    private string activityHref = "/activity-feed";
+    private string approvalsHref = "/approvals";
+    private string auditHref = "/audit";
+    private string briefingHref = "/briefing-preferences";
 
     private string? NavMenuCssClass => collapseNavMenu ? "collapse" : null;
 
@@ -113,8 +122,16 @@
 
     private void RefreshFinanceHref()
     {
-        var requestedCompanyId = TryGetCompanyIdFromUri(Navigation.Uri);
-        financeHref = FinanceAccessResolver.BuildNavigationHref(currentUser, requestedCompanyId);
+        currentCompanyId = TryGetCompanyIdFromUri(Navigation.Uri) ?? currentUser?.ActiveCompany?.CompanyId;
+        financeHref = FinanceAccessResolver.BuildNavigationHref(currentUser, currentCompanyId);
+        dashboardHref = DashboardRoutes.EnsureCompanyContext("/dashboard", currentCompanyId, "/dashboard");
+        agentsHref = DashboardRoutes.EnsureCompanyContext("/agents", currentCompanyId, "/agents");
+        workflowsHref = DashboardRoutes.EnsureCompanyContext("/workflows", currentCompanyId, "/workflows");
+        inboxHref = currentCompanyId is Guid inboxCompanyId ? $"/inbox?companyId={inboxCompanyId:D}" : "/inbox";
+        activityHref = DashboardRoutes.EnsureCompanyContext("/activity-feed", currentCompanyId, "/activity-feed");
+        approvalsHref = DashboardRoutes.BuildApprovalsPath(currentCompanyId);
+        auditHref = currentCompanyId is Guid auditCompanyId ? $"/audit?companyId={auditCompanyId:D}" : "/audit";
+        briefingHref = currentCompanyId is Guid briefingCompanyId ? $"/briefing-preferences?companyId={briefingCompanyId:D}" : "/briefing-preferences";
     }
 
     private static Guid? TryGetCompanyIdFromUri(string uri)

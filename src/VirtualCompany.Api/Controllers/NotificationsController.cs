@@ -17,10 +17,12 @@ namespace VirtualCompany.Api.Controllers;
 public sealed class NotificationsController : ControllerBase
 {
     private readonly INotificationInboxService _notificationInboxService;
+    private readonly ILogger<NotificationsController> _logger;
 
-    public NotificationsController(INotificationInboxService notificationInboxService)
+    public NotificationsController(INotificationInboxService notificationInboxService, ILogger<NotificationsController> logger)
     {
         _notificationInboxService = notificationInboxService;
+        _logger = logger;
     }
 
     [HttpGet("inbox")]
@@ -167,16 +169,37 @@ public sealed class NotificationsController : ControllerBase
         Guid approvalId,
         CancellationToken cancellationToken)
     {
+        _logger.LogInformation(
+            "Approval inbox detail requested. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}.",
+            companyId,
+            approvalId);
         try
         {
-            return Ok(await _notificationInboxService.GetApprovalDetailAsync(companyId, approvalId, cancellationToken));
+            var approval = await _notificationInboxService.GetApprovalDetailAsync(companyId, approvalId, cancellationToken);
+            _logger.LogInformation(
+                "Approval inbox detail resolved. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. TargetType: {TargetType}. TargetId: {TargetId}. AffectedEntities: {AffectedEntities}. Status: {Status}.",
+                companyId,
+                approvalId,
+                approval.TargetEntityType,
+                approval.TargetEntityId,
+                approval.AffectedEntities.Count,
+                approval.Status);
+            return Ok(approval);
         }
         catch (KeyNotFoundException)
         {
+            _logger.LogWarning(
+                "Approval inbox detail not found. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}.",
+                companyId,
+                approvalId);
             return NotFound();
         }
         catch (UnauthorizedAccessException)
         {
+            _logger.LogWarning(
+                "Approval inbox detail forbidden. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}.",
+                companyId,
+                approvalId);
             return Forbid();
         }
     }
@@ -195,6 +218,11 @@ public sealed class NotificationsController : ControllerBase
 
         if (command.ApprovalId != approvalId)
         {
+            _logger.LogWarning(
+                "Approval inbox decision rejected because approval id did not match route. CompanyId: {CompanyId}. RouteApprovalId: {ApprovalId}. PayloadApprovalId: {PayloadApprovalId}.",
+                companyId,
+                approvalId,
+                command.ApprovalId);
             return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
             {
                 [nameof(command.ApprovalId)] = ["Approval id must match the route."]
@@ -205,12 +233,34 @@ public sealed class NotificationsController : ControllerBase
             });
         }
 
+        _logger.LogInformation(
+            "Approval inbox decision requested. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. StepId: {StepId}. Decision: {Decision}. ClientRequestId: {ClientRequestId}.",
+            companyId,
+            approvalId,
+            command.StepId,
+            command.Decision,
+            command.ClientRequestId);
         try
         {
-            return Ok(await _notificationInboxService.DecideApprovalAsync(companyId, approvalId, command, cancellationToken));
+            var result = await _notificationInboxService.DecideApprovalAsync(companyId, approvalId, command, cancellationToken);
+            _logger.LogInformation(
+                "Approval inbox decision completed. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. Finalized: {Finalized}. Status: {Status}. NextStepId: {NextStepId}.",
+                companyId,
+                approvalId,
+                result.IsFinalized,
+                result.Approval.Status,
+                result.NextStep?.Id);
+            return Ok(result);
         }
         catch (ApprovalValidationException ex)
         {
+            _logger.LogWarning(
+                ex,
+                "Approval inbox decision validation failed. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. StepId: {StepId}. Decision: {Decision}.",
+                companyId,
+                approvalId,
+                command.StepId,
+                command.Decision);
             return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors, StringComparer.OrdinalIgnoreCase))
             {
                 Title = "Validation failed",
@@ -219,14 +269,30 @@ public sealed class NotificationsController : ControllerBase
         }
         catch (KeyNotFoundException)
         {
+            _logger.LogWarning(
+                "Approval inbox decision failed because approval was not found. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}.",
+                companyId,
+                approvalId);
             return NotFound();
         }
         catch (UnauthorizedAccessException)
         {
+            _logger.LogWarning(
+                "Approval inbox decision forbidden. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. StepId: {StepId}.",
+                companyId,
+                approvalId,
+                command.StepId);
             return Forbid();
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogWarning(
+                ex,
+                "Approval inbox decision conflict. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. StepId: {StepId}. Decision: {Decision}.",
+                companyId,
+                approvalId,
+                command.StepId,
+                command.Decision);
             return Conflict(new ProblemDetails { Title = "Approval decision conflict", Detail = ex.Message, Status = StatusCodes.Status409Conflict });
         }
     }

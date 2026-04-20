@@ -1,8 +1,10 @@
 @page "/approvals"
+@rendermode InteractiveServer
 @inject ApprovalApiClient ApprovalApiClient
 @inject InboxApiClient InboxApiClient
 @inject OnboardingApiClient OnboardingApiClient
 @inject NavigationManager Navigation
+@inject ILogger<Approvals> Logger
 @using Microsoft.AspNetCore.Components
 @using VirtualCompany.Web.Services
 
@@ -51,8 +53,8 @@ else if (CompanyId is null)
 else
 {
     <section class="py-4 dashboard-hero">
-        <div class="dashboard-shell">
-            <div class="wizard-card dashboard-summary">
+        <div class="dashboard-shell approvals-layout">
+            <div class="wizard-card dashboard-summary approvals-workbench">
                 <span class="dashboard-kicker">Approval inbox</span>
                 <h1>@(companyAccess?.CompanyName ?? "Approvals")</h1>
                 <p class="text-body-secondary mb-0">Review the rationale and affected data before deciding.</p>
@@ -89,112 +91,21 @@ else
 
                 @if (approvals.Count == 0)
                 {
-                    <p class="text-body-secondary mt-4 mb-0">No pending approvals.</p>
+                    <p class="text-body-secondary mt-4 mb-0">No approvals are waiting for review.</p>
                 }
                 else
                 {
-                    <div class="list-group mt-4">
-                        @foreach (var approval in approvals)
-                        {
-                            <button type="button"
-                                    class="@GetApprovalListItemClass(approval)"
-                                    @onclick="() => SelectApprovalAsync(approval.Id)">
-                                <div class="d-flex w-100 justify-content-between gap-3">
-                                    <div>
-                                        <strong>@approval.ApprovalType approval</strong>
-                                        <div class="text-body-secondary small mt-1">@approval.RationaleSummary</div>
-                                        <div class="small mt-2">@approval.AffectedDataSummary</div>
-                                        <div class="small mt-1">Requested by @approval.RequestedByActorType @approval.RequestedByActorId.ToString("N")</div>
-                                        <div class="small mt-1">Approver: @FormatApprover(approval)</div>
-                                    </div>
-                                    <span class="badge text-bg-light align-self-start">@approval.Status</span>
-                                </div>
-                            </button>
-                        }
-                    </div>
+                    <ApprovalInbox Approvals="approvals" SelectedApprovalId="selectedApproval?.Id" OnSelectApproval="SelectApprovalAsync" />
                 }
             </div>
 
-            <div class="wizard-card wizard-card--compact">
-                @if (selectedApproval is null)
-                {
-                    <h2 class="h5">Approval detail</h2>
-                    <p class="text-body-secondary mb-0">Select an approval to review the rationale and affected data.</p>
-                }
-                else
-                {
-                    <h2 class="h5">Approval detail</h2>
-                    <dl class="mb-4">
-                        <dt>Status</dt>
-                        <dd>@selectedApproval.Status</dd>
-                        <dt>Requested</dt>
-                        <dd>@selectedApproval.CreatedAt.ToLocalTime().ToString("g")</dd>
-                        <dt>Target</dt>
-                        <dd>@selectedApproval.TargetEntityType</dd>
-                        <dt>Target id</dt>
-                        <dd>@selectedApproval.TargetEntityId.ToString("N")</dd>
-                        <dt>Requested by</dt>
-                        <dd>@selectedApproval.RequestedByActorType @selectedApproval.RequestedByActorId.ToString("N")</dd>
-                        <dt>Required approver</dt>
-                        <dd>@FormatApprover(selectedApproval)</dd>
-                    </dl>
-
-                    <h3 class="h6">Rationale</h3>
-                    <p class="text-body-secondary">@selectedApproval.RationaleSummary</p>
-
-                    <h3 class="h6">Affected data</h3>
-                    <p class="text-body-secondary">@selectedApproval.AffectedDataSummary</p>
-                    @if (selectedApproval.AffectedEntities.Count > 0)
-                    {
-                        <div class="d-flex flex-wrap gap-2 mb-3">
-                            @foreach (var entity in selectedApproval.AffectedEntities)
-                            {
-                                <span class="badge text-bg-light">@entity.EntityType: @entity.Label</span>
-                            }
-                        </div>
-                    }
-
-                    @if (!string.IsNullOrWhiteSpace(selectedApproval.ThresholdSummary))
-                    {
-                        <h3 class="h6">Threshold context</h3>
-                        <p class="text-body-secondary">@selectedApproval.ThresholdSummary</p>
-                    }
-
-                    @if (!string.IsNullOrWhiteSpace(selectedApproval.RejectionComment))
-                    {
-                        <h3 class="h6">Rejection feedback</h3>
-                        <p class="text-body-secondary">@selectedApproval.RejectionComment</p>
-                    }
-
-                    @if (selectedApproval.Steps.Any(step => step.DecidedAt is not null || !string.Equals(step.Status, "pending", StringComparison.OrdinalIgnoreCase)))
-                    {
-                        <h3 class="h6">Decision history</h3>
-                        <ul class="list-unstyled">
-                            @foreach (var step in selectedApproval.Steps.Where(step => step.DecidedAt is not null || !string.Equals(step.Status, "pending", StringComparison.OrdinalIgnoreCase)))
-                            {
-                                <li class="mb-2">
-                                    Step @step.SequenceNo: @step.Status@if (!string.IsNullOrWhiteSpace(step.Comment)) { <span> - @step.Comment</span> }
-                                </li>
-                            }
-                        </ul>
-                    }
-
-                    @if (selectedApproval.CurrentStep is not null && IsPending(selectedApproval))
-                    {
-                        <div class="mb-3">
-                            <label class="form-label" for="approval-comment">Decision comment</label>
-                            <textarea id="approval-comment" class="form-control" rows="3" @bind="decisionComment"></textarea>
-                        </div>
-                        <div class="dashboard-actions">
-                            <button class="btn btn-primary" @onclick='() => DecideAsync("approve")' disabled="@isDeciding">Approve</button>
-                            <button class="btn btn-outline-secondary" @onclick='() => DecideAsync("reject")' disabled="@isDeciding">Reject</button>
-                        </div>
-                    }
-                    else
-                    {
-                        <p class="text-body-secondary mb-0">This approval is not awaiting a decision.</p>
-                    }
-                }
+            <div class="wizard-card wizard-card--compact approvals-detail-panel">
+                <ApprovalDetail Approval="selectedApproval"
+                                DecisionComment="@decisionComment"
+                                DecisionCommentChanged="OnDecisionCommentChanged"
+                                IsDeciding="isDeciding"
+                                OnApprove='@(() => DecideAsync("approve"))'
+                                OnReject='@(() => DecideAsync("reject"))' />
             </div>
         </div>
     </section>
@@ -234,6 +145,13 @@ else
     {
         isLoading = true;
         errorMessage = null;
+        Logger.LogInformation(
+            "Approvals page parameters updated. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. Status: {Status}. Filter: {Filter}. Source: {Source}.",
+            CompanyId,
+            ApprovalId,
+            Status,
+            Filter,
+            Source);
 
         try
         {
@@ -253,6 +171,12 @@ else
         }
         catch (OnboardingApiException ex)
         {
+            Logger.LogWarning(
+                ex,
+                "Approvals page failed to load. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. Status: {Status}.",
+                CompanyId,
+                ApprovalId,
+                StatusOrDefault);
             errorMessage = ex.Message;
             approvals = [];
             selectedApproval = null;
@@ -267,41 +191,101 @@ else
     {
         if (CompanyId is not Guid companyId)
         {
+            Logger.LogWarning("Approval selection ignored because no company id was present. ApprovalId: {ApprovalId}.", approvalId);
             return;
         }
 
-        selectedApproval = IsPendingInboxFilter ? await InboxApiClient.GetPendingApprovalDetailAsync(companyId, approvalId) : await ApprovalApiClient.GetAsync(companyId, approvalId);
-        decisionComment = null;
-        Navigation.NavigateTo(BuildApprovalsUri(companyId, Filter, StatusOrDefault, approvalId, Source), replace: true);
+        Logger.LogInformation(
+            "Selecting approval from UI. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. PendingInboxFilter: {PendingInboxFilter}.",
+            companyId,
+            approvalId,
+            IsPendingInboxFilter);
+
+        try
+        {
+            selectedApproval = IsPendingInboxFilter
+                ? await InboxApiClient.GetPendingApprovalDetailAsync(companyId, approvalId)
+                : await ApprovalApiClient.GetAsync(companyId, approvalId);
+            selectedApproval = ApprovalPresentationFormatter.Format(selectedApproval);
+            decisionComment = null;
+            Logger.LogInformation(
+                "Approval detail loaded. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. TargetType: {TargetType}. TargetId: {TargetId}. AffectedEntities: {AffectedEntities}. Status: {Status}.",
+                companyId,
+                selectedApproval.Id,
+                selectedApproval.TargetEntityType,
+                selectedApproval.TargetEntityId,
+                selectedApproval.AffectedEntities.Count,
+                selectedApproval.Status);
+        }
+        catch (OnboardingApiException ex)
+        {
+            Logger.LogWarning(
+                ex,
+                "Approval detail request failed. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. PendingInboxFilter: {PendingInboxFilter}.",
+                companyId,
+                approvalId,
+                IsPendingInboxFilter);
+            errorMessage = ex.Message;
+        }
     }
 
     private async Task DecideAsync(string decision)
     {
         if (CompanyId is not Guid companyId || selectedApproval?.CurrentStep is null)
         {
+            Logger.LogWarning(
+                "Approval decision ignored because selection was incomplete. CompanyId: {CompanyId}. SelectedApprovalId: {ApprovalId}. Decision: {Decision}. HasCurrentStep: {HasCurrentStep}.",
+                CompanyId,
+                selectedApproval?.Id,
+                decision,
+                selectedApproval?.CurrentStep is not null);
             return;
         }
 
         isDeciding = true;
         errorMessage = null;
+        var approvalId = selectedApproval.Id;
+        var stepId = selectedApproval.CurrentStep.Id;
+        Logger.LogInformation(
+            "Submitting approval decision from UI. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. StepId: {StepId}. Decision: {Decision}. PendingInboxFilter: {PendingInboxFilter}.",
+            companyId,
+            approvalId,
+            stepId,
+            decision,
+            IsPendingInboxFilter);
         try
         {
             var request = new ApprovalDecisionRequest
             {
-                ApprovalId = selectedApproval.Id,
-                StepId = selectedApproval.CurrentStep.Id,
+                ApprovalId = approvalId,
+                StepId = stepId,
                 Decision = decision,
                 Comment = decisionComment
             };
             var result = IsPendingInboxFilter
-                ? await InboxApiClient.DecidePendingApprovalAsync(companyId, selectedApproval.Id, request)
-                : await ApprovalApiClient.DecideAsync(companyId, selectedApproval.Id, request);
-            selectedApproval = result.Approval;
+                ? await InboxApiClient.DecidePendingApprovalAsync(companyId, approvalId, request)
+                : await ApprovalApiClient.DecideAsync(companyId, approvalId, request);
+            selectedApproval = ApprovalPresentationFormatter.Format(result.Approval);
             decisionComment = null;
+            Logger.LogInformation(
+                "Approval decision completed in UI. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. Finalized: {Finalized}. NewStatus: {Status}. NextStepId: {NextStepId}.",
+                companyId,
+                result.Approval.Id,
+                result.IsFinalized,
+                result.Approval.Status,
+                result.NextStep?.Id);
             await LoadApprovalInboxAsync(companyId);
         }
         catch (OnboardingApiException ex)
         {
+            Logger.LogWarning(
+                ex,
+                "Approval decision failed in UI. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. StepId: {StepId}. Decision: {Decision}. PendingInboxFilter: {PendingInboxFilter}.",
+                companyId,
+                approvalId,
+                stepId,
+                decision,
+                IsPendingInboxFilter);
             errorMessage = ex.Message;
         }
         finally
@@ -312,20 +296,54 @@ else
 
     private async Task LoadApprovalInboxAsync(Guid companyId)
     {
+        Logger.LogInformation(
+            "Loading approval inbox. CompanyId: {CompanyId}. PendingInboxFilter: {PendingInboxFilter}. ApprovalId: {ApprovalId}.",
+            companyId,
+            IsPendingInboxFilter,
+            ApprovalId);
+
         if (IsPendingInboxFilter)
         {
             var inbox = await InboxApiClient.GetInboxAsync(companyId);
-            approvals = inbox.PendingApprovals.Select(ToApprovalRequestViewModel).ToList();
-            selectedApproval = ApprovalId is Guid approvalId
-                ? await InboxApiClient.GetPendingApprovalDetailAsync(companyId, approvalId)
-                : approvals.FirstOrDefault();
+            approvals = ApprovalPresentationFormatter.Format(inbox.PendingApprovals.Select(ToApprovalRequestViewModel));
+            if (ApprovalId is Guid approvalId)
+            {
+                try
+                {
+                    selectedApproval = ApprovalPresentationFormatter.Format(await InboxApiClient.GetPendingApprovalDetailAsync(companyId, approvalId));
+                }
+                catch (OnboardingApiException ex)
+                {
+                    Logger.LogInformation(
+                        ex,
+                        "Pending approval detail could not be reloaded from inbox. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. Falling back to first available pending approval.",
+                        companyId,
+                        approvalId);
+                    selectedApproval = approvals.FirstOrDefault();
+                }
+            }
+            else
+            {
+                selectedApproval = approvals.FirstOrDefault();
+            }
+            Logger.LogInformation(
+                "Loaded pending approval inbox. CompanyId: {CompanyId}. ApprovalCount: {ApprovalCount}. SelectedApprovalId: {SelectedApprovalId}.",
+                companyId,
+                approvals.Count,
+                selectedApproval?.Id);
             return;
         }
 
-        approvals = (await ApprovalApiClient.ListAsync(companyId, StatusOrDefault)).ToList();
+        approvals = ApprovalPresentationFormatter.Format(await ApprovalApiClient.ListAsync(companyId, StatusOrDefault));
         selectedApproval = ApprovalId is Guid selectedApprovalId
-            ? await ApprovalApiClient.GetAsync(companyId, selectedApprovalId)
+            ? ApprovalPresentationFormatter.Format(await ApprovalApiClient.GetAsync(companyId, selectedApprovalId))
             : approvals.FirstOrDefault();
+        Logger.LogInformation(
+            "Loaded approval list. CompanyId: {CompanyId}. ApprovalCount: {ApprovalCount}. SelectedApprovalId: {SelectedApprovalId}. StatusFilter: {StatusFilter}.",
+            companyId,
+            approvals.Count,
+            selectedApproval?.Id,
+            StatusOrDefault);
     }
 
     private static ApprovalRequestViewModel ToApprovalRequestViewModel(ApprovalInboxItemViewModel item) =>
@@ -347,11 +365,6 @@ else
             CurrentStep = item.CurrentStep,
             CreatedAt = item.CreatedAt
         };
-
-    private string GetApprovalListItemClass(ApprovalRequestViewModel approval) =>
-        selectedApproval?.Id == approval.Id
-            ? "list-group-item list-group-item-action active"
-            : "list-group-item list-group-item-action";
 
     private string? StatusOrDefault =>
         NormalizeApprovalStatus(Status, Filter);
@@ -392,21 +405,9 @@ else
     private static bool IsPending(ApprovalRequestViewModel approval) =>
         string.Equals(approval.Status, "pending", StringComparison.OrdinalIgnoreCase);
 
-    private static string FormatApprover(ApprovalRequestViewModel approval)
+    private Task OnDecisionCommentChanged(string? value)
     {
-        if (approval.RequiredUserId is Guid requiredUserId)
-        {
-            return $"user {requiredUserId:N}";
-        }
-
-        if (!string.IsNullOrWhiteSpace(approval.RequiredRole))
-        {
-            return $"role {approval.RequiredRole}";
-        }
-
-        return FormatStepApprover(approval.CurrentStep);
+        decisionComment = value;
+        return Task.CompletedTask;
     }
-
-    private static string FormatStepApprover(ApprovalStepViewModel? step) =>
-        step is null ? "current approver" : $"{step.ApproverType} {step.ApproverRef}";
 }

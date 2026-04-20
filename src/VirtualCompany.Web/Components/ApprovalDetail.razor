@@ -1,0 +1,170 @@
+@using VirtualCompany.Web.Services
+
+@if (Approval is null)
+{
+    <h2 class="h5">Approval detail</h2>
+    <p class="text-body-secondary mb-0">Select an approval to review the details and make a decision.</p>
+}
+else
+{
+    <h2 class="h5">Approval detail</h2>
+
+    <section class="approvals-detail-section">
+        <h3 class="h6">Decision</h3>
+        <p class="text-body-secondary mb-0">@Approval.DisplayDecisionSummary</p>
+    </section>
+
+    <section class="approvals-detail-section">
+        <h3 class="h6">Payment details</h3>
+        <dl class="approvals-summary-grid mb-0">
+            <dt>Type</dt>
+            <dd>@Approval.DisplayType</dd>
+            <dt>Reference</dt>
+            <dd>@Approval.DisplayReference</dd>
+            @if (!string.IsNullOrWhiteSpace(Approval.DisplayAmount))
+            {
+                <dt>Amount</dt>
+                <dd>@Approval.DisplayAmount</dd>
+            }
+            <dt>Date</dt>
+            <dd>@Approval.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd")</dd>
+            <dt>Status</dt>
+            <dd>@Approval.DisplayStatus</dd>
+        </dl>
+    </section>
+
+    @if (HasSupportingDetails(Approval))
+    {
+        <section class="approvals-detail-section">
+            <h3 class="h6">Supporting details</h3>
+            <dl class="approvals-summary-grid mb-0">
+            @if (!string.IsNullOrWhiteSpace(Approval.DisplayScenario))
+            {
+                <dt>Scenario</dt>
+                <dd>@Approval.DisplayScenario</dd>
+            }
+            @if (!string.IsNullOrWhiteSpace(Approval.DisplayCounterparty))
+            {
+                <dt>Counterparty</dt>
+                <dd>@Approval.DisplayCounterparty</dd>
+            }
+            @if (!string.IsNullOrWhiteSpace(Approval.DisplayPaymentActivity))
+            {
+                <dt>Payment activity</dt>
+                <dd>@Approval.DisplayPaymentActivity</dd>
+            }
+            @if (!string.IsNullOrWhiteSpace(Approval.DisplayStatusNote))
+            {
+                <dt>Related status</dt>
+                <dd>@Approval.DisplayStatusNote</dd>
+            }
+            </dl>
+        </section>
+    }
+
+    @if (Approval.Steps.Any(step => step.DecidedAt is not null || !string.Equals(step.Status, "pending", StringComparison.OrdinalIgnoreCase)))
+    {
+        <section class="approvals-detail-section">
+            <h3 class="h6">Decision history</h3>
+            <ul class="list-unstyled mb-0">
+                @foreach (var step in Approval.Steps.Where(step => step.DecidedAt is not null || !string.Equals(step.Status, "pending", StringComparison.OrdinalIgnoreCase)))
+                {
+                    <li class="mb-2">
+                        Step @step.SequenceNo: @HumanizeStatus(step.Status)@if (!string.IsNullOrWhiteSpace(step.Comment)) { <span> - @step.Comment</span> }
+                    </li>
+                }
+            </ul>
+        </section>
+    }
+
+    @if (Approval.CurrentStep is not null && IsPending(Approval))
+    {
+        <section class="approvals-detail-section">
+            <div class="mb-3">
+                <label class="form-label" for="approval-comment">Comment</label>
+                <textarea id="approval-comment" class="form-control" rows="3" value="@DecisionComment" @oninput="HandleCommentChanged"></textarea>
+            </div>
+            <div class="dashboard-actions">
+                <button class="btn btn-primary" type="button" @onclick="OnApprove" disabled="@IsDeciding">Approve</button>
+                <button class="btn btn-outline-secondary" type="button" @onclick="OnReject" disabled="@IsDeciding">Reject</button>
+            </div>
+        </section>
+    }
+    else
+    {
+        <p class="text-body-secondary mb-0">This approval is not awaiting a decision.</p>
+    }
+
+    <details class="approvals-technical mt-4">
+        <summary>Technical details</summary>
+        <dl class="approvals-summary-grid mt-3 mb-0">
+            <dt>Approval ID</dt>
+            <dd>@Approval.Id.ToString("N")</dd>
+            <dt>Target type</dt>
+            <dd>@Approval.TargetEntityType</dd>
+            <dt>Target ID</dt>
+            <dd>@Approval.TargetEntityId.ToString("N")</dd>
+            <dt>Requested by</dt>
+            <dd>@Approval.RequestedByActorType @Approval.RequestedByActorId.ToString("N")</dd>
+            <dt>Trigger</dt>
+            <dd>@Approval.DisplayTrigger</dd>
+            @if (!string.IsNullOrWhiteSpace(Approval.DisplayScenario))
+            {
+                <dt>Scenario</dt>
+                <dd>@Approval.DisplayScenario</dd>
+            }
+            @if (!string.IsNullOrWhiteSpace(Approval.RequiredRole))
+            {
+                <dt>Approver role</dt>
+                <dd>@HumanizeApproverRole(Approval.RequiredRole)</dd>
+            }
+            @if (!string.IsNullOrWhiteSpace(Approval.AffectedDataSummary))
+            {
+                <dt>Raw task data</dt>
+                <dd>@Approval.AffectedDataSummary</dd>
+            }
+        </dl>
+    </details>
+}
+
+@code {
+    [Parameter]
+    public ApprovalRequestViewModel? Approval { get; set; }
+
+    [Parameter]
+    public string? DecisionComment { get; set; }
+
+    [Parameter]
+    public EventCallback<string?> DecisionCommentChanged { get; set; }
+
+    [Parameter]
+    public bool IsDeciding { get; set; }
+
+    [Parameter]
+    public EventCallback OnApprove { get; set; }
+
+    [Parameter]
+    public EventCallback OnReject { get; set; }
+
+    private Task HandleCommentChanged(ChangeEventArgs args) =>
+        DecisionCommentChanged.InvokeAsync(args.Value?.ToString());
+
+    private static bool IsPending(ApprovalRequestViewModel approval) =>
+        string.Equals(approval.Status, "pending", StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasSupportingDetails(ApprovalRequestViewModel approval) =>
+        !string.IsNullOrWhiteSpace(approval.DisplayCounterparty) ||
+        !string.IsNullOrWhiteSpace(approval.DisplayPaymentActivity) ||
+        !string.IsNullOrWhiteSpace(approval.DisplayStatusNote);
+
+    private static string HumanizeStatus(string value) =>
+        System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(
+            value.Replace('_', ' ').Replace('-', ' ').ToLowerInvariant());
+
+    private static string HumanizeApproverRole(string role) =>
+        role switch
+        {
+            "finance_approver" => "Finance manager",
+            _ => HumanizeStatus(role)
+        };
+}

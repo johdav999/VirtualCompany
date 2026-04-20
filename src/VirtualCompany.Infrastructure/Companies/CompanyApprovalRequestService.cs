@@ -772,10 +772,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             {
                 if (tasks.TryGetValue(approval.TargetEntityId, out var task))
                 {
-                    return new ApprovalSummaryContext(
-                        task.RationaleSummary,
-                        $"Task: {task.Title}",
-                        [new ApprovalAffectedEntityDto(ApprovalTargetEntityType.Task.ToStorageValue(), task.Id, task.Title)]);
+                    return BuildTaskApprovalSummaryContext(task, approval);
                 }
 
                 if (workflows.TryGetValue(approval.TargetEntityId, out var workflow))
@@ -805,6 +802,93 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
                     $"{ToDisplayName(approval.TargetEntityType)}: {approval.TargetEntityId:N}",
                     [new ApprovalAffectedEntityDto(approval.TargetEntityType, approval.TargetEntityId, ToDisplayName(approval.TargetEntityType))]);
             });
+    }
+
+    private static ApprovalSummaryContext BuildTaskApprovalSummaryContext(WorkTask task, ApprovalRequest approval)
+    {
+        var invoiceId = TryGetGuid(task.OutputPayload, "invoiceId") ??
+            TryGetGuid(task.InputPayload, "invoiceId") ??
+            TryGetGuid(approval.ThresholdContext, "invoiceId");
+        var invoiceNumber = FirstNonEmptyOrNull(
+            TryReadString(task.OutputPayload, "invoiceNumber"),
+            TryReadString(task.InputPayload, "invoiceNumber"),
+            TryReadString(approval.ThresholdContext, "invoiceNumber"));
+        var counterpartyName = FirstNonEmptyOrNull(
+            TryReadString(task.OutputPayload, "vendorName", "counterpartyName"),
+            TryReadString(task.InputPayload, "vendorName", "counterpartyName"),
+            TryReadString(approval.ThresholdContext, "vendorName", "counterpartyName"));
+        var invoiceStatus = FirstNonEmptyOrNull(
+            TryReadString(task.OutputPayload, "invoiceStatus"),
+            TryReadString(task.InputPayload, "status"),
+            TryReadString(approval.ThresholdContext, "invoiceStatus"));
+        var invoiceAmount = TryGetDecimal(task.OutputPayload, "invoiceAmount") ??
+            TryGetDecimal(task.InputPayload, "amount") ??
+            TryGetDecimal(approval.ThresholdContext, "invoiceAmount");
+        var invoiceCurrency = FirstNonEmptyOrNull(
+            TryReadString(task.OutputPayload, "invoiceCurrency"),
+            TryReadString(task.InputPayload, "currency"),
+            TryReadString(approval.ThresholdContext, "invoiceCurrency"));
+        var transactionCount = TryGetNestedInt(task.OutputPayload, "relatedPaymentContext", "transactionCount") ??
+            TryGetNestedInt(approval.ThresholdContext, "relatedPaymentContext", "transactionCount");
+        var totalPaidAmount = TryGetNestedDecimal(task.OutputPayload, "relatedPaymentContext", "totalPaidAmount") ??
+            TryGetNestedDecimal(approval.ThresholdContext, "relatedPaymentContext", "totalPaidAmount");
+        var paymentCurrency = FirstNonEmptyOrNull(
+            TryGetNestedString(task.OutputPayload, "relatedPaymentContext", "currency"),
+            TryGetNestedString(approval.ThresholdContext, "relatedPaymentContext", "currency"),
+            invoiceCurrency);
+
+        var affectedSummaryParts = new List<string> { $"Task: {task.Title}" };
+        var affectedEntities = new List<ApprovalAffectedEntityDto>
+        {
+            new(ApprovalTargetEntityType.Task.ToStorageValue(), task.Id, task.Title)
+        };
+
+        if (invoiceId.HasValue)
+        {
+            var invoiceLabel = string.IsNullOrWhiteSpace(invoiceNumber)
+                ? $"Invoice {invoiceId.Value:N}"
+                : $"Invoice {invoiceNumber}";
+            affectedSummaryParts.Add(invoiceLabel);
+            affectedEntities.Add(new ApprovalAffectedEntityDto("invoice", invoiceId.Value, invoiceLabel));
+        }
+        else if (!string.IsNullOrWhiteSpace(invoiceNumber))
+        {
+            affectedSummaryParts.Add($"Invoice {invoiceNumber}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(counterpartyName))
+        {
+            affectedSummaryParts.Add($"Counterparty: {counterpartyName}");
+        }
+
+        if (invoiceAmount.HasValue && !string.IsNullOrWhiteSpace(invoiceCurrency))
+        {
+            affectedSummaryParts.Add($"Amount: {invoiceAmount.Value:0.##} {invoiceCurrency}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(invoiceStatus))
+        {
+            affectedSummaryParts.Add($"Status: {invoiceStatus}");
+        }
+
+        var resolvedTransactionCount = transactionCount.GetValueOrDefault();
+        if (resolvedTransactionCount > 0)
+        {
+            var paymentSummary = totalPaidAmount.HasValue && !string.IsNullOrWhiteSpace(paymentCurrency)
+                ? $"Payment activity: {resolvedTransactionCount} transaction(s) totaling {totalPaidAmount.Value:0.##} {paymentCurrency}"
+                : $"Payment activity: {resolvedTransactionCount} related transaction(s)";
+            affectedSummaryParts.Add(paymentSummary);
+        }
+
+        var rationaleSummary = FirstNonEmptyOrNull(
+            task.RationaleSummary,
+            TryReadString(task.OutputPayload, "rationale"),
+            TryReadString(approval.ThresholdContext, "rationaleSummary", "rationale", "explanation"));
+
+        return new ApprovalSummaryContext(
+            rationaleSummary,
+            string.Join(" | ", affectedSummaryParts),
+            affectedEntities);
     }
 
     private static Dictionary<string, JsonNode?> BuildBlockedApprovalResultPayload(ApprovalRequest approval, ToolExecutionAttempt attempt)
@@ -913,8 +997,104 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
         return null;
     }
 
+    private static Guid? TryGetGuid(IReadOnlyDictionary<string, JsonNode?>? nodes, string key)
+    {
+        if (nodes is null ||
+            !nodes.TryGetValue(key, out var node) ||
+            node is not JsonValue value)
+        {
+            return null;
+        }
+
+        if (value.TryGetValue<Guid>(out var guid) && guid != Guid.Empty)
+        {
+            return guid;
+        }
+
+        return value.TryGetValue<string>(out var text) && Guid.TryParse(text, out guid) && guid != Guid.Empty
+            ? guid
+            : null;
+    }
+
+    private static decimal? TryGetDecimal(IReadOnlyDictionary<string, JsonNode?>? nodes, string key)
+    {
+        if (nodes is null ||
+            !nodes.TryGetValue(key, out var node) ||
+            node is not JsonValue value)
+        {
+            return null;
+        }
+
+        if (value.TryGetValue<decimal>(out var number))
+        {
+            return number;
+        }
+
+        return value.TryGetValue<string>(out var text) && decimal.TryParse(text, out number)
+            ? number
+            : null;
+    }
+
+    private static int? TryGetInt(IReadOnlyDictionary<string, JsonNode?>? nodes, string key)
+    {
+        if (nodes is null ||
+            !nodes.TryGetValue(key, out var node) ||
+            node is not JsonValue value)
+        {
+            return null;
+        }
+
+        if (value.TryGetValue<int>(out var number))
+        {
+            return number;
+        }
+
+        return value.TryGetValue<string>(out var text) && int.TryParse(text, out number)
+            ? number
+            : null;
+    }
+
+    private static string? TryGetNestedString(IReadOnlyDictionary<string, JsonNode?>? nodes, string key, string nestedKey)
+    {
+        if (nodes is null ||
+            !nodes.TryGetValue(key, out var node) ||
+            node is not JsonObject obj)
+        {
+            return null;
+        }
+
+        return TryReadString(obj.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase), nestedKey);
+    }
+
+    private static int? TryGetNestedInt(IReadOnlyDictionary<string, JsonNode?>? nodes, string key, string nestedKey)
+    {
+        if (nodes is null ||
+            !nodes.TryGetValue(key, out var node) ||
+            node is not JsonObject obj)
+        {
+            return null;
+        }
+
+        return TryGetInt(obj.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase), nestedKey);
+    }
+
+    private static decimal? TryGetNestedDecimal(IReadOnlyDictionary<string, JsonNode?>? nodes, string key, string nestedKey)
+    {
+        if (nodes is null ||
+            !nodes.TryGetValue(key, out var node) ||
+            node is not JsonObject obj)
+        {
+            return null;
+        }
+
+        return TryGetDecimal(obj.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase), nestedKey);
+    }
+
     private static string FirstNonEmpty(params string?[] values) =>
         values.First(value => !string.IsNullOrWhiteSpace(value))!.Trim();
+
+    private static string? FirstNonEmptyOrNull(params string?[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
 
     private static string Truncate(string value, int maxLength) =>
         value.Length <= maxLength ? value : value[..maxLength].TrimEnd() + "...";
