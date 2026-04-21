@@ -1,0 +1,1647 @@
+diff --git a/src/VirtualCompany.Application/Finance/CashPostingTraceabilityBackfillContracts.cs b/src/VirtualCompany.Application/Finance/CashPostingTraceabilityBackfillContracts.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/CashPostingTraceabilityBackfillContracts.cs
+@@ -0,0 +1,18 @@
++namespace VirtualCompany.Application.Finance;
++
++public sealed record BackfillCashPostingTraceabilityCommand(
++    Guid CompanyId,
++    int BatchSize = 250,
++    string? CorrelationId = null);
++
++public sealed record CashPostingTraceabilityBackfillResultDto(
++    Guid CompanyId,
++    string CorrelationId,
++    int MigratedRecordCount,
++    int BackfilledRecordCount,
++    int SkippedRecordCount,
++    int ConflictCount);
++
++public interface ICashPostingTraceabilityBackfillService
++{
++    Task<CashPostingTraceabilityBackfillResultDto> BackfillAsync(BackfillCashPostingTraceabilityCommand command, CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Domain/Enums/BankTransactionValues.cs b/src/VirtualCompany.Domain/Enums/BankTransactionValues.cs
+--- a/src/VirtualCompany.Domain/Enums/BankTransactionValues.cs
++++ b/src/VirtualCompany.Domain/Enums/BankTransactionValues.cs
+@@ -43,3 +43,83 @@ public static class BankTransactionReconciliationStatuses
+             : PartiallyReconciled;
+     }
+ }
++
++public static class BankTransactionMatchingStatuses
++{
++    public const string Unknown = "unknown";
++    public const string Matched = "matched";
++    public const string Unmatched = "unmatched";
++
++    private static readonly string[] AllowedValuesInternal =
++    [
++        Unknown,
++        Matched,
++        Unmatched
++    ];
++
++    private static readonly HashSet<string> AllowedValueSet = new(AllowedValuesInternal, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues => AllowedValuesInternal;
++
++    public static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    public static bool IsSupported(string? value) =>
++        !string.IsNullOrWhiteSpace(value) &&
++        AllowedValueSet.Contains(Normalize(value));
++
++    public static string BuildCheckConstraintSql(string columnName)
++    {
++        if (string.IsNullOrWhiteSpace(columnName))
++        {
++            throw new ArgumentException("Column name is required.", nameof(columnName));
++        }
++
++        return $"{columnName} IN ('{Unknown}', '{Matched}', '{Unmatched}')";
++    }
++}
++
++public static class BankTransactionPostingStates
++{
++    public const string Pending = "pending";
++    public const string Posted = "posted";
++    public const string SkippedUnmatched = "skipped_unmatched";
++    public const string Conflict = "conflict";
++
++    private static readonly string[] AllowedValuesInternal =
++    [
++        Pending,
++        Posted,
++        SkippedUnmatched,
++        Conflict
++    ];
++
++    private static readonly HashSet<string> AllowedValueSet = new(AllowedValuesInternal, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues => AllowedValuesInternal;
++
++    public static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    public static bool IsSupported(string? value) =>
++        !string.IsNullOrWhiteSpace(value) &&
++        AllowedValueSet.Contains(Normalize(value));
++
++    public static string BuildCheckConstraintSql(string columnName)
++    {
++        if (string.IsNullOrWhiteSpace(columnName))
++        {
++            throw new ArgumentException("Column name is required.", nameof(columnName));
++        }
++
++        return $"{columnName} IN ('{Pending}', '{Posted}', '{SkippedUnmatched}', '{Conflict}')";
++    }
++
++    public static string Resolve(bool hasPaymentLinks, bool hasLedgerEntry, bool hasConflict) =>
++        hasConflict
++            ? Conflict
++            : hasLedgerEntry
++                ? Posted
++                : hasPaymentLinks
++                    ? Pending
++                    : SkippedUnmatched;
++}
+diff --git a/src/VirtualCompany.Domain/Entities/Payment.cs b/src/VirtualCompany.Domain/Entities/Payment.cs
+--- a/src/VirtualCompany.Domain/Entities/Payment.cs
++++ b/src/VirtualCompany.Domain/Entities/Payment.cs
+@@ -64,6 +64,7 @@ public sealed class Payment : ICompanyOwnedEntity
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public ICollection<PaymentAllocation> Allocations { get; } = new List<PaymentAllocation>();
++    public ICollection<PaymentCashLedgerLink> CashLedgerLinks { get; } = new List<PaymentCashLedgerLink>();
+ 
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+@@ -82,3 +83,58 @@ public sealed class Payment : ICompanyOwnedEntity
+         return trimmed;
+     }
+ }
++
++public sealed class PaymentCashLedgerLink : ICompanyOwnedEntity
++{
++    private PaymentCashLedgerLink()
++    {
++    }
++
++    public PaymentCashLedgerLink(
++        Guid id,
++        Guid companyId,
++        Guid paymentId,
++        Guid ledgerEntryId,
++        string sourceType,
++        string sourceId,
++        DateTime postedAtUtc,
++        DateTime? createdUtc = null)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
++        PaymentId = paymentId == Guid.Empty ? throw new ArgumentException("PaymentId is required.", nameof(paymentId)) : paymentId;
++        LedgerEntryId = ledgerEntryId == Guid.Empty ? throw new ArgumentException("LedgerEntryId is required.", nameof(ledgerEntryId)) : ledgerEntryId;
++        SourceType = NormalizeRequired(sourceType, nameof(sourceType), 64).ToLowerInvariant();
++        SourceId = NormalizeRequired(sourceId, nameof(sourceId), 128);
++        PostedAtUtc = EntityTimestampNormalizer.NormalizeUtc(postedAtUtc, nameof(postedAtUtc));
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? PostedAtUtc, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid PaymentId { get; private set; }
++    public Guid LedgerEntryId { get; private set; }
++    public string SourceType { get; private set; } = null!;
++    public string SourceId { get; private set; } = null!;
++    public DateTime PostedAtUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Payment Payment { get; private set; } = null!;
++    public LedgerEntry LedgerEntry { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/BankTransactionEntities.cs b/src/VirtualCompany.Domain/Entities/BankTransactionEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/BankTransactionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BankTransactionEntities.cs
+@@ -147,6 +147,7 @@ public sealed class BankTransaction : ICompanyOwnedEntity
+     public CompanyBankAccount BankAccount { get; private set; } = null!;
+     public ICollection<BankTransactionPaymentLink> PaymentLinks { get; } = new List<BankTransactionPaymentLink>();
+     public ICollection<BankTransactionCashLedgerLink> CashLedgerLinks { get; } = new List<BankTransactionCashLedgerLink>();
++    public BankTransactionPostingStateRecord? PostingStateRecord { get; private set; }
+ 
+     public decimal AbsoluteAmount => Math.Abs(Amount);
+ 
+@@ -278,3 +279,108 @@ public sealed class BankTransactionCashLedgerLink : ICompanyOwnedEntity
+     public BankTransaction BankTransaction { get; private set; } = null!;
+     public LedgerEntry LedgerEntry { get; private set; } = null!;
+ }
++
++public sealed class BankTransactionPostingStateRecord : ICompanyOwnedEntity
++{
++    private BankTransactionPostingStateRecord()
++    {
++    }
++
++    public BankTransactionPostingStateRecord(
++        Guid id,
++        Guid companyId,
++        Guid bankTransactionId,
++        string matchingStatus,
++        string postingState,
++        int linkedPaymentCount,
++        DateTime lastEvaluatedUtc,
++        string? unmatchedReason = null,
++        string? conflictCode = null,
++        string? conflictDetails = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
++        BankTransactionId = bankTransactionId == Guid.Empty ? throw new ArgumentException("BankTransactionId is required.", nameof(bankTransactionId)) : bankTransactionId;
++        MatchingStatus = NormalizeMatchingStatus(matchingStatus);
++        PostingState = NormalizePostingState(postingState);
++        LinkedPaymentCount = NormalizeLinkedPaymentCount(linkedPaymentCount);
++        LastEvaluatedUtc = EntityTimestampNormalizer.NormalizeUtc(lastEvaluatedUtc, nameof(lastEvaluatedUtc));
++        UnmatchedReason = NormalizeOptional(unmatchedReason, nameof(unmatchedReason), 128);
++        ConflictCode = NormalizeOptional(conflictCode, nameof(conflictCode), 64);
++        ConflictDetails = NormalizeOptional(conflictDetails, nameof(conflictDetails), 512);
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? LastEvaluatedUtc, nameof(createdUtc));
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid BankTransactionId { get; private set; }
++    public string MatchingStatus { get; private set; } = null!;
++    public string PostingState { get; private set; } = null!;
++    public int LinkedPaymentCount { get; private set; }
++    public DateTime LastEvaluatedUtc { get; private set; }
++    public string? UnmatchedReason { get; private set; }
++    public string? ConflictCode { get; private set; }
++    public string? ConflictDetails { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public BankTransaction BankTransaction { get; private set; } = null!;
++
++    public void SyncSnapshot(
++        string matchingStatus,
++        string postingState,
++        int linkedPaymentCount,
++        DateTime evaluatedUtc,
++        string? unmatchedReason = null,
++        string? conflictCode = null,
++        string? conflictDetails = null)
++    {
++        MatchingStatus = NormalizeMatchingStatus(matchingStatus);
++        PostingState = NormalizePostingState(postingState);
++        LinkedPaymentCount = NormalizeLinkedPaymentCount(linkedPaymentCount);
++        LastEvaluatedUtc = EntityTimestampNormalizer.NormalizeUtc(evaluatedUtc, nameof(evaluatedUtc));
++        UnmatchedReason = NormalizeOptional(unmatchedReason, nameof(unmatchedReason), 128);
++        ConflictCode = NormalizeOptional(conflictCode, nameof(conflictCode), 64);
++        ConflictDetails = NormalizeOptional(conflictDetails, nameof(conflictDetails), 512);
++        UpdatedUtc = LastEvaluatedUtc;
++    }
++
++    private static string NormalizeMatchingStatus(string value)
++    {
++        var normalized = BankTransactionMatchingStatuses.Normalize(value);
++        if (!BankTransactionMatchingStatuses.IsSupported(normalized))
++        {
++            throw new ArgumentOutOfRangeException(nameof(value), "Unsupported bank transaction matching status.");
++        }
++
++        return normalized;
++    }
++
++    private static string NormalizePostingState(string value)
++    {
++        var normalized = BankTransactionPostingStates.Normalize(value);
++        if (!BankTransactionPostingStates.IsSupported(normalized))
++        {
++            throw new ArgumentOutOfRangeException(nameof(value), "Unsupported bank transaction posting state.");
++        }
++
++        return normalized;
++    }
++
++    private static int NormalizeLinkedPaymentCount(int value) =>
++        value < 0
++            ? throw new ArgumentOutOfRangeException(nameof(value), "Linked payment count cannot be negative.")
++            : value;
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/CashPostingTraceabilityEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/CashPostingTraceabilityEntityConfiguration.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/CashPostingTraceabilityEntityConfiguration.cs
+@@ -0,0 +1,55 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class PaymentCashLedgerLinkEntityConfiguration : IEntityTypeConfiguration<PaymentCashLedgerLink>
++{
++    public void Configure(EntityTypeBuilder<PaymentCashLedgerLink> builder)
++    {
++        builder.ToTable("payment_cash_ledger_links");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.PaymentId).HasColumnName("payment_id").IsRequired();
++        builder.Property(x => x.LedgerEntryId).HasColumnName("ledger_entry_id").IsRequired();
++        builder.Property(x => x.SourceType).HasColumnName("source_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.SourceId).HasColumnName("source_id").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.PostedAtUtc).HasColumnName("posted_at").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.PaymentId, x.LedgerEntryId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.PaymentId, x.SourceType, x.SourceId, x.PostedAtUtc }).IsUnique();
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Payment).WithMany(x => x.CashLedgerLinks).HasForeignKey(x => x.PaymentId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.LedgerEntry).WithMany().HasForeignKey(x => x.LedgerEntryId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class BankTransactionPostingStateRecordEntityConfiguration : IEntityTypeConfiguration<BankTransactionPostingStateRecord>
++{
++    public void Configure(EntityTypeBuilder<BankTransactionPostingStateRecord> builder)
++    {
++        builder.ToTable("bank_transaction_posting_states");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.BankTransactionId).HasColumnName("bank_transaction_id").IsRequired();
++        builder.Property(x => x.MatchingStatus).HasColumnName("matching_status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.PostingState).HasColumnName("posting_state").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.LinkedPaymentCount).HasColumnName("linked_payment_count").IsRequired();
++        builder.Property(x => x.LastEvaluatedUtc).HasColumnName("last_evaluated_at").IsRequired();
++        builder.Property(x => x.UnmatchedReason).HasColumnName("unmatched_reason").HasMaxLength(128);
++        builder.Property(x => x.ConflictCode).HasColumnName("conflict_code").HasMaxLength(64);
++        builder.Property(x => x.ConflictDetails).HasColumnName("conflict_details").HasMaxLength(512);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.HasCheckConstraint("CK_bank_transaction_posting_states_matching_status", BankTransactionMatchingStatuses.BuildCheckConstraintSql("matching_status"));
++        builder.HasCheckConstraint("CK_bank_transaction_posting_states_posting_state", BankTransactionPostingStates.BuildCheckConstraintSql("posting_state"));
++        builder.HasCheckConstraint("CK_bank_transaction_posting_states_linked_payment_count", "linked_payment_count >= 0");
++        builder.HasIndex(x => new { x.CompanyId, x.BankTransactionId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.MatchingStatus, x.PostingState });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.BankTransaction).WithOne(x => x.PostingStateRecord).HasForeignKey<BankTransactionPostingStateRecord>(x => x.BankTransactionId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/PaymentEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/PaymentEntityConfiguration.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/PaymentEntityConfiguration.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/PaymentEntityConfiguration.cs
+@@ -33,5 +33,8 @@ internal sealed class PaymentEntityConfiguration : IEntityTypeConfiguration<Paym
+         builder.HasOne(x => x.Company)
+             .WithMany()
+             .HasForeignKey(x => x.CompanyId)
+             .OnDelete(DeleteBehavior.Cascade);
++
++        builder.HasMany(x => x.CashLedgerLinks)
++            .WithOne(x => x.Payment)
++            .HasForeignKey(x => x.PaymentId);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/BankTransactionEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/BankTransactionEntityConfiguration.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/BankTransactionEntityConfiguration.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/BankTransactionEntityConfiguration.cs
+@@ -31,6 +31,9 @@ internal sealed class BankTransactionEntityConfiguration : IEntityTypeConfigurat
+         builder.HasOne(x => x.BankAccount).WithMany(x => x.Transactions).HasForeignKey(x => x.BankAccountId).OnDelete(DeleteBehavior.Restrict);
+         builder.HasMany(x => x.PaymentLinks).WithOne(x => x.BankTransaction).HasForeignKey(x => x.BankTransactionId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasMany(x => x.CashLedgerLinks).WithOne(x => x.BankTransaction).HasForeignKey(x => x.BankTransactionId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.PostingStateRecord)
++            .WithOne(x => x.BankTransaction)
++            .HasForeignKey<BankTransactionPostingStateRecord>(x => x.BankTransactionId);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -77,8 +77,10 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanyBankAccount> CompanyBankAccounts => Set<CompanyBankAccount>();
+     public DbSet<BankTransaction> BankTransactions => Set<BankTransaction>();
+     public DbSet<BankTransactionPaymentLink> BankTransactionPaymentLinks => Set<BankTransactionPaymentLink>();
++    public DbSet<BankTransactionPostingStateRecord> BankTransactionPostingStateRecords => Set<BankTransactionPostingStateRecord>();
+     public DbSet<BankTransactionCashLedgerLink> BankTransactionCashLedgerLinks => Set<BankTransactionCashLedgerLink>();
+     public DbSet<ReconciliationSuggestionRecord> ReconciliationSuggestionRecords => Set<ReconciliationSuggestionRecord>();
++    public DbSet<PaymentCashLedgerLink> PaymentCashLedgerLinks => Set<PaymentCashLedgerLink>();
+     public DbSet<ReconciliationResultRecord> ReconciliationResultRecords => Set<ReconciliationResultRecord>();
+     public DbSet<PaymentAllocation> PaymentAllocations => Set<PaymentAllocation>();
+     public DbSet<FinanceTransaction> FinanceTransactions => Set<FinanceTransaction>();
+@@ -97,6 +99,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+     {
+         ValidateCompanyOwnedMutations();
++        EnsureBankTransactionPostingStates();
+         var companiesToInvalidate = CaptureDashboardInvalidationCompanies();
+         var result = await base.SaveChangesAsync(cancellationToken);
+ 
+@@ -110,6 +113,35 @@ public sealed class VirtualCompanyDbContext : DbContext
+         return result;
+     }
+ 
++    private void EnsureBankTransactionPostingStates()
++    {
++        var trackedStates = ChangeTracker.Entries<BankTransactionPostingStateRecord>()
++            .Where(entry => entry.State != EntityState.Deleted)
++            .Select(entry => (entry.Entity.CompanyId, entry.Entity.BankTransactionId))
++            .ToHashSet();
++
++        var addedTransactions = ChangeTracker.Entries<BankTransaction>()
++            .Where(entry => entry.State == EntityState.Added)
++            .Select(entry => entry.Entity)
++            .ToList();
++
++        foreach (var transaction in addedTransactions)
++        {
++            var key = (transaction.CompanyId, transaction.Id);
++            if (trackedStates.Contains(key))
++            {
++                continue;
++            }
++
++            BankTransactionPostingStateRecords.Add(new BankTransactionPostingStateRecord(
++                Guid.NewGuid(),
++                transaction.CompanyId,
++                transaction.Id,
++                BankTransactionMatchingStatuses.Unmatched,
++                BankTransactionPostingStates.SkippedUnmatched,
++                0,
++                transaction.CreatedUtc,
++                "created_without_payment_match"));
++        }
++    }
++
+     private void ValidateCompanyOwnedMutations()
+     {
+         var currentCompanyId = CurrentCompanyId;
+@@ -189,6 +221,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is CompanyBankAccount ||
+                 entry.Entity is BankTransaction ||
+                 entry.Entity is BankTransactionPaymentLink ||
++                entry.Entity is BankTransactionPostingStateRecord ||
++                entry.Entity is PaymentCashLedgerLink ||
+                 entry.Entity is BankTransactionCashLedgerLink ||
+                 entry.Entity is PaymentAllocation ||
+                 entry.Entity is FinanceTransaction ||
+@@ -298,6 +332,12 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<BankTransactionPaymentLink>()
+             .HasQueryFilter(link =>
+                 CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<BankTransactionPostingStateRecord>()
++            .HasQueryFilter(state =>
++                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<PaymentCashLedgerLink>()
++            .HasQueryFilter(link =>
++                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<BankTransactionCashLedgerLink>()
+             .HasQueryFilter(link =>
+                 CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs
+@@ -33,13 +33,29 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
+         var settledAmount = NormalizeMoney(command.SettledAmount);
+         var postedAtUtc = NormalizeUtc(command.SettledAtUtc);
+ 
++        if (string.Equals(normalizedSourceType, FinanceCashPostingSourceTypes.BankTransaction, StringComparison.OrdinalIgnoreCase))
++        {
++            await EnsureMatchedBankTransactionSourceAsync(command.CompanyId, normalizedSourceId, cancellationToken);
++        }
++
+         var existingEntry = await FindExistingAsync(command.CompanyId, normalizedSourceType, normalizedSourceId, postedAtUtc, cancellationToken);
+         if (existingEntry is not null)
+         {
++            await TryEnsurePaymentCashLedgerLinkAsync(
++                command.CompanyId,
++                command.PaymentId,
++                existingEntry.Id,
++                normalizedSourceType,
++                normalizedSourceId,
++                postedAtUtc,
++                cancellationToken);
+             return await MapExistingAsync(existingEntry, normalizedSourceType, normalizedSourceId, postedAtUtc, cancellationToken);
+         }
+ 
+-        var payment = await _dbContext.Payments
++        var paymentExists = await _dbContext.Payments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AnyAsync(x => x.CompanyId == command.CompanyId && x.Id == command.PaymentId, cancellationToken);
++        var payment = paymentExists ? await _dbContext.Payments
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .SingleOrDefaultAsync(
+@@ -47,7 +63,8 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
+                 cancellationToken);
++            : null;
+ 
+         if (payment is null)
+         {
+             throw new KeyNotFoundException("Finance payment was not found.");
+         }
+@@ -86,6 +103,15 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
+             postedAtUtc,
+             postedAtUtc));
+ 
++        _dbContext.PaymentCashLedgerLinks.Add(new PaymentCashLedgerLink(
++            Guid.NewGuid(),
++            command.CompanyId,
++            payment.Id,
++            entry.Id,
++            normalizedSourceType,
++            normalizedSourceId,
++            postedAtUtc,
++            postedAtUtc));
++
+         try
+         {
+             await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -212,6 +238,67 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
+             .FirstOrDefaultAsync(cancellationToken);
+ 
+         return fallbackCashAccount ?? throw new InvalidOperationException("Cash settlement posting requires a configured cash account.");
++    }
++
++    private async Task EnsureMatchedBankTransactionSourceAsync(
++        Guid companyId,
++        string sourceId,
++        CancellationToken cancellationToken)
++    {
++        if (!Guid.TryParse(sourceId, out var bankTransactionId))
++        {
++            throw CreateValidationException(nameof(PostCashSettlementCommand.SourceId), "Bank transaction posting sources must use the bank transaction id.");
++        }
++
++        var state = await _dbContext.BankTransactionPostingStateRecords
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == companyId && x.BankTransactionId == bankTransactionId,
++                cancellationToken);
++
++        if (state is not null &&
++            string.Equals(state.MatchingStatus, BankTransactionMatchingStatuses.Unmatched, StringComparison.OrdinalIgnoreCase))
++        {
++            throw CreateValidationException(nameof(PostCashSettlementCommand.SourceId), "Unmatched bank transactions cannot create AR/AP settlement journal entries.");
++        }
++
++        if (state is null)
++        {
++            var hasMatch = await _dbContext.BankTransactionPaymentLinks
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .AnyAsync(
++                    x => x.CompanyId == companyId && x.BankTransactionId == bankTransactionId,
++                    cancellationToken);
++
++            if (!hasMatch)
++            {
++                throw CreateValidationException(nameof(PostCashSettlementCommand.SourceId), "Unmatched bank transactions cannot create AR/AP settlement journal entries.");
++            }
++        }
++    }
++
++    private async Task TryEnsurePaymentCashLedgerLinkAsync(
++        Guid companyId,
++        Guid paymentId,
++        Guid ledgerEntryId,
++        string sourceType,
++        string sourceId,
++        DateTime postedAtUtc,
++        CancellationToken cancellationToken)
++    {
++        var exists = await _dbContext.PaymentCashLedgerLinks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AnyAsync(
++                x => x.CompanyId == companyId && x.PaymentId == paymentId && x.LedgerEntryId == ledgerEntryId,
++                cancellationToken);
++
++        if (exists)
++        {
++            return;
++        }
++
++        _dbContext.PaymentCashLedgerLinks.Add(new PaymentCashLedgerLink(
++            Guid.NewGuid(),
++            companyId,
++            paymentId,
++            ledgerEntryId,
++            sourceType,
++            sourceId,
++            postedAtUtc,
++            postedAtUtc));
+     }
+ 
+     private async Task<FinanceAccount> ResolveSettlementAccountAsync(
+@@ -327,6 +414,8 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
+             if (message.Contains("IX_ledger_entries_company_id_source_type_source_id_posted_at", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("IX_ledger_entry_source_mappings_company_id_source_type_source_id_posted_at", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("unique", StringComparison.OrdinalIgnoreCase) && message.Contains("ledger_entries", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("payment_cash_ledger_links", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("IX_payment_cash_ledger_links_company_id_payment_id_ledger_entry_id", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("unique", StringComparison.OrdinalIgnoreCase) && message.Contains("ledger_entry_source_mappings", StringComparison.OrdinalIgnoreCase))
+             {
+                 return true;
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
+@@ -256,6 +256,8 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+ 
+             var idempotencyKey = BuildIdempotencyKey(command.CompanyId, transaction.Id);
+             var existingLedgerLink = await _dbContext.BankTransactionCashLedgerLinks
++                .IgnoreQueryFilters()
++                .AsTracking()
+                 .SingleOrDefaultAsync(
+                     x => x.CompanyId == command.CompanyId &&
+                          (x.BankTransactionId == transaction.Id || x.IdempotencyKey == idempotencyKey),
+@@ -263,6 +265,7 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+ 
+             // Ledger posting is created on the first successful reconciliation and reused on retries or later partial-to-full updates.
++            Guid? ledgerEntryId = existingLedgerLink?.LedgerEntryId;
+             if (transaction.ReconciledAmount > 0m && existingLedgerLink is null)
+             {
+                 var fiscalPeriod = await EnsureFiscalPeriodAsync(command.CompanyId, transaction.BookingDate, cancellationToken);
+@@ -293,8 +296,26 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+                     transaction.Id,
+                     ledgerEntry.Id,
+                     idempotencyKey,
+                     transaction.BookingDate));
++
++                ledgerEntryId = ledgerEntry.Id;
+             }
++
++            var effectivePaymentIds = existingLinks
++                .Select(x => x.PaymentId)
++                .Concat(command.Payments.Select(x => x.PaymentId))
++                .Where(x => x != Guid.Empty)
++                .Distinct()
++                .ToArray();
++
++            await UpsertPostingStateAsync(
++                command.CompanyId,
++                transaction.Id,
++                linkedPaymentCount: existingLinks.Select(x => x.PaymentId).Concat(effectivePaymentIds).Distinct().Count(),
++                hasLedgerEntry: ledgerEntryId.HasValue,
++                unmatchedReason: null,
++                conflictCode: null,
++                conflictDetails: null,
++                cancellationToken);
++
++            await EnsurePaymentCashLedgerLinksAsync(command.CompanyId, transaction.Id, effectivePaymentIds, ledgerEntryId, transaction.BookingDate, cancellationToken);
+ 
+             try
+             {
+@@ -415,6 +436,76 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+         return fallback ?? throw new InvalidOperationException("Reconciliation requires a non-bank finance account to post the cash ledger entry.");
+     }
+ 
++    private async Task UpsertPostingStateAsync(
++        Guid companyId,
++        Guid bankTransactionId,
++        int linkedPaymentCount,
++        bool hasLedgerEntry,
++        string? unmatchedReason,
++        string? conflictCode,
++        string? conflictDetails,
++        CancellationToken cancellationToken)
++    {
++        var hasPaymentLinks = linkedPaymentCount > 0;
++        var evaluatedAtUtc = DateTime.UtcNow;
++        var matchingStatus = hasPaymentLinks
++            ? BankTransactionMatchingStatuses.Matched
++            : BankTransactionMatchingStatuses.Unmatched;
++        var postingState = BankTransactionPostingStates.Resolve(hasPaymentLinks, hasLedgerEntry, !string.IsNullOrWhiteSpace(conflictCode));
++
++        var record = await _dbContext.BankTransactionPostingStateRecords
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == companyId && x.BankTransactionId == bankTransactionId,
++                cancellationToken);
++
++        if (record is null)
++        {
++            _dbContext.BankTransactionPostingStateRecords.Add(new BankTransactionPostingStateRecord(
++                Guid.NewGuid(),
++                companyId,
++                bankTransactionId,
++                matchingStatus,
++                postingState,
++                linkedPaymentCount,
++                evaluatedAtUtc,
++                unmatchedReason,
++                conflictCode,
++                conflictDetails,
++                evaluatedAtUtc,
++                evaluatedAtUtc));
++            return;
++        }
++
++        record.SyncSnapshot(
++            matchingStatus,
++            postingState,
++            linkedPaymentCount,
++            evaluatedAtUtc,
++            unmatchedReason,
++            conflictCode,
++            conflictDetails);
++    }
++
++    private async Task EnsurePaymentCashLedgerLinksAsync(
++        Guid companyId,
++        Guid bankTransactionId,
++        IReadOnlyCollection<Guid> paymentIds,
++        Guid? ledgerEntryId,
++        DateTime postedAtUtc,
++        CancellationToken cancellationToken)
++    {
++        if (!ledgerEntryId.HasValue || paymentIds.Count == 0)
++        {
++            return;
++        }
++
++        var existingPaymentIds = await _dbContext.PaymentCashLedgerLinks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.LedgerEntryId == ledgerEntryId.Value && paymentIds.Contains(x.PaymentId))
++            .Select(x => x.PaymentId)
++            .ToListAsync(cancellationToken);
++
++        foreach (var paymentId in paymentIds.Where(x => !existingPaymentIds.Contains(x)))
++        {
++            _dbContext.PaymentCashLedgerLinks.Add(new PaymentCashLedgerLink(Guid.NewGuid(), companyId, paymentId, ledgerEntryId.Value, FinanceCashPostingSourceTypes.BankTransaction, bankTransactionId.ToString("D"), postedAtUtc, postedAtUtc));
++        }
++    }
++
+     private static LedgerEntry CreateLedgerEntry(BankTransaction transaction, Guid fiscalPeriodId) =>
+         new(
+             Guid.NewGuid(),
+@@ -473,6 +564,8 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+                 message.Contains("bank_transaction_cash_ledger_links", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("IX_bank_transaction_payment_links_company_id_bank_transaction_id_payment_id", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("ledger_entry_source_mappings", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("payment_cash_ledger_links", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("bank_transaction_posting_states", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("IX_bank_transaction_cash_ledger_links_company_id_bank_transaction_id", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("IX_ledger_entry_source_mappings_company_id_source_type_source_id_posted_at", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("IX_bank_transaction_cash_ledger_links_company_id_idempotency_key", StringComparison.OrdinalIgnoreCase);
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyCashPostingTraceabilityBackfillService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyCashPostingTraceabilityBackfillService.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyCashPostingTraceabilityBackfillService.cs
+@@ -0,0 +1,258 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Observability;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyCashPostingTraceabilityBackfillService : ICashPostingTraceabilityBackfillService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
++    private readonly ILogger<CompanyCashPostingTraceabilityBackfillService> _logger;
++
++    public CompanyCashPostingTraceabilityBackfillService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor? companyContextAccessor,
++        ILogger<CompanyCashPostingTraceabilityBackfillService> logger)
++    {
++        _dbContext = dbContext;
++        _companyContextAccessor = companyContextAccessor;
++        _logger = logger;
++    }
++
++    public async Task<CashPostingTraceabilityBackfillResultDto> BackfillAsync(
++        BackfillCashPostingTraceabilityCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++
++        var correlationId = string.IsNullOrWhiteSpace(command.CorrelationId)
++            ? Guid.NewGuid().ToString("N")
++            : command.CorrelationId.Trim();
++        var batchSize = command.BatchSize <= 0 ? 250 : Math.Min(command.BatchSize, 1000);
++        var migrated = 0;
++        var backfilled = 0;
++        var skipped = 0;
++        var conflicts = 0;
++        var page = 0;
++
++        while (true)
++        {
++            var transactions = await _dbContext.BankTransactions
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => x.CompanyId == command.CompanyId)
++                .OrderBy(x => x.BookingDate)
++                .ThenBy(x => x.Id)
++                .Skip(page * batchSize)
++                .Take(batchSize)
++                .Select(x => new { x.Id, x.CompanyId, x.BookingDate })
++                .ToListAsync(cancellationToken);
++
++            if (transactions.Count == 0)
++            {
++                break;
++            }
++
++            page++;
++            var transactionIds = transactions.Select(x => x.Id).ToArray();
++            var transactionSourceIds = transactionIds.ToDictionary(x => x, x => x.ToString("D"));
++            var paymentLinks = await _dbContext.BankTransactionPaymentLinks
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => x.CompanyId == command.CompanyId && transactionIds.Contains(x.BankTransactionId))
++                .ToListAsync(cancellationToken);
++            var cashLinks = await _dbContext.BankTransactionCashLedgerLinks
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => x.CompanyId == command.CompanyId && transactionIds.Contains(x.BankTransactionId))
++                .ToListAsync(cancellationToken);
++            var postingStates = await _dbContext.BankTransactionPostingStateRecords
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == command.CompanyId && transactionIds.Contains(x.BankTransactionId))
++                .ToDictionaryAsync(x => x.BankTransactionId, cancellationToken);
++            var inferredMappings = await _dbContext.LedgerEntrySourceMappings
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => x.CompanyId == command.CompanyId &&
++                            x.SourceType == FinanceCashPostingSourceTypes.BankTransaction &&
++                            transactionSourceIds.Values.Contains(x.SourceId))
++                .ToListAsync(cancellationToken);
++
++            var paymentIds = paymentLinks.Select(x => x.PaymentId).Distinct().ToArray();
++            var existingPaymentLedgerLinks = paymentIds.Length == 0
++                ? []
++                : await _dbContext.PaymentCashLedgerLinks
++                    .IgnoreQueryFilters()
++                    .AsNoTracking()
++                    .Where(x => x.CompanyId == command.CompanyId && paymentIds.Contains(x.PaymentId))
++                    .ToListAsync(cancellationToken);
++            var existingPaymentLedgerPairs = existingPaymentLedgerLinks
++                .Select(x => (x.PaymentId, x.LedgerEntryId))
++                .ToHashSet();
++
++            foreach (var transaction in transactions)
++            {
++                var linksForTransaction = paymentLinks.Where(x => x.BankTransactionId == transaction.Id).ToList();
++                var cashLinksForTransaction = cashLinks.Where(x => x.BankTransactionId == transaction.Id).ToList();
++                var mappingsForTransaction = inferredMappings
++                    .Where(x => string.Equals(x.SourceId, transactionSourceIds[transaction.Id], StringComparison.OrdinalIgnoreCase))
++                    .ToList();
++
++                string? conflictCode = null;
++                string? conflictDetails = null;
++                Guid? ledgerEntryId = null;
++                var effectivePostedAtUtc = transaction.BookingDate;
++
++                if (cashLinksForTransaction.Count > 1)
++                {
++                    conflictCode = "duplicate_cash_posting_links";
++                    conflictDetails = "More than one cash ledger link exists for the same bank transaction.";
++                }
++                else if (cashLinksForTransaction.Count == 1)
++                {
++                    ledgerEntryId = cashLinksForTransaction[0].LedgerEntryId;
++                    effectivePostedAtUtc = cashLinksForTransaction[0].CreatedUtc;
++                }
++
++                if (!ledgerEntryId.HasValue)
++                {
++                    if (mappingsForTransaction.Count == 1)
++                    {
++                        ledgerEntryId = mappingsForTransaction[0].LedgerEntryId;
++                        effectivePostedAtUtc = mappingsForTransaction[0].PostedAtUtc;
++                        _dbContext.BankTransactionCashLedgerLinks.Add(new BankTransactionCashLedgerLink(
++                            Guid.NewGuid(),
++                            command.CompanyId,
++                            transaction.Id,
++                            ledgerEntryId.Value,
++                            BuildIdempotencyKey(command.CompanyId, transaction.Id),
++                            effectivePostedAtUtc));
++                        migrated++;
++                    }
++                    else if (mappingsForTransaction.Count > 1)
++                    {
++                        conflictCode = "ambiguous_legacy_cash_posting";
++                        conflictDetails = "More than one legacy journal entry mapping was found for the bank transaction.";
++                    }
++                }
++                else if (mappingsForTransaction.Count == 1 && mappingsForTransaction[0].LedgerEntryId != ledgerEntryId.Value)
++                {
++                    conflictCode = "conflicting_cash_posting_traceability";
++                    conflictDetails = "Existing cash posting link does not match the inferred legacy ledger entry mapping.";
++                }
++
++                if (linksForTransaction.Count == 0 && ledgerEntryId.HasValue)
++                {
++                    conflictCode ??= "unmatched_transaction_has_posting";
++                    conflictDetails ??= "An unmatched bank transaction already has a cash posting journal entry.";
++                }
++
++                if (!postingStates.TryGetValue(transaction.Id, out var postingState))
++                {
++                    _dbContext.BankTransactionPostingStateRecords.Add(CreatePostingStateRecord(
++                        command.CompanyId,
++                        transaction.Id,
++                        linksForTransaction.Count,
++                        ledgerEntryId.HasValue,
++                        transaction.BookingDate,
++                        conflictCode,
++                        conflictDetails));
++                    backfilled++;
++                }
++                else
++                {
++                    var matchingStatus = linksForTransaction.Count > 0 ? BankTransactionMatchingStatuses.Matched : BankTransactionMatchingStatuses.Unmatched;
++                    var desiredPostingState = BankTransactionPostingStates.Resolve(linksForTransaction.Count > 0, ledgerEntryId.HasValue, !string.IsNullOrWhiteSpace(conflictCode));
++                    var desiredUnmatchedReason = linksForTransaction.Count > 0 ? null : "no_payment_match";
++
++                    if (postingState.MatchingStatus != matchingStatus ||
++                        postingState.PostingState != desiredPostingState ||
++                        postingState.LinkedPaymentCount != linksForTransaction.Count ||
++                        !string.Equals(postingState.UnmatchedReason, desiredUnmatchedReason, StringComparison.Ordinal) ||
++                        !string.Equals(postingState.ConflictCode, conflictCode, StringComparison.Ordinal) ||
++                        !string.Equals(postingState.ConflictDetails, conflictDetails, StringComparison.Ordinal))
++                    {
++                        postingState.SyncSnapshot(
++                            matchingStatus,
++                            desiredPostingState,
++                            linksForTransaction.Count,
++                            transaction.BookingDate,
++                            desiredUnmatchedReason,
++                            conflictCode,
++                            conflictDetails);
++                        backfilled++;
++                    }
++                    else
++                    {
++                        skipped++;
++                    }
++                }
++
++                if (ledgerEntryId.HasValue && linksForTransaction.Count > 0 && string.IsNullOrWhiteSpace(conflictCode))
++                {
++                    foreach (var paymentLink in linksForTransaction)
++                    {
++                        var key = (paymentLink.PaymentId, ledgerEntryId.Value);
++                        if (existingPaymentLedgerPairs.Add(key))
++                        {
++                            _dbContext.PaymentCashLedgerLinks.Add(new PaymentCashLedgerLink(
++                                Guid.NewGuid(),
++                                command.CompanyId,
++                                paymentLink.PaymentId,
++                                ledgerEntryId.Value,
++                                FinanceCashPostingSourceTypes.BankTransaction,
++                                transaction.Id.ToString("D"),
++                                effectivePostedAtUtc,
++                                effectivePostedAtUtc));
++                            backfilled++;
++                        }
++                        else
++                        {
++                            skipped++;
++                        }
++                    }
++                }
++
++                if (!string.IsNullOrWhiteSpace(conflictCode))
++                {
++                    conflicts++;
++                }
++            }
++
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++
++        using var scope = _logger.BeginScope(ExecutionLogScope.ForBackground(correlationId, command.CompanyId));
++        _logger.LogInformation(
++            "Completed cash posting traceability backfill for company {CompanyId}. Migrated={MigratedRecordCount} Backfilled={BackfilledRecordCount} Skipped={SkippedRecordCount} Conflicts={ConflictCount}.",
++            command.CompanyId,
++            migrated,
++            backfilled,
++            skipped,
++            conflicts);
++
++        return new CashPostingTraceabilityBackfillResultDto(
++            command.CompanyId,
++            correlationId,
++            migrated,
++            backfilled,
++            skipped,
++            conflicts);
++    }
++
++    private void EnsureTenant(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++
++        if (_companyContextAccessor?.CompanyId is Guid currentCompanyId && currentCompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException("Cash posting backfill is scoped to the active company context.");
++        }
++    }
++
++    private static string BuildIdempotencyKey(Guid companyId, Guid bankTransactionId) =>
++        $"bank-transaction-ledger:{companyId:N}:{bankTransactionId:N}";
++
++    private static BankTransactionPostingStateRecord CreatePostingStateRecord(
++        Guid companyId,
++        Guid bankTransactionId,
++        int linkedPaymentCount,
++        bool hasLedgerEntry,
++        DateTime evaluatedAtUtc,
++        string? conflictCode,
++        string? conflictDetails) =>
++        new(
++            Guid.NewGuid(),
++            companyId,
++            bankTransactionId,
++            linkedPaymentCount > 0 ? BankTransactionMatchingStatuses.Matched : BankTransactionMatchingStatuses.Unmatched,
++            BankTransactionPostingStates.Resolve(linkedPaymentCount > 0, hasLedgerEntry, !string.IsNullOrWhiteSpace(conflictCode)),
++            linkedPaymentCount,
++            evaluatedAtUtc,
++            linkedPaymentCount > 0 ? null : "no_payment_match",
++            conflictCode,
++            conflictDetails,
++            evaluatedAtUtc,
++            evaluatedAtUtc);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -372,6 +372,7 @@ public static class DependencyInjection
+         services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
+         services.AddScoped<IFinancePaymentCommandService, CompanyFinanceCommandService>();
+         services.AddScoped<IFinanceCashSettlementPostingService, CompanyCashSettlementPostingService>();
++        services.AddScoped<ICashPostingTraceabilityBackfillService, CompanyCashPostingTraceabilityBackfillService>();
+         services.AddScoped<IBankTransactionReadService, CompanyBankTransactionService>();
+         services.AddScoped<IBankTransactionCommandService, CompanyBankTransactionService>();
+         services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceCashPostingBackfillController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceCashPostingBackfillController.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceCashPostingBackfillController.cs
+@@ -0,0 +1,44 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("internal/companies/{companyId:guid}/finance/cash-posting")]
++[Authorize(Policy = CompanyPolicies.FinanceEdit)]
++[RequireCompanyContext]
++public sealed class InternalFinanceCashPostingBackfillController : ControllerBase
++{
++    private readonly ICashPostingTraceabilityBackfillService _backfillService;
++
++    public InternalFinanceCashPostingBackfillController(ICashPostingTraceabilityBackfillService backfillService)
++    {
++        _backfillService = backfillService;
++    }
++
++    [HttpPost("backfill")]
++    public async Task<ActionResult<CashPostingTraceabilityBackfillResultDto>> BackfillAsync(
++        Guid companyId,
++        [FromBody] RunCashPostingTraceabilityBackfillRequest? request,
++        CancellationToken cancellationToken)
++    {
++        if (request is not null && request.BatchSize <= 0)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
++            {
++                [nameof(RunCashPostingTraceabilityBackfillRequest.BatchSize)] = ["Batch size must be greater than zero."]
++            })
++            {
++                Title = "Finance validation failed",
++                Detail = "Update the backfill request and try again.",
++                Status = StatusCodes.Status400BadRequest,
++                Instance = HttpContext.Request.Path
++            });
++        }
++
++        var result = await _backfillService.BackfillAsync(new BackfillCashPostingTraceabilityCommand(companyId, request?.BatchSize ?? 250, request?.CorrelationId), cancellationToken);
++        return Ok(result);
++    }
++}
++
++public sealed record RunCashPostingTraceabilityBackfillRequest(int BatchSize = 250, string? CorrelationId = null);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420170000_AddCashPostingTraceabilityBackfillSupport.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420170000_AddCashPostingTraceabilityBackfillSupport.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420170000_AddCashPostingTraceabilityBackfillSupport.cs
+@@ -0,0 +1,122 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddCashPostingTraceabilityBackfillSupport : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var intType = isPostgres ? "integer" : "int";
++            var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
++            var string512Type = isPostgres ? "character varying(512)" : "nvarchar(512)";
++
++            migrationBuilder.CreateTable(
++                name: "bank_transaction_posting_states",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    bank_transaction_id = table.Column<Guid>(type: guidType, nullable: false),
++                    matching_status = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    posting_state = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    linked_payment_count = table.Column<int>(type: intType, nullable: false),
++                    last_evaluated_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    unmatched_reason = table.Column<string>(type: string128Type, maxLength: 128, nullable: true),
++                    conflict_code = table.Column<string>(type: string64Type, maxLength: 64, nullable: true),
++                    conflict_details = table.Column<string>(type: string512Type, maxLength: 512, nullable: true),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_bank_transaction_posting_states", x => x.id);
++                    table.ForeignKey(
++                        name: "FK_bank_transaction_posting_states_bank_transactions_bank_transaction_id",
++                        column: x => x.bank_transaction_id,
++                        principalTable: "bank_transactions",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_bank_transaction_posting_states_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "payment_cash_ledger_links",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    payment_id = table.Column<Guid>(type: guidType, nullable: false),
++                    ledger_entry_id = table.Column<Guid>(type: guidType, nullable: false),
++                    source_type = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    source_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: false),
++                    posted_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_payment_cash_ledger_links", x => x.id);
++                    table.ForeignKey(
++                        name: "FK_payment_cash_ledger_links_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_payment_cash_ledger_links_ledger_entries_ledger_entry_id",
++                        column: x => x.ledger_entry_id,
++                        principalTable: "ledger_entries",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_payment_cash_ledger_links_payments_payment_id",
++                        column: x => x.payment_id,
++                        principalTable: "finance_payments",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_bank_transaction_posting_states_company_id_bank_transaction_id",
++                table: "bank_transaction_posting_states",
++                columns: new[] { "company_id", "bank_transaction_id" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_bank_transaction_posting_states_company_id_matching_status_posting_state",
++                table: "bank_transaction_posting_states",
++                columns: new[] { "company_id", "matching_status", "posting_state" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_payment_cash_ledger_links_company_id_payment_id_ledger_entry_id",
++                table: "payment_cash_ledger_links",
++                columns: new[] { "company_id", "payment_id", "ledger_entry_id" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_payment_cash_ledger_links_company_id_payment_id_source_type_source_id_posted_at",
++                table: "payment_cash_ledger_links",
++                columns: new[] { "company_id", "payment_id", "source_type", "source_id", "posted_at" },
++                unique: true);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "bank_transaction_posting_states");
++
++            migrationBuilder.DropTable(
++                name: "payment_cash_ledger_links");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs
+@@ -35,11 +35,21 @@ public sealed class BankTransactionPersistenceTests
+         Assert.Contains("ledger_entry_id", cashLedgerLinkColumns);
+         Assert.Contains("idempotency_key", cashLedgerLinkColumns);
+ 
++        var postingStateColumns = await ReadColumnsAsync(connection, "bank_transaction_posting_states");
++        Assert.Contains("bank_transaction_id", postingStateColumns);
++        Assert.Contains("matching_status", postingStateColumns);
++        Assert.Contains("posting_state", postingStateColumns);
++
++        var paymentLedgerLinkColumns = await ReadColumnsAsync(connection, "payment_cash_ledger_links");
++        Assert.Contains("payment_id", paymentLedgerLinkColumns);
++        Assert.Contains("ledger_entry_id", paymentLedgerLinkColumns);
++        Assert.Contains("source_type", paymentLedgerLinkColumns);
++
+         var sourceMappingColumns = await ReadColumnsAsync(connection, "ledger_entry_source_mappings");
+         Assert.Contains("ledger_entry_id", sourceMappingColumns);
+         Assert.Contains("source_type", sourceMappingColumns);
+         Assert.Contains("posted_at", sourceMappingColumns);
+ 
++
+         var bankTransactionIndexes = await ReadIndexesAsync(connection, "bank_transactions");
+         Assert.Contains("IX_bank_transactions_company_id_bank_account_id_booking_date", bankTransactionIndexes);
+         Assert.Contains("IX_bank_transactions_company_id_status_booking_date", bankTransactionIndexes);
+@@ -50,10 +60,17 @@ public sealed class BankTransactionPersistenceTests
+         Assert.Contains("IX_bank_transaction_cash_ledger_links_company_id_bank_transaction_id", cashLedgerIndexes);
+         Assert.Contains("IX_bank_transaction_cash_ledger_links_company_id_idempotency_key", cashLedgerIndexes);
+ 
++        var postingStateIndexes = await ReadIndexesAsync(connection, "bank_transaction_posting_states");
++        Assert.Contains("IX_bank_transaction_posting_states_company_id_bank_transaction_id", postingStateIndexes);
++        Assert.Contains("IX_bank_transaction_posting_states_company_id_matching_status_posting_state", postingStateIndexes);
++
++        var paymentLedgerIndexes = await ReadIndexesAsync(connection, "payment_cash_ledger_links");
++        Assert.Contains("IX_payment_cash_ledger_links_company_id_payment_id_ledger_entry_id", paymentLedgerIndexes);
++        Assert.Contains("IX_payment_cash_ledger_links_company_id_payment_id_source_type_source_id_posted_at", paymentLedgerIndexes);
++
+         var sourceMappingIndexes = await ReadIndexesAsync(connection, "ledger_entry_source_mappings");
+         Assert.Contains("IX_ledger_entry_source_mappings_company_id_ledger_entry_id", sourceMappingIndexes);
+         Assert.Contains("IX_ledger_entry_source_mappings_company_id_source_type_source_id_posted_at", sourceMappingIndexes);
+-    }
++   }
+ 
+     [Fact]
+     public async Task SaveChanges_enforces_exact_once_cash_ledger_link_uniqueness()
+diff --git a/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs b/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs
+@@ -299,6 +299,69 @@ public sealed class CashSettlementPostingServiceTests
+         Assert.Equal(lines.Sum(x => x.DebitAmount), lines.Sum(x => x.CreditAmount));
+     }
+ 
++    [Fact]
++    public async Task Posting_cash_settlement_creates_payment_cash_traceability_link()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var postedAtUtc = new DateTime(2026, 4, 24, 8, 30, 0, DateTimeKind.Utc);
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var seed = await SeedPostingScenarioAsync(dbContext, companyId);
++        var service = new CompanyCashSettlementPostingService(dbContext, accessor);
++
++        var result = await service.PostCashSettlementAsync(
++            new PostCashSettlementCommand(
++                companyId,
++                FinanceCashPostingSourceTypes.PaymentSettlement,
++                "payment-traceability-001",
++                seed.IncomingPaymentId,
++                25m,
++                postedAtUtc),
++            CancellationToken.None);
++
++        var paymentLedgerLink = await dbContext.PaymentCashLedgerLinks
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.PaymentId == seed.IncomingPaymentId && x.LedgerEntryId == result.LedgerEntryId);
++
++        Assert.Equal(FinanceCashPostingSourceTypes.PaymentSettlement, paymentLedgerLink.SourceType);
++        Assert.Equal("payment-traceability-001", paymentLedgerLink.SourceId);
++        Assert.Equal(postedAtUtc, paymentLedgerLink.PostedAtUtc);
++    }
++
++    [Fact]
++    public async Task Unmatched_bank_transaction_source_does_not_create_cash_settlement_journal_entry()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var seed = await SeedPostingScenarioAsync(dbContext, companyId);
++        var bankAccountId = await dbContext.CompanyBankAccounts
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => x.Id)
++            .SingleAsync();
++        var bankTransactionId = Guid.NewGuid();
++        dbContext.BankTransactions.Add(new BankTransaction(
++            bankTransactionId,
++            companyId,
++            bankAccountId,
++            new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc),
++            100m,
++            "USD",
++            "Unmatched remittance",
++            "Unknown counterparty"));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyCashSettlementPostingService(dbContext, accessor);
++        await Assert.ThrowsAsync<FinanceValidationException>(() => service.PostCashSettlementAsync(
++            new PostCashSettlementCommand(companyId, FinanceCashPostingSourceTypes.BankTransaction, bankTransactionId.ToString("D"), seed.IncomingPaymentId, 100m, new DateTime(2026, 4, 24, 1, 0, 0, DateTimeKind.Utc)),
++            CancellationToken.None));
++    }
++
+     [Fact]
+     public async Task Ensure_created_maps_traceability_columns_unique_source_index_and_source_mapping_table()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/CashPostingTraceabilityBackfillServiceTests.cs b/tests/VirtualCompany.Api.Tests/CashPostingTraceabilityBackfillServiceTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/CashPostingTraceabilityBackfillServiceTests.cs
+@@ -0,0 +1,255 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class CashPostingTraceabilityBackfillServiceTests
++{
++    [Fact]
++    public async Task Backfill_creates_missing_traceability_and_unmatched_state_without_duplicates_on_rerun()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        var logger = new ScopeCapturingLogger<CompanyCashPostingTraceabilityBackfillService>();
++
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var seed = await SeedLegacyScenarioAsync(dbContext, companyId);
++        var service = new CompanyCashPostingTraceabilityBackfillService(dbContext, accessor, logger);
++
++        var first = await service.BackfillAsync(
++            new BackfillCashPostingTraceabilityCommand(companyId, BatchSize: 1, CorrelationId: "backfill-run-001"),
++            CancellationToken.None);
++
++        Assert.Equal(companyId, first.CompanyId);
++        Assert.Equal("backfill-run-001", first.CorrelationId);
++        Assert.Equal(1, first.MigratedRecordCount);
++        Assert.Equal(3, first.BackfilledRecordCount);
++        Assert.Equal(0, first.ConflictCount);
++
++        var postingStates = await dbContext.BankTransactionPostingStateRecords
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.BankTransactionId)
++            .ToListAsync();
++        var matchedState = Assert.Single(postingStates.Where(x => x.BankTransactionId == seed.MatchedBankTransactionId));
++        var unmatchedState = Assert.Single(postingStates.Where(x => x.BankTransactionId == seed.UnmatchedBankTransactionId));
++        Assert.Equal(BankTransactionMatchingStatuses.Matched, matchedState.MatchingStatus);
++        Assert.Equal(BankTransactionPostingStates.Posted, matchedState.PostingState);
++        Assert.Equal(1, matchedState.LinkedPaymentCount);
++        Assert.Equal(BankTransactionMatchingStatuses.Unmatched, unmatchedState.MatchingStatus);
++        Assert.Equal(BankTransactionPostingStates.SkippedUnmatched, unmatchedState.PostingState);
++        Assert.Equal("no_payment_match", unmatchedState.UnmatchedReason);
++
++        Assert.Single(await dbContext.BankTransactionCashLedgerLinks
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.BankTransactionId == seed.MatchedBankTransactionId)
++            .ToListAsync());
++
++        var paymentLedgerLink = await dbContext.PaymentCashLedgerLinks
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.PaymentId == seed.PaymentId);
++        Assert.Equal(seed.LedgerEntryId, paymentLedgerLink.LedgerEntryId);
++        Assert.Equal(FinanceCashPostingSourceTypes.BankTransaction, paymentLedgerLink.SourceType);
++        Assert.Equal(seed.MatchedBankTransactionId.ToString("D"), paymentLedgerLink.SourceId);
++
++        var second = await service.BackfillAsync(
++            new BackfillCashPostingTraceabilityCommand(companyId, BatchSize: 10, CorrelationId: "backfill-run-002"),
++            CancellationToken.None);
++
++        Assert.Equal(0, second.MigratedRecordCount);
++        Assert.Equal(0, second.BackfilledRecordCount);
++        Assert.Equal(0, second.ConflictCount);
++        Assert.True(second.SkippedRecordCount > 0);
++        Assert.Single(await dbContext.PaymentCashLedgerLinks.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
++        Assert.Equal(2, await dbContext.BankTransactionPostingStateRecords.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
++
++        var entry = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Completed cash posting traceability backfill", StringComparison.Ordinal)));
++        Assert.Equal(companyId, AssertScopeValue(entry.Scope, "CompanyId"));
++        Assert.Equal("backfill-run-001", AssertScopeValue(entry.Scope, "CorrelationId"));
++    }
++
++    private static async Task<LegacyBackfillSeed> SeedLegacyScenarioAsync(VirtualCompanyDbContext dbContext, Guid companyId)
++    {
++        var cashAccountId = Guid.NewGuid();
++        var receivablesAccountId = Guid.NewGuid();
++        var fiscalPeriodId = Guid.NewGuid();
++        var bankAccountId = Guid.NewGuid();
++        var paymentId = Guid.NewGuid();
++        var matchedBankTransactionId = Guid.NewGuid();
++        var unmatchedBankTransactionId = Guid.NewGuid();
++        var ledgerEntryId = Guid.NewGuid();
++
++        dbContext.Companies.Add(new Company(companyId, "Backfill Company"));
++        dbContext.FinanceAccounts.AddRange(
++            new FinanceAccount(cashAccountId, companyId, "1000", "Operating Cash", FinanceAccountTypes.Asset, "USD", 0m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FinanceAccount(receivablesAccountId, companyId, "1100", "Accounts Receivable", FinanceAccountTypes.Asset, "USD", 0m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.FiscalPeriods.Add(new FiscalPeriod(
++            fiscalPeriodId,
++            companyId,
++            "FY 2026",
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.CompanyBankAccounts.Add(new CompanyBankAccount(
++            bankAccountId,
++            companyId,
++            cashAccountId,
++            "Operating Account",
++            "Northwind Bank",
++            "**** 1200",
++            "USD",
++            "ops",
++            true,
++            true,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.Payments.Add(new Payment(
++            paymentId,
++            companyId,
++            PaymentTypes.Incoming,
++            100m,
++            "USD",
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            "bank_transfer",
++            PaymentStatuses.Completed,
++            "INV-2000"));
++        dbContext.BankTransactions.AddRange(
++            new BankTransaction(
++                matchedBankTransactionId,
++                companyId,
++                bankAccountId,
++                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                100m,
++                "USD",
++                "Customer receipt",
++                "Northwind",
++                reconciledAmount: 100m),
++            new BankTransaction(
++                unmatchedBankTransactionId,
++                companyId,
++                bankAccountId,
++                new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc),
++                55m,
++                "USD",
++                "Unknown deposit",
++                "Unknown"));
++        dbContext.BankTransactionPaymentLinks.Add(new BankTransactionPaymentLink(
++            Guid.NewGuid(),
++            companyId,
++            matchedBankTransactionId,
++            paymentId,
++            100m,
++            "USD",
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.LedgerEntries.Add(new LedgerEntry(
++            ledgerEntryId,
++            companyId,
++            fiscalPeriodId,
++            "BTX-TRACE-001",
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            LedgerEntryStatuses.Posted,
++            "Legacy bank transaction posting",
++            FinanceCashPostingSourceTypes.BankTransaction,
++            matchedBankTransactionId.ToString("D"),
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.LedgerEntrySourceMappings.Add(new LedgerEntrySourceMapping(
++            Guid.NewGuid(),
++            companyId,
++            ledgerEntryId,
++            FinanceCashPostingSourceTypes.BankTransaction,
++            matchedBankTransactionId.ToString("D"),
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc)));
++
++        await dbContext.SaveChangesAsync();
++        await dbContext.BankTransactionPostingStateRecords
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .ExecuteDeleteAsync();
++
++        return new LegacyBackfillSeed(companyId, paymentId, matchedBankTransactionId, unmatchedBankTransactionId, ledgerEntryId);
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection, ICompanyContextAccessor accessor) =>
++        new(
++            new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++                .UseSqlite(connection)
++                .Options,
++            accessor);
++
++    private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key)
++    {
++        Assert.True(scope.ContainsKey(key), $"Missing scope value '{key}'.");
++        return scope[key];
++    }
++
++    private sealed record LegacyBackfillSeed(
++        Guid CompanyId,
++        Guid PaymentId,
++        Guid MatchedBankTransactionId,
++        Guid UnmatchedBankTransactionId,
++        Guid LedgerEntryId);
++
++    private sealed class TestCompanyContextAccessor : ICompanyContextAccessor
++    {
++        public TestCompanyContextAccessor(Guid companyId)
++        {
++            CompanyId = companyId;
++        }
++
++        public Guid? CompanyId { get; private set; }
++        public Guid? UserId { get; private set; }
++        public bool IsResolved => Membership is not null;
++        public ResolvedCompanyMembershipContext? Membership { get; private set; }
++
++        public void SetCompanyId(Guid? companyId)
++        {
++            CompanyId = companyId;
++            Membership = null;
++            UserId = null;
++        }
++
++        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext)
++        {
++            Membership = companyContext;
++            CompanyId = companyContext?.CompanyId;
++            UserId = companyContext?.UserId;
++        }
++    }
++
++    private sealed class ScopeCapturingLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
++    {
++        private readonly List<object> _activeScopes = [];
++        public IList<CapturedLogEntry> Entries { get; } = [];
++        public IDisposable BeginScope<TState>(TState state) where TState : notnull { _activeScopes.Add(state); return new ScopeHandle(_activeScopes); }
++        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
++        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
++        {
++            var scope = new Dictionary<string, object?>(StringComparer.Ordinal);
++            foreach (var activeScope in _activeScopes.OfType<IEnumerable<KeyValuePair<string, object?>>>())
++            {
++                foreach (var pair in activeScope)
++                {
++                    scope[pair.Key] = pair.Value;
++                }
++            }
++            Entries.Add(new CapturedLogEntry(logLevel, formatter(state, exception), scope));
++        }
++        internal sealed record CapturedLogEntry(Microsoft.Extensions.Logging.LogLevel LogLevel, string Message, IReadOnlyDictionary<string, object?> Scope);
++        private sealed class ScopeHandle(List<object> activeScopes) : IDisposable { public void Dispose() { activeScopes.RemoveAt(activeScopes.Count - 1); } }
++    }
++}
++END_OF_PATCH

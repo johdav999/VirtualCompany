@@ -1,0 +1,2013 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -18,6 +18,12 @@ public sealed record GetFinanceProfitAndLossReportQuery(
+     Guid CompanyId,
+     Guid FiscalPeriodId);
+ 
++public sealed record GetFinancialStatementDrilldownQuery(
++    Guid CompanyId,
++    Guid FiscalPeriodId,
++    FinancialStatementType StatementType,
++    string LineCode,
++    int? SnapshotVersionNumber = null);
+ public sealed record GetFinanceBalanceSheetReportQuery(Guid CompanyId, Guid FiscalPeriodId);
+ public sealed record ValidateReportingPeriodCloseQuery(Guid CompanyId, Guid FiscalPeriodId);
+ public sealed record LockReportingPeriodCommand(Guid CompanyId, Guid FiscalPeriodId);
+@@ -311,7 +317,8 @@ public sealed record ProfitAndLossReportDto(
+     IReadOnlyList<FinanceStatementLineDto> RevenueLines,
+     IReadOnlyList<FinanceStatementLineDto> ExpenseLines,
+     decimal TotalRevenue,
+     decimal TotalExpenses,
+-    decimal NetIncome);
++    decimal NetIncome,
++    FinancialStatementSnapshotMetadataDto? Snapshot);
+ 
+ public sealed record BalanceSheetReportDto(
+     Guid CompanyId,
+@@ -326,7 +333,52 @@ public sealed record BalanceSheetReportDto(
+     decimal TotalAssets,
+     decimal TotalLiabilities,
+     decimal TotalEquity,
+-    bool IsBalanced);
++    bool IsBalanced,
++    FinancialStatementSnapshotMetadataDto? Snapshot);
++
++public sealed record FinancialStatementSnapshotMetadataDto(
++    Guid SnapshotId,
++    int VersionNumber,
++    string BalancesChecksum,
++    DateTime GeneratedAtUtc,
++    DateTime SourcePeriodStartUtc,
++    DateTime SourcePeriodEndUtc,
++    string Currency);
++
++public sealed record FinancialStatementDrilldownDto(
++    Guid CompanyId,
++    Guid FiscalPeriodId,
++    string FiscalPeriodName,
++    string StatementType,
++    string SourceMode,
++    FinancialStatementSnapshotMetadataDto? Snapshot,
++    FinancialStatementDrilldownLineDto SelectedLine,
++    decimal OpeningBalanceAdjustment,
++    decimal JournalLineTotal,
++    decimal ReconciliationTotal,
++    IReadOnlyList<FinancialStatementDrilldownJournalEntryDto> JournalEntries);
++
++public sealed record FinancialStatementDrilldownLineDto(
++    string LineCode,
++    string LineName,
++    string ReportSection,
++    string LineClassification,
++    decimal Amount,
++    string Currency);
++
++public sealed record FinancialStatementDrilldownJournalEntryDto(
++    Guid EntryId,
++    string EntryNumber,
++    DateTime EntryUtc,
++    string? Description,
++    decimal TotalContributionAmount,
++    IReadOnlyList<FinancialStatementDrilldownJournalLineDto> Lines);
++
++public sealed record FinancialStatementDrilldownJournalLineDto(
++    Guid JournalLineId,
++    Guid FinanceAccountId,
++    string AccountCode,
++    string AccountName,
++    decimal DebitAmount,
++    decimal CreditAmount,
++    decimal ContributionAmount,
++    string Currency,
++    string? Description);
+ 
+ public sealed record ReportingPeriodLockStateDto(
+     Guid CompanyId,
+@@ -1094,6 +1146,10 @@ public interface IFinanceReadService
+         GetFinanceProfitAndLossReportQuery query,
+         CancellationToken cancellationToken);
+ 
++    Task<FinancialStatementDrilldownDto> GetFinancialStatementDrilldownAsync(
++        GetFinancialStatementDrilldownQuery query,
++        CancellationToken cancellationToken);
++
+     Task<BalanceSheetReportDto> GetBalanceSheetReportAsync(
+         GetFinanceBalanceSheetReportQuery query,
+         CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -266,6 +266,20 @@ public sealed class InternalFinanceController : ControllerBase
+             () => _financeReadService.GetBalanceSheetReportAsync(
+                 new GetFinanceBalanceSheetReportQuery(companyId, fiscalPeriodId),
+                 cancellationToken));
++
++    [HttpGet("reports/drilldown")]
++    public async Task<ActionResult<FinancialStatementDrilldownDto>> GetFinancialStatementDrilldownAsync(
++        Guid companyId,
++        [FromQuery] Guid fiscalPeriodId,
++        [FromQuery] string statementType,
++        [FromQuery] string lineCode,
++        [FromQuery] int? snapshotVersionNumber,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetFinancialStatementDrilldownAsync(
++                new GetFinancialStatementDrilldownQuery(
++                    companyId,
++                    fiscalPeriodId,
++                    FinancialStatementTypeValues.Parse(statementType),
++                    lineCode,
++                    snapshotVersionNumber),
++                cancellationToken));
+ 
+     [HttpGet("expense-breakdown")]
+     public async Task<ActionResult<FinanceExpenseBreakdownDto>> GetExpenseBreakdownAsync(
+diff --git a/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs b/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
+@@ -1,3 +1,5 @@
++using VirtualCompany.Domain.Enums;
++
+ namespace VirtualCompany.Domain.Entities;
+ 
+ public static class LedgerEntryStatuses
+@@ -358,3 +360,170 @@ public sealed class TrialBalanceSnapshot : ICompanyOwnedEntity
+         return trimmed;
+     }
+ }
++
++public sealed class FinancialStatementSnapshot : ICompanyOwnedEntity
++{
++    private FinancialStatementSnapshot()
++    {
++    }
++
++    public FinancialStatementSnapshot(
++        Guid id,
++        Guid companyId,
++        Guid fiscalPeriodId,
++        FinancialStatementType statementType,
++        DateTime sourcePeriodStartUtc,
++        DateTime sourcePeriodEndUtc,
++        int versionNumber,
++        string balancesChecksum,
++        DateTime generatedAtUtc,
++        string currency)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (fiscalPeriodId == Guid.Empty)
++        {
++            throw new ArgumentException("FiscalPeriodId is required.", nameof(fiscalPeriodId));
++        }
++
++        if (versionNumber <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(versionNumber), "VersionNumber must be positive.");
++        }
++
++        var normalizedSourcePeriodStartUtc = EntityTimestampNormalizer.NormalizeUtc(sourcePeriodStartUtc, nameof(sourcePeriodStartUtc));
++        var normalizedSourcePeriodEndUtc = EntityTimestampNormalizer.NormalizeUtc(sourcePeriodEndUtc, nameof(sourcePeriodEndUtc));
++        if (normalizedSourcePeriodEndUtc <= normalizedSourcePeriodStartUtc)
++        {
++            throw new ArgumentOutOfRangeException(nameof(sourcePeriodEndUtc), "SourcePeriodEndUtc must be later than SourcePeriodStartUtc.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        FiscalPeriodId = fiscalPeriodId;
++        StatementType = statementType;
++        SourcePeriodStartUtc = normalizedSourcePeriodStartUtc;
++        SourcePeriodEndUtc = normalizedSourcePeriodEndUtc;
++        VersionNumber = versionNumber;
++        BalancesChecksum = NormalizeRequired(balancesChecksum, nameof(balancesChecksum), 128);
++        GeneratedAtUtc = EntityTimestampNormalizer.NormalizeUtc(generatedAtUtc, nameof(generatedAtUtc));
++        Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid FiscalPeriodId { get; private set; }
++    public FinancialStatementType StatementType { get; private set; }
++    public DateTime SourcePeriodStartUtc { get; private set; }
++    public DateTime SourcePeriodEndUtc { get; private set; }
++    public int VersionNumber { get; private set; }
++    public string BalancesChecksum { get; private set; } = null!;
++    public DateTime GeneratedAtUtc { get; private set; }
++    public string Currency { get; private set; } = null!;
++    public Company Company { get; private set; } = null!;
++    public FiscalPeriod FiscalPeriod { get; private set; } = null!;
++    public ICollection<FinancialStatementSnapshotLine> Lines { get; } = new List<FinancialStatementSnapshotLine>();
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
++
++public sealed class FinancialStatementSnapshotLine : ICompanyOwnedEntity
++{
++    private FinancialStatementSnapshotLine()
++    {
++    }
++
++    public FinancialStatementSnapshotLine(
++        Guid id,
++        Guid companyId,
++        Guid snapshotId,
++        Guid? financeAccountId,
++        string lineCode,
++        string lineName,
++        int lineOrder,
++        FinancialStatementReportSection reportSection,
++        FinancialStatementLineClassification lineClassification,
++        decimal amount,
++        string currency)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (snapshotId == Guid.Empty)
++        {
++            throw new ArgumentException("SnapshotId is required.", nameof(snapshotId));
++        }
++
++        if (financeAccountId == Guid.Empty)
++        {
++            throw new ArgumentException("FinanceAccountId cannot be empty.", nameof(financeAccountId));
++        }
++
++        if (lineOrder < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(lineOrder), "LineOrder cannot be negative.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        SnapshotId = snapshotId;
++        FinanceAccountId = financeAccountId;
++        LineCode = NormalizeRequired(lineCode, nameof(lineCode), 64);
++        LineName = NormalizeRequired(lineName, nameof(lineName), 160);
++        LineOrder = lineOrder;
++        ReportSection = reportSection;
++        LineClassification = lineClassification;
++        Amount = amount;
++        Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid SnapshotId { get; private set; }
++    public Guid? FinanceAccountId { get; private set; }
++    public string LineCode { get; private set; } = null!;
++    public string LineName { get; private set; } = null!;
++    public int LineOrder { get; private set; }
++    public FinancialStatementReportSection ReportSection { get; private set; }
++    public FinancialStatementLineClassification LineClassification { get; private set; }
++    public decimal Amount { get; private set; }
++    public string Currency { get; private set; } = null!;
++    public Company Company { get; private set; } = null!;
++    public FinancialStatementSnapshot Snapshot { get; private set; } = null!;
++    public FinanceAccount? FinanceAccount { get; private set; }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -180,12 +180,44 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+         await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
+ 
+         var period = await LoadFiscalPeriodAsync(query.CompanyId, query.FiscalPeriodId, cancellationToken);
++        var snapshot = period.IsClosed
++            ? await LoadLatestFinancialStatementSnapshotAsync(query.CompanyId, query.FiscalPeriodId, FinancialStatementType.ProfitAndLoss, cancellationToken)
++            : null;
++        if (snapshot is not null)
++        {
++            var snapshotLines = await LoadFinancialStatementSnapshotLinesAsync(snapshot.SnapshotId, cancellationToken);
++            return BuildProfitAndLossReport(period, snapshotLines, true, MapSnapshotMetadata(snapshot));
++        }
++
+         var snapshotRows = period.IsClosed
+             ? await LoadSnapshotStatementRowsAsync(query.CompanyId, query.FiscalPeriodId, FinancialStatementType.ProfitAndLoss, cancellationToken)
+             : [];
+         var rows = snapshotRows.Count > 0
+             ? snapshotRows
+             : await LoadLedgerStatementRowsForPeriodAsync(query.CompanyId, period, FinancialStatementType.ProfitAndLoss, cancellationToken);
++        var lines = rows
++            .Select(MapStatementLine)
++            .Where(x => x.Amount != 0m)
++            .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++        return BuildProfitAndLossReport(period, lines, snapshotRows.Count > 0, null);
++    }
++
++    public async Task<FinancialStatementDrilldownDto> GetFinancialStatementDrilldownAsync(
++        GetFinancialStatementDrilldownQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++        var period = await LoadFiscalPeriodAsync(query.CompanyId, query.FiscalPeriodId, cancellationToken);
++        var resolution = query.SnapshotVersionNumber.HasValue
++            ? await ResolveSnapshotStatementLineAsync(query, period, cancellationToken)
++            : await ResolveLiveStatementLineAsync(query, period, cancellationToken);
++        var drilldownEntries = await LoadDrilldownEntriesAsync(
++            query.CompanyId,
++            period,
++            resolution.StatementType,
++            resolution.ContributionRules,
++            cancellationToken);
++        var journalLineTotal = Math.Round(drilldownEntries.Sum(x => x.TotalContributionAmount), 2, MidpointRounding.AwayFromZero);
++        var reconciliationTotal = Math.Round(resolution.OpeningBalanceAdjustment + journalLineTotal, 2, MidpointRounding.AwayFromZero);
+ 
+-        return BuildProfitAndLossReport(period, rows, snapshotRows.Count > 0);
++        return new FinancialStatementDrilldownDto(
++            query.CompanyId,
++            period.FiscalPeriodId,
++            period.Name,
++            resolution.StatementType.ToStorageValue(),
++            resolution.SourceMode,
++            resolution.Snapshot,
++            new FinancialStatementDrilldownLineDto(
++                resolution.LineCode,
++                resolution.LineName,
++                resolution.ReportSection.ToStorageValue(),
++                resolution.LineClassification.ToStorageValue(),
++                resolution.Amount,
++                resolution.Currency),
++            resolution.OpeningBalanceAdjustment,
++            journalLineTotal,
++            reconciliationTotal,
++            drilldownEntries);
+     }
+ 
+     public async Task<BalanceSheetReportDto> GetBalanceSheetReportAsync(
+@@ -195,6 +227,14 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+         EnsureTenant(query.CompanyId);
+         await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
+         var period = await LoadFiscalPeriodAsync(query.CompanyId, query.FiscalPeriodId, cancellationToken);
++        var snapshot = period.IsClosed
++            ? await LoadLatestFinancialStatementSnapshotAsync(query.CompanyId, query.FiscalPeriodId, FinancialStatementType.BalanceSheet, cancellationToken)
++            : null;
++        if (snapshot is not null)
++        {
++            var snapshotLines = await LoadFinancialStatementSnapshotLinesAsync(snapshot.SnapshotId, cancellationToken);
++            return BuildBalanceSheetReport(period, snapshotLines, true, MapSnapshotMetadata(snapshot));
++        }
++
+         var snapshotRows = period.IsClosed
+             ? await LoadSnapshotStatementRowsAsync(query.CompanyId, query.FiscalPeriodId, FinancialStatementType.BalanceSheet, cancellationToken)
+             : [];
+@@ -205,7 +245,12 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             ? CalculateProfitAndLossTotal(await LoadSnapshotStatementRowsAsync(query.CompanyId, query.FiscalPeriodId, FinancialStatementType.ProfitAndLoss, cancellationToken))
+             : await CalculateCurrentEarningsAsync(query.CompanyId, period.EndUtc, cancellationToken);
+ 
+-        return BuildBalanceSheetReport(period, statementRows, currentEarnings, usedSnapshot);
++        var lines = BuildLiveBalanceSheetLines(statementRows, currentEarnings);
++        return BuildBalanceSheetReport(period, lines, usedSnapshot, null);
++    }
++
++    private static FinancialStatementSnapshotMetadataDto MapSnapshotMetadata(FinancialStatementSnapshotHeaderRow row) =>
++        new(row.SnapshotId, row.VersionNumber, row.BalancesChecksum, row.GeneratedAtUtc, row.SourcePeriodStartUtc, row.SourcePeriodEndUtc, row.Currency);
++
+     }
+ 
+     public async Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(
+@@ -929,6 +974,42 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .Select(x => new StatementMappingRow(
+                 x.FinanceAccountId,
+                 x.ReportSection,
++                x.LineClassification,
++                x.FinanceAccount.Code,
++                x.FinanceAccount.Name,
++                x.FinanceAccount.OpeningBalance,
++                x.FinanceAccount.Currency))
++            .ToDictionaryAsync(x => x.FinanceAccountId, cancellationToken);
++
++    private async Task<FinancialStatementSnapshotHeaderRow?> LoadLatestFinancialStatementSnapshotAsync(
++        Guid companyId,
++        Guid fiscalPeriodId,
++        FinancialStatementType statementType,
++        CancellationToken cancellationToken) =>
++        await _dbContext.FinancialStatementSnapshots
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.FiscalPeriodId == fiscalPeriodId &&
++                x.StatementType == statementType)
++            .OrderByDescending(x => x.VersionNumber)
++            .Select(x => new FinancialStatementSnapshotHeaderRow(
++                x.Id,
++                x.StatementType,
++                x.VersionNumber,
++                x.BalancesChecksum,
++                x.GeneratedAtUtc,
++                x.SourcePeriodStartUtc,
++                x.SourcePeriodEndUtc,
++                x.Currency))
++            .FirstOrDefaultAsync(cancellationToken);
++
++    private async Task<List<FinanceStatementLineDto>> LoadFinancialStatementSnapshotLinesAsync(
++        Guid snapshotId,
++        CancellationToken cancellationToken) =>
++        await _dbContext.FinancialStatementSnapshotLines
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.SnapshotId == snapshotId)
++            .OrderBy(x => x.LineOrder)
++            .ThenBy(x => x.LineCode)
++            .Select(x => new FinanceStatementLineDto(
++                x.FinanceAccountId,
++                x.LineCode,
++                x.LineName,
++                x.ReportSection.ToStorageValue(),
+                 x.LineClassification))
+-            .ToDictionaryAsync(x => x.FinanceAccountId, cancellationToken);
++            .Select(x => new FinanceStatementLineDto(
++                x.AccountId,
++                x.AccountCode,
++                x.AccountName,
++                x.ReportSection,
++                x.LineClassification,
++                0m,
++                string.Empty))
++            .ToListAsync(cancellationToken);
+ 
+     private async Task<List<LedgerStatementRow>> LoadSnapshotStatementRowsAsync(
+         Guid companyId,
+@@ -1150,23 +1231,48 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     }
+ 
+     private ProfitAndLossReportDto BuildProfitAndLossReport(
+-        FiscalPeriodRow period,
+-        IReadOnlyList<LedgerStatementRow> rows,
+-        bool usedSnapshot)
++        FiscalPeriodRow period,
++        IReadOnlyList<FinanceStatementLineDto> lines,
++        bool usedSnapshot,
++        FinancialStatementSnapshotMetadataDto? snapshot)
+     {
+-        var materialized = rows
+-            .Select(MapStatementLine)
+-            .Where(x => x.Amount != 0m)
+-            .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
+-            .ToList();
+-
+-        var revenueLines = materialized
++        var revenueLines = lines
+             .Where(x => IsProfitAndLossRevenueLine(x.ReportSection, x.LineClassification))
++            .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
+             .ToList();
+-        var expenseLines = materialized
++        var expenseLines = lines
+             .Where(x => !IsProfitAndLossRevenueLine(x.ReportSection, x.LineClassification))
++            .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
+             .ToList();
+-        var currency = ResolveCurrency(materialized.Select(x => new FinanceAmountRow(x.Amount, x.Currency)));
++        var currency = ResolveCurrency(lines.Select(x => new FinanceAmountRow(x.Amount, x.Currency)));
+ 
+         return new ProfitAndLossReportDto(
+             period.CompanyId,
+@@ -1179,17 +1285,30 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             expenseLines,
+             revenueLines.Sum(x => x.Amount),
+             expenseLines.Sum(x => x.Amount),
+-            revenueLines.Sum(x => x.Amount) - expenseLines.Sum(x => x.Amount));
++            revenueLines.Sum(x => x.Amount) - expenseLines.Sum(x => x.Amount),
++            snapshot);
+     }
+ 
+-    private BalanceSheetReportDto BuildBalanceSheetReport(
+-        FiscalPeriodRow period,
+-        IReadOnlyList<LedgerStatementRow> rows,
+-        decimal currentEarnings,
+-        bool usedSnapshot)
++    private static List<FinanceStatementLineDto> BuildLiveBalanceSheetLines(
++        IReadOnlyList<LedgerStatementRow> rows,
++        decimal currentEarnings)
+     {
+         var lines = rows
+             .Select(MapStatementLine)
+             .Where(x => x.Amount != 0m)
+             .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
+             .ToList();
++
++        if (currentEarnings != 0m)
++        {
++            lines.Add(new FinanceStatementLineDto(
++                null,
++                "current_earnings",
++                "Current Earnings",
++                FinancialStatementReportSection.BalanceSheetEquity.ToStorageValue(),
++                FinancialStatementLineClassification.Equity.ToStorageValue(),
++                currentEarnings,
++                ResolveCurrency(lines.Select(x => new FinanceAmountRow(x.Amount, x.Currency)))));
++        }
++
++        return lines;
++    }
++
++    private BalanceSheetReportDto BuildBalanceSheetReport(
++        FiscalPeriodRow period,
++        IReadOnlyList<FinanceStatementLineDto> lines,
++        bool usedSnapshot,
++        FinancialStatementSnapshotMetadataDto? snapshot)
++    {
+         var currency = ResolveCurrency(lines.Select(x => new FinanceAmountRow(x.Amount, x.Currency)));
+         var assets = lines.Where(x => string.Equals(x.ReportSection, FinancialStatementReportSection.BalanceSheetAssets.ToStorageValue(), StringComparison.Ordinal)).ToList();
+         var liabilities = lines.Where(x => string.Equals(x.ReportSection, FinancialStatementReportSection.BalanceSheetLiabilities.ToStorageValue(), StringComparison.Ordinal)).ToList();
+         var equity = lines.Where(x => string.Equals(x.ReportSection, FinancialStatementReportSection.BalanceSheetEquity.ToStorageValue(), StringComparison.Ordinal)).ToList();
+-        if (currentEarnings != 0m)
+-        {
+-            equity.Add(new FinanceStatementLineDto(
+-                null,
+-                "current_earnings",
+-                "Current Earnings",
+-                FinancialStatementReportSection.BalanceSheetEquity.ToStorageValue(),
+-                FinancialStatementLineClassification.Equity.ToStorageValue(),
+-                currentEarnings,
+-                currency));
+-        }
+ 
+         var totalAssets = assets.Sum(x => x.Amount);
+         var totalLiabilities = liabilities.Sum(x => x.Amount);
+@@ -1207,7 +1326,180 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             totalAssets,
+             totalLiabilities,
+             totalEquity,
+-            totalAssets == totalLiabilities + totalEquity);
++            totalAssets == totalLiabilities + totalEquity,
++            snapshot);
++    }
++
++    private async Task<StatementLineResolution> ResolveSnapshotStatementLineAsync(
++        GetFinancialStatementDrilldownQuery query,
++        FiscalPeriodRow period,
++        CancellationToken cancellationToken)
++    {
++        var snapshot = await _dbContext.FinancialStatementSnapshots
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == query.CompanyId &&
++                x.FiscalPeriodId == query.FiscalPeriodId &&
++                x.StatementType == query.StatementType &&
++                x.VersionNumber == query.SnapshotVersionNumber)
++            .Select(x => new FinancialStatementSnapshotHeaderRow(
++                x.Id,
++                x.StatementType,
++                x.VersionNumber,
++                x.BalancesChecksum,
++                x.GeneratedAtUtc,
++                x.SourcePeriodStartUtc,
++                x.SourcePeriodEndUtc,
++                x.Currency))
++            .SingleOrDefaultAsync(cancellationToken);
++
++        if (snapshot is null)
++        {
++            throw new KeyNotFoundException("The requested financial statement snapshot version was not found.");
++        }
++
++        var line = await _dbContext.FinancialStatementSnapshotLines
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.SnapshotId == snapshot.SnapshotId && x.LineCode == query.LineCode)
++            .Select(x => new SnapshotStatementLineRow(
++                x.FinanceAccountId,
++                x.LineCode,
++                x.LineName,
++                x.ReportSection,
++                x.LineClassification,
++                x.Amount,
++                x.Currency))
++            .SingleOrDefaultAsync(cancellationToken);
++
++        if (line is null)
++        {
++            throw new KeyNotFoundException("The requested snapshot report line was not found.");
++        }
++
++        var snapshotMetadata = MapSnapshotMetadata(snapshot);
++        if (string.Equals(line.LineCode, "current_earnings", StringComparison.OrdinalIgnoreCase))
++        {
++            var rules = await LoadCurrentEarningsContributionRulesAsync(query.CompanyId, cancellationToken);
++            return new StatementLineResolution(
++                query.StatementType,
++                "snapshot",
++                snapshotMetadata,
++                line.LineCode,
++                line.LineName,
++                line.ReportSection,
++                line.LineClassification,
++                line.Amount,
++                line.Currency,
++                CalculateOpeningBalanceAdjustment(rules),
++                rules);
++        }
++
++        if (!line.FinanceAccountId.HasValue)
++        {
++            throw new KeyNotFoundException("The requested snapshot report line is missing account metadata.");
++        }
++
++        var rule = await LoadAccountContributionRuleAsync(
++            query.CompanyId,
++            line.FinanceAccountId.Value,
++            line.LineCode,
++            line.LineName,
++            line.ReportSection,
++            line.LineClassification,
++            query.StatementType == FinancialStatementType.BalanceSheet,
++            cancellationToken);
++
++        return new StatementLineResolution(
++            query.StatementType,
++            "snapshot",
++            snapshotMetadata,
++            line.LineCode,
++            line.LineName,
++            line.ReportSection,
++            line.LineClassification,
++            line.Amount,
++            line.Currency,
++            CalculateOpeningBalanceAdjustment([rule]),
++            [rule]);
++    }
++
++    private async Task<StatementLineResolution> ResolveLiveStatementLineAsync(
++        GetFinancialStatementDrilldownQuery query,
++        FiscalPeriodRow period,
++        CancellationToken cancellationToken)
++    {
++        if (query.StatementType == FinancialStatementType.BalanceSheet &&
++            string.Equals(query.LineCode, "current_earnings", StringComparison.OrdinalIgnoreCase))
++        {
++            var currentEarnings = await CalculateCurrentEarningsAsync(query.CompanyId, period.EndUtc, cancellationToken);
++            var rules = await LoadCurrentEarningsContributionRulesAsync(query.CompanyId, cancellationToken);
++            return new StatementLineResolution(
++                query.StatementType,
++                "live",
++                null,
++                "current_earnings",
++                "Current Earnings",
++                FinancialStatementReportSection.BalanceSheetEquity,
++                FinancialStatementLineClassification.Equity,
++                currentEarnings,
++                ResolveCurrency(rules.Select(x => new FinanceAmountRow(x.OpeningBalance, x.Currency))),
++                CalculateOpeningBalanceAdjustment(rules),
++                rules);
++        }
++
++        if (query.StatementType == FinancialStatementType.ProfitAndLoss)
++        {
++            var rows = await LoadLedgerStatementRowsForPeriodAsync(query.CompanyId, period, FinancialStatementType.ProfitAndLoss, cancellationToken);
++            var row = rows.SingleOrDefault(x => string.Equals(x.AccountCode, query.LineCode, StringComparison.OrdinalIgnoreCase))
++                ?? throw new KeyNotFoundException("The requested live report line was not found.");
++            var amount = NormalizeStatementAmount(row);
++            var rule = await LoadAccountContributionRuleAsync(
++                query.CompanyId,
++                row.FinanceAccountId,
++                row.AccountCode,
++                row.AccountName,
++                row.ReportSection,
++                row.LineClassification,
++                includeOpeningBalance: false,
++                cancellationToken);
++
++            return new StatementLineResolution(
++                query.StatementType,
++                "live",
++                null,
++                row.AccountCode,
++                row.AccountName,
++                row.ReportSection,
++                row.LineClassification,
++                amount,
++                row.Currency,
++                0m,
++                [rule]);
++        }
++
++        var balanceSheetRows = await LoadBalanceSheetRowsAsync(query.CompanyId, period.EndUtc, cancellationToken);
++        var balanceSheetRow = balanceSheetRows.SingleOrDefault(x => string.Equals(x.AccountCode, query.LineCode, StringComparison.OrdinalIgnoreCase))
++            ?? throw new KeyNotFoundException("The requested live report line was not found.");
++        var liveRule = await LoadAccountContributionRuleAsync(
++            query.CompanyId,
++            balanceSheetRow.FinanceAccountId,
++            balanceSheetRow.AccountCode,
++            balanceSheetRow.AccountName,
++            balanceSheetRow.ReportSection,
++            balanceSheetRow.LineClassification,
++            includeOpeningBalance: true,
++            cancellationToken);
++
++        return new StatementLineResolution(
++            query.StatementType,
++            "live",
++            null,
++            balanceSheetRow.AccountCode,
++            balanceSheetRow.AccountName,
++            balanceSheetRow.ReportSection,
++            balanceSheetRow.LineClassification,
++            NormalizeStatementAmount(balanceSheetRow),
++            balanceSheetRow.Currency,
++            CalculateOpeningBalanceAdjustment([liveRule]),
++            [liveRule]);
++    }
++
++    private async Task<ContributionRule> LoadAccountContributionRuleAsync(
++        Guid companyId,
++        Guid financeAccountId,
++        string lineCode,
++        string lineName,
++        FinancialStatementReportSection reportSection,
++        FinancialStatementLineClassification lineClassification,
++        bool includeOpeningBalance,
++        CancellationToken cancellationToken)
++    {
++        var account = await _dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Id == financeAccountId)
++            .Select(x => new ContributionAccountRow(x.Id, x.Code, x.Name, x.OpeningBalance, x.Currency))
++            .SingleAsync(cancellationToken);
++        return new ContributionRule(
++            account.AccountId,
++            lineCode,
++            lineName,
++            account.AccountCode,
++            account.AccountName,
++            reportSection,
++            lineClassification,
++            ResolveContributionFactor(reportSection, lineClassification),
++            includeOpeningBalance ? account.OpeningBalance : 0m,
++            account.Currency);
++    }
++
++    private async Task<List<ContributionRule>> LoadCurrentEarningsContributionRulesAsync(
++        Guid companyId,
++        CancellationToken cancellationToken) =>
++        await _dbContext.FinancialStatementMappings
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.IsActive && x.StatementType == FinancialStatementType.ProfitAndLoss)
++            .Select(x => new ContributionRule(
++                x.FinanceAccountId,
++                "current_earnings",
++                "Current Earnings",
++                x.FinanceAccount.Code,
++                x.FinanceAccount.Name,
++                x.ReportSection,
++                x.LineClassification,
++                ResolveContributionFactor(x.ReportSection, x.LineClassification),
++                x.FinanceAccount.OpeningBalance,
++                x.FinanceAccount.Currency))
++            .ToListAsync(cancellationToken);
++
++    private static decimal CalculateOpeningBalanceAdjustment(IEnumerable<ContributionRule> rules) =>
++        Math.Round(rules.Sum(x => x.OpeningBalance * x.ContributionFactor), 2, MidpointRounding.AwayFromZero);
++
++    private async Task<List<FinancialStatementDrilldownJournalEntryDto>> LoadDrilldownEntriesAsync(
++        Guid companyId,
++        FiscalPeriodRow period,
++        FinancialStatementType statementType,
++        IReadOnlyList<ContributionRule> rules,
++        CancellationToken cancellationToken)
++    {
++        if (rules.Count == 0)
++        {
++            return [];
++        }
++
++        var accountIds = rules.Select(x => x.FinanceAccountId).Distinct().ToArray();
++        var factorByAccountId = rules.ToDictionary(x => x.FinanceAccountId, x => x.ContributionFactor);
++        var postings = await _dbContext.LedgerEntryLines
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.LedgerEntry.Status == LedgerEntryStatuses.Posted &&
++                accountIds.Contains(x.FinanceAccountId) &&
++                (statementType == FinancialStatementType.ProfitAndLoss
++                    ? x.LedgerEntry.EntryUtc >= period.StartUtc && x.LedgerEntry.EntryUtc < period.EndUtc
++                    : x.LedgerEntry.EntryUtc < period.EndUtc))
++            .OrderBy(x => x.LedgerEntry.EntryUtc)
++            .ThenBy(x => x.LedgerEntry.EntryNumber)
++            .Select(x => new DrilldownPostingRow(
++                x.LedgerEntryId,
++                x.LedgerEntry.EntryNumber,
++                x.LedgerEntry.EntryUtc,
++                x.LedgerEntry.Description,
++                x.Id,
++                x.FinanceAccountId,
++                x.FinanceAccount.Code,
++                x.FinanceAccount.Name,
++                x.DebitAmount,
++                x.CreditAmount,
++                x.Currency,
++                x.Description))
++            .ToListAsync(cancellationToken);
++
++        return postings
++            .GroupBy(x => new { x.LedgerEntryId, x.EntryNumber, x.EntryUtc, x.EntryDescription })
++            .Select(group =>
++            {
++                var lines = group
++                    .Select(line => new FinancialStatementDrilldownJournalLineDto(
++                        line.LedgerEntryLineId,
++                        line.FinanceAccountId,
++                        line.AccountCode,
++                        line.AccountName,
++                        line.DebitAmount,
++                        line.CreditAmount,
++                        Math.Round((line.DebitAmount - line.CreditAmount) * factorByAccountId[line.FinanceAccountId], 2, MidpointRounding.AwayFromZero),
++                        line.Currency,
++                        line.LineDescription))
++                    .Where(x => x.ContributionAmount != 0m)
++                    .ToList();
++
++                return new FinancialStatementDrilldownJournalEntryDto(
++                    group.Key.LedgerEntryId,
++                    group.Key.EntryNumber,
++                    group.Key.EntryUtc,
++                    group.Key.EntryDescription,
++                    Math.Round(lines.Sum(x => x.ContributionAmount), 2, MidpointRounding.AwayFromZero),
++                    lines);
++            })
++            .Where(x => x.Lines.Count > 0)
++            .ToList();
+     }
+ 
+     private static decimal CalculateProfitAndLossTotal(IEnumerable<LedgerStatementRow> rows) =>
+@@ -1267,6 +1559,24 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     private static bool IsProfitAndLossRevenueLine(FinancialStatementReportSection reportSection, FinancialStatementLineClassification lineClassification) =>
+         reportSection == FinancialStatementReportSection.ProfitAndLossRevenue ||
+         lineClassification == FinancialStatementLineClassification.NonOperatingIncome;
++
++    private static decimal ResolveContributionFactor(
++        FinancialStatementReportSection reportSection,
++        FinancialStatementLineClassification lineClassification) =>
++        reportSection switch
++        {
++            FinancialStatementReportSection.BalanceSheetAssets => 1m,
++            FinancialStatementReportSection.BalanceSheetLiabilities => -1m,
++            FinancialStatementReportSection.BalanceSheetEquity => -1m,
++            FinancialStatementReportSection.ProfitAndLossRevenue => -1m,
++            FinancialStatementReportSection.ProfitAndLossCostOfSales => 1m,
++            FinancialStatementReportSection.ProfitAndLossOperatingExpenses => 1m,
++            FinancialStatementReportSection.ProfitAndLossTaxes => 1m,
++            FinancialStatementReportSection.ProfitAndLossOtherIncomeExpense when lineClassification == FinancialStatementLineClassification.NonOperatingIncome => -1m,
++            FinancialStatementReportSection.ProfitAndLossOtherIncomeExpense => 1m,
++            _ => 1m
++        };
++
++    private static bool IsProfitAndLossRevenueLine(string reportSection, string lineClassification) =>
++        string.Equals(reportSection, FinancialStatementReportSection.ProfitAndLossRevenue.ToStorageValue(), StringComparison.Ordinal) ||
++        string.Equals(lineClassification, FinancialStatementLineClassification.NonOperatingIncome.ToStorageValue(), StringComparison.Ordinal);
+ 
+     private async Task<List<FinanceAccountBalanceDto>> BuildAccountBalancesAsync(
+         Guid companyId,
+@@ -2040,18 +2350,84 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+         string Name,
+         DateTime StartUtc,
+         DateTime EndUtc,
+-        bool IsClosed);
++        bool IsClosed);
+ 
+     private sealed record StatementMappingRow(
+         Guid FinanceAccountId,
+         FinancialStatementReportSection ReportSection,
+-        FinancialStatementLineClassification LineClassification);
++        FinancialStatementLineClassification LineClassification,
++        string AccountCode,
++        string AccountName,
++        decimal OpeningBalance,
++        string Currency);
++
++    private sealed record FinancialStatementSnapshotHeaderRow(
++        Guid SnapshotId,
++        FinancialStatementType StatementType,
++        int VersionNumber,
++        string BalancesChecksum,
++        DateTime GeneratedAtUtc,
++        DateTime SourcePeriodStartUtc,
++        DateTime SourcePeriodEndUtc,
++        string Currency);
++
++    private sealed record SnapshotStatementLineRow(
++        Guid? FinanceAccountId,
++        string LineCode,
++        string LineName,
++        FinancialStatementReportSection ReportSection,
++        FinancialStatementLineClassification LineClassification,
++        decimal Amount,
++        string Currency);
+ 
+     private sealed record LedgerPostingRow(
+         Guid FinanceAccountId,
+         string AccountCode,
+         string AccountName,
+         decimal SignedAmount,
+-        string Currency);
++        string Currency);
++
++    private sealed record ContributionAccountRow(
++        Guid AccountId,
++        string AccountCode,
++        string AccountName,
++        decimal OpeningBalance,
++        string Currency);
++
++    private sealed record ContributionRule(
++        Guid FinanceAccountId,
++        string LineCode,
++        string LineName,
++        string AccountCode,
++        string AccountName,
++        FinancialStatementReportSection ReportSection,
++        FinancialStatementLineClassification LineClassification,
++        decimal ContributionFactor,
++        decimal OpeningBalance,
++        string Currency);
++
++    private sealed record StatementLineResolution(
++        FinancialStatementType StatementType,
++        string SourceMode,
++        FinancialStatementSnapshotMetadataDto? Snapshot,
++        string LineCode,
++        string LineName,
++        FinancialStatementReportSection ReportSection,
++        FinancialStatementLineClassification LineClassification,
++        decimal Amount,
++        string Currency,
++        decimal OpeningBalanceAdjustment,
++        IReadOnlyList<ContributionRule> ContributionRules);
++
++    private sealed record DrilldownPostingRow(
++        Guid LedgerEntryId,
++        string EntryNumber,
++        DateTime EntryUtc,
++        string? EntryDescription,
++        Guid LedgerEntryLineId,
++        Guid FinanceAccountId,
++        string AccountCode,
++        string AccountName,
++        decimal DebitAmount,
++        decimal CreditAmount,
++        string Currency,
++        string? LineDescription);
+ 
+     private sealed record LedgerPostingAmountRow(
+         Guid FinanceAccountId,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs
+@@ -1,4 +1,7 @@
++using System.Globalization;
++using System.Security.Cryptography;
++using System.Text;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
+@@ -194,8 +197,11 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+         }
+ 
+         var completedAtUtc = DateTime.UtcNow;
++        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+         var snapshotCount = await RegenerateSnapshotsAsync(period, completedAtUtc, cancellationToken);
+         await _dbContext.SaveChangesAsync(cancellationToken);
++        await transaction.CommitAsync(cancellationToken);
++
+ 
+         return new ReportingPeriodRegenerationRequestResultDto(
+             command.CompanyId,
+@@ -216,8 +222,11 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+         var period = await LoadFiscalPeriodAsync(companyId, fiscalPeriodId, track: true, cancellationToken);
+         EnsureClosed(period);
+         await EnsureRegenerationAllowedAsync(period, SystemActor(correlationId), null, cancellationToken);
++        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+         var regeneratedAtUtc = DateTime.UtcNow;
+-        return await RegenerateSnapshotsAsync(period, regeneratedAtUtc, cancellationToken);
++        var snapshotCount = await RegenerateSnapshotsAsync(period, regeneratedAtUtc, cancellationToken);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        await transaction.CommitAsync(cancellationToken);
++        return snapshotCount;
+     }
+ 
+     private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken) =>
+@@ -410,7 +419,248 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+             .ToList();
+ 
+         _dbContext.TrialBalanceSnapshots.AddRange(snapshots);
+-        return snapshots.Count;
++        var statementSnapshotCount = await CreateFinancialStatementSnapshotsAsync(period, regeneratedAtUtc, cancellationToken);
++        return snapshots.Count + statementSnapshotCount;
++    }
++
++    private async Task<int> CreateFinancialStatementSnapshotsAsync(
++        FiscalPeriod period,
++        DateTime generatedAtUtc,
++        CancellationToken cancellationToken)
++    {
++        var profitAndLossLines = await BuildProfitAndLossSnapshotLinesAsync(period, cancellationToken);
++        var balanceSheetLines = await BuildBalanceSheetSnapshotLinesAsync(period, cancellationToken);
++
++        var created = 0;
++        created += await CreateFinancialStatementSnapshotAsync(period, FinancialStatementType.ProfitAndLoss, profitAndLossLines, generatedAtUtc, cancellationToken);
++        created += await CreateFinancialStatementSnapshotAsync(period, FinancialStatementType.BalanceSheet, balanceSheetLines, generatedAtUtc, cancellationToken);
++        return created;
++    }
++
++    private async Task<int> CreateFinancialStatementSnapshotAsync(
++        FiscalPeriod period,
++        FinancialStatementType statementType,
++        IReadOnlyList<StatementSnapshotLineSeed> lines,
++        DateTime generatedAtUtc,
++        CancellationToken cancellationToken)
++    {
++        var nextVersionNumber = await _dbContext.FinancialStatementSnapshots
++            .IgnoreQueryFilters()
++            .Where(x =>
++                x.CompanyId == period.CompanyId &&
++                x.FiscalPeriodId == period.Id &&
++                x.StatementType == statementType)
++            .Select(x => (int?)x.VersionNumber)
++            .MaxAsync(cancellationToken) ?? 0;
++        nextVersionNumber++;
++
++        var orderedLines = lines
++            .Where(x => x.Amount != 0m)
++            .OrderBy(x => x.LineOrder)
++            .ThenBy(x => x.LineCode, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++        var currency = ResolveCurrency(orderedLines.Select(x => x.Currency));
++        var snapshot = new FinancialStatementSnapshot(
++            Guid.NewGuid(),
++            period.CompanyId,
++            period.Id,
++            statementType,
++            period.StartUtc,
++            period.EndUtc,
++            nextVersionNumber,
++            ComputeChecksum(orderedLines),
++            generatedAtUtc,
++            currency);
++
++        _dbContext.FinancialStatementSnapshots.Add(snapshot);
++        _dbContext.FinancialStatementSnapshotLines.AddRange(
++            orderedLines.Select(line => new FinancialStatementSnapshotLine(
++                Guid.NewGuid(),
++                period.CompanyId,
++                snapshot.Id,
++                line.FinanceAccountId,
++                line.LineCode,
++                line.LineName,
++                line.LineOrder,
++                line.ReportSection,
++                line.LineClassification,
++                line.Amount,
++                line.Currency)));
++
++        return 1;
++    }
++
++    private async Task<List<StatementSnapshotLineSeed>> BuildProfitAndLossSnapshotLinesAsync(
++        FiscalPeriod period,
++        CancellationToken cancellationToken)
++    {
++        var mappings = await _dbContext.FinancialStatementMappings
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == period.CompanyId &&
++                x.IsActive &&
++                x.StatementType == FinancialStatementType.ProfitAndLoss)
++            .Select(x => new SnapshotMappingRow(
++                x.FinanceAccountId,
++                x.FinanceAccount.Code,
++                x.FinanceAccount.Name,
++                x.FinanceAccount.OpeningBalance,
++                x.FinanceAccount.Currency,
++                x.ReportSection,
++                x.LineClassification))
++            .ToListAsync(cancellationToken);
++
++        if (mappings.Count == 0)
++        {
++            return [];
++        }
++
++        var accountIds = mappings.Select(x => x.FinanceAccountId).ToArray();
++        var postings = await _dbContext.LedgerEntryLines
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == period.CompanyId &&
++                x.LedgerEntry.Status == LedgerEntryStatuses.Posted &&
++                x.LedgerEntry.EntryUtc >= period.StartUtc &&
++                x.LedgerEntry.EntryUtc < period.EndUtc &&
++                accountIds.Contains(x.FinanceAccountId))
++            .GroupBy(x => x.FinanceAccountId)
++            .Select(group => new SnapshotPostingRow(
++                group.Key,
++                group.Sum(line => line.DebitAmount - line.CreditAmount)))
++            .ToDictionaryAsync(x => x.FinanceAccountId, x => x.SignedAmount, cancellationToken);
++
++        return mappings
++            .Select((mapping, index) => new StatementSnapshotLineSeed(
++                mapping.FinanceAccountId,
++                mapping.AccountCode,
++                mapping.AccountName,
++                index,
++                mapping.ReportSection,
++                mapping.LineClassification,
++                NormalizeAmount(mapping.ReportSection, mapping.LineClassification, postings.GetValueOrDefault(mapping.FinanceAccountId)),
++                mapping.Currency))
++            .Where(x => x.Amount != 0m)
++            .ToList();
++    }
++
++    private async Task<List<StatementSnapshotLineSeed>> BuildBalanceSheetSnapshotLinesAsync(
++        FiscalPeriod period,
++        CancellationToken cancellationToken)
++    {
++        var mappings = await _dbContext.FinancialStatementMappings
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == period.CompanyId &&
++                x.IsActive &&
++                x.StatementType == FinancialStatementType.BalanceSheet)
++            .Select(x => new SnapshotMappingRow(
++                x.FinanceAccountId,
++                x.FinanceAccount.Code,
++                x.FinanceAccount.Name,
++                x.FinanceAccount.OpeningBalance,
++                x.FinanceAccount.Currency,
++                x.ReportSection,
++                x.LineClassification))
++            .ToListAsync(cancellationToken);
++
++        var lines = new List<StatementSnapshotLineSeed>();
++        if (mappings.Count > 0)
++        {
++            var accountIds = mappings.Select(x => x.FinanceAccountId).ToArray();
++            var postings = await _dbContext.LedgerEntryLines
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x =>
++                    x.CompanyId == period.CompanyId &&
++                    x.LedgerEntry.Status == LedgerEntryStatuses.Posted &&
++                    x.LedgerEntry.EntryUtc < period.EndUtc &&
++                    accountIds.Contains(x.FinanceAccountId))
++                .GroupBy(x => x.FinanceAccountId)
++                .Select(group => new SnapshotPostingRow(
++                    group.Key,
++                    group.Sum(line => line.DebitAmount - line.CreditAmount)))
++                .ToDictionaryAsync(x => x.FinanceAccountId, x => x.SignedAmount, cancellationToken);
++
++            lines.AddRange(mappings
++                .Select((mapping, index) => new StatementSnapshotLineSeed(
++                    mapping.FinanceAccountId,
++                    mapping.AccountCode,
++                    mapping.AccountName,
++                    index,
++                    mapping.ReportSection,
++                    mapping.LineClassification,
++                    NormalizeAmount(
++                        mapping.ReportSection,
++                        mapping.LineClassification,
++                        mapping.OpeningBalance + postings.GetValueOrDefault(mapping.FinanceAccountId)),
++                    mapping.Currency))
++                .Where(x => x.Amount != 0m));
++        }
++
++        var currentEarnings = await CalculateCurrentEarningsAsync(period.CompanyId, period.EndUtc, cancellationToken);
++        if (currentEarnings != 0m)
++        {
++            lines.Add(new StatementSnapshotLineSeed(
++                null,
++                "current_earnings",
++                "Current Earnings",
++                int.MaxValue,
++                FinancialStatementReportSection.BalanceSheetEquity,
++                FinancialStatementLineClassification.Equity,
++                Math.Round(currentEarnings, 2, MidpointRounding.AwayFromZero),
++                ResolveCurrency(lines.Select(x => x.Currency))));
++        }
++
++        return lines;
++    }
++
++    private async Task<decimal> CalculateCurrentEarningsAsync(
++        Guid companyId,
++        DateTime endUtc,
++        CancellationToken cancellationToken)
++    {
++        var rows = await _dbContext.FinancialStatementMappings
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.IsActive &&
++                x.StatementType == FinancialStatementType.ProfitAndLoss)
++            .Select(x => new SnapshotMappingRow(
++                x.FinanceAccountId,
++                x.FinanceAccount.Code,
++                x.FinanceAccount.Name,
++                x.FinanceAccount.OpeningBalance,
++                x.FinanceAccount.Currency,
++                x.ReportSection,
++                x.LineClassification))
++            .ToListAsync(cancellationToken);
++
++        if (rows.Count == 0)
++        {
++            return 0m;
++        }
++
++        var accountIds = rows.Select(x => x.FinanceAccountId).ToArray();
++        var postings = await _dbContext.LedgerEntryLines
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.LedgerEntry.Status == LedgerEntryStatuses.Posted &&
++                x.LedgerEntry.EntryUtc < endUtc &&
++                accountIds.Contains(x.FinanceAccountId))
++            .GroupBy(x => x.FinanceAccountId)
++            .Select(group => new SnapshotPostingRow(
++                group.Key,
++                group.Sum(line => line.DebitAmount - line.CreditAmount)))
++            .ToDictionaryAsync(x => x.FinanceAccountId, x => x.SignedAmount, cancellationToken);
++
++        return Math.Round(rows.Sum(row =>
++            NormalizeAmount(
++                row.ReportSection,
++                row.LineClassification,
++                row.OpeningBalance + postings.GetValueOrDefault(row.FinanceAccountId)) *
++            (row.LineClassification == FinancialStatementLineClassification.NonOperatingIncome ||
++             row.ReportSection == FinancialStatementReportSection.ProfitAndLossRevenue
++                ? 1m
++                : -1m)), 2, MidpointRounding.AwayFromZero);
++    }
++
++    private static decimal NormalizeAmount(
++        FinancialStatementReportSection reportSection,
++        FinancialStatementLineClassification lineClassification,
++        decimal balanceAmount)
++    {
++        var normalized = reportSection switch
++        {
++            FinancialStatementReportSection.BalanceSheetAssets => balanceAmount,
++            FinancialStatementReportSection.BalanceSheetLiabilities => -balanceAmount,
++            FinancialStatementReportSection.BalanceSheetEquity => -balanceAmount,
++            FinancialStatementReportSection.ProfitAndLossRevenue => -balanceAmount,
++            FinancialStatementReportSection.ProfitAndLossCostOfSales => balanceAmount,
++            FinancialStatementReportSection.ProfitAndLossOperatingExpenses => balanceAmount,
++            FinancialStatementReportSection.ProfitAndLossTaxes => balanceAmount,
++            FinancialStatementReportSection.ProfitAndLossOtherIncomeExpense when lineClassification == FinancialStatementLineClassification.NonOperatingIncome => -balanceAmount,
++            FinancialStatementReportSection.ProfitAndLossOtherIncomeExpense => balanceAmount,
++            _ => balanceAmount
++        };
++
++        return Math.Abs(normalized) < 0.0001m ? 0m : Math.Round(normalized, 2, MidpointRounding.AwayFromZero);
++    }
++
++    private static string ComputeChecksum(IEnumerable<StatementSnapshotLineSeed> lines)
++    {
++        var canonical = string.Join('\n', lines.Select(x =>
++            $"{x.LineCode}|{x.Amount.ToString("0.00####", CultureInfo.InvariantCulture)}|{x.Currency}"));
++        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
++        return Convert.ToHexString(hash).ToLowerInvariant();
++    }
++
++    private static string ResolveCurrency(IEnumerable<string> currencies)
++    {
++        var distinct = currencies
++            .Where(x => !string.IsNullOrWhiteSpace(x))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToList();
++        return distinct.Count == 1 ? distinct[0] : "MIXED";
+     }
+ 
+     private async Task<IReadOnlyList<ReportingPeriodBlockingIssueDto>> BuildBlockingIssuesAsync(
+@@ -554,4 +804,23 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+     private sealed record MappingRequirementRow(
+         Guid AccountId,
+         FinancialStatementType StatementType);
++
++    private sealed record SnapshotMappingRow(
++        Guid FinanceAccountId,
++        string AccountCode,
++        string AccountName,
++        decimal OpeningBalance,
++        string Currency,
++        FinancialStatementReportSection ReportSection,
++        FinancialStatementLineClassification LineClassification);
++
++    private sealed record SnapshotPostingRow(
++        Guid FinanceAccountId,
++        decimal SignedAmount);
++
++    private sealed record StatementSnapshotLineSeed(
++        Guid? FinanceAccountId,
++        string LineCode,
++        string LineName,
++        int LineOrder,
++        FinancialStatementReportSection ReportSection,
++        FinancialStatementLineClassification LineClassification,
++        decimal Amount,
++        string Currency);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -3131,6 +3131,69 @@ internal sealed class TrialBalanceSnapshotConfiguration : IEntityTypeConfigurati
+     }
+ }
+ 
++internal sealed class FinancialStatementSnapshotConfiguration : IEntityTypeConfiguration<FinancialStatementSnapshot>
++{
++    public void Configure(EntityTypeBuilder<FinancialStatementSnapshot> builder)
++    {
++        builder.ToTable("financial_statement_snapshots");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.FiscalPeriodId).HasColumnName("fiscal_period_id").IsRequired();
++        builder.Property(x => x.StatementType)
++            .HasColumnName("statement_type")
++            .HasConversion(value => value.ToStorageValue(), value => FinancialStatementTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.SourcePeriodStartUtc).HasColumnName("source_period_start_at").IsRequired();
++        builder.Property(x => x.SourcePeriodEndUtc).HasColumnName("source_period_end_at").IsRequired();
++        builder.Property(x => x.VersionNumber).HasColumnName("version_number").IsRequired();
++        builder.Property(x => x.BalancesChecksum).HasColumnName("balances_checksum").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.GeneratedAtUtc).HasColumnName("generated_at").IsRequired();
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
++
++        builder.HasCheckConstraint("CK_financial_statement_snapshots_statement_type", FinancialStatementTypeValues.BuildCheckConstraintSql("statement_type"));
++
++        builder.HasIndex(x => new { x.CompanyId, x.StatementType, x.FiscalPeriodId, x.VersionNumber }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.StatementType, x.FiscalPeriodId, x.GeneratedAtUtc });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.FiscalPeriod).WithMany().HasForeignKey(x => new { x.CompanyId, x.FiscalPeriodId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
++        builder.HasMany(x => x.Lines).WithOne(x => x.Snapshot).HasForeignKey(x => x.SnapshotId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class FinancialStatementSnapshotLineConfiguration : IEntityTypeConfiguration<FinancialStatementSnapshotLine>
++{
++    public void Configure(EntityTypeBuilder<FinancialStatementSnapshotLine> builder)
++    {
++        builder.ToTable("financial_statement_snapshot_lines");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SnapshotId).HasColumnName("snapshot_id").IsRequired();
++        builder.Property(x => x.FinanceAccountId).HasColumnName("finance_account_id");
++        builder.Property(x => x.LineCode).HasColumnName("line_code").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.LineName).HasColumnName("line_name").HasMaxLength(160).IsRequired();
++        builder.Property(x => x.LineOrder).HasColumnName("line_order").IsRequired();
++        builder.Property(x => x.ReportSection)
++            .HasColumnName("report_section")
++            .HasConversion(value => value.ToStorageValue(), value => FinancialStatementReportSectionValues.Parse(value))
++            .HasMaxLength(64)
++            .IsRequired();
++        builder.Property(x => x.LineClassification)
++            .HasColumnName("line_classification")
++            .HasConversion(value => value.ToStorageValue(), value => FinancialStatementLineClassificationValues.Parse(value))
++            .HasMaxLength(64)
++            .IsRequired();
++        builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
++
++        builder.HasCheckConstraint("CK_financial_statement_snapshot_lines_report_section", FinancialStatementReportSectionValues.BuildCheckConstraintSql("report_section"));
++        builder.HasCheckConstraint("CK_financial_statement_snapshot_lines_line_classification", FinancialStatementLineClassificationValues.BuildCheckConstraintSql("line_classification"));
++        builder.HasIndex(x => new { x.SnapshotId, x.LineCode }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.SnapshotId, x.LineOrder });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.FinanceAccount).WithMany().HasForeignKey(x => new { x.CompanyId, x.FinanceAccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
+ internal sealed class FinancePolicyConfigurationConfiguration : IEntityTypeConfiguration<FinancePolicyConfiguration>
+ {
+     public void Configure(EntityTypeBuilder<FinancePolicyConfiguration> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420190000_AddFinancialStatementSnapshots.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420190000_AddFinancialStatementSnapshots.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420190000_AddFinancialStatementSnapshots.cs
+@@ -0,0 +1,172 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddFinancialStatementSnapshots : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var decimalType = isPostgres ? "numeric(18,2)" : "decimal(18,2)";
++            var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
++            var string160Type = isPostgres ? "character varying(160)" : "nvarchar(160)";
++            var string3Type = isPostgres ? "character varying(3)" : "nvarchar(3)";
++
++            migrationBuilder.CreateTable(
++                name: "financial_statement_snapshots",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    fiscal_period_id = table.Column<Guid>(type: guidType, nullable: false),
++                    statement_type = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    source_period_start_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    source_period_end_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    version_number = table.Column<int>(type: "int", nullable: false),
++                    balances_checksum = table.Column<string>(type: string128Type, maxLength: 128, nullable: false),
++                    generated_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    currency = table.Column<string>(type: string3Type, maxLength: 3, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_financial_statement_snapshots", x => x.id);
++                    table.CheckConstraint("CK_financial_statement_snapshots_statement_type", "statement_type IN ('balance_sheet', 'cash_flow', 'profit_and_loss')");
++                    table.ForeignKey(
++                        name: "FK_financial_statement_snapshots_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_financial_statement_snapshots_finance_fiscal_periods_company_id_fiscal_period_id",
++                        columns: x => new { x.company_id, x.fiscal_period_id },
++                        principalTable: "finance_fiscal_periods",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "financial_statement_snapshot_lines",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    snapshot_id = table.Column<Guid>(type: guidType, nullable: false),
++                    finance_account_id = table.Column<Guid>(type: guidType, nullable: true),
++                    line_code = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    line_name = table.Column<string>(type: string160Type, maxLength: 160, nullable: false),
++                    line_order = table.Column<int>(type: "int", nullable: false),
++                    report_section = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    line_classification = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    amount = table.Column<decimal>(type: decimalType, nullable: false),
++                    currency = table.Column<string>(type: string3Type, maxLength: 3, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_financial_statement_snapshot_lines", x => x.id);
++                    table.CheckConstraint("CK_financial_statement_snapshot_lines_report_section", "report_section IN ('balance_sheet_assets', 'balance_sheet_equity', 'balance_sheet_liabilities', 'cash_flow_financing_activities', 'cash_flow_investing_activities', 'cash_flow_operating_activities', 'cash_flow_supplemental_disclosures', 'profit_and_loss_cost_of_sales', 'profit_and_loss_operating_expenses', 'profit_and_loss_other_income_expense', 'profit_and_loss_revenue', 'profit_and_loss_taxes')");
++                    table.CheckConstraint("CK_financial_statement_snapshot_lines_line_classification", "line_classification IN ('cash_disbursement', 'cash_receipt', 'contra_revenue', 'cost_of_sales', 'current_asset', 'current_liability', 'depreciation_and_amortization', 'equity', 'financing_cash_inflow', 'financing_cash_outflow', 'income_tax', 'investing_cash_inflow', 'investing_cash_outflow', 'non_cash_adjustment', 'non_current_asset', 'non_current_liability', 'non_operating_expense', 'non_operating_income', 'operating_expense', 'revenue', 'supplemental_disclosure', 'working_capital')");
++                    table.ForeignKey(
++                        name: "FK_financial_statement_snapshot_lines_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_financial_statement_snapshot_lines_finance_accounts_company_id_finance_account_id",
++                        columns: x => new { x.company_id, x.finance_account_id },
++                        principalTable: "finance_accounts",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(
++                        name: "FK_financial_statement_snapshot_lines_financial_statement_snapshots_snapshot_id",
++                        column: x => x.snapshot_id,
++                        principalTable: "financial_statement_snapshots",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_financial_statement_snapshots_company_id_statement_type_fiscal_period_id_version_number",
++                table: "financial_statement_snapshots",
++                columns: new[] { "company_id", "statement_type", "fiscal_period_id", "version_number" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_financial_statement_snapshots_company_id_statement_type_fiscal_period_id_generated_at",
++                table: "financial_statement_snapshots",
++                columns: new[] { "company_id", "statement_type", "fiscal_period_id", "generated_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_financial_statement_snapshot_lines_company_id_snapshot_id_line_order",
++                table: "financial_statement_snapshot_lines",
++                columns: new[] { "company_id", "snapshot_id", "line_order" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_financial_statement_snapshot_lines_company_id_finance_account_id",
++                table: "financial_statement_snapshot_lines",
++                columns: new[] { "company_id", "finance_account_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_financial_statement_snapshot_lines_snapshot_id_line_code",
++                table: "financial_statement_snapshot_lines",
++                columns: new[] { "snapshot_id", "line_code" },
++                unique: true);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "financial_statement_snapshot_lines");
++
++            migrationBuilder.DropTable(
++                name: "financial_statement_snapshots");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -88,6 +88,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
+     public DbSet<LedgerEntryLine> LedgerEntryLines => Set<LedgerEntryLine>();
+     public DbSet<TrialBalanceSnapshot> TrialBalanceSnapshots => Set<TrialBalanceSnapshot>();
++    public DbSet<FinancialStatementSnapshot> FinancialStatementSnapshots => Set<FinancialStatementSnapshot>();
++    public DbSet<FinancialStatementSnapshotLine> FinancialStatementSnapshotLines => Set<FinancialStatementSnapshotLine>();
+     public DbSet<CompanySimulationState> CompanySimulationStates => Set<CompanySimulationState>();
+     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
+     public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
+@@ -169,7 +171,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is FiscalPeriod ||
+                 entry.Entity is LedgerEntry ||
+                 entry.Entity is LedgerEntryLine ||
+-                entry.Entity is TrialBalanceSnapshot)
++                entry.Entity is TrialBalanceSnapshot ||
++                entry.Entity is FinancialStatementSnapshot ||
++                entry.Entity is FinancialStatementSnapshotLine)
+             .Select(entry =>
+             {
+                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
+@@ -353,6 +357,12 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<TrialBalanceSnapshot>()
+             .HasQueryFilter(snapshot =>
+                 CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinancialStatementSnapshot>()
++            .HasQueryFilter(snapshot =>
++                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinancialStatementSnapshotLine>()
++            .HasQueryFilter(line =>
++                CurrentCompanyId.HasValue && line.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanySimulationState>()
+             .HasQueryFilter(state =>
+                 CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+diff --git a/tests/VirtualCompany.Api.Tests/FinancialStatementSnapshotDrilldownIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancialStatementSnapshotDrilldownIntegrationTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinancialStatementSnapshotDrilldownIntegrationTests.cs
+@@ -0,0 +1,374 @@
++using System.Net;
++using System.Net.Http.Json;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinancialStatementSnapshotDrilldownIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Regenerating_unlocked_period_creates_new_statement_snapshot_versions_without_overwriting_prior_versions()
++    {
++        var seed = await SeedScenarioAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var firstResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.JanuaryPeriodId:D}/reporting/stored-statements/regenerate",
++            new { runInBackground = false });
++        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
++
++        var secondResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.JanuaryPeriodId:D}/reporting/stored-statements/regenerate",
++            new { runInBackground = false });
++        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
++
++        var snapshots = await _factory.ExecuteDbContextAsync(dbContext =>
++            dbContext.FinancialStatementSnapshots.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyId && x.FiscalPeriodId == seed.JanuaryPeriodId)
++                .OrderBy(x => x.StatementType)
++                .ThenBy(x => x.VersionNumber)
++                .Select(x => new
++                {
++                    x.StatementType,
++                    x.VersionNumber,
++                    x.BalancesChecksum,
++                    x.GeneratedAtUtc,
++                    x.SourcePeriodStartUtc,
++                    x.SourcePeriodEndUtc,
++                    LineCount = x.Lines.Count
++                })
++                .ToListAsync());
++
++        Assert.Equal(4, snapshots.Count);
++        Assert.Equal([1, 2], snapshots.Where(x => x.StatementType == FinancialStatementType.BalanceSheet).Select(x => x.VersionNumber).ToArray());
++        Assert.Equal([1, 2], snapshots.Where(x => x.StatementType == FinancialStatementType.ProfitAndLoss).Select(x => x.VersionNumber).ToArray());
++        Assert.All(snapshots, snapshot =>
++        {
++            Assert.False(string.IsNullOrWhiteSpace(snapshot.BalancesChecksum));
++            Assert.True(snapshot.GeneratedAtUtc > DateTime.UtcNow.AddMinutes(-5));
++            Assert.Equal(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), snapshot.SourcePeriodStartUtc);
++            Assert.Equal(new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc), snapshot.SourcePeriodEndUtc);
++            Assert.True(snapshot.LineCount > 0);
++        });
++    }
++
++    [Fact]
++    public async Task Snapshot_and_live_drilldown_reconcile_to_selected_report_line_amounts()
++    {
++        var seed = await SeedScenarioAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var regenerateResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.JanuaryPeriodId:D}/reporting/stored-statements/regenerate",
++            new { runInBackground = false });
++        Assert.Equal(HttpStatusCode.OK, regenerateResponse.StatusCode);
++
++        var snapshotResponse = await client.GetAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/reports/drilldown?fiscalPeriodId={seed.JanuaryPeriodId:D}&statementType=profit_and_loss&lineCode=4000&snapshotVersionNumber=1");
++        Assert.Equal(HttpStatusCode.OK, snapshotResponse.StatusCode);
++        var snapshotPayload = await snapshotResponse.Content.ReadFromJsonAsync<FinancialStatementDrilldownResponse>();
++
++        Assert.NotNull(snapshotPayload);
++        Assert.Equal("snapshot", snapshotPayload!.SourceMode);
++        Assert.Equal(900m, snapshotPayload.SelectedLine.Amount);
++        Assert.Equal(900m, snapshotPayload.ReconciliationTotal);
++        Assert.Equal(900m, snapshotPayload.JournalLineTotal);
++        Assert.Equal(0m, snapshotPayload.OpeningBalanceAdjustment);
++        Assert.Equal(1, snapshotPayload.Snapshot!.VersionNumber);
++        Assert.Equal(900m, snapshotPayload.JournalEntries.SelectMany(x => x.Lines).Sum(x => x.ContributionAmount));
++
++        var liveResponse = await client.GetAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/reports/drilldown?fiscalPeriodId={seed.FebruaryPeriodId:D}&statementType=profit_and_loss&lineCode=4000");
++        Assert.Equal(HttpStatusCode.OK, liveResponse.StatusCode);
++        var livePayload = await liveResponse.Content.ReadFromJsonAsync<FinancialStatementDrilldownResponse>();
++
++        Assert.NotNull(livePayload);
++        Assert.Equal("live", livePayload!.SourceMode);
++        Assert.Null(livePayload.Snapshot);
++        Assert.Equal(300m, livePayload.SelectedLine.Amount);
++        Assert.Equal(300m, livePayload.ReconciliationTotal);
++        Assert.Equal(300m, livePayload.JournalLineTotal);
++        Assert.Equal(0m, livePayload.OpeningBalanceAdjustment);
++        Assert.Equal(300m, livePayload.JournalEntries.SelectMany(x => x.Lines).Sum(x => x.ContributionAmount));
++        Assert.All(livePayload.JournalEntries, entry =>
++            Assert.True(entry.EntryUtc >= new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc) &&
++                        entry.EntryUtc < new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc)));
++    }
++
++    [Fact]
++    public async Task Drilldown_endpoint_is_company_scoped()
++    {
++        var authorizedSeed = await SeedScenarioAsync();
++        var outOfScopeSeed = await SeedScenarioAsync();
++        using var client = CreateAuthenticatedClient(authorizedSeed.Subject, authorizedSeed.Email, authorizedSeed.DisplayName);
++
++        var response = await client.GetAsync(
++            $"/internal/companies/{outOfScopeSeed.CompanyId:D}/finance/reports/drilldown?fiscalPeriodId={outOfScopeSeed.JanuaryPeriodId:D}&statementType=profit_and_loss&lineCode=4000");
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
++    private async Task<ScenarioSeed> SeedScenarioAsync()
++    {
++        var seed = new ScenarioSeed(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            $"finance-snapshot-{Guid.NewGuid():N}",
++            $"finance-snapshot-{Guid.NewGuid():N}@example.com",
++            "Finance Snapshot Owner",
++            "Snapshot Drilldown Co");
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            SeedBaseCompanyData(dbContext, seed);
++            SeedLedger(dbContext, seed);
++            return Task.CompletedTask;
++        });
++
++        return seed;
++    }
++
++    private static void SeedBaseCompanyData(VirtualCompanyDbContext dbContext, ScenarioSeed seed)
++    {
++        dbContext.Users.Add(new User(seed.UserId, seed.Email, seed.DisplayName, "dev-header", seed.Subject));
++        dbContext.Companies.Add(new Company(seed.CompanyId, seed.CompanyName));
++        dbContext.CompanyMemberships.Add(new CompanyMembership(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            seed.UserId,
++            CompanyMembershipRole.Owner,
++            CompanyMembershipStatus.Active));
++
++        var customerId = Guid.NewGuid();
++        var vendorId = Guid.NewGuid();
++        dbContext.FinanceCounterparties.AddRange(
++            new FinanceCounterparty(customerId, seed.CompanyId, "Customer", "customer", "customer@example.com"),
++            new FinanceCounterparty(vendorId, seed.CompanyId, "Vendor", "vendor", "vendor@example.com"));
++
++        var cashAccountId = Guid.NewGuid();
++        var equityAccountId = Guid.NewGuid();
++        var revenueAccountId = Guid.NewGuid();
++        var expenseAccountId = Guid.NewGuid();
++
++        dbContext.FinanceAccounts.AddRange(
++            new FinanceAccount(cashAccountId, seed.CompanyId, "1000", "Operating Cash", "asset", "USD", 0m, new DateTime(2025, 12, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FinanceAccount(equityAccountId, seed.CompanyId, "3000", "Owner Equity", "equity", "USD", 0m, new DateTime(2025, 12, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FinanceAccount(revenueAccountId, seed.CompanyId, "4000", "Sales Revenue", "revenue", "USD", 0m, new DateTime(2025, 12, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FinanceAccount(expenseAccountId, seed.CompanyId, "6100", "Operating Expense", "expense", "USD", 0m, new DateTime(2025, 12, 1, 0, 0, 0, DateTimeKind.Utc)));
++
++        dbContext.FinancialStatementMappings.AddRange(
++            new FinancialStatementMapping(Guid.NewGuid(), seed.CompanyId, cashAccountId, FinancialStatementType.BalanceSheet, FinancialStatementReportSection.BalanceSheetAssets, FinancialStatementLineClassification.CurrentAsset),
++            new FinancialStatementMapping(Guid.NewGuid(), seed.CompanyId, equityAccountId, FinancialStatementType.BalanceSheet, FinancialStatementReportSection.BalanceSheetEquity, FinancialStatementLineClassification.Equity),
++            new FinancialStatementMapping(Guid.NewGuid(), seed.CompanyId, revenueAccountId, FinancialStatementType.ProfitAndLoss, FinancialStatementReportSection.ProfitAndLossRevenue, FinancialStatementLineClassification.Revenue),
++            new FinancialStatementMapping(Guid.NewGuid(), seed.CompanyId, expenseAccountId, FinancialStatementType.ProfitAndLoss, FinancialStatementReportSection.ProfitAndLossOperatingExpenses, FinancialStatementLineClassification.OperatingExpense));
++
++        dbContext.FinanceInvoices.Add(new FinanceInvoice(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            customerId,
++            "INV-202601-001",
++            new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 2, 2, 0, 0, 0, DateTimeKind.Utc),
++            1m,
++            "USD",
++            "open"));
++        dbContext.FinanceBills.Add(new FinanceBill(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            vendorId,
++            "BILL-202601-001",
++            new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 2, 2, 0, 0, 0, DateTimeKind.Utc),
++            1m,
++            "USD",
++            "open"));
++        dbContext.FinanceTransactions.Add(new FinanceTransaction(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            cashAccountId,
++            customerId,
++            null,
++            null,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++            "bootstrap",
++            0m,
++            "USD",
++            "Seed completeness transaction",
++            $"BOOT-{seed.CompanyId:N}"));
++        dbContext.FinanceBalances.Add(new FinanceBalance(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            cashAccountId,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++            0m,
++            "USD"));
++        dbContext.FinancePolicyConfigurations.Add(new FinancePolicyConfiguration(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            "USD",
++            1000m,
++            1000m,
++            true,
++            -10000m,
++            10000m,
++            90,
++            30));
++
++        dbContext.FiscalPeriods.AddRange(
++            new FiscalPeriod(
++                seed.JanuaryPeriodId,
++                seed.CompanyId,
++                "FY2026-01",
++                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),
++                true,
++                new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FiscalPeriod(
++                seed.FebruaryPeriodId,
++                seed.CompanyId,
++                "FY2026-02",
++                new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc)));
++    }
++
++    private static void SeedLedger(VirtualCompanyDbContext dbContext, ScenarioSeed seed)
++    {
++        var cashAccountId = dbContext.FinanceAccounts.Single(x => x.CompanyId == seed.CompanyId && x.Code == "1000").Id;
++        var equityAccountId = dbContext.FinanceAccounts.Single(x => x.CompanyId == seed.CompanyId && x.Code == "3000").Id;
++        var revenueAccountId = dbContext.FinanceAccounts.Single(x => x.CompanyId == seed.CompanyId && x.Code == "4000").Id;
++        var expenseAccountId = dbContext.FinanceAccounts.Single(x => x.CompanyId == seed.CompanyId && x.Code == "6100").Id;
++
++        var capitalEntry = new LedgerEntry(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            seed.JanuaryPeriodId,
++            "JE-1000",
++            new DateTime(2026, 1, 3, 0, 0, 0, DateTimeKind.Utc),
++            LedgerEntryStatuses.Posted,
++            "Owner capital");
++        dbContext.LedgerEntries.Add(capitalEntry);
++        dbContext.LedgerEntryLines.AddRange(
++            new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, capitalEntry.Id, cashAccountId, 500m, 0m, "USD", "Cash contribution"),
++            new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, capitalEntry.Id, equityAccountId, 0m, 500m, "USD", "Owner equity"));
++
++        var januaryRevenue = new LedgerEntry(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            seed.JanuaryPeriodId,
++            "JE-1001",
++            new DateTime(2026, 1, 10, 0, 0, 0, DateTimeKind.Utc),
++            LedgerEntryStatuses.Posted,
++            "January sale");
++        dbContext.LedgerEntries.Add(januaryRevenue);
++        dbContext.LedgerEntryLines.AddRange(
++            new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, januaryRevenue.Id, cashAccountId, 900m, 0m, "USD", "Cash sale"),
++            new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, januaryRevenue.Id, revenueAccountId, 0m, 900m, "USD", "Revenue"));
++
++        var januaryExpense = new LedgerEntry(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            seed.JanuaryPeriodId,
++            "JE-1002",
++            new DateTime(2026, 1, 18, 0, 0, 0, DateTimeKind.Utc),
++            LedgerEntryStatuses.Posted,
++            "January expense");
++        dbContext.LedgerEntries.Add(januaryExpense);
++        dbContext.LedgerEntryLines.AddRange(
++            new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, januaryExpense.Id, expenseAccountId, 200m, 0m, "USD", "Expense"),
++            new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, januaryExpense.Id, cashAccountId, 0m, 200m, "USD", "Cash payment"));
++
++        var februaryRevenue = new LedgerEntry(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            seed.FebruaryPeriodId,
++            "JE-2001",
++            new DateTime(2026, 2, 5, 0, 0, 0, DateTimeKind.Utc),
++            LedgerEntryStatuses.Posted,
++            "February sale");
++        dbContext.LedgerEntries.Add(februaryRevenue);
++        dbContext.LedgerEntryLines.AddRange(
++            new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, februaryRevenue.Id, cashAccountId, 300m, 0m, "USD", "Cash sale"),
++            new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, februaryRevenue.Id, revenueAccountId, 0m, 300m, "USD", "Revenue"));
++
++        var februaryExpense = new LedgerEntry(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            seed.FebruaryPeriodId,
++            "JE-2002",
++            new DateTime(2026, 2, 14, 0, 0, 0, DateTimeKind.Utc),
++            LedgerEntryStatuses.Posted,
++            "February expense");
++        dbContext.LedgerEntries.Add(februaryExpense);
++        dbContext.LedgerEntryLines.AddRange(
++            new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, februaryExpense.Id, expenseAccountId, 50m, 0m, "USD", "Expense"),
++            new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, februaryExpense.Id, cashAccountId, 0m, 50m, "USD", "Cash payment"));
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private sealed record ScenarioSeed(
++        Guid CompanyId,
++        Guid UserId,
++        Guid JanuaryPeriodId,
++        Guid FebruaryPeriodId,
++        string Subject,
++        string Email,
++        string DisplayName,
++        string CompanyName);
++
++    private sealed class FinancialStatementDrilldownResponse
++    {
++        public Guid CompanyId { get; set; }
++        public Guid FiscalPeriodId { get; set; }
++        public string FiscalPeriodName { get; set; } = string.Empty;
++        public string StatementType { get; set; } = string.Empty;
++        public string SourceMode { get; set; } = string.Empty;
++        public SnapshotMetadataResponse? Snapshot { get; set; }
++        public DrilldownLineResponse SelectedLine { get; set; } = new();
++        public decimal OpeningBalanceAdjustment { get; set; }
++        public decimal JournalLineTotal { get; set; }
++        public decimal ReconciliationTotal { get; set; }
++        public List<DrilldownEntryResponse> JournalEntries { get; set; } = [];
++    }
++
++    private sealed class SnapshotMetadataResponse
++    {
++        public Guid SnapshotId { get; set; }
++        public int VersionNumber { get; set; }
++        public string BalancesChecksum { get; set; } = string.Empty;
++        public DateTime GeneratedAtUtc { get; set; }
++        public DateTime SourcePeriodStartUtc { get; set; }
++        public DateTime SourcePeriodEndUtc { get; set; }
++        public string Currency { get; set; } = string.Empty;
++    }
++
++    private sealed class DrilldownLineResponse
++    {
++        public string LineCode { get; set; } = string.Empty;
++        public string LineName { get; set; } = string.Empty;
++        public string ReportSection { get; set; } = string.Empty;
++        public string LineClassification { get; set; } = string.Empty;
++        public decimal Amount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++    }
++
++    private sealed class DrilldownEntryResponse
++    {
++        public Guid EntryId { get; set; }
++        public string EntryNumber { get; set; } = string.Empty;
++        public DateTime EntryUtc { get; set; }
++        public string? Description { get; set; }
++        public decimal TotalContributionAmount { get; set; }
++        public List<DrilldownJournalLineResponse> Lines { get; set; } = [];
++    }
++
++    private sealed class DrilldownJournalLineResponse
++    {
++        public Guid JournalLineId { get; set; }
++        public Guid FinanceAccountId { get; set; }
++        public string AccountCode { get; set; } = string.Empty;
++        public string AccountName { get; set; } = string.Empty;
++        public decimal DebitAmount { get; set; }
++        public decimal CreditAmount { get; set; }
++        public decimal ContributionAmount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public string? Description { get; set; }
++    }
++}
+END_OF_PATCH

@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Domain.Entities;
+using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Infrastructure.Persistence;
 
@@ -43,6 +44,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<AgentTaskCreationDedupeRecord> AgentTaskCreationDedupeRecords => Set<AgentTaskCreationDedupeRecord>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<Conversation> Conversations => Set<Conversation>();
+    public DbSet<ApprovalTask> ApprovalTasks => Set<ApprovalTask>();
     public DbSet<Message> Messages => Set<Message>();
     public DbSet<ConversationTaskLink> ConversationTaskLinks => Set<ConversationTaskLink>();
     public DbSet<CompanyBriefing> CompanyBriefings => Set<CompanyBriefing>();
@@ -73,6 +75,18 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<DashboardDepartmentConfig> DashboardDepartmentConfigs => Set<DashboardDepartmentConfig>();
     public DbSet<DashboardWidgetConfig> DashboardWidgetConfigs => Set<DashboardWidgetConfig>();
     public DbSet<FinanceAccount> FinanceAccounts => Set<FinanceAccount>();
+    public DbSet<Payment> Payments => Set<Payment>();
+    public DbSet<CompanyBankAccount> CompanyBankAccounts => Set<CompanyBankAccount>();
+    public DbSet<Budget> Budgets => Set<Budget>();
+    public DbSet<Forecast> Forecasts => Set<Forecast>();
+    public DbSet<BankTransaction> BankTransactions => Set<BankTransaction>();
+    public DbSet<BankTransactionPaymentLink> BankTransactionPaymentLinks => Set<BankTransactionPaymentLink>();
+    public DbSet<BankTransactionPostingStateRecord> BankTransactionPostingStateRecords => Set<BankTransactionPostingStateRecord>();
+    public DbSet<BankTransactionCashLedgerLink> BankTransactionCashLedgerLinks => Set<BankTransactionCashLedgerLink>();
+    public DbSet<ReconciliationSuggestionRecord> ReconciliationSuggestionRecords => Set<ReconciliationSuggestionRecord>();
+    public DbSet<PaymentCashLedgerLink> PaymentCashLedgerLinks => Set<PaymentCashLedgerLink>();
+    public DbSet<ReconciliationResultRecord> ReconciliationResultRecords => Set<ReconciliationResultRecord>();
+    public DbSet<PaymentAllocation> PaymentAllocations => Set<PaymentAllocation>();
     public DbSet<FinanceTransaction> FinanceTransactions => Set<FinanceTransaction>();
     public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();
     public DbSet<FinanceCounterparty> FinanceCounterparties => Set<FinanceCounterparty>();
@@ -83,6 +97,14 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<FinanceSimulationStepLog> FinanceSimulationStepLogs => Set<FinanceSimulationStepLog>();
     public DbSet<FinanceSeedBackfillRun> FinanceSeedBackfillRuns => Set<FinanceSeedBackfillRun>();
     public DbSet<FinanceSeedBackfillAttempt> FinanceSeedBackfillAttempts => Set<FinanceSeedBackfillAttempt>();
+    public DbSet<FiscalPeriod> FiscalPeriods => Set<FiscalPeriod>();
+    public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
+    public DbSet<LedgerEntrySourceMapping> LedgerEntrySourceMappings => Set<LedgerEntrySourceMapping>();
+    public DbSet<LedgerEntryLine> LedgerEntryLines => Set<LedgerEntryLine>();
+    public DbSet<TrialBalanceSnapshot> TrialBalanceSnapshots => Set<TrialBalanceSnapshot>();
+    public DbSet<FinancialStatementSnapshot> FinancialStatementSnapshots => Set<FinancialStatementSnapshot>();
+    public DbSet<FinancialStatementSnapshotLine> FinancialStatementSnapshotLines => Set<FinancialStatementSnapshotLine>();
+    public DbSet<FinancialStatementMapping> FinancialStatementMappings => Set<FinancialStatementMapping>();
     public DbSet<CompanySimulationState> CompanySimulationStates => Set<CompanySimulationState>();
     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
     public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
@@ -93,6 +115,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         ValidateCompanyOwnedMutations();
+        EnsureBankTransactionPostingStates();
         var companiesToInvalidate = CaptureDashboardInvalidationCompanies();
         var result = await base.SaveChangesAsync(cancellationToken);
 
@@ -105,6 +128,38 @@ public sealed class VirtualCompanyDbContext : DbContext
         }
 
         return result;
+    }
+
+    private void EnsureBankTransactionPostingStates()
+    {
+        var trackedStates = ChangeTracker.Entries<BankTransactionPostingStateRecord>()
+            .Where(entry => entry.State != EntityState.Deleted)
+            .Select(entry => (entry.Entity.CompanyId, entry.Entity.BankTransactionId))
+            .ToHashSet();
+
+        var addedTransactions = ChangeTracker.Entries<BankTransaction>()
+            .Where(entry => entry.State == EntityState.Added)
+            .Select(entry => entry.Entity)
+            .ToList();
+
+        foreach (var transaction in addedTransactions)
+        {
+            var key = (transaction.CompanyId, transaction.Id);
+            if (trackedStates.Contains(key))
+            {
+                continue;
+            }
+
+            BankTransactionPostingStateRecords.Add(new BankTransactionPostingStateRecord(
+                Guid.NewGuid(),
+                transaction.CompanyId,
+                transaction.Id,
+                BankTransactionMatchingStatuses.Unmatched,
+                BankTransactionPostingStates.SkippedUnmatched,
+                0,
+                transaction.CreatedUtc,
+                "created_without_payment_match"));
+        }
     }
 
     private void ValidateCompanyOwnedMutations()
@@ -129,6 +184,7 @@ public sealed class VirtualCompanyDbContext : DbContext
         ChangeTracker.Entries()
             .Where(entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
             .Where(entry =>
+                entry.Entity is ApprovalTask ||
                 entry.Entity is WorkTask ||
                 entry.Entity is ApprovalRequest ||
                 entry.Entity is Agent ||
@@ -149,6 +205,16 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is DashboardWidgetConfig ||
                 entry.Entity is Alert ||
                 entry.Entity is FinanceAccount ||
+                entry.Entity is Payment ||
+                entry.Entity is Budget ||
+                entry.Entity is Forecast ||
+                entry.Entity is CompanyBankAccount ||
+                entry.Entity is BankTransaction ||
+                entry.Entity is BankTransactionPaymentLink ||
+                entry.Entity is BankTransactionPostingStateRecord ||
+                entry.Entity is PaymentCashLedgerLink ||
+                entry.Entity is BankTransactionCashLedgerLink ||
+                entry.Entity is PaymentAllocation ||
                 entry.Entity is FinanceTransaction ||
                 entry.Entity is FinanceInvoice ||
                 entry.Entity is FinanceBill ||
@@ -156,7 +222,14 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is FinanceCounterparty ||
                 entry.Entity is FinancePolicyConfiguration ||
                 entry.Entity is FinanceSeedAnomaly ||
-                entry.Entity is FinanceSimulationStepLog)
+                entry.Entity is FinanceSimulationStepLog ||
+                entry.Entity is FiscalPeriod ||
+                entry.Entity is LedgerEntry ||
+                entry.Entity is LedgerEntrySourceMapping ||
+                entry.Entity is LedgerEntryLine ||
+                entry.Entity is TrialBalanceSnapshot ||
+                entry.Entity is FinancialStatementSnapshot ||
+                entry.Entity is FinancialStatementSnapshotLine)
             .Select(entry =>
             {
                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
@@ -210,6 +283,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<ApprovalRequest>()
             .HasQueryFilter(request =>
                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ApprovalTask>()
+            .HasQueryFilter(task =>
+                CurrentCompanyId.HasValue && task.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<Conversation>()
             .HasQueryFilter(conversation =>
                 CurrentCompanyId.HasValue && conversation.CompanyId == CurrentCompanyId.Value);
@@ -303,6 +379,42 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinanceAccount>()
             .HasQueryFilter(account =>
                 CurrentCompanyId.HasValue && account.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<Budget>()
+            .HasQueryFilter(budget =>
+                CurrentCompanyId.HasValue && budget.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<Forecast>()
+            .HasQueryFilter(forecast =>
+                CurrentCompanyId.HasValue && forecast.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<Payment>()
+            .HasQueryFilter(payment =>
+                CurrentCompanyId.HasValue && payment.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanyBankAccount>()
+            .HasQueryFilter(bankAccount =>
+                CurrentCompanyId.HasValue && bankAccount.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<BankTransaction>()
+            .HasQueryFilter(bankTransaction =>
+                CurrentCompanyId.HasValue && bankTransaction.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<BankTransactionPaymentLink>()
+            .HasQueryFilter(link =>
+                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<BankTransactionPostingStateRecord>()
+            .HasQueryFilter(state =>
+                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<PaymentCashLedgerLink>()
+            .HasQueryFilter(link =>
+                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<BankTransactionCashLedgerLink>()
+            .HasQueryFilter(link =>
+                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<PaymentAllocation>()
+            .HasQueryFilter(allocation =>
+                CurrentCompanyId.HasValue && allocation.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ReconciliationSuggestionRecord>()
+            .HasQueryFilter(suggestion =>
+                CurrentCompanyId.HasValue && suggestion.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ReconciliationResultRecord>()
+            .HasQueryFilter(result =>
+                CurrentCompanyId.HasValue && result.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<FinanceTransaction>()
             .HasQueryFilter(transaction =>
                 CurrentCompanyId.HasValue && transaction.CompanyId == CurrentCompanyId.Value);
@@ -327,6 +439,27 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinanceSimulationStepLog>()
             .HasQueryFilter(log =>
                 CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FiscalPeriod>()
+            .HasQueryFilter(period =>
+                CurrentCompanyId.HasValue && period.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<LedgerEntry>()
+            .HasQueryFilter(entry =>
+                CurrentCompanyId.HasValue && entry.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<LedgerEntrySourceMapping>()
+            .HasQueryFilter(mapping =>
+                CurrentCompanyId.HasValue && mapping.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<LedgerEntryLine>()
+            .HasQueryFilter(line =>
+                CurrentCompanyId.HasValue && line.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<TrialBalanceSnapshot>()
+            .HasQueryFilter(snapshot =>
+                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinancialStatementSnapshot>()
+            .HasQueryFilter(snapshot =>
+                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinancialStatementSnapshotLine>()
+            .HasQueryFilter(line =>
+                CurrentCompanyId.HasValue && line.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<CompanySimulationState>()
             .HasQueryFilter(state =>
                 CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);

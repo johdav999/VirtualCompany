@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-26.4.1",
+  "promptPath": ".ai-design/prompts/TASK-26.4.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T18:27:53.479Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T18-27-53-479Z_TASK-26.4.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T18-27-53-479Z_TASK-26.4.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T18:40:16.768Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "duce negative balances\n \n Pending scheduled allocations replace, rather than supplement, the unscheduled remainder in expected incoming and outgoing metrics so the forecast does not double count both the scheduled installment and the full document balance.\n+\n+## Finance agent query resolvers\n+\n+- `resolve_finance_agent_query` is a live-computed, tenant-scoped finance tool. It does not use pre-aggregated projection tables in the current implementation.\n+- Supported deterministic phrases are `what should i pay this week`, `which customers are overdue`, and `why is cash down this month`.\n+- Resolver routing is explicit and phrase-normalized. Unsupported phrasing fails instead of falling back to free-form interpretation.\n+- `what should i pay this week` uses the company timezone from `companies.timezone`, falls back to `UTC`, and evaluates a Monday-start company week. It returns payable items with bill ids, related allocation ids, and calculation components for original amount, completed allocations, remaining balance, and scheduled payments in the week window.\n+- `which customers are overdue` uses the company timezone from `companies.timezone`, falls back to `UTC`, and computes days overdue from the local company date. It returns invoice ids, customer ids, aging buckets, and remaining-balance components derived from completed incoming allocations.\n+- `why is cash down this month` compares current month-to-date cash-account movements against the same number of elapsed company-local days in the prior month. It returns ranked metric components and transaction ids for the categories that moved cash the most.\n+- Because these agent resolver metrics are live-computed from finance source tables, refresh behavior matches source-of-truth writes immediately after the underlying transaction, invoice, bill, payment, or allocation records are committed.\n+- No projection backfill or rebuild job is required for these agent resolver queries in the current implementation.\nEND_OF_PATCH\n",
+  "stderrTail": "es\n \n Pending scheduled allocations replace, rather than supplement, the unscheduled remainder in expected incoming and outgoing metrics so the forecast does not double count both the scheduled installment and the full document balance.\n+\n+## Finance agent query resolvers\n+\n+- `resolve_finance_agent_query` is a live-computed, tenant-scoped finance tool. It does not use pre-aggregated projection tables in the current implementation.\n+- Supported deterministic phrases are `what should i pay this week`, `which customers are overdue`, and `why is cash down this month`.\n+- Resolver routing is explicit and phrase-normalized. Unsupported phrasing fails instead of falling back to free-form interpretation.\n+- `what should i pay this week` uses the company timezone from `companies.timezone`, falls back to `UTC`, and evaluates a Monday-start company week. It returns payable items with bill ids, related allocation ids, and calculation components for original amount, completed allocations, remaining balance, and scheduled payments in the week window.\n+- `which customers are overdue` uses the company timezone from `companies.timezone`, falls back to `UTC`, and computes days overdue from the local company date. It returns invoice ids, customer ids, aging buckets, and remaining-balance components derived from completed incoming allocations.\n+- `why is cash down this month` compares current month-to-date cash-account movements against the same number of elapsed company-local days in the prior month. It returns ranked metric components and transaction ids for the categories that moved cash the most.\n+- Because these agent resolver metrics are live-computed from finance source tables, refresh behavior matches source-of-truth writes immediately after the underlying transaction, invoice, bill, payment, or allocation records are committed.\n+- No projection backfill or rebuild job is required for these agent resolver queries in the current implementation.\nEND_OF_PATCH\ntokens used\n176,564\n",
+  "verbosityMode": "verbose"
+}

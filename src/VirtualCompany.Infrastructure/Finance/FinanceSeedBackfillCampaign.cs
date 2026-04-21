@@ -189,7 +189,7 @@ public sealed class FinanceSeedBackfillExecutionScheduler : IFinanceSeedBackfill
         }
 
         var recordChecks = await LoadRecordChecksAsync(dbContext, request.CompanyId, cancellationToken);
-        if (company.FinanceSeedStatus == FinanceSeedingState.Seeded || recordChecks.IsComplete)
+        if ((company.FinanceSeedStatus == FinanceSeedingState.Seeded || recordChecks.IsComplete) && recordChecks.IsBankingComplete)
         {
             return FinanceSeedBackfillScheduleResult.Skipped(
                 request.CompanyId,
@@ -255,11 +255,15 @@ public sealed class FinanceSeedBackfillExecutionScheduler : IFinanceSeedBackfill
             var hasPolicy = await dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
             var hasInvoices = await dbContext.FinanceInvoices.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
             var hasBills = await dbContext.FinanceBills.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+            var hasBankAccounts = await dbContext.CompanyBankAccounts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+            var hasBankTransactions = await dbContext.BankTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
 
             return new FinanceBackfillRecordChecks(
                 hasAccounts,
                 hasCounterparties,
                 hasTransactions,
+                hasBankAccounts,
+                hasBankTransactions,
                 hasBalances,
                 hasPolicy,
                 hasInvoices,
@@ -271,6 +275,8 @@ public sealed class FinanceSeedBackfillExecutionScheduler : IFinanceSeedBackfill
                 HasAccounts: false,
                 HasCounterparties: false,
                 HasTransactions: false,
+                HasBankAccounts: false,
+                HasBankTransactions: false,
                 HasBalances: false,
                 HasPolicyConfiguration: false,
                 HasInvoices: false,
@@ -601,6 +607,8 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
         IReadOnlyList<Guid> counterparties;
         IReadOnlyList<Guid> transactions;
         IReadOnlyList<Guid> balances;
+        IReadOnlyList<Guid> bankAccounts;
+        IReadOnlyList<Guid> bankTransactions;
         IReadOnlyList<Guid> policies;
         IReadOnlyList<Guid> invoices;
         IReadOnlyList<Guid> bills;
@@ -611,6 +619,8 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
             counterparties = await LoadCompanySetAsync(_dbContext.FinanceCounterparties, companyIds, cancellationToken);
             transactions = await LoadCompanySetAsync(_dbContext.FinanceTransactions, companyIds, cancellationToken);
             balances = await LoadCompanySetAsync(_dbContext.FinanceBalances, companyIds, cancellationToken);
+            bankAccounts = await LoadCompanySetAsync(_dbContext.CompanyBankAccounts, companyIds, cancellationToken);
+            bankTransactions = await LoadCompanySetAsync(_dbContext.BankTransactions, companyIds, cancellationToken);
             policies = await LoadCompanySetAsync(_dbContext.FinancePolicyConfigurations, companyIds, cancellationToken);
             invoices = await LoadCompanySetAsync(_dbContext.FinanceInvoices, companyIds, cancellationToken);
             bills = await LoadCompanySetAsync(_dbContext.FinanceBills, companyIds, cancellationToken);
@@ -620,6 +630,8 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
             accounts = [];
             counterparties = [];
             transactions = [];
+            bankAccounts = [];
+            bankTransactions = [];
             balances = [];
             policies = [];
             invoices = [];
@@ -637,6 +649,8 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
             new HashSet<Guid>(accounts),
             new HashSet<Guid>(counterparties),
             new HashSet<Guid>(transactions),
+            new HashSet<Guid>(bankAccounts),
+            new HashSet<Guid>(bankTransactions),
             new HashSet<Guid>(balances),
             new HashSet<Guid>(policies),
             new HashSet<Guid>(invoices),
@@ -673,7 +687,12 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
             ? execution
             : null;
 
-        if (company.FinanceSeedStatus == FinanceSeedingState.Seeded || company.FinanceSeededUtc.HasValue || checks.IsComplete)
+        if (checks.IsComplete && !checks.IsBankingComplete)
+        {
+            return new FinanceBackfillEvaluation(true, FinanceSeedBackfillEligibilityReasons.BankingUpgrade, company.FinanceSeedStatus);
+        }
+
+        if (company.FinanceSeedStatus == FinanceSeedingState.Seeded || company.FinanceSeededUtc.HasValue || (checks.IsComplete && checks.IsBankingComplete))
         {
             return new FinanceBackfillEvaluation(false, FinanceSeedBackfillSkipReasons.AlreadySeeded, company.FinanceSeedStatus);
         }
@@ -891,6 +910,8 @@ internal sealed record FinanceBackfillPageState(
     HashSet<Guid> CompaniesWithAccounts,
     HashSet<Guid> CompaniesWithCounterparties,
     HashSet<Guid> CompaniesWithTransactions,
+    HashSet<Guid> CompaniesWithBankAccounts,
+    HashSet<Guid> CompaniesWithBankTransactions,
     HashSet<Guid> CompaniesWithBalances,
     HashSet<Guid> CompaniesWithPolicyConfigurations,
     HashSet<Guid> CompaniesWithInvoices,
@@ -902,6 +923,8 @@ internal sealed record FinanceBackfillPageState(
             CompaniesWithAccounts.Contains(companyId),
             CompaniesWithCounterparties.Contains(companyId),
             CompaniesWithTransactions.Contains(companyId),
+            CompaniesWithBankAccounts.Contains(companyId),
+            CompaniesWithBankTransactions.Contains(companyId),
             CompaniesWithBalances.Contains(companyId),
             CompaniesWithPolicyConfigurations.Contains(companyId),
             CompaniesWithInvoices.Contains(companyId),
@@ -912,17 +935,22 @@ internal sealed record FinanceBackfillRecordChecks(
     bool HasAccounts,
     bool HasCounterparties,
     bool HasTransactions,
+    bool HasBankAccounts,
+    bool HasBankTransactions,
     bool HasBalances,
     bool HasPolicyConfiguration,
     bool HasInvoices,
     bool HasBills)
 {
     public bool IsComplete => HasAccounts && HasCounterparties && HasTransactions && HasBalances && HasPolicyConfiguration;
+    public bool IsBankingComplete => HasBankAccounts && HasBankTransactions;
 
     public bool HasAnyRecords =>
         HasAccounts ||
         HasCounterparties ||
         HasTransactions ||
+        HasBankAccounts ||
+        HasBankTransactions ||
         HasBalances ||
         HasPolicyConfiguration ||
         HasInvoices ||

@@ -29,6 +29,7 @@ public sealed class InternalCompanyToolRegistryTests : IClassFixture<TestWebAppl
         Assert.Contains(tools, tool => tool.ToolName == "knowledge.search" && tool.Supports(ToolActionType.Read, "knowledge"));
         Assert.Contains(tools, tool => tool.ToolName == "knowledge.search" && tool.Supports(ToolActionType.Recommend, "knowledge"));
         Assert.Contains(tools, tool => tool.ToolName == "get_cash_balance" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+        Assert.Contains(tools, tool => tool.ToolName == "resolve_finance_agent_query" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
         Assert.Contains(tools, tool => tool.ToolName == "list_transactions" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
         Assert.Contains(tools, tool => tool.ToolName == "list_uncategorized_transactions" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
         Assert.Contains(tools, tool => tool.ToolName == "list_invoices_awaiting_approval" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));

@@ -1,0 +1,254 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -137,6 +137,14 @@ For staging validation, inspect `executive_cockpit_endpoint_latency_ms`,
+ `executive_cockpit_cache_hits`, `executive_cockpit_cache_misses`, and
+ `executive_cockpit_widget_render_ms` while repeatedly loading the cockpit and refreshing individual widgets.
+ Cached dashboard and widget requests should remain below the 2.5 second p95 target.
++
++### Finance agent cash query validation
++
++The finance tool boundary also supports deterministic tenant-scoped cash analytics through
++`resolve_finance_agent_query` for `what should i pay this week`, `which customers are overdue`,
++and `why is cash down this month`.
++
++These resolver paths are validated against seeded multi-company datasets with a local integration-test
++threshold of 2 seconds per supported query, and currently remain live-computed without summary tables or rebuild jobs.
+ 
+ 
+ 1. Route value `companyId`
+diff --git a/docs/finance-dashboard-cash-metrics.md b/docs/finance-dashboard-cash-metrics.md
+--- a/docs/finance-dashboard-cash-metrics.md
++++ b/docs/finance-dashboard-cash-metrics.md
+@@ -18,10 +18,12 @@ Pending scheduled allocations replace, rather than supplement, the unscheduled r
+ ## Finance agent query resolvers
+ 
+ - `resolve_finance_agent_query` is a live-computed, tenant-scoped finance tool. It does not use pre-aggregated projection tables in the current implementation.
++- Seeded multi-company integration coverage validates each supported resolver against a 2 second local threshold per query. Live computation remained within that threshold, so no summary-table migrations or aggregate rebuild jobs were introduced for TASK-26.4.2.
+ - Supported deterministic phrases are `what should i pay this week`, `which customers are overdue`, and `why is cash down this month`.
+ - Resolver routing is explicit and phrase-normalized. Unsupported phrasing fails instead of falling back to free-form interpretation.
+ - `what should i pay this week` uses the company timezone from `companies.timezone`, falls back to `UTC`, and evaluates a Monday-start company week. It returns payable items with bill ids, related allocation ids, and calculation components for original amount, completed allocations, remaining balance, and scheduled payments in the week window.
+ - `which customers are overdue` uses the company timezone from `companies.timezone`, falls back to `UTC`, and computes days overdue from the local company date. It returns invoice ids, customer ids, aging buckets, and remaining-balance components derived from completed incoming allocations.
+ - `why is cash down this month` compares current month-to-date cash-account movements against the same number of elapsed company-local days in the prior month. It returns ranked metric components and transaction ids for the categories that moved cash the most.
+-- Because these agent resolver metrics are live-computed from finance source tables, refresh behavior matches source-of-truth writes immediately after the underlying transaction, invoice, bill, payment, or allocation records are committed.
+-- No projection backfill or rebuild job is required for these agent resolver queries in the current implementation.
++- Every supported response includes exact provenance through `sourceRecordIds` and `metricComponents`. Bill and invoice answers surface document ids plus allocation ids; month-to-date cash explanations surface the transaction ids that contributed to each component delta.
++- Because these agent resolver metrics are live-computed from finance source tables, refresh behavior matches source-of-truth writes immediately after the underlying transaction, invoice, bill, payment, or allocation records are committed. No delayed refresh window, projection lag, or backfill catch-up cycle applies to these resolver answers in the current implementation.
+diff --git a/docs/postgresql-migrations-archive/README.md b/docs/postgresql-migrations-archive/README.md
+--- a/docs/postgresql-migrations-archive/README.md
++++ b/docs/postgresql-migrations-archive/README.md
+@@ -8,3 +8,6 @@ These files are the previous PostgreSQL/Npgsql migration source files preserved
+ - The active migration strategy from this point is a fresh SQL Server baseline migration generated from the current model.
+ 
+ The archived files retain their original filenames with a `.txt` suffix so they are preserved in the repository without being compiled as active migration classes.
++
++TASK-26.4.2 did not add PostgreSQL summary/projection migrations to this archive.
++The supported finance agent cash queries stayed on the live-query path after seeded multi-company performance validation, so no aggregate backfill schema was required.
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceToolProviders.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceToolProviders.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceToolProviders.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceToolProviders.cs
+@@ -56,7 +56,7 @@ public sealed class InternalFinanceToolProvider : IFinanceToolProvider
+     public Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
+         GetFinanceAgentQueryQuery query,
+         CancellationToken cancellationToken) =>
+-        _readService.GetBalancesAsync(query, cancellationToken);
++        _readService.ResolveAgentQueryAsync(query, cancellationToken);
+ 
+     public Task<FinanceTransactionCategoryRecommendationDto> RecommendTransactionCategoryAsync(
+         InternalToolExecutionRequest request,
+@@ -298,7 +298,7 @@ public sealed class MockFinanceToolProvider : IFinanceToolProvider
+                             new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
+                             1500m,
+                             "USD",
+-                            "31-60 days overdue.",
++                            "1-30 days overdue.",
+                             1,
+                             15,
+                             "1-30",
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceAgentQueryResolverTests.cs b/tests/VirtualCompany.Api.Tests/FinanceAgentQueryResolverTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceAgentQueryResolverTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceAgentQueryResolverTests.cs
+@@ -9,6 +9,8 @@ using Xunit;
+ 
+ public sealed class FinanceAgentQueryResolverTests
+ {
++    private static readonly TimeSpan LocalAgentQueryPerformanceThreshold = TimeSpan.FromSeconds(2);
++
+     [Fact]
+     public async Task Resolver_returns_weekly_payables_with_explainability_and_deterministic_order()
+     {
+@@ -34,8 +36,27 @@ public sealed class FinanceAgentQueryResolverTests
+         Assert.Equal(FinanceAgentQueryIntents.WhatShouldIPayThisWeek, result.Intent);
+         Assert.Equal(new[] { scenario.OverdueBillId, scenario.DueThisWeekBillId }, result.Items.Select(x => x.RecordId));
+         Assert.All(result.Items, item => Assert.Contains(item.MetricComponents, component => component.ComponentKey == "remaining_balance"));
+-        Assert.All(result.Items, item => Assert.Contains(item.SourceRecordIds, id => id == item.RecordId));
++        Assert.Equal(
++            new[] { scenario.CompletedOutgoingAllocationId, scenario.OverdueBillId },
++            result.Items[0].SourceRecordIds);
++        Assert.Equal(
++            new[] { scenario.PendingOutgoingAllocationId, scenario.DueThisWeekBillId },
++            result.Items[1].SourceRecordIds);
++        Assert.Contains(
++            result.MetricComponents,
++            component => component.ComponentKey == "recommended_payables_total" &&
++                         component.SourceRecordIds.SequenceEqual(new[]
++                         {
++                             scenario.CompletedOutgoingAllocationId,
++                             scenario.PendingOutgoingAllocationId,
++                             scenario.OverdueBillId,
++                             scenario.DueThisWeekBillId
++                         }));
++        Assert.All(result.Items, item => Assert.Contains(item.SourceRecordIds, id => id == item.RecordId));
++        Assert.All(
++            result.Items,
++            item => Assert.Contains(
++                item.MetricComponents,
++                component => component.ComponentKey == "scheduled_outgoing_this_week" || component.ComponentKey == "completed_outgoing_allocations"));
+     }
+ 
+     [Fact]
+@@ -65,6 +86,15 @@ public sealed class FinanceAgentQueryResolverTests
+         Assert.Equal(new[] { scenario.OlderOverdueInvoiceId, scenario.RecentOverdueInvoiceId }, result.Items.Select(x => x.RecordId));
+         Assert.DoesNotContain(result.SourceRecordIds, id => id == scenario.OtherCompanyInvoiceId);
+         Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.AgingBucket)));
++        Assert.Equal(
++            new[] { scenario.CompletedIncomingAllocationId, scenario.OlderOverdueInvoiceId },
++            result.Items[0].SourceRecordIds);
++        Assert.Equal(
++            new[] { scenario.RecentOverdueInvoiceId },
++            result.Items[1].SourceRecordIds);
++        Assert.Contains(
++            result.MetricComponents,
++            component => component.ComponentKey == "overdue_receivables_total" &&
++                         component.SourceRecordIds.SequenceEqual(new[] { scenario.CompletedIncomingAllocationId, scenario.OlderOverdueInvoiceId, scenario.RecentOverdueInvoiceId }));
+     }
+ 
+     [Fact]
+@@ -95,6 +125,13 @@ public sealed class FinanceAgentQueryResolverTests
+         Assert.Contains(result.MetricComponents, component => component.ComponentKey == "payroll" && component.Delta < 0m);
+         Assert.Contains(result.SourceRecordIds, id => id == scenario.CurrentRevenueTransactionId);
+         Assert.Contains(result.SourceRecordIds, id => id == scenario.PreviousRevenueTransactionId);
++        Assert.Equal(
++            new[]
++            {
++                scenario.CurrentRevenueTransactionId,
++                scenario.CurrentPayrollTransactionId,
++                scenario.PreviousPayrollTransactionId,
++                scenario.PreviousRevenueTransactionId
++            },
++            result.Items.Single(item => string.Equals(item.Reference, "revenue", StringComparison.Ordinal)).SourceRecordIds);
+     }
+ 
+     [Fact]
+@@ -123,7 +160,7 @@ public sealed class FinanceAgentQueryResolverTests
+     }
+ 
+     [Fact]
+-    public async Task Resolver_handles_seeded_multi_company_dataset_within_local_threshold()
++    public async Task Resolver_handles_supported_queries_on_seeded_multi_company_dataset_within_local_threshold()
+     {
+         await using var connection = new SqliteConnection("Data Source=:memory:");
+         await connection.OpenAsync();
+@@ -137,20 +174,40 @@ public sealed class FinanceAgentQueryResolverTests
+         accessor.SetCompanyId(scenario.CompanyId);
+         var service = new CompanyFinanceReadService(dbContext, accessor);
+ 
+-        var stopwatch = Stopwatch.StartNew();
+-        var result = await service.ResolveAgentQueryAsync(
+-            new GetFinanceAgentQueryQuery(
+-                scenario.CompanyId,
+-                "why is cash down this month",
+-                scenario.AsOfUtc),
+-            CancellationToken.None);
+-        stopwatch.Stop();
+-
+-        Assert.Equal(FinanceAgentQueryIntents.WhyIsCashDownThisMonth, result.Intent);
+-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2), $"Resolver completed in {stopwatch.Elapsed.TotalMilliseconds:0.0} ms.");
+-        Assert.DoesNotContain(result.SourceRecordIds, id => id == scenario.OtherCompanyInvoiceId);
++        var supportedQueries = new[]
++        {
++            (FinanceAgentQueryRouting.WhatShouldIPayThisWeekPhrase, FinanceAgentQueryIntents.WhatShouldIPayThisWeek),
++            (FinanceAgentQueryRouting.WhichCustomersAreOverduePhrase, FinanceAgentQueryIntents.WhichCustomersAreOverdue),
++            (FinanceAgentQueryRouting.WhyIsCashDownThisMonthPhrase, FinanceAgentQueryIntents.WhyIsCashDownThisMonth)
++        };
++
++        foreach (var (queryText, expectedIntent) in supportedQueries)
++        {
++            var stopwatch = Stopwatch.StartNew();
++            var result = await service.ResolveAgentQueryAsync(
++                new GetFinanceAgentQueryQuery(
++                    scenario.CompanyId,
++                    queryText,
++                    scenario.AsOfUtc),
++                CancellationToken.None);
++            stopwatch.Stop();
++
++            Assert.Equal(expectedIntent, result.Intent);
++            Assert.True(
++                stopwatch.Elapsed < LocalAgentQueryPerformanceThreshold,
++                $"Resolver '{queryText}' completed in {stopwatch.Elapsed.TotalMilliseconds:0.0} ms.");
++            Assert.NotEmpty(result.MetricComponents);
++            Assert.NotEmpty(result.SourceRecordIds);
++            Assert.DoesNotContain(result.SourceRecordIds, id => id == scenario.OtherCompanyInvoiceId);
++        }
+     }
+ 
+     private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
+         new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
+             .UseSqlite(connection)
+@@ -192,8 +249,8 @@ public sealed class FinanceAgentQueryResolverTests
+             new FinanceInvoice(recentOverdueInvoiceId, companyId, secondCustomerId, "INV-RECENT-001", asOfUtc.AddDays(-20), asOfUtc.AddDays(-5), 400m, "USD", "open", settlementStatus: "unpaid"),
+             new FinanceInvoice(otherCompanyInvoiceId, otherCompanyId, otherCustomerId, "INV-OTHER-001", asOfUtc.AddDays(-15), asOfUtc.AddDays(-4), 777m, "USD", "open", settlementStatus: "unpaid"));
+ 
+-        var completedOutgoingPaymentId = Guid.Parse("70707070-7070-7070-7070-707070707070");
+-        var pendingOutgoingPaymentId = Guid.Parse("80808080-8080-8080-8080-808080808080");
++        var completedOutgoingAllocationId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
++        var pendingOutgoingAllocationId = Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff");
+         var completedIncomingPaymentId = Guid.Parse("90909090-9090-9090-9090-909090909090");
+         dbContext.Payments.AddRange(
+             new Payment(completedOutgoingPaymentId, companyId, "outgoing", 100m, "USD", asOfUtc.AddDays(-1), "ach", "completed", "BILL-OVERDUE-001"),
+@@ -201,9 +258,9 @@ public sealed class FinanceAgentQueryResolverTests
+             new Payment(completedIncomingPaymentId, companyId, "incoming", 200m, "USD", asOfUtc.AddDays(-10), "ach", "completed", "INV-OLDER-001"));
+         dbContext.PaymentAllocations.AddRange(
+-            new PaymentAllocation(Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), companyId, completedOutgoingPaymentId, null, overdueBillId, 100m, "USD"),
+-            new PaymentAllocation(Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff"), companyId, pendingOutgoingPaymentId, null, dueThisWeekBillId, 150m, "USD"),
+-            new PaymentAllocation(Guid.Parse("cccccccc-dddd-eeee-ffff-000000000000"), companyId, completedIncomingPaymentId, olderOverdueInvoiceId, null, 200m, "USD"));
++            new PaymentAllocation(completedOutgoingAllocationId, companyId, completedOutgoingPaymentId, null, overdueBillId, 100m, "USD"),
++            new PaymentAllocation(pendingOutgoingAllocationId, companyId, pendingOutgoingPaymentId, null, dueThisWeekBillId, 150m, "USD"),
++            new PaymentAllocation(Guid.Parse("cccccccc-dddd-eeee-ffff-000000000000"), companyId, completedIncomingPaymentId, olderOverdueInvoiceId, null, 200m, "USD"));
+ 
+         var previousRevenueTransactionId = Guid.Parse("12121212-1212-1212-1212-121212121212");
+         var currentRevenueTransactionId = Guid.Parse("13131313-1313-1313-1313-131313131313");
+@@ -240,10 +297,15 @@ public sealed class FinanceAgentQueryResolverTests
+             otherCompanyId,
+             asOfUtc,
+             overdueBillId,
++            completedOutgoingAllocationId,
+             dueThisWeekBillId,
++            pendingOutgoingAllocationId,
+             olderOverdueInvoiceId,
++            Guid.Parse("cccccccc-dddd-eeee-ffff-000000000000"),
+             recentOverdueInvoiceId,
+             otherCompanyInvoiceId,
++            Guid.Parse("14141414-1414-1414-1414-141414141414"),
++            Guid.Parse("16161616-1616-1616-1616-161616161616"),
+             previousRevenueTransactionId,
+             currentRevenueTransactionId);
+     }
+@@ -252,10 +314,15 @@ public sealed class FinanceAgentQueryResolverTests
+         Guid OtherCompanyId,
+         DateTime AsOfUtc,
+         Guid OverdueBillId,
++        Guid CompletedOutgoingAllocationId,
+         Guid DueThisWeekBillId,
++        Guid PendingOutgoingAllocationId,
+         Guid OlderOverdueInvoiceId,
++        Guid CompletedIncomingAllocationId,
+         Guid RecentOverdueInvoiceId,
+         Guid OtherCompanyInvoiceId,
++        Guid PreviousPayrollTransactionId,
++        Guid CurrentPayrollTransactionId,
+         Guid PreviousRevenueTransactionId,
+         Guid CurrentRevenueTransactionId);
+ }
+END_OF_PATCH

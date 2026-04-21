@@ -1,0 +1,334 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
+index 7df82ef..6a4c1c7 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
+@@ -117,7 +117,6 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+                 cancellationToken);
+ 
+         if (transaction is null)
+         {
+-            .SingleOrDefaultAsync(cancellationToken);
+             return null;
+         }
+ 
+@@ -325,10 +324,76 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+                     idempotencyKey,
+                     transaction.BookingDate));
+             }
+ 
+-            await _dbContext.SaveChangesAsync(cancellationToken);
++            try
++            {
++                await _dbContext.SaveChangesAsync(cancellationToken);
++            }
++            catch (DbUpdateException ex) when (IsReconciliationDuplicateViolation(ex))
++            {
++                // The database uniqueness constraints are the final exact-once guard for
++                // payment links and the cash ledger side effect. If a retry or concurrent
++                // request already committed the same reconciliation, reload that state.
++                var duplicateResult = await TryLoadDuplicateReconciliationResultAsync(command, cancellationToken);
++                if (duplicateResult is null)
++                {
++                    throw;
++                }
++
++                return duplicateResult;
++            }
+ 
+             return (await GetDetailAsync(
+                 new GetBankTransactionDetailQuery(command.CompanyId, command.BankTransactionId),
+                 cancellationToken))!;
+         }, cancellationToken);
++
++    private async Task<BankTransactionDetailDto?> TryLoadDuplicateReconciliationResultAsync(
++        ReconcileBankTransactionCommand command,
++        CancellationToken cancellationToken)
++    {
++        _dbContext.ChangeTracker.Clear();
++
++        var requestedAllocations = command.Payments
++            .Where(x => x.PaymentId != Guid.Empty)
++            .GroupBy(x => x.PaymentId)
++            .ToDictionary(
++                x => x.Key,
++                x => NormalizeMoney(x.Single().AllocatedAmount));
++
++        if (requestedAllocations.Count == 0)
++        {
++            return null;
++        }
++
++        var persistedLinks = await _dbContext.BankTransactionPaymentLinks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == command.CompanyId &&
++                        x.BankTransactionId == command.BankTransactionId &&
++                        requestedAllocations.Keys.Contains(x.PaymentId))
++            .ToListAsync(cancellationToken);
++
++        if (persistedLinks.Count != requestedAllocations.Count)
++        {
++            return null;
++        }
++
++        foreach (var link in persistedLinks)
++        {
++            if (!requestedAllocations.TryGetValue(link.PaymentId, out var requestedAmount) ||
++                NormalizeMoney(link.AllocatedAmount) != requestedAmount)
++            {
++                return null;
++            }
++        }
++
++        var hasLedgerLink = await _dbContext.BankTransactionCashLedgerLinks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AnyAsync(
++                x => x.CompanyId == command.CompanyId &&
++                     (x.BankTransactionId == command.BankTransactionId ||
++                      x.IdempotencyKey == BuildIdempotencyKey(command.CompanyId, command.BankTransactionId)),
++                cancellationToken);
++
++        if (!hasLedgerLink)
++        {
++            return null;
++        }
++
++        return await GetDetailAsync(new GetBankTransactionDetailQuery(command.CompanyId, command.BankTransactionId), cancellationToken);
++    }
+ 
+     private async Task<FiscalPeriod> EnsureFiscalPeriodAsync(
+         Guid companyId,
+         DateTime bookingDateUtc,
+         CancellationToken cancellationToken)
+@@ -500,6 +565,33 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+     private static string BuildIdempotencyKey(Guid companyId, Guid bankTransactionId) =>
+         $"bank-transaction-ledger:{companyId:N}:{bankTransactionId:N}";
+ 
++    private static bool IsReconciliationDuplicateViolation(DbUpdateException exception)
++    {
++        for (Exception? current = exception; current is not null; current = current.InnerException)
++        {
++            var message = current.Message;
++            var referencesReconciliationLink =
++                message.Contains("bank_transaction_payment_links", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("bank_transaction_cash_ledger_links", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("IX_bank_transaction_payment_links_company_id_bank_transaction_id_payment_id", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("IX_bank_transaction_cash_ledger_links_company_id_bank_transaction_id", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("IX_bank_transaction_cash_ledger_links_company_id_idempotency_key", StringComparison.OrdinalIgnoreCase);
++
++            if (!referencesReconciliationLink)
++            {
++                continue;
++            }
++
++            if (message.Contains("duplicate", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("unique constraint", StringComparison.OrdinalIgnoreCase))
++            {
++                return true;
++            }
++        }
++
++        return false;
++    }
++
+     private static FinanceValidationException CreateValidationException(string field, string message) =>
+         new(
+             new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+diff --git a/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs
+index 7e1718e..651b805 100644
+--- a/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs
+@@ -1,6 +1,8 @@
+ using Microsoft.Data.Sqlite;
+ using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ using Xunit;
+ 
+ namespace VirtualCompany.Api.Tests;
+@@ -43,6 +45,50 @@ public sealed class BankTransactionPersistenceTests
+         Assert.Contains("IX_bank_transaction_cash_ledger_links_company_id_bank_transaction_id", cashLedgerIndexes);
+         Assert.Contains("IX_bank_transaction_cash_ledger_links_company_id_idempotency_key", cashLedgerIndexes);
+     }
++
++    [Fact]
++    public async Task SaveChanges_enforces_exact_once_cash_ledger_link_uniqueness()
++    {
++        await using var connection = await OpenConnectionAsync();
++
++        var duplicateByTransaction = await CreateContextWithSchemaAsync(connection);
++        var seed = await SeedCashLedgerLinkDependenciesAsync(duplicateByTransaction);
++        duplicateByTransaction.BankTransactionCashLedgerLinks.Add(new BankTransactionCashLedgerLink(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            seed.FirstBankTransactionId,
++            seed.FirstLedgerEntryId,
++            "bank-transaction-ledger:first",
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc)));
++        await duplicateByTransaction.SaveChangesAsync();
++
++        duplicateByTransaction.BankTransactionCashLedgerLinks.Add(new BankTransactionCashLedgerLink(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            seed.FirstBankTransactionId,
++            seed.SecondLedgerEntryId,
++            "bank-transaction-ledger:first-retry",
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc)));
++        await Assert.ThrowsAsync<DbUpdateException>(() => duplicateByTransaction.SaveChangesAsync());
++        await duplicateByTransaction.DisposeAsync();
++
++        var duplicateByIdempotency = await CreateContextWithSchemaAsync(connection);
++        duplicateByIdempotency.BankTransactionCashLedgerLinks.Add(new BankTransactionCashLedgerLink(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            seed.SecondBankTransactionId,
++            seed.SecondLedgerEntryId,
++            "bank-transaction-ledger:first",
++            new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc)));
++
++        await Assert.ThrowsAsync<DbUpdateException>(() => duplicateByIdempotency.SaveChangesAsync());
++    }
++
++    private static async Task<VirtualCompanyDbContext> CreateContextWithSchemaAsync(SqliteConnection connection)
++    {
++        var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++        return dbContext;
++    }
+ 
+     private static async Task<HashSet<string>> ReadColumnsAsync(SqliteConnection connection, string tableName)
+     {
+@@ -74,6 +120,95 @@ public sealed class BankTransactionPersistenceTests
+         await connection.OpenAsync();
+         return connection;
+     }
++
++    private static async Task<CashLedgerLinkSeed> SeedCashLedgerLinkDependenciesAsync(VirtualCompanyDbContext dbContext)
++    {
++        var companyId = Guid.NewGuid();
++        var cashAccountId = Guid.NewGuid();
++        var offsetAccountId = Guid.NewGuid();
++        var fiscalPeriodId = Guid.NewGuid();
++        var bankAccountId = Guid.NewGuid();
++        var firstBankTransactionId = Guid.NewGuid();
++        var secondBankTransactionId = Guid.NewGuid();
++        var firstLedgerEntryId = Guid.NewGuid();
++        var secondLedgerEntryId = Guid.NewGuid();
++
++        dbContext.Companies.Add(new Company(companyId, "Persistence Bank Transaction Company"));
++        dbContext.FinanceAccounts.AddRange(
++            new FinanceAccount(
++                cashAccountId,
++                companyId,
++                "1000",
++                "Operating Cash",
++                FinanceAccountTypes.Asset,
++                "USD",
++                0m,
++                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FinanceAccount(
++                offsetAccountId,
++                companyId,
++                "1100",
++                "Receivables",
++                FinanceAccountTypes.Asset,
++                "USD",
++                0m,
++                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++
++        dbContext.FiscalPeriods.Add(new FiscalPeriod(
++            fiscalPeriodId,
++            companyId,
++            "FY 2026",
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++
++        dbContext.CompanyBankAccounts.Add(new CompanyBankAccount(
++            bankAccountId,
++            companyId,
++            cashAccountId,
++            "Operating Account",
++            "Northwind Bank",
++            "**** 7781",
++            "USD",
++            "operating",
++            true,
++            true,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++
++        dbContext.BankTransactions.AddRange(
++            new BankTransaction(
++                firstBankTransactionId,
++                companyId,
++                bankAccountId,
++                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                100m,
++                "USD",
++                "Receipt one",
++                "Counterparty one"),
++            new BankTransaction(
++                secondBankTransactionId,
++                companyId,
++                bankAccountId,
++                new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc),
++                50m,
++                "USD",
++                "Receipt two",
++                "Counterparty two"));
++
++        dbContext.LedgerEntries.AddRange(
++            new LedgerEntry(firstLedgerEntryId, companyId, fiscalPeriodId, "BTX-001", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "Bank reconciliation one"),
++            new LedgerEntry(secondLedgerEntryId, companyId, fiscalPeriodId, "BTX-002", new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "Bank reconciliation two"));
++
++        await dbContext.SaveChangesAsync();
++        return new CashLedgerLinkSeed(companyId, firstBankTransactionId, secondBankTransactionId, firstLedgerEntryId, secondLedgerEntryId);
++    }
+ 
+     private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
+         new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
+             .UseSqlite(connection)
+             .Options);
++
++    private sealed record CashLedgerLinkSeed(
++        Guid CompanyId,
++        Guid FirstBankTransactionId,
++        Guid SecondBankTransactionId,
++        Guid FirstLedgerEntryId,
++        Guid SecondLedgerEntryId);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs
+index a86f402..750620f 100644
+--- a/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs
+@@ -72,6 +72,7 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+         Assert.Equal("partially_reconciled", firstResult!.Status);
+         Assert.Equal(100m, firstResult.ReconciledAmount);
+         Assert.Single(firstResult.LinkedPayments);
++        Assert.NotNull(firstResult.CashLedgerEntryId);
+ 
+         var retryResponse = await client.PostAsJsonAsync(
+             $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reconcile",
+@@ -91,6 +92,8 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+         Assert.NotNull(retriedResult);
+         Assert.Equal("partially_reconciled", retriedResult!.Status);
+         Assert.Single(retriedResult.LinkedPayments);
++        Assert.NotNull(retriedResult.CashLedgerEntryId);
++        Assert.Equal(firstResult.CashLedgerEntryId, retriedResult.CashLedgerEntryId);
+ 
+         var secondResponse = await client.PostAsJsonAsync(
+             $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reconcile",
+@@ -120,6 +123,7 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+         Assert.Equal(150m, secondResult.ReconciledAmount);
+         Assert.Equal(2, secondResult.LinkedPayments.Count);
+         Assert.NotNull(secondResult.CashLedgerEntryId);
++        Assert.Equal(firstResult.CashLedgerEntryId, secondResult.CashLedgerEntryId);
+ 
+         var counts = await _factory.ExecuteDbContextAsync(async dbContext =>
+         {
+END_OF_PATCH

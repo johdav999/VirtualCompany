@@ -1,0 +1,58 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 289a8f1..0f2a1aa 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -1046,17 +1046,6 @@ public interface IReportingPeriodRegenerationJobRunner
+ {
+     Task<int> RunDueAsync(CancellationToken cancellationToken);
+ }
+-
+-public sealed class FinanceValidationException : Exception
+-{
+-    public FinanceValidationException(IDictionary<string, string[]> errors, string? message = null)
+-        : base(string.IsNullOrWhiteSpace(message) ? "Finance validation failed." : message)
+-    {
+-        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
+-    }
+-
+-    public IReadOnlyDictionary<string, string[]> Errors { get; }
+-}
+ 
+ public interface IFinanceEntryService
+ {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs
+index 351d01a..354481f 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs
+@@ -197,7 +197,8 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+                 true,
+                 execution.Id,
+                 0,
++                execution.Status.ToStorageValue(),
+                 execution.UpdatedUtc,
+-                null,
++                execution.CompletedUtc,
+                 actor.ActorType,
+                 actor.ActorId,
+                 MapLockState(period));
+@@ -215,6 +216,7 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+             false,
+             null,
+             snapshotCount,
++            BackgroundExecutionStatus.Succeeded.ToStorageValue(),
+             completedAtUtc,
+             completedAtUtc,
+             actor.ActorType,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0f1a0ec..76f58c1 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -3039,6 +3039,7 @@ internal sealed class FiscalPeriodConfiguration : IEntityTypeConfiguration<Fisca
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.StartUtc, x.EndUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.IsClosed, x.IsReportingLocked });
+         builder.HasIndex(x => new { x.CompanyId, x.Name }).IsUnique();
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+     }
+END_OF_PATCH

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-04-19T14:49:41.806Z",
+  "generatedAt": "2026-04-20T12:34:53.507Z",
   "epics": [
     {
       "id": "EP-1",
@@ -5025,6 +5025,994 @@
             "Telemetry records focus item clicks, first action timestamp, and scroll depth for each dashboard session.",
             "A dashboard session emits a measurable time-to-first-action metric when a user clicks any actionable CTA.",
             "Department cards render no more than 3 key signals and suppress zero-value metrics."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-23",
+      "title": "EPIC-23 — Financial Statements and Period-End Reporting from Ledger",
+      "stories": [
+        {
+          "id": "US-23.1",
+          "title": "Map ledger accounts to financial statement sections and reporting classifications",
+          "tasks": [
+            {
+              "id": "TASK-23.1.1",
+              "title": "Create financial statement mapping entities, enums, and EF Core configurations",
+              "tags": [
+                "backend",
+                "ledger",
+                "db"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-23.1.2",
+              "title": "Implement company-scoped APIs for account mapping CRUD and validation",
+              "tags": [
+                "api",
+                "backend",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-23.1.3",
+              "title": "Add database migration, uniqueness constraints, and bootstrap defaults for seeded charts of accounts",
+              "tags": [
+                "migration",
+                "seed",
+                "db"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A financial statement mapping model exists that links each active company account to a report section and line classification for Balance Sheet, Profit & Loss, and Cash Flow preparation.",
+            "The system prevents an account from being left unmapped when the account is active and marked as reportable.",
+            "API endpoints allow listing, creating, and updating account-to-statement mappings scoped by company.",
+            "A validation endpoint returns all unmapped or conflicting accounts for a company with deterministic error codes.",
+            "Database constraints enforce uniqueness for one active mapping per company account and statement type."
+          ]
+        },
+        {
+          "id": "US-23.2",
+          "title": "Generate Profit & Loss and Balance Sheet reports by fiscal period",
+          "tasks": [
+            {
+              "id": "TASK-23.2.1",
+              "title": "Implement ledger aggregation services for period-based P&L and Balance Sheet generation",
+              "tags": [
+                "backend",
+                "reporting",
+                "ledger"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-23.2.2",
+              "title": "Expose read APIs for Profit & Loss and Balance Sheet with period and company filters",
+              "tags": [
+                "api",
+                "reporting",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-23.2.3",
+              "title": "Add integration tests covering posted, unposted, and cross-period journal entry scenarios",
+              "tags": [
+                "tests",
+                "integration",
+                "ledger"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Given a company and fiscal period, the Profit & Loss API returns line items, totals, and net income derived from posted journal entries only.",
+            "Given a company and fiscal period, the Balance Sheet API returns assets, liabilities, equity, and balancing totals derived from posted journal entries only.",
+            "Closed periods return stable report values that match the corresponding trial balance snapshot totals for the same period.",
+            "Report generation excludes unposted journal entries and entries dated outside the requested fiscal period.",
+            "Automated tests verify that Balance Sheet total assets equals total liabilities plus equity for seeded reporting scenarios."
+          ]
+        },
+        {
+          "id": "US-23.3",
+          "title": "Support period-end close checks and reporting lock controls",
+          "tasks": [
+            {
+              "id": "TASK-23.3.1",
+              "title": "Implement period-end validation service for reporting readiness checks",
+              "tags": [
+                "backend",
+                "validation",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-23.3.2",
+              "title": "Add reporting lock state, audit fields, and authorization checks to period reporting workflows",
+              "tags": [
+                "backend",
+                "auth",
+                "audit"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-23.3.3",
+              "title": "Create migration and API endpoints for close checks, lock, and unlock operations",
+              "tags": [
+                "migration",
+                "api",
+                "db"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A period close validation endpoint returns blocking issues when the period contains unposted source documents, unbalanced journal entries, or missing statement mappings.",
+            "A reporting lock can be applied to a closed fiscal period and prevents regeneration of stored statement outputs unless an authorized unlock operation is performed.",
+            "The system records who executed close validation, lock, and unlock operations with timestamps in the audit trail.",
+            "Attempting to regenerate locked period reports returns a consistent authorization or state error response.",
+            "Automated tests verify that lock state changes are enforced across API and background job execution paths."
+          ]
+        },
+        {
+          "id": "US-23.4",
+          "title": "Persist report snapshots and provide statement drilldown APIs",
+          "tasks": [
+            {
+              "id": "TASK-23.4.1",
+              "title": "Create financial statement snapshot tables and versioning model",
+              "tags": [
+                "db",
+                "reporting",
+                "snapshot"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-23.4.2",
+              "title": "Implement snapshot generation job and persistence workflow for financial statements",
+              "tags": [
+                "backend",
+                "jobs",
+                "reporting"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-23.4.3",
+              "title": "Build report line drilldown queries from statement lines to journal entries and lines",
+              "tags": [
+                "api",
+                "ledger",
+                "drilldown"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The system can persist versioned Profit & Loss and Balance Sheet snapshots for a company and fiscal period after successful generation.",
+            "Snapshot records include generation timestamp, source period, version number, and hash or checksum of included balances.",
+            "A drilldown API returns the journal entries and journal lines contributing to a selected report line for a given snapshot or live report.",
+            "Regenerating an unlocked period creates a new snapshot version without overwriting prior versions.",
+            "Automated tests verify that drilldown totals reconcile to the selected report line amount within the same company and period."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-24",
+      "title": "EPIC-24 — Cash Flow Operations, Payment Settlement, and Bank Reconciliation",
+      "stories": [
+        {
+          "id": "US-24.1",
+          "title": "Implement finance counterparty master data for customers and suppliers",
+          "tasks": [
+            {
+              "id": "TASK-24.1.1",
+              "title": "Extend customer and supplier schemas with finance master data fields and account mappings",
+              "tags": [
+                "backend",
+                "db",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-24.1.2",
+              "title": "Create migration and backfill scripts for counterparty finance fields and lookup indexes",
+              "tags": [
+                "migration",
+                "backfill",
+                "db"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-24.1.3",
+              "title": "Add admin APIs and validation for customer and supplier finance data management",
+              "tags": [
+                "api",
+                "backend",
+                "validation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-24.1.4",
+              "title": "Build admin UI screens for viewing and editing finance counterparty details",
+              "tags": [
+                "frontend",
+                "ui",
+                "admin"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Customer and Supplier persistence models include paymentTerms, taxId, creditLimit, preferredPaymentMethod, and defaultAccountMapping fields.",
+            "A database migration adds the new finance fields and creates indexes on tenant/company identifier plus name or reference columns.",
+            "Existing invoices and bills continue to resolve their linked customer or supplier records after migration in automated integration tests.",
+            "Admin API endpoints support create, update, get, and list operations for customers and suppliers with the new finance fields.",
+            "Admin UI forms display and persist all finance-relevant customer and supplier fields without validation errors for valid payloads.",
+            "Backfill logic populates default values for existing mock counterparties and completes successfully for seeded tenants."
+          ]
+        },
+        {
+          "id": "US-24.2",
+          "title": "Implement payment records for incoming and outgoing cash movements",
+          "tasks": [
+            {
+              "id": "TASK-24.2.1",
+              "title": "Create payment domain model, repository, and persistence constraints for cash movement records",
+              "tags": [
+                "backend",
+                "db",
+                "payments"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-24.2.2",
+              "title": "Add payment create and list APIs with tenant scoping and request validation",
+              "tags": [
+                "api",
+                "backend",
+                "auth"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-24.2.3",
+              "title": "Implement payment detail and list views in the finance workspace",
+              "tags": [
+                "frontend",
+                "ui",
+                "payments"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-24.2.4",
+              "title": "Add migration and seed generation for payment tables and indexes",
+              "tags": [
+                "migration",
+                "seed",
+                "db"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A Payment entity exists with paymentType, amount, currency, paymentDate, method, status, and counterpartyReference fields.",
+            "Database constraints reject payment records with amount less than or equal to zero and invalid paymentType values.",
+            "Payment APIs support creation and listing of both incoming and outgoing payments scoped to a tenant/company.",
+            "Payment inspection UI shows payment header fields, status, amount, currency, and linked counterparty reference.",
+            "A migration creates payment storage and indexes on tenant/company identifier, status, and paymentDate.",
+            "Seed/bootstrap logic generates realistic payment records for existing companies and completes without duplicate key errors."
+          ]
+        },
+        {
+          "id": "US-24.3",
+          "title": "Implement payment allocation and document settlement status updates",
+          "tasks": [
+            {
+              "id": "TASK-24.3.1",
+              "title": "Create payment allocation schema, foreign keys, and over-allocation validation rules",
+              "tags": [
+                "backend",
+                "db",
+                "allocation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-24.3.2",
+              "title": "Implement settlement service to recalculate invoice and bill payment statuses from allocations",
+              "tags": [
+                "backend",
+                "service",
+                "settlement"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-24.3.3",
+              "title": "Add allocation APIs for creating and inspecting payment-to-document links",
+              "tags": [
+                "api",
+                "backend",
+                "payments"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-24.3.4",
+              "title": "Write integration and edge-case tests for partial payments and status transitions",
+              "tags": [
+                "test",
+                "integration",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A PaymentAllocation entity supports linking one payment to multiple invoices or bills and multiple payments to a single invoice or bill.",
+            "Allocation validation prevents total allocated amount from exceeding the payment amount or the remaining open amount on an invoice or bill.",
+            "Partial allocations are supported and persisted with exact allocated amounts and currency-consistent validation.",
+            "Invoice and bill statuses automatically transition to unpaid, partially paid, or paid based on current allocation totals.",
+            "Automated tests cover over-allocation rejection, partial payment handling, multi-document allocation, and status recalculation after allocation changes.",
+            "Backfill logic can infer and generate allocations for existing mocked paid invoices and bills where source payments are available or synthesized."
+          ]
+        },
+        {
+          "id": "US-24.4",
+          "title": "Implement bank transaction ingestion, reconciliation workflow, and cash ledger integration",
+          "tasks": [
+            {
+              "id": "TASK-24.4.1",
+              "title": "Create bank transaction model, migration, indexes, and tenant bank account mapping",
+              "tags": [
+                "backend",
+                "db",
+                "banking"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-24.4.2",
+              "title": "Build mock bank transaction importer and seeded bootstrap generation for existing companies",
+              "tags": [
+                "import",
+                "seed",
+                "banking"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-24.4.3",
+              "title": "Implement reconciliation service linking bank transactions to payments with status updates",
+              "tags": [
+                "backend",
+                "reconciliation",
+                "payments"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-24.4.4",
+              "title": "Integrate reconciled cash events with ledger posting and add idempotency coverage",
+              "tags": [
+                "ledger",
+                "backend",
+                "test"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A BankTransaction entity exists with bankAccount, bookingDate, valueDate, amount, referenceText, counterparty, and status fields.",
+            "Database migration creates bank transaction storage with indexes on tenant/company identifier, bankAccount, bookingDate, and amount.",
+            "Mock bank transaction import or bootstrap creates realistic transactions for onboarded companies and maps bank accounts to tenant finance settings.",
+            "Bank transaction APIs support list and detail retrieval with filtering by bank account, date range, status, and amount.",
+            "A reconciliation process can link a bank transaction to one or more payments and marks the transaction as unreconciled, partially reconciled, or reconciled.",
+            "Reconciling a bank transaction posts or links the corresponding cash ledger event exactly once, verified by automated idempotency tests."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-25",
+      "title": "EPIC-25 — Reconciliation Engine, Match Suggestions, and Decision Persistence",
+      "stories": [
+        {
+          "id": "US-25.1",
+          "title": "Build reconciliation matching engine for bank transactions, payments, invoices, and bills",
+          "tasks": [
+            {
+              "id": "TASK-25.1.1",
+              "title": "Implement reconciliation scoring service with amount, date, reference, and counterparty rules",
+              "tags": [
+                "backend",
+                "matching",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-25.1.2",
+              "title": "Add tenant-scoped reconciliation configuration for tolerances and scoring weights",
+              "tags": [
+                "backend",
+                "config",
+                "tenant"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-25.1.3",
+              "title": "Create automated test suite for ranked match generation across supported entity types",
+              "tags": [
+                "tests",
+                "backend",
+                "qa"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Given a bank transaction and candidate payment records, the engine returns ranked payment-to-bank matches using amount exact/near match, date proximity, reference similarity, and counterparty similarity.",
+            "Given an invoice or bill and candidate payment records, the engine returns ranked linkage suggestions for invoice-to-payment and bill-to-payment scenarios.",
+            "The engine computes a normalized confidence score between 0.00 and 1.00 for every suggestion and includes per-rule scoring details in the result payload.",
+            "Near-match amount tolerance and date proximity windows are configurable per tenant and applied during scoring.",
+            "Automated tests cover exact match, near amount match, date-only match, reference-only match, counterparty-only match, and no-match scenarios."
+          ]
+        },
+        {
+          "id": "US-25.2",
+          "title": "Persist reconciliation suggestions and accepted reconciliation outcomes",
+          "tasks": [
+            {
+              "id": "TASK-25.2.1",
+              "title": "Design and apply database schema for reconciliation suggestions and reconciliation results",
+              "tags": [
+                "database",
+                "backend",
+                "migration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-25.2.2",
+              "title": "Implement repository and service methods for suggestion lifecycle and reconciliation persistence",
+              "tags": [
+                "backend",
+                "service",
+                "persistence"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-25.2.3",
+              "title": "Add audit metadata and tenant isolation checks to reconciliation data access paths",
+              "tags": [
+                "audit",
+                "security",
+                "tenant"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A reconciliation suggestion record is stored with source entity IDs, target entity IDs, match type, confidence score, rule breakdown, status, and timestamps.",
+            "When a suggestion is accepted, the system persists a reconciliation result linking the relevant records and marks superseded suggestions as no longer actionable.",
+            "When a suggestion is rejected, the system updates the suggestion status to rejected and excludes it from default open suggestion queries.",
+            "Reconciliation records are tenant-scoped and auditable, with created-by and updated-by metadata persisted for all state changes.",
+            "Database tests verify create, accept, reject, and query behavior for payment-to-bank, invoice-to-payment, and bill-to-payment records."
+          ]
+        },
+        {
+          "id": "US-25.3",
+          "title": "Expose reconciliation suggestion review and accept/reject workflow APIs",
+          "tasks": [
+            {
+              "id": "TASK-25.3.1",
+              "title": "Implement reconciliation suggestion query endpoints with filtering and pagination",
+              "tags": [
+                "api",
+                "backend",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-25.3.2",
+              "title": "Implement accept and reject workflow endpoints with validation and state transition handling",
+              "tags": [
+                "api",
+                "workflow",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-25.3.3",
+              "title": "Add integration tests for reconciliation workflow API behavior and error cases",
+              "tags": [
+                "tests",
+                "api",
+                "qa"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "An API endpoint returns open reconciliation suggestions filtered by tenant, entity type, status, and minimum confidence.",
+            "An API endpoint accepts a reconciliation suggestion and returns the persisted reconciliation result with linked record identifiers.",
+            "An API endpoint rejects a reconciliation suggestion and returns the updated suggestion status.",
+            "Accepting an already accepted or rejected suggestion returns a deterministic validation error response.",
+            "API integration tests verify authorization, validation, idempotency behavior, and response payloads for accept and reject actions."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-26",
+      "title": "EPIC-26 — Cash Event Ledger Posting, Cash Position Analytics, and Upgrade Backfills",
+      "stories": [
+        {
+          "id": "US-26.1",
+          "title": "Implement ledger posting for incoming and outgoing cash events with source traceability",
+          "tasks": [
+            {
+              "id": "TASK-26.1.1",
+              "title": "Implement cash settlement posting service for AR and AP journal generation",
+              "tags": [
+                "backend",
+                "ledger",
+                "payments"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-26.1.2",
+              "title": "Add source traceability mappings between payments, bank transactions, and journal entries",
+              "tags": [
+                "backend",
+                "schema",
+                "traceability"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-26.1.3",
+              "title": "Add idempotency guards and replay-safe posting logic for cash events",
+              "tags": [
+                "backend",
+                "idempotency",
+                "ledger"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-26.1.4",
+              "title": "Write automated tests for settlement posting and duplicate replay scenarios",
+              "tags": [
+                "tests",
+                "ledger",
+                "payments"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "When a customer payment is marked settled, the system creates exactly one balanced journal entry debiting cash and crediting accounts receivable for the settled amount.",
+            "When a supplier payment is marked settled, the system creates exactly one balanced journal entry crediting cash and debiting accounts payable for the settled amount.",
+            "Each journal entry created from a payment or bank event stores a traceable source reference including source type, source id, company id, and posting timestamp.",
+            "Reprocessing the same settled payment or bank event does not create duplicate journal entries and returns the existing posting result.",
+            "Automated tests cover incoming payment posting, outgoing payment posting, partial settlement handling, and idempotent replay behavior."
+          ]
+        },
+        {
+          "id": "US-26.2",
+          "title": "Handle unmatched bank transactions and complete migration and backfill support for cash posting",
+          "tasks": [
+            {
+              "id": "TASK-26.2.1",
+              "title": "Create schema migration for cash posting linkage fields and traceability tables",
+              "tags": [
+                "migration",
+                "schema",
+                "ledger"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-26.2.2",
+              "title": "Implement backfill routine for existing payments, bank transactions, and posting state",
+              "tags": [
+                "backfill",
+                "backend",
+                "data"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-26.2.3",
+              "title": "Add unmatched bank transaction classification state and posting exclusion rules",
+              "tags": [
+                "backend",
+                "reconciliation",
+                "banking"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A database migration adds all linkage fields and mapping tables required to connect payments, bank transactions, and journal entries.",
+            "A backfill job initializes required traceability and unmatched-state records for existing tenant finance data without violating foreign key constraints.",
+            "Unmatched bank transactions are persisted with an explicit unmatched status and do not generate AR or AP settlement journal entries until matched or manually classified.",
+            "Migration and backfill execution completes successfully against an existing onboarded company dataset and produces no duplicate posting links.",
+            "Operational logs record counts of migrated records, backfilled records, skipped records, and posting conflicts per company."
+          ]
+        },
+        {
+          "id": "US-26.3",
+          "title": "Deliver cash position and cash flow APIs with finance dashboard widgets",
+          "tasks": [
+            {
+              "id": "TASK-26.3.1",
+              "title": "Implement cash position and cash flow summary API endpoints",
+              "tags": [
+                "api",
+                "backend",
+                "cashflow"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-26.3.2",
+              "title": "Build finance dashboard widgets for cash balance and receivable/payable views",
+              "tags": [
+                "frontend",
+                "dashboard",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-26.3.3",
+              "title": "Add integration tests for cash metrics against seeded ledger and payment scenarios",
+              "tags": [
+                "tests",
+                "api",
+                "cashflow"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The API exposes tenant-scoped endpoints for current cash balance, expected incoming cash, expected outgoing cash, overdue receivables, and upcoming payables.",
+            "Current cash balance equals the sum of posted cash-account ledger movements for the selected company and date context.",
+            "Expected incoming and outgoing cash metrics are computed from open receivables, open payables, and scheduled payment data using documented query rules.",
+            "Finance dashboard widgets render all five cash metrics and refresh successfully from live API responses.",
+            "API and UI tests verify correct metric values for seeded scenarios including overdue invoices, upcoming bills, and recent cash movement."
+          ]
+        },
+        {
+          "id": "US-26.4",
+          "title": "Add agent query support and performance strategy for cash analytics",
+          "tasks": [
+            {
+              "id": "TASK-26.4.1",
+              "title": "Implement finance agent query resolvers for cash planning, overdue customers, and cash movement explanations",
+              "tags": [
+                "backend",
+                "agents",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-26.4.2",
+              "title": "Add summary table migrations and aggregate backfill jobs if query performance requires pre-aggregation",
+              "tags": [
+                "migration",
+                "performance",
+                "backfill"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-26.4.3",
+              "title": "Document live versus pre-aggregated cash metrics and validate query latency on seeded datasets",
+              "tags": [
+                "docs",
+                "performance",
+                "testing"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Agent query handlers return deterministic responses for 'what should I pay this week', 'which customers are overdue', and 'why is cash down this month' using tenant-scoped finance data.",
+            "For each supported agent query, the response includes the underlying record ids or metric components used to produce the answer.",
+            "If summary or projection tables are introduced, migrations and background backfill jobs are implemented and can rebuild aggregates for an existing company.",
+            "System documentation identifies which cash metrics are computed live versus pre-aggregated and includes refresh behavior for any cached or summarized data.",
+            "Performance tests demonstrate that dashboard and agent cash queries complete within agreed service thresholds on seeded multi-company datasets."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-27",
+      "title": "EPIC-27 — Operational Finance Planning, Approval State, and Variance Insights",
+      "stories": [
+        {
+          "id": "US-27.1",
+          "title": "Implement finance approval workflow state and pending approval APIs",
+          "tasks": [
+            {
+              "id": "TASK-27.1.1",
+              "title": "Add ApprovalTask entity, workflow enums, and EF Core migration with tenant-scoped indexes",
+              "tags": [
+                "backend",
+                "db",
+                "efcore"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-27.1.2",
+              "title": "Implement approval rule evaluation and automatic task creation for bills, payments, and exceptions",
+              "tags": [
+                "backend",
+                "rules",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-27.1.3",
+              "title": "Expose pending approvals API and approval action endpoints for approve, reject, and escalate",
+              "tags": [
+                "api",
+                "backend",
+                "workflow"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-27.1.4",
+              "title": "Build idempotent backfill job for existing company approval tasks from seeded finance data",
+              "tags": [
+                "backfill",
+                "seed",
+                "migration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A database migration creates approval workflow tables and fields with indexes on companyId, assigneeId, status, and dueDate.",
+            "The system supports approval targets of bill, payment, and exception with workflow states pending, approved, rejected, and escalated.",
+            "Threshold-based approval rules create pending approval tasks automatically when a bill or payment exceeds configured limits.",
+            "GET /api/finance/approvals/pending returns only tenant-scoped pending and escalated approval tasks with target type, target id, assignee, due date, and status.",
+            "Existing bill records remain valid after migration even when no approval task exists for the bill.",
+            "A backfill job creates approval tasks for existing mock bills that match approval rule criteria without creating duplicates on repeated runs."
+          ]
+        },
+        {
+          "id": "US-27.2",
+          "title": "Add budget and forecast planning models with seeded baseline data",
+          "tasks": [
+            {
+              "id": "TASK-27.2.1",
+              "title": "Create Budget and Forecast entities with EF Core mappings, constraints, and migrations",
+              "tags": [
+                "backend",
+                "db",
+                "planning"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-27.2.2",
+              "title": "Implement budget CRUD APIs and forecast retrieval APIs with tenant and period filters",
+              "tags": [
+                "api",
+                "backend",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-27.2.3",
+              "title": "Build baseline planning seed service for current and newly onboarded companies",
+              "tags": [
+                "seed",
+                "backfill",
+                "planning"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A database migration creates budget and forecast tables with uniqueness constraints covering companyId, period, accountId, version, and optional costCenterId.",
+            "Budget APIs support create, update, list, and version-filtered retrieval of month-level budget records by company and period.",
+            "Forecast APIs return month-level forecast values by account and version for a requested company and period range.",
+            "Seed logic creates baseline budget and forecast data for newly created companies and backfills missing planning data for already onboarded companies.",
+            "Budget and forecast records reference valid chart-of-accounts accounts already present for the tenant.",
+            "Repeated execution of seed or backfill logic does not create duplicate budget or forecast rows for the same company, period, account, version, and cost center."
+          ]
+        },
+        {
+          "id": "US-27.3",
+          "title": "Deliver actual vs budget and actual vs forecast variance services",
+          "tasks": [
+            {
+              "id": "TASK-27.3.1",
+              "title": "Implement variance aggregation service for actual vs budget and actual vs forecast comparisons",
+              "tags": [
+                "backend",
+                "analytics",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-27.3.2",
+              "title": "Expose variance API endpoints with grouping by period, account, category, and optional cost center",
+              "tags": [
+                "api",
+                "analytics",
+                "reporting"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-27.3.3",
+              "title": "Add integration tests for seeded monthly variance calculations and tenant isolation",
+              "tags": [
+                "test",
+                "integration",
+                "analytics"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Variance services aggregate actuals from ledger data for a requested company and period and compare them against budget and forecast values.",
+            "The API returns variance amount and variance percentage grouped by period and account, and includes cost center grouping when cost centers are enabled for the tenant.",
+            "For a fixed seeded dataset, variance calculations match expected values in automated integration tests for at least one monthly period.",
+            "If summary tables are introduced, a documented refresh job populates them from ledger or snapshot data and can be rerun safely.",
+            "The variance API excludes data from other tenants and returns empty results rather than errors when no budget or forecast exists for a requested slice."
+          ]
+        },
+        {
+          "id": "US-27.4",
+          "title": "Add finance insight services and migration-safe rollout verification",
+          "tasks": [
+            {
+              "id": "TASK-27.4.1",
+              "title": "Implement finance insight aggregation services and narrative-ready DTOs",
+              "tags": [
+                "backend",
+                "insights",
+                "agents"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-27.4.2",
+              "title": "Add insight API endpoints and optional snapshot refresh job with retention handling",
+              "tags": [
+                "api",
+                "jobs",
+                "analytics"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-27.4.3",
+              "title": "Create migration verification tests and startup pending-migration guard for dev and test",
+              "tags": [
+                "test",
+                "migration",
+                "ops"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-27.4.4",
+              "title": "Build admin bootstrap endpoint for idempotent finance planning and approval backfill reruns",
+              "tags": [
+                "admin",
+                "backfill",
+                "seed"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Insight services compute top expenses, revenue trend, burn rate, overdue customer risk, and payable pressure for a tenant using current finance data.",
+            "An insight API returns structured metrics and narrative-ready fields for agent consumption with a generatedAt timestamp.",
+            "If insight cache or materialization tables are added, migrations create them and a background refresh job updates snapshots without duplicate rows for the same tenant and snapshot key.",
+            "Automated migration tests cover clean database migration, migration from the current mock finance schema, and migration of a partially seeded company.",
+            "Startup validation in dev and test environments fails fast when pending migrations exist.",
+            "A safe admin-triggered bootstrap operation can rerun planning and approval backfills for an existing company without duplicating seeded records."
           ]
         }
       ]

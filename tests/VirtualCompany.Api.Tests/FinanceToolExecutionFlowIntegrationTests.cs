@@ -383,6 +383,14 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
 
         yield return
         [
+            "resolve_finance_agent_query",
+            new { queryText = "what should i pay this week" },
+            "result",
+            nameof(TrackingFinanceToolProvider.ResolveAgentQueryAsync)
+        ];
+
+        yield return
+        [
             "list_transactions",
             new { startUtc = "2026-04-01T00:00:00Z", endUtc = "2026-04-16T00:00:00Z", limit = 25 },
             "transactions",
@@ -612,6 +620,22 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
                         "USD",
                         query.AsOfUtc ?? new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc))
                 ]));
+        }
+
+        public Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
+            GetFinanceAgentQueryQuery query,
+            CancellationToken cancellationToken)
+        {
+            _callNames.Enqueue(nameof(ResolveAgentQueryAsync));
+            return Task.FromResult(new FinanceAgentQueryResultDto(
+                query.CompanyId,
+                FinanceAgentQueryIntents.WhatShouldIPayThisWeek,
+                FinanceAgentQueryRouting.NormalizeQueryText(query.QueryText),
+                "Selected 1 payable item.",
+                "USD",
+                query.AsOfUtc ?? new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc),
+                new FinanceAgentQueryPeriodDto(query.AsOfUtc ?? new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 13, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), null, null, "UTC"),
+                [new FinanceAgentQueryItemDto(Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"), "bill", Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"), "Tracked Vendor", "BILL-001", new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc), 250m, "USD", "Due within the current company week.", 1, null, null, [Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")], [new FinanceAgentMetricComponentDto("remaining_balance", "Remaining balance", 250m, null, 250m, "USD", [Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")])])], [new FinanceAgentMetricComponentDto("recommended_payables_total", "Recommended payables total", 250m, null, 250m, "USD", [Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")])], [Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")]));
         }
 
         public Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(

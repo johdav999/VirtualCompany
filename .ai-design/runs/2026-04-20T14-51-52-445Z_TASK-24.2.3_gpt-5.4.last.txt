@@ -1,0 +1,1951 @@
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -33,6 +33,8 @@ public sealed class InternalFinanceController : ControllerBase
+ 
+     private readonly IFinanceReadService _financeReadService;
+     private readonly IFinanceCommandService _financeCommandService;
++    private readonly IFinancePaymentReadService _financePaymentReadService;
++    private readonly IFinancePaymentCommandService _financePaymentCommandService;
+     private readonly IAuditQueryService _auditQueryService;
+     private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
+     private readonly IFinanceSeedBootstrapService _financeSeedBootstrapService;
+@@ -54,6 +56,8 @@ public sealed class InternalFinanceController : ControllerBase
+     public InternalFinanceController(
+         IFinanceReadService financeReadService,
+         IFinanceCommandService financeCommandService,
++        IFinancePaymentReadService financePaymentReadService,
++        IFinancePaymentCommandService financePaymentCommandService,
+         IAuditQueryService auditQueryService,
+         IFinancePolicyConfigurationService financePolicyConfigurationService,
+         IFinanceEntryService financeEntryService,
+@@ -74,6 +78,8 @@ public sealed class InternalFinanceController : ControllerBase
+     {
+         _financeReadService = financeReadService;
+         _toolRegistry = toolRegistry;
++        _financePaymentReadService = financePaymentReadService;
++        _financePaymentCommandService = financePaymentCommandService;
+         _financeToolProvider = financeToolProvider;
+         _financeCommandService = financeCommandService;
+         _auditQueryService = auditQueryService;
+@@ -285,6 +291,39 @@ public sealed class InternalFinanceController : ControllerBase
+                 cancellationToken),
+             "Finance transaction was not found.");
+ 
++    [HttpGet("payments")]
++    public async Task<ActionResult<IReadOnlyList<FinancePaymentDto>>> GetPaymentsAsync(
++        Guid companyId,
++        [FromQuery(Name = "type")] string? paymentType,
++        [FromQuery] int limit,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financePaymentReadService.GetPaymentsAsync(
++                new GetFinancePaymentsQuery(companyId, paymentType, limit),
++                cancellationToken));
++
++    [HttpGet("payments/{paymentId:guid}")]
++    public async Task<ActionResult<FinancePaymentDto>> GetPaymentDetailAsync(
++        Guid companyId,
++        Guid paymentId,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadOptionalAsync(
++            () => _financePaymentReadService.GetPaymentDetailAsync(
++                new GetFinancePaymentDetailQuery(companyId, paymentId),
++                cancellationToken),
++            "Finance payment was not found.");
++
++    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
++    [HttpPost("payments")]
++    public async Task<ActionResult<FinancePaymentDto>> CreatePaymentAsync(
++        Guid companyId,
++        [FromBody] CreateFinancePaymentRequest request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _financePaymentCommandService.CreatePaymentAsync(
++                new CreateFinancePaymentCommand(companyId, request.ToDto()),
++                cancellationToken));
++
+     [HttpGet("invoices")]
+     public async Task<ActionResult<IReadOnlyList<FinanceInvoiceDto>>> GetInvoicesAsync(
+         Guid companyId,
+@@ -3116,6 +3155,20 @@ public sealed record EvaluateFinanceCashPositionRequest(
+ 
+ public sealed record UpdateFinanceTransactionCategoryRequest(string Category);
+ 
++public sealed record CreateFinancePaymentRequest(
++    string PaymentType,
++    decimal Amount,
++    string Currency,
++    DateTime PaymentDate,
++    string Method,
++    string Status,
++    string CounterpartyReference)
++{
++    public CreateFinancePaymentDto ToDto() =>
++        new(PaymentType, Amount, Currency, PaymentDate, Method, Status, CounterpartyReference);
++}
++
+ public sealed record BootstrapFinanceSeedRequest(
+     int SeedValue,
+     DateTime? SeedAnchorUtc = null,
+diff --git a/src/VirtualCompany.Application/Finance/PaymentContracts.cs b/src/VirtualCompany.Application/Finance/PaymentContracts.cs
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/PaymentContracts.cs
+@@ -0,0 +1,37 @@
++namespace VirtualCompany.Application.Finance;
++
++public sealed record GetFinancePaymentsQuery(
++    Guid CompanyId,
++    string? PaymentType = null,
++    int Limit = 100);
++
++public sealed record GetFinancePaymentDetailQuery(
++    Guid CompanyId,
++    Guid PaymentId);
++
++public sealed record CreateFinancePaymentDto(
++    string PaymentType,
++    decimal Amount,
++    string Currency,
++    DateTime PaymentDate,
++    string Method,
++    string Status,
++    string CounterpartyReference);
++
++public sealed record CreateFinancePaymentCommand(
++    Guid CompanyId,
++    CreateFinancePaymentDto Payment);
++
++public sealed record FinancePaymentDto(
++    Guid Id,
++    Guid CompanyId,
++    string PaymentType,
++    decimal Amount,
++    string Currency,
++    DateTime PaymentDate,
++    string Method,
++    string Status,
++    string CounterpartyReference,
++    DateTime CreatedUtc,
++    DateTime UpdatedUtc);
++
++public interface IFinancePaymentReadService
++{
++    Task<IReadOnlyList<FinancePaymentDto>> GetPaymentsAsync(GetFinancePaymentsQuery query, CancellationToken cancellationToken);
++    Task<FinancePaymentDto?> GetPaymentDetailAsync(GetFinancePaymentDetailQuery query, CancellationToken cancellationToken);
++}
++
++public interface IFinancePaymentCommandService
++{
++    Task<FinancePaymentDto> CreatePaymentAsync(CreateFinancePaymentCommand command, CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Domain/Entities/Payment.cs b/src/VirtualCompany.Domain/Entities/Payment.cs
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/Payment.cs
+@@ -0,0 +1,80 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class Payment : ICompanyOwnedEntity
++{
++    private Payment()
++    {
++    }
++
++    public Payment(
++        Guid id,
++        Guid companyId,
++        string paymentType,
++        decimal amount,
++        string currency,
++        DateTime paymentDate,
++        string method,
++        string status,
++        string counterpartyReference,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (amount <= 0m)
++        {
++            throw new ArgumentOutOfRangeException(nameof(amount), "Amount must be greater than zero.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        PaymentType = PaymentTypes.Normalize(paymentType);
++        if (!PaymentTypes.IsSupported(PaymentType))
++        {
++            throw new ArgumentOutOfRangeException(nameof(paymentType), paymentType, "Unsupported payment type.");
++        }
++
++        Amount = decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
++        Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
++        if (Currency.Length != 3 || !Currency.All(char.IsLetter))
++        {
++            throw new ArgumentOutOfRangeException(nameof(currency), "Currency must be a three-letter ISO code.");
++        }
++
++        PaymentDate = EntityTimestampNormalizer.NormalizeUtc(paymentDate, nameof(paymentDate));
++        Method = PaymentMethods.Normalize(method);
++        if (!PaymentMethods.IsSupported(Method))
++        {
++            throw new ArgumentOutOfRangeException(nameof(method), method, "Unsupported payment method.");
++        }
++
++        Status = PaymentStatuses.Normalize(status);
++        if (!PaymentStatuses.IsSupported(Status))
++        {
++            throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported payment status.");
++        }
++
++        CounterpartyReference = NormalizeRequired(counterpartyReference, nameof(counterpartyReference), 200);
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? PaymentDate, nameof(createdUtc));
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string PaymentType { get; private set; } = null!;
++    public decimal Amount { get; private set; }
++    public string Currency { get; private set; } = null!;
++    public DateTime PaymentDate { get; private set; }
++    public string Method { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public string CounterpartyReference { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Enums/PaymentValues.cs b/src/VirtualCompany.Domain/Enums/PaymentValues.cs
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/PaymentValues.cs
+@@ -0,0 +1,68 @@
++namespace VirtualCompany.Domain.Enums;
++
++public static class PaymentTypes
++{
++    public const string Incoming = "incoming";
++    public const string Outgoing = "outgoing";
++
++    private static readonly string[] AllowedTypeValues =
++    [
++        Incoming,
++        Outgoing
++    ];
++
++    private static readonly HashSet<string> AllowedTypeSet = new(AllowedTypeValues, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues => AllowedTypeValues;
++
++    public static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    public static bool IsSupported(string? value) =>
++        !string.IsNullOrWhiteSpace(value) &&
++        AllowedTypeSet.Contains(Normalize(value));
++
++    public static string BuildCheckConstraintSql(string columnName)
++    {
++        if (string.IsNullOrWhiteSpace(columnName))
++        {
++            throw new ArgumentException("Column name is required.", nameof(columnName));
++        }
++
++        var allowedValues = string.Join(", ", AllowedValues.Select(value => $"'{value}'"));
++        return $"{columnName} IN ({allowedValues})";
++    }
++}
++
++public static class PaymentMethods
++{
++    private static readonly string[] AllowedMethodValues =
++    [
++        "ach",
++        "bank_transfer",
++        "card",
++        "cash",
++        "check",
++        "direct_debit"
++    ];
++
++    private static readonly HashSet<string> AllowedMethodSet = new(AllowedMethodValues, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues => AllowedMethodValues;
++
++    public static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    public static bool IsSupported(string? value) =>
++        !string.IsNullOrWhiteSpace(value) &&
++        AllowedMethodSet.Contains(Normalize(value));
++}
++
++public static class PaymentStatuses
++{
++    private static readonly string[] AllowedStatusValues =
++    [
++        "pending",
++        "completed",
++        "failed",
++        "cancelled"
++    ];
++
++    private static readonly HashSet<string> AllowedStatusSet = new(AllowedStatusValues, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues => AllowedStatusValues;
++
++    public static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    public static bool IsSupported(string? value) =>
++        !string.IsNullOrWhiteSpace(value) &&
++        AllowedStatusSet.Contains(Normalize(value));
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -364,6 +364,7 @@ public static class DependencyInjection
+         services.AddScoped<InternalFinanceToolProvider>();
+         services.AddScoped<MockFinanceToolProvider>();
+         services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
++        services.AddScoped<IFinancePaymentCommandService, CompanyFinanceCommandService>();
+         services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+         services.AddScoped<ISignalEngine, CompanySignalEngine>();
+@@ -392,6 +393,7 @@ public static class DependencyInjection
+         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
+         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
+         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
++        services.AddScoped<IFinancePaymentReadService, CompanyFinanceReadService>();
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<ExecutionExceptionService>();
+         services.AddScoped<ICompanySimulationService, CompanySimulationService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -4,11 +4,12 @@ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Shared;
+ using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Finance;
+ 
+-public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFinancePolicyConfigurationService
++public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFinancePolicyConfigurationService, IFinancePaymentCommandService
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyContextAccessor? _companyContextAccessor;
+@@ -37,6 +38,44 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFina
+         _serviceProvider = serviceProvider;
+     }
+ 
++    public async Task<FinancePaymentDto> CreatePaymentAsync(
++        CreateFinancePaymentCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        ValidatePayment(command.Payment);
++
++        var payment = new Payment(
++            Guid.NewGuid(),
++            command.CompanyId,
++            command.Payment.PaymentType,
++            command.Payment.Amount,
++            command.Payment.Currency,
++            command.Payment.PaymentDate,
++            command.Payment.Method,
++            command.Payment.Status,
++            command.Payment.CounterpartyReference);
++
++        _dbContext.Payments.Add(payment);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return MapPayment(payment);
++    }
++
++    private static FinancePaymentDto MapPayment(Payment payment) =>
++        new(
++            payment.Id,
++            payment.CompanyId,
++            payment.PaymentType,
++            payment.Amount,
++            payment.Currency,
++            payment.PaymentDate,
++            payment.Method,
++            payment.Status,
++            payment.CounterpartyReference,
++            payment.CreatedUtc,
++            payment.UpdatedUtc);
++
+     public async Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
+         UpdateFinanceInvoiceApprovalStatusCommand command,
+         CancellationToken cancellationToken)
+@@ -303,6 +342,53 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFina
+             message);
+ 
++    private static void ValidatePayment(CreateFinancePaymentDto payment)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++
++        AddRequired(errors, nameof(CreateFinancePaymentDto.PaymentType), payment.PaymentType);
++        AddRequired(errors, nameof(CreateFinancePaymentDto.Currency), payment.Currency);
++        AddRequired(errors, nameof(CreateFinancePaymentDto.Method), payment.Method);
++        AddRequired(errors, nameof(CreateFinancePaymentDto.Status), payment.Status);
++        AddRequired(errors, nameof(CreateFinancePaymentDto.CounterpartyReference), payment.CounterpartyReference);
++        AddMaxLength(errors, nameof(CreateFinancePaymentDto.CounterpartyReference), payment.CounterpartyReference, 200);
++
++        if (!string.IsNullOrWhiteSpace(payment.Currency))
++        {
++            var normalizedCurrency = payment.Currency.Trim();
++            if (normalizedCurrency.Length != 3 || !normalizedCurrency.All(char.IsLetter))
++            {
++                errors[nameof(CreateFinancePaymentDto.Currency)] = ["Currency must be a three-letter ISO code."];
++            }
++        }
++
++        if (!string.IsNullOrWhiteSpace(payment.PaymentType) && !PaymentTypes.IsSupported(payment.PaymentType))
++        {
++            errors[nameof(CreateFinancePaymentDto.PaymentType)] = [$"Unsupported payment type '{payment.PaymentType}'. Allowed values: {string.Join(", ", PaymentTypes.AllowedValues)}."];
++        }
++
++        if (!string.IsNullOrWhiteSpace(payment.Method) && !PaymentMethods.IsSupported(payment.Method))
++        {
++            errors[nameof(CreateFinancePaymentDto.Method)] = [$"Unsupported payment method '{payment.Method}'. Allowed values: {string.Join(", ", PaymentMethods.AllowedValues)}."];
++        }
++
++        if (!string.IsNullOrWhiteSpace(payment.Status) && !PaymentStatuses.IsSupported(payment.Status))
++        {
++            errors[nameof(CreateFinancePaymentDto.Status)] = [$"Unsupported payment status '{payment.Status}'. Allowed values: {string.Join(", ", PaymentStatuses.AllowedValues)}."];
++        }
++
++        if (payment.Amount <= 0m)
++        {
++            errors[nameof(CreateFinancePaymentDto.Amount)] = ["Amount must be greater than zero."];
++        }
++
++        if (payment.PaymentDate == default)
++        {
++            errors[nameof(CreateFinancePaymentDto.PaymentDate)] = ["Payment date is required."];
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new FinanceValidationException(errors);
++        }
++    }
++
++    private static void AddRequired(IDictionary<string, string[]> errors, string field, string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            errors[field] = [$"{field} is required."];
++        }
++    }
++
++    private static void AddMaxLength(IDictionary<string, string[]> errors, string field, string? value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return;
++        }
++
++        if (value.Trim().Length > maxLength)
++        {
++            errors[field] = [$"{field} must be {maxLength} characters or fewer."];
++        }
++    }
++
+     private static FinanceInvoiceDto MapInvoice(FinanceInvoice invoice) =>
+         new(
+             invoice.Id,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -11,7 +11,7 @@ using VirtualCompany.Shared;
+ 
+ namespace VirtualCompany.Infrastructure.Finance;
+ 
+-public sealed class CompanyFinanceReadService : IFinanceReadService
++public sealed class CompanyFinanceReadService : IFinanceReadService, IFinancePaymentReadService
+ {
+     private const int DefaultLimit = 100;
+     private const int MaxLimit = 500;
+@@ -265,6 +265,53 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             ResolveCurrency(expenses.Select(x => new FinanceAmountRow(x.Amount, x.Currency))),
+             categories);
+     }
+ 
++    public async Task<IReadOnlyList<FinancePaymentDto>> GetPaymentsAsync(
++        GetFinancePaymentsQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++        var normalizedType = string.IsNullOrWhiteSpace(query.PaymentType)
++            ? null
++            : PaymentTypes.Normalize(query.PaymentType);
++        if (normalizedType is not null && !PaymentTypes.IsSupported(normalizedType))
++        {
++            throw new ArgumentException($"Unsupported payment type '{query.PaymentType}'.", nameof(query));
++        }
++
++        var limit = NormalizeLimit(query.Limit);
++        var payments = _dbContext.Payments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId);
++
++        if (normalizedType is not null)
++        {
++            payments = payments.Where(x => x.PaymentType == normalizedType);
++        }
++
++        return await payments
++            .OrderByDescending(x => x.PaymentDate)
++            .ThenByDescending(x => x.UpdatedUtc)
++            .Take(limit)
++            .Select(x => new FinancePaymentDto(
++                x.Id,
++                x.CompanyId,
++                x.PaymentType,
++                x.Amount,
++                x.Currency,
++                x.PaymentDate,
++                x.Method,
++                x.Status,
++                x.CounterpartyReference,
++                x.CreatedUtc,
++                x.UpdatedUtc))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<FinancePaymentDto?> GetPaymentDetailAsync(
++        GetFinancePaymentDetailQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++        if (query.PaymentId == Guid.Empty)
++        {
++            throw new ArgumentException("Payment id is required.", nameof(query));
++        }
++
++        return await _dbContext.Payments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.PaymentId)
++            .Select(x => new FinancePaymentDto(
++                x.Id,
++                x.CompanyId,
++                x.PaymentType,
++                x.Amount,
++                x.Currency,
++                x.PaymentDate,
++                x.Method,
++                x.Status,
++                x.CounterpartyReference,
++                x.CreatedUtc,
++                x.UpdatedUtc))
++            .SingleOrDefaultAsync(cancellationToken);
++    }
++
+     public async Task<IReadOnlyList<FinanceTransactionDto>> GetTransactionsAsync(
+         GetFinanceTransactionsQuery query,
+         CancellationToken cancellationToken)
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+@@ -121,6 +121,7 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+         await _dbContext.FinanceTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceInvoices.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceBills.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
++        await _dbContext.Payments.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceBalances.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceSeedAnomalies.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+@@ -148,6 +149,10 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+             .ToListAsync(cancellationToken);
++        var payments = await _dbContext.Payments
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .ToListAsync(cancellationToken);
+         var policies = await _dbContext.FinancePolicyConfigurations
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+@@ -183,6 +188,7 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+         _dbContext.FinanceSeedAnomalies.RemoveRange(anomalies);
+         _dbContext.FinanceTransactions.RemoveRange(transactions);
+         _dbContext.FinanceBalances.RemoveRange(balances);
++        _dbContext.Payments.RemoveRange(payments);
+         _dbContext.FinanceInvoices.RemoveRange(invoices);
+         _dbContext.FinanceBills.RemoveRange(bills);
+         _dbContext.FinancePolicyConfigurations.RemoveRange(policies);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs b/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
+@@ -85,6 +85,7 @@ public static class DeterministicFinanceSeedDatasetGenerator
+         var documents = CreateDocuments(companyId, windowEndUtc);
+         var invoices = CreateInvoices(companyId, counterparties, documents, windowEndUtc);
+         var bills = CreateBills(companyId, counterparties, documents, windowEndUtc);
++        var payments = CreatePayments(companyId, invoices, bills, windowEndUtc);
+         var transactions = CreateTransactions(
+             companyId,
+             accounts,
+@@ -105,6 +106,7 @@ public static class DeterministicFinanceSeedDatasetGenerator
+         dbContext.FinanceCounterparties.AddRange(counterparties);
+         dbContext.CompanyKnowledgeDocuments.AddRange(documents);
+         dbContext.FinanceInvoices.AddRange(invoices);
++        dbContext.Payments.AddRange(payments);
+         dbContext.FinanceBills.AddRange(bills);
+         dbContext.FinanceTransactions.AddRange(transactions);
+         dbContext.FinanceBalances.AddRange(balances);
+@@ -515,6 +517,34 @@ public static class DeterministicFinanceSeedDatasetGenerator
+             .ThenBy(x => x.ExternalReference, StringComparer.Ordinal)
+             .ToArray();
+ 
++    private static IReadOnlyList<Payment> CreatePayments(
++        Guid companyId,
++        IReadOnlyList<FinanceInvoice> invoices,
++        IReadOnlyList<FinanceBill> bills,
++        DateTime windowEndUtc) =>
++        invoices
++            .Select(invoice =>
++            {
++                var paymentDate = invoice.IssuedUtc.AddDays(12);
++                if (paymentDate > windowEndUtc)
++                {
++                    paymentDate = windowEndUtc;
++                }
++
++                return new Payment(
++                    StableId(companyId, 0, $"payment:invoice:{invoice.InvoiceNumber}"),
++                    companyId,
++                    PaymentTypes.Incoming,
++                    invoice.Amount,
++                    invoice.Currency,
++                    paymentDate,
++                    "bank_transfer",
++                    "completed",
++                    invoice.InvoiceNumber);
++            })
++            .Concat(bills.Select(bill => new Payment(
++                StableId(companyId, 0, $"payment:bill:{bill.BillNumber}"),
++                companyId,
++                PaymentTypes.Outgoing,
++                bill.Amount,
++                bill.Currency,
++                bill.ReceivedUtc.AddDays(9) > windowEndUtc ? windowEndUtc : bill.ReceivedUtc.AddDays(9),
++                "ach",
++                "completed",
++                bill.BillNumber)))
++            .OrderBy(x => x.PaymentDate)
++            .ToArray();
++
+     private static IReadOnlyList<FinanceSeedAnomaly> CreateAnomalies(
+         Guid companyId,
+         int seedValue,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+@@ -90,6 +90,27 @@ public static class FinanceSeedData
+                 index % 2 == 0 ? "paid" : "open",
+                 documents[(index + 1) % documents.Length].Id))
+             .ToArray();
++
++        var payments = invoices
++            .Select(invoice => new Payment(
++                StableId(companyId, $"payment:invoice:{invoice.InvoiceNumber}"),
++                companyId,
++                PaymentTypes.Incoming,
++                invoice.Amount,
++                invoice.Currency,
++                invoice.IssuedUtc.AddDays(12),
++                "bank_transfer",
++                invoice.Status == "paid" ? "completed" : "pending",
++                invoice.InvoiceNumber))
++            .Concat(bills.Select(bill => new Payment(
++                StableId(companyId, $"payment:bill:{bill.BillNumber}"),
++                companyId,
++                PaymentTypes.Outgoing,
++                bill.Amount,
++                bill.Currency,
++                bill.ReceivedUtc.AddDays(9),
++                "ach",
++                bill.Status == "paid" ? "completed" : "pending",
++                bill.BillNumber)))
++            .OrderBy(x => x.PaymentDate)
++            .ToArray();
+ 
+         var transactions = new List<FinanceTransaction>(capacity: 50);
+         for (var index = 0; index < 50; index++)
+@@ -160,6 +181,7 @@ public static class FinanceSeedData
+         dbContext.CompanyKnowledgeDocuments.AddRange(documents);
+         dbContext.FinanceInvoices.AddRange(invoices);
+         dbContext.FinanceBills.AddRange(bills);
++        dbContext.Payments.AddRange(payments);
+         dbContext.FinanceTransactions.AddRange(transactions);
+         dbContext.FinanceBalances.AddRange(balances);
+         dbContext.FinancePolicyConfigurations.Add(policy);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420220000_AddFinancePayments.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420220000_AddFinancePayments.cs
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420220000_AddFinancePayments.cs
+@@ -0,0 +1,69 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddFinancePayments : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var decimalType = isPostgres ? "numeric(18,2)" : "decimal(18,2)";
++            var string3Type = isPostgres ? "character varying(3)" : "nvarchar(3)";
++            var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var string200Type = isPostgres ? "character varying(200)" : "nvarchar(200)";
++
++            migrationBuilder.CreateTable(
++                name: "finance_payments",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    payment_type = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    amount = table.Column<decimal>(type: decimalType, nullable: false),
++                    currency = table.Column<string>(type: string3Type, maxLength: 3, nullable: false),
++                    payment_date = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    method = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    status = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    counterparty_reference = table.Column<string>(type: string200Type, maxLength: 200, nullable: false),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_payments", x => x.id);
++                    table.UniqueConstraint("AK_finance_payments_company_id_id", x => new { x.company_id, x.id });
++                    table.CheckConstraint("CK_finance_payments_amount_positive", "amount > 0");
++                    table.CheckConstraint("CK_finance_payments_payment_type", "payment_type IN ('incoming', 'outgoing')");
++                    table.ForeignKey(
++                        name: "FK_finance_payments_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_payments_company_id",
++                table: "finance_payments",
++                column: "company_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_payments_status",
++                table: "finance_payments",
++                column: "status");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_payments_payment_date",
++                table: "finance_payments",
++                column: "payment_date");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "finance_payments");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/PaymentEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/PaymentEntityConfiguration.cs
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/PaymentEntityConfiguration.cs
+@@ -0,0 +1,33 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class PaymentEntityConfiguration : IEntityTypeConfiguration<Payment>
++{
++    public void Configure(EntityTypeBuilder<Payment> builder)
++    {
++        builder.ToTable("finance_payments");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.PaymentType).HasColumnName("payment_type").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
++        builder.Property(x => x.PaymentDate).HasColumnName("payment_date").IsRequired();
++        builder.Property(x => x.Method).HasColumnName("method").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.CounterpartyReference).HasColumnName("counterparty_reference").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasCheckConstraint("CK_finance_payments_amount_positive", "amount > 0");
++        builder.HasCheckConstraint("CK_finance_payments_payment_type", PaymentTypes.BuildCheckConstraintSql("payment_type"));
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.Status);
++        builder.HasIndex(x => x.PaymentDate);
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -73,6 +73,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<DashboardDepartmentConfig> DashboardDepartmentConfigs => Set<DashboardDepartmentConfig>();
+     public DbSet<DashboardWidgetConfig> DashboardWidgetConfigs => Set<DashboardWidgetConfig>();
+     public DbSet<FinanceAccount> FinanceAccounts => Set<FinanceAccount>();
++    public DbSet<Payment> Payments => Set<Payment>();
+     public DbSet<FinanceTransaction> FinanceTransactions => Set<FinanceTransaction>();
+     public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();
+     public DbSet<FinanceCounterparty> FinanceCounterparties => Set<FinanceCounterparty>();
+@@ -149,6 +150,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is DashboardWidgetConfig ||
+                 entry.Entity is Alert ||
+                 entry.Entity is FinanceAccount ||
++                entry.Entity is Payment ||
+                 entry.Entity is FinanceTransaction ||
+                 entry.Entity is FinanceInvoice ||
+                 entry.Entity is FinanceBill ||
+@@ -303,6 +305,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FinanceAccount>()
+             .HasQueryFilter(account =>
+                 CurrentCompanyId.HasValue && account.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<Payment>()
++            .HasQueryFilter(payment =>
++                CurrentCompanyId.HasValue && payment.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<FinanceTransaction>()
+             .HasQueryFilter(transaction =>
+                 CurrentCompanyId.HasValue && transaction.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Web/Pages/Finance/PaymentsPage.razor b/src/VirtualCompany.Web/Pages/Finance/PaymentsPage.razor
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/PaymentsPage.razor
+@@ -0,0 +1,94 @@
++@page "/finance/payments"
++@page "/finance/payments/{PaymentId:guid}"
++@inherits FinancePageBase
++
++<PageTitle>Payments</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Payments"
++    Description="Inspect incoming and outgoing cash movement records for the selected company."
++    LoadingMessage="Loading payments workspace...">
++    <form method="get" class="agent-filter-bar mb-4">
++        <input type="hidden" name="@FinanceRoutes.CompanyIdQueryKey" value="@AccessState.CompanyId" />
++        <div>
++            <label class="form-label" for="payment-filter-type">Direction</label>
++            <select id="payment-filter-type" class="form-select" name="type">
++                <option value="" selected="@string.IsNullOrWhiteSpace(TypeFilterValue)">All payments</option>
++                <option value="incoming" selected="@IsTypeSelected("incoming")">Incoming</option>
++                <option value="outgoing" selected="@IsTypeSelected("outgoing")">Outgoing</option>
++            </select>
++        </div>
++        <div class="dashboard-actions">
++            <button class="btn btn-primary" type="submit">Apply filters</button>
++            <a class="btn btn-outline-secondary" href="@ClearFiltersHref">Clear</a>
++        </div>
++    </form>
++
++    <div class="row g-4 align-items-start">
++        <div class="col-lg-7">
++            <div class="wizard-card wizard-card--compact">
++                <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
++                    <div>
++                        <h2 class="h5 mb-1">Payment list</h2>
++                        <p class="text-body-secondary mb-0">Incoming and outgoing cash movements are scoped to the active company route.</p>
++                    </div>
++                    <span class="badge text-bg-light">@Payments.Count item@(Payments.Count == 1 ? string.Empty : "s")</span>
++                </div>
++
++                <FinanceDataState
++                    IsLoading="@IsListLoading"
++                    IsEmpty="@IsListEmpty"
++                    ErrorMessage="@ListErrorMessage"
++                    LoadingTitle="Loading payments"
++                    LoadingMessage="Fetching tenant-scoped payment activity."
++                    EmptyTitle="No payments matched the active filter"
++                    EmptyMessage="Adjust the payment direction filter and try again."
++                    OnRetry="@ReloadAsync">
++                    <div class="list-group">
++                        @foreach (var payment in Payments)
++                        {
++                            <a class="@GetPaymentListItemClass(payment.Id)" href="@BuildPaymentHref(payment.Id)">
++                                <div class="d-flex w-100 justify-content-between gap-3">
++                                    <div>
++                                        <strong>@payment.CounterpartyReference</strong>
++                                        <div class="text-body-secondary small mt-1">@FormatDate(payment.PaymentDate) | @FormatLabel(payment.Method)</div>
++                                        <div class="small mt-2">@FormatLabel(payment.PaymentType)</div>
++                                    </div>
++                                    <div class="text-end">
++                                        <div class="fw-semibold">@FormatCurrency(payment.Amount, payment.Currency)</div>
++                                        <div class="mt-2 d-flex gap-2 justify-content-end">
++                                            <span class="badge text-bg-light">@FormatLabel(payment.PaymentType)</span>
++                                            <span class="badge @GetStatusBadgeClass(payment.Status)">@FormatLabel(payment.Status)</span>
++                                        </div>
++                                    </div>
++                                </div>
++                            </a>
++                        }
++                    </div>
++                </FinanceDataState>
++            </div>
++        </div>
++
++        <div class="col-lg-5">
++            <div class="wizard-card wizard-card--compact">
++                @if (IsDetailLoading)
++                {
++                    <FinanceLoadingState Title="Loading payment detail" Message="Resolving the selected payment from the current route." />
++                }
++                else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
++                {
++                    <FinanceErrorState Title="Payment detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
++                }
++                else if (SelectedPayment is null)
++                {
++                    <FinanceEmptyState Title="No payment selected" Message="Select a payment to inspect its header details." />
++                }
++                else
++                {
++                    <h2 class="h5">Payment detail</h2>
++                    <p class="text-body-secondary mb-4">@SelectedPayment.CounterpartyReference</p>
++
++                    <dl class="mb-0">
++                        <dt>Status</dt>
++                        <dd><span class="badge @GetStatusBadgeClass(SelectedPayment.Status)">@FormatLabel(SelectedPayment.Status)</span></dd>
++                        <dt>Amount</dt>
++                        <dd>@FormatCurrency(SelectedPayment.Amount, SelectedPayment.Currency)</dd>
++                        <dt>Currency</dt>
++                        <dd>@SelectedPayment.Currency</dd>
++                        <dt>Direction</dt>
++                        <dd>@FormatLabel(SelectedPayment.PaymentType)</dd>
++                        <dt>Payment date</dt>
++                        <dd>@FormatDate(SelectedPayment.PaymentDate)</dd>
++                        <dt>Method</dt>
++                        <dd>@FormatLabel(SelectedPayment.Method)</dd>
++                        <dt>Counterparty reference</dt>
++                        <dd>@SelectedPayment.CounterpartyReference</dd>
++                        <dt>Created</dt>
++                        <dd>@FormatDate(SelectedPayment.CreatedUtc)</dd>
++                    </dl>
++                }
++            </div>
++        </div>
++    </div>
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/PaymentsPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/PaymentsPage.razor.cs
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/PaymentsPage.razor.cs
+@@ -0,0 +1,114 @@
++using System.Globalization;
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class PaymentsPage : FinancePageBase
++{
++    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
++
++    [Parameter]
++    public Guid? PaymentId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "type")]
++    public string? Type { get; set; }
++
++    private IReadOnlyList<FinancePaymentResponse> Payments { get; set; } = [];
++    private FinancePaymentResponse? SelectedPayment { get; set; }
++    private bool IsListLoading { get; set; }
++    private bool IsDetailLoading { get; set; }
++    private string? ListErrorMessage { get; set; }
++    private string? DetailErrorMessage { get; set; }
++
++    private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Payments.Count == 0;
++    private string? TypeFilterValue => NormalizeOptionalText(Type);
++    private string ClearFiltersHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Payments, AccessState.CompanyId);
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        Payments = [];
++        SelectedPayment = null;
++        ListErrorMessage = null;
++        DetailErrorMessage = null;
++
++        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadPaymentsAsync(companyId);
++
++        if (PaymentId is Guid paymentId)
++        {
++            await LoadDetailAsync(companyId, paymentId);
++        }
++    }
++
++    private async Task ReloadAsync()
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadPaymentsAsync(companyId);
++        if (PaymentId is Guid paymentId)
++        {
++            await LoadDetailAsync(companyId, paymentId);
++        }
++    }
++
++    private async Task LoadPaymentsAsync(Guid companyId)
++    {
++        IsListLoading = true;
++        ListErrorMessage = null;
++
++        try
++        {
++            Payments = await FinanceApiClient.GetPaymentsAsync(companyId, TypeFilterValue, 200);
++        }
++        catch (FinanceApiException ex)
++        {
++            Payments = [];
++            ListErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsListLoading = false;
++        }
++    }
++
++    private async Task LoadDetailAsync(Guid companyId, Guid paymentId)
++    {
++        IsDetailLoading = true;
++        DetailErrorMessage = null;
++
++        try
++        {
++            SelectedPayment = await FinanceApiClient.GetPaymentDetailAsync(companyId, paymentId);
++            if (SelectedPayment is null)
++            {
++                DetailErrorMessage = "The selected payment could not be found in the active company context.";
++            }
++        }
++        catch (FinanceApiException ex)
++        {
++            SelectedPayment = null;
++            DetailErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsDetailLoading = false;
++        }
++    }
++
++    private string BuildPaymentHref(Guid paymentId)
++    {
++        var path = FinanceRoutes.BuildPaymentDetailPath(paymentId, null);
++        var query = new List<string> { $"{FinanceRoutes.CompanyIdQueryKey}={AccessState.CompanyId}" };
++        if (!string.IsNullOrWhiteSpace(TypeFilterValue))
++        {
++            query.Add($"type={Uri.EscapeDataString(TypeFilterValue)}");
++        }
++
++        return $"{path}?{string.Join("&", query)}";
++    }
++
++    private string GetPaymentListItemClass(Guid paymentId) =>
++        PaymentId == paymentId
++            ? "list-group-item list-group-item-action active"
++            : "list-group-item list-group-item-action";
++
++    private bool IsTypeSelected(string option) =>
++        string.Equals(TypeFilterValue, option, StringComparison.OrdinalIgnoreCase);
++
++    private static string GetStatusBadgeClass(string status) =>
++        string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase)
++            ? "text-bg-success"
++            : string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase) || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase)
++                ? "text-bg-danger"
++                : "text-bg-warning";
++
++    private static string? NormalizeOptionalText(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    private static string FormatCurrency(decimal amount, string currency) =>
++        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
++
++    private static string FormatDate(DateTime value) =>
++        value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
++
++    private static string FormatLabel(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "n/a"
++            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
++}
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -370,6 +370,40 @@ public sealed class FinanceApiClient
+             ? Task.FromResult<FinanceTransactionDetailResponse?>(null)
+             : GetAsync<FinanceTransactionDetailResponse>(companyId, $"internal/companies/{companyId}/finance/transactions/{transactionId}", allowNotFound: true, cancellationToken);
+ 
++    public Task<IReadOnlyList<FinancePaymentResponse>> GetPaymentsAsync(
++        Guid companyId,
++        string? paymentType = null,
++        int limit = 100,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<IReadOnlyList<FinancePaymentResponse>>([]);
++        }
++
++        var uri = $"internal/companies/{companyId}/finance/payments{BuildQuery(("type", paymentType), ("limit", limit.ToString(CultureInfo.InvariantCulture)))}";
++        return GetListAsync<FinancePaymentResponse>(companyId, uri, cancellationToken);
++    }
++
++    public Task<FinancePaymentResponse?> GetPaymentDetailAsync(Guid companyId, Guid paymentId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinancePaymentResponse?>(null)
++            : GetAsync<FinancePaymentResponse>(companyId, $"internal/companies/{companyId}/finance/payments/{paymentId}", allowNotFound: true, cancellationToken);
++
++    public Task<FinancePaymentResponse> CreatePaymentAsync(
++        Guid companyId,
++        CreateFinancePaymentRequest request,
++        CancellationToken cancellationToken = default)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<CreateFinancePaymentRequest, FinancePaymentResponse>(
++            companyId,
++            HttpMethod.Post,
++            $"internal/companies/{companyId}/finance/payments",
++            request,
++            cancellationToken);
++    }
++
+     public Task<IReadOnlyList<FinanceInvoiceResponse>> GetInvoicesAsync(Guid companyId, DateTime? startUtc = null, DateTime? endUtc = null, int limit = 100, CancellationToken cancellationToken = default)
+     {
+         if (_useOfflineMode)
+@@ -860,6 +894,21 @@ public sealed class FinanceTransactionResponse
+     public string AnomalyState { get; set; } = string.Empty;
+ }
+ 
++public sealed class FinancePaymentResponse
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string PaymentType { get; set; } = string.Empty;
++    public decimal Amount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public DateTime PaymentDate { get; set; }
++    public string Method { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string CounterpartyReference { get; set; } = string.Empty;
++    public DateTime CreatedUtc { get; set; }
++    public DateTime UpdatedUtc { get; set; }
++}
++
+ public sealed class FinanceTransactionDetailResponse
+ {
+     public Guid Id { get; set; }
+@@ -1122,3 +1171,14 @@ public sealed class UpdateFinanceInvoiceApprovalStatusRequest
+ {
+     public string Status { get; set; } = string.Empty;
+ }
++
++public sealed class CreateFinancePaymentRequest
++{
++    public string PaymentType { get; set; } = string.Empty;
++    public decimal Amount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public DateTime PaymentDate { get; set; }
++    public string Method { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string CounterpartyReference { get; set; } = string.Empty;
++}
+diff --git a/src/VirtualCompany.Web/Services/FinanceRoutes.cs b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+--- a/src/VirtualCompany.Web/Services/FinanceRoutes.cs
++++ b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+@@ -18,6 +18,8 @@ public static class FinanceRoutes
+     public const string Home = "/finance";
+     public const string CashPosition = "/finance/cash-position";
+     public const string Transactions = "/finance/transactions";
++    public const string Payments = "/finance/payments";
++    public const string PaymentDetail = "/finance/payments/{paymentId:guid}";
+     public const string TransactionDetail = "/finance/transactions/{transactionId:guid}";
+     public const string Invoices = "/finance/invoices";
+     public const string Reviews = "/finance/reviews";
+@@ -50,6 +52,7 @@ public static class FinanceRoutes
+         [
+             new("Cash position", CashPosition, "Review cash coverage and company liquidity in the active tenant context."),
+             new("Transactions", Transactions, "Inspect transaction activity and categorization work for the selected company."),
++            new("Payments", Payments, "Inspect incoming and outgoing cash movement records for the selected company."),
+             new("Invoice reviews", Reviews, "Review finance workflow recommendations and actions for invoice workbench items."),
+             new("Invoices", Invoices, "Track invoice review and collection workflows inside the active company."),
+             new("Balances", Balances, "Browse account balances with explicit tenant-scoped routing."),
+@@ -64,6 +67,9 @@ public static class FinanceRoutes
+     public static string BuildTransactionDetailPath(Guid transactionId, Guid? companyId) =>
+         WithCompanyContext($"/finance/transactions/{transactionId:D}", companyId);
+ 
++    public static string BuildPaymentDetailPath(Guid paymentId, Guid? companyId) =>
++        WithCompanyContext($"/finance/payments/{paymentId:D}", companyId);
++
+     public static string BuildInvoiceDetailPath(Guid invoiceId, Guid? companyId) =>
+         WithCompanyContext($"/finance/invoices/{invoiceId:D}", companyId);
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePaymentPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/FinancePaymentPersistenceTests.cs
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinancePaymentPersistenceTests.cs
+@@ -0,0 +1,176 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinancePaymentPersistenceTests
++{
++    [Fact]
++    public async Task EnsureCreated_maps_finance_payment_columns_and_indexes()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var columns = await ReadColumnsAsync(connection, "finance_payments");
++        Assert.Contains("company_id", columns);
++        Assert.Contains("payment_type", columns);
++        Assert.Contains("amount", columns);
++        Assert.Contains("payment_date", columns);
++        Assert.Contains("status", columns);
++        Assert.Contains("counterparty_reference", columns);
++
++        var indexes = await ReadIndexesAsync(connection, "finance_payments");
++        Assert.Contains("IX_finance_payments_company_id", indexes);
++        Assert.Contains("IX_finance_payments_status", indexes);
++        Assert.Contains("IX_finance_payments_payment_date", indexes);
++
++        var company = new Company(Guid.NewGuid(), "Payment Persistence Company");
++        dbContext.Companies.Add(company);
++        dbContext.Payments.Add(new Payment(
++            Guid.NewGuid(),
++            company.Id,
++            "incoming",
++            1250.40m,
++            "usd",
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            "bank_transfer",
++            "completed",
++            "PERSIST-001"));
++        await dbContext.SaveChangesAsync();
++
++        var stored = await dbContext.Payments.AsNoTracking().SingleAsync();
++        Assert.Equal("incoming", stored.PaymentType);
++        Assert.Equal("USD", stored.Currency);
++        Assert.Equal("completed", stored.Status);
++    }
++
++    [Fact]
++    public async Task EnsureCreated_rejects_non_positive_payment_amounts()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var companyId = await InsertCompanyAsync(connection);
++
++        var exception = await Assert.ThrowsAsync<SqliteException>(async () =>
++        {
++            using var command = connection.CreateCommand();
++            command.CommandText =
++                """
++                INSERT INTO finance_payments (
++                    id,
++                    company_id,
++                    payment_type,
++                    amount,
++                    currency,
++                    payment_date,
++                    method,
++                    status,
++                    counterparty_reference,
++                    created_at,
++                    updated_at)
++                VALUES ($id, $companyId, $paymentType, $amount, $currency, $paymentDate, $method, $status, $reference, $createdAt, $updatedAt);
++                """;
++            command.Parameters.AddWithValue("$id", Guid.NewGuid());
++            command.Parameters.AddWithValue("$companyId", companyId);
++            command.Parameters.AddWithValue("$paymentType", "incoming");
++            command.Parameters.AddWithValue("$amount", 0m);
++            command.Parameters.AddWithValue("$currency", "USD");
++            command.Parameters.AddWithValue("$paymentDate", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc));
++            command.Parameters.AddWithValue("$method", "bank_transfer");
++            command.Parameters.AddWithValue("$status", "completed");
++            command.Parameters.AddWithValue("$reference", "INVALID-AMOUNT");
++            command.Parameters.AddWithValue("$createdAt", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc));
++            command.Parameters.AddWithValue("$updatedAt", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc));
++            await command.ExecuteNonQueryAsync();
++        });
++
++        Assert.Contains("CK_finance_payments_amount_positive", exception.Message, StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public async Task EnsureCreated_rejects_invalid_payment_type_values()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var companyId = await InsertCompanyAsync(connection);
++
++        var exception = await Assert.ThrowsAsync<SqliteException>(async () =>
++        {
++            using var command = connection.CreateCommand();
++            command.CommandText =
++                """
++                INSERT INTO finance_payments (
++                    id,
++                    company_id,
++                    payment_type,
++                    amount,
++                    currency,
++                    payment_date,
++                    method,
++                    status,
++                    counterparty_reference,
++                    created_at,
++                    updated_at)
++                VALUES ($id, $companyId, $paymentType, $amount, $currency, $paymentDate, $method, $status, $reference, $createdAt, $updatedAt);
++                """;
++            command.Parameters.AddWithValue("$id", Guid.NewGuid());
++            command.Parameters.AddWithValue("$companyId", companyId);
++            command.Parameters.AddWithValue("$paymentType", "sideways");
++            command.Parameters.AddWithValue("$amount", 99.95m);
++            command.Parameters.AddWithValue("$currency", "USD");
++            command.Parameters.AddWithValue("$paymentDate", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc));
++            command.Parameters.AddWithValue("$method", "bank_transfer");
++            command.Parameters.AddWithValue("$status", "completed");
++            command.Parameters.AddWithValue("$reference", "INVALID-TYPE");
++            command.Parameters.AddWithValue("$createdAt", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc));
++            command.Parameters.AddWithValue("$updatedAt", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc));
++            await command.ExecuteNonQueryAsync();
++        });
++
++        Assert.Contains("CK_finance_payments_payment_type", exception.Message, StringComparison.OrdinalIgnoreCase);
++    }
++
++    private static async Task<Guid> InsertCompanyAsync(SqliteConnection connection)
++    {
++        var companyId = Guid.NewGuid();
++        using var command = connection.CreateCommand();
++        command.CommandText = "INSERT INTO companies (Id, Name, branding_json, settings_json, OnboardingStatus, CreatedUtc, UpdatedUtc, finance_seed_status, finance_seed_status_updated_at) VALUES ($id, $name, '{}', '{}', 'not_started', $createdUtc, $updatedUtc, 'seeded', $statusUpdatedUtc);";
++        command.Parameters.AddWithValue("$id", companyId);
++        command.Parameters.AddWithValue("$name", "Payment Constraint Company");
++        command.Parameters.AddWithValue("$createdUtc", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc));
++        command.Parameters.AddWithValue("$updatedUtc", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc));
++        command.Parameters.AddWithValue("$statusUpdatedUtc", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc));
++        await command.ExecuteNonQueryAsync();
++        return companyId;
++    }
++
++    private static async Task<HashSet<string>> ReadColumnsAsync(SqliteConnection connection, string tableName)
++    {
++        var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        using var command = connection.CreateCommand();
++        command.CommandText = $"PRAGMA table_info('{tableName}');";
++        await using var reader = await command.ExecuteReaderAsync();
++        while (await reader.ReadAsync())
++        {
++            values.Add(reader.GetString(1));
++        }
++
++        return values;
++    }
++
++    private static async Task<HashSet<string>> ReadIndexesAsync(SqliteConnection connection, string tableName)
++    {
++        var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        using var command = connection.CreateCommand();
++        command.CommandText = $"PRAGMA index_list('{tableName}');";
++        await using var reader = await command.ExecuteReaderAsync();
++        while (await reader.ReadAsync())
++        {
++            values.Add(reader.GetString(1));
++        }
++
++        return values;
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options);
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePaymentsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePaymentsIntegrationTests.cs
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinancePaymentsIntegrationTests.cs
+@@ -0,0 +1,187 @@
++using System.Net;
++using System.Net.Http.Json;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinancePaymentsIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinancePaymentsIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Payment_endpoints_create_list_both_directions_and_isolate_records_by_company()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var createResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments",
++            new CreateFinancePaymentRequest
++            {
++                PaymentType = "incoming",
++                Amount = 1825.50m,
++                Currency = "usd",
++                PaymentDate = new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                Method = "bank-transfer",
++                Status = "completed",
++                CounterpartyReference = "ACME RECEIPT-204"
++            });
++
++        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
++        var incomingPayment = await createResponse.Content.ReadFromJsonAsync<FinancePaymentResponse>();
++        Assert.NotNull(incomingPayment);
++        Assert.Equal(seed.CompanyId, incomingPayment!.CompanyId);
++        Assert.Equal("incoming", incomingPayment.PaymentType);
++        Assert.Equal("USD", incomingPayment.Currency);
++        Assert.Equal("bank_transfer", incomingPayment.Method);
++
++        var outgoingCreateResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments",
++            new CreateFinancePaymentRequest
++            {
++                PaymentType = "outgoing",
++                Amount = 640.10m,
++                Currency = "eur",
++                PaymentDate = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc),
++                Method = "ach",
++                Status = "pending",
++                CounterpartyReference = "VENDOR-PAYOUT-12"
++            });
++
++        Assert.Equal(HttpStatusCode.OK, outgoingCreateResponse.StatusCode);
++        var outgoingPayment = await outgoingCreateResponse.Content.ReadFromJsonAsync<FinancePaymentResponse>();
++        Assert.NotNull(outgoingPayment);
++        Assert.Equal("outgoing", outgoingPayment!.PaymentType);
++        Assert.Equal("EUR", outgoingPayment.Currency);
++
++        var listResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/payments?limit=50");
++        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
++        var payments = await listResponse.Content.ReadFromJsonAsync<List<FinancePaymentResponse>>();
++        Assert.NotNull(payments);
++        Assert.Contains(payments!, payment => payment.Id == incomingPayment.Id);
++        Assert.Contains(payments!, payment => payment.Id == outgoingPayment.Id);
++        Assert.Contains(payments!, payment => payment.PaymentType == "incoming");
++        Assert.Contains(payments!, payment => payment.PaymentType == "outgoing");
++
++        var outgoingOnlyResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/payments?type=outgoing&limit=50");
++        Assert.Equal(HttpStatusCode.OK, outgoingOnlyResponse.StatusCode);
++        var outgoingPayments = await outgoingOnlyResponse.Content.ReadFromJsonAsync<List<FinancePaymentResponse>>();
++        Assert.NotNull(outgoingPayments);
++        Assert.Contains(outgoingPayments!, payment => payment.Id == outgoingPayment.Id);
++        Assert.All(outgoingPayments!, payment => Assert.Equal("outgoing", payment.PaymentType));
++
++        var detailResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/payments/{outgoingPayment.Id}");
++        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
++        var detail = await detailResponse.Content.ReadFromJsonAsync<FinancePaymentResponse>();
++        Assert.NotNull(detail);
++        Assert.Equal(outgoingPayment.Id, detail!.Id);
++        Assert.Equal(outgoingPayment.CounterpartyReference, detail.CounterpartyReference);
++
++        var crossTenantResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/payments/{seed.OtherCompanyPaymentId}");
++        Assert.Equal(HttpStatusCode.NotFound, crossTenantResponse.StatusCode);
++    }
++
++    [Fact]
++    public async Task Payment_create_endpoint_rejects_invalid_amount_and_type()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments",
++            new CreateFinancePaymentRequest
++            {
++                PaymentType = "sideways",
++                Amount = 0m,
++                Currency = "US1",
++                PaymentDate = new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                Method = "bank_transfer",
++                Status = "completed",
++                CounterpartyReference = "Invalid payment"
++            });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(problem);
++        Assert.Contains(nameof(CreateFinancePaymentRequest.PaymentType), problem!.Errors.Keys);
++        Assert.Contains(nameof(CreateFinancePaymentRequest.Amount), problem.Errors.Keys);
++        Assert.Contains(nameof(CreateFinancePaymentRequest.Currency), problem.Errors.Keys);
++    }
++
++    private async Task<PaymentEndpointSeed> SeedAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var subject = $"finance-payments-{Guid.NewGuid():N}";
++        var email = $"{subject}@example.com";
++        const string displayName = "Finance Payments Owner";
++        var otherCompanyPaymentId = Guid.Empty;
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Payments Company"),
++                new Company(otherCompanyId, "Other Payments Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++
++            FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++            FinanceSeedData.AddMockFinanceData(dbContext, otherCompanyId);
++
++            var otherCompanyPayment = new Payment(
++                Guid.NewGuid(),
++                otherCompanyId,
++                PaymentTypes.Outgoing,
++                945.20m,
++                "USD",
++                new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
++                "ach",
++                "completed",
++                "OTHER-CO-PAYMENT");
++            dbContext.Payments.Add(otherCompanyPayment);
++            otherCompanyPaymentId = otherCompanyPayment.Id;
++
++            return Task.CompletedTask;
++        });
++
++        return new PaymentEndpointSeed(companyId, subject, email, displayName, otherCompanyPaymentId);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private sealed record PaymentEndpointSeed(
++        Guid CompanyId,
++        string Subject,
++        string Email,
++        string DisplayName,
++        Guid OtherCompanyPaymentId);
++
++    private sealed class FinancePaymentResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CompanyId { get; set; }
++        public string PaymentType { get; set; } = string.Empty;
++        public decimal Amount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public DateTime PaymentDate { get; set; }
++        public string Method { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++        public string CounterpartyReference { get; set; } = string.Empty;
++        public DateTime CreatedUtc { get; set; }
++        public DateTime UpdatedUtc { get; set; }
++    }
++
++    private sealed class CreateFinancePaymentRequest
++    {
++        public string PaymentType { get; set; } = string.Empty;
++        public decimal Amount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public DateTime PaymentDate { get; set; }
++        public string Method { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++        public string CounterpartyReference { get; set; } = string.Empty;
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePaymentsPageTests.cs b/tests/VirtualCompany.Api.Tests/FinancePaymentsPageTests.cs
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinancePaymentsPageTests.cs
+@@ -0,0 +1,145 @@
++using System.Net;
++using System.Net.Http.Json;
++using Bunit;
++using Bunit.TestDoubles;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Shared;
++using VirtualCompany.Web.Pages.Finance;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinancePaymentsPageTests
++{
++    [Fact]
++    public void Payments_page_renders_list_and_selected_detail()
++    {
++        var companyId = Guid.Parse("a53bf35e-a656-45a3-8b3d-b6d498aa1a61");
++        var paymentId = Guid.Parse("66d81e13-9914-44cf-8715-1c8998eeffaf");
++        var payments = new List<FinancePaymentResponse>
++        {
++            new()
++            {
++                Id = Guid.Parse("f4a5aa2d-0b69-4f1d-b26e-8ceee32418a3"),
++                CompanyId = companyId,
++                PaymentType = "incoming",
++                Amount = 1520.55m,
++                Currency = "USD",
++                PaymentDate = new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
++                Method = "bank_transfer",
++                Status = "completed",
++                CounterpartyReference = "ACME-REC-18",
++                CreatedUtc = new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
++                UpdatedUtc = new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc)
++            },
++            new()
++            {
++                Id = paymentId,
++                CompanyId = companyId,
++                PaymentType = "outgoing",
++                Amount = 640.10m,
++                Currency = "EUR",
++                PaymentDate = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc),
++                Method = "ach",
++                Status = "pending",
++                CounterpartyReference = "VENDOR-PAYOUT-12",
++                CreatedUtc = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc),
++                UpdatedUtc = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc)
++            }
++        };
++
++        using var harness = CreateHarness(companyId, payments);
++        harness.Navigation.NavigateTo($"http://localhost/finance/payments/{paymentId:D}?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<PaymentsPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId)
++            .Add(x => x.PaymentId, paymentId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Payment list", cut.Markup);
++            Assert.Contains("Payment detail", cut.Markup);
++            Assert.Contains("VENDOR-PAYOUT-12", cut.Markup);
++            Assert.Contains("EUR 640.10", cut.Markup);
++            Assert.Contains("pending", cut.Markup, StringComparison.OrdinalIgnoreCase);
++            Assert.Contains("ach", cut.Markup, StringComparison.OrdinalIgnoreCase);
++            Assert.Contains("outgoing", cut.Markup, StringComparison.OrdinalIgnoreCase);
++        });
++    }
++
++    private static PaymentsPageHarness CreateHarness(Guid companyId, List<FinancePaymentResponse> payments)
++    {
++        var context = new TestContext();
++        context.Services.AddOptions();
++        context.Services.AddSingleton(new FinanceAccessResolver());
++
++        context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            return Task.FromResult(request.RequestUri?.AbsolutePath switch
++            {
++                "/api/auth/me" => CreateJsonResponse(CreateCurrentUser(companyId, "owner")),
++                _ => CreateNotFoundResponse()
++            });
++        }))
++        {
++            BaseAddress = new Uri("http://localhost/")
++        }));
++
++        context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            var path = request.RequestUri?.AbsolutePath;
++            if (path == $"/internal/companies/{companyId:D}/finance/payments" && request.Method == HttpMethod.Get)
++            {
++                return Task.FromResult(CreateJsonResponse(payments));
++            }
++
++            if (path?.StartsWith($"/internal/companies/{companyId:D}/finance/payments/", StringComparison.Ordinal) == true &&
++                request.Method == HttpMethod.Get)
++            {
++                var idText = path[(path.LastIndexOf('/') + 1)..];
++                return Guid.TryParse(idText, out var paymentId)
++                    ? payments.SingleOrDefault(x => x.Id == paymentId) is { } payment
++                        ? Task.FromResult(CreateJsonResponse(payment))
++                        : Task.FromResult(CreateNotFoundResponse())
++                    : Task.FromResult(CreateNotFoundResponse());
++            }
++
++            return Task.FromResult(CreateNotFoundResponse());
++        }))
++        {
++            BaseAddress = new Uri("http://localhost/")
++        }));
++
++        return new PaymentsPageHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
++    }
++
++    private static CurrentUserContextViewModel CreateCurrentUser(Guid companyId, string membershipRole) =>
++        new()
++        {
++            Memberships =
++            [
++                new CompanyMembershipViewModel
++                {
++                    MembershipId = Guid.NewGuid(),
++                    CompanyId = companyId,
++                    CompanyName = "Contoso Finance",
++                    MembershipRole = membershipRole,
++                    Status = "active"
++                }
++            ],
++            ActiveCompany = new ResolvedCompanyContextViewModel
++            {
++                MembershipId = Guid.NewGuid(),
++                CompanyId = companyId,
++                CompanyName = "Contoso Finance",
++                MembershipRole = membershipRole,
++                Status = "active"
++            }
++        };
++
++    private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>
++        new(HttpStatusCode.OK)
++        {
++            Content = JsonContent.Create(payload)
++        };
++
++    private static HttpResponseMessage CreateNotFoundResponse() =>
++        new(HttpStatusCode.NotFound)
++        {
++            Content = JsonContent.Create(new { title = "Not found", detail = "Not found." })
++        };
++
++    private sealed record PaymentsPageHarness(TestContext Context, FakeNavigationManager Navigation) : IDisposable
++    {
++        public void Dispose() => Context.Dispose();
++    }
++
++    private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler
++    {
++        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
++
++        public AsyncStubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
++        {
++            _handler = handler;
++        }
++
++        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
++            _handler(request, cancellationToken);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceRouteRegistrationTests.cs
+@@ -10,6 +10,8 @@ public sealed class FinanceRouteRegistrationTests
+     [InlineData(typeof(FinancePage), FinanceRoutes.Home)]
+     [InlineData(typeof(CashPositionPage), FinanceRoutes.CashPosition)]
+     [InlineData(typeof(TransactionsPage), FinanceRoutes.Transactions)]
++    [InlineData(typeof(PaymentsPage), FinanceRoutes.Payments)]
++    [InlineData(typeof(PaymentsPage), FinanceRoutes.PaymentDetail)]
+     [InlineData(typeof(TransactionsPage), FinanceRoutes.TransactionDetail)]
+     [InlineData(typeof(InvoiceReviewsPage), FinanceRoutes.Reviews)]
+     [InlineData(typeof(InvoiceReviewDetailPage), FinanceRoutes.ReviewDetail)]
+@@ -39,9 +41,10 @@ public sealed class FinanceRouteRegistrationTests
+     {
+         var routes = FinanceRoutes.SectionPages.Select(route => route.Path).ToArray();
+ 
+-        Assert.Equal(11, routes.Length);
++        Assert.Equal(12, routes.Length);
+         Assert.Contains(FinanceRoutes.CashPosition, routes);
+         Assert.Contains(FinanceRoutes.Transactions, routes);
++        Assert.Contains(FinanceRoutes.Payments, routes);
+         Assert.Contains(FinanceRoutes.Reviews, routes);
+         Assert.Contains(FinanceRoutes.Invoices, routes);
+         Assert.Contains(FinanceRoutes.Balances, routes);
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
+@@ -32,6 +32,7 @@ public sealed class FinanceSeedDatasetGeneratorTests
+         Assert.NotEmpty(dataset.BillIds);
+         Assert.NotEmpty(dataset.SupplierIds);
+         Assert.NotEmpty(dataset.RecurringExpenses);
++        Assert.NotEmpty(await dbContext.Payments.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
+         Assert.NotEmpty(dataset.CategoryIds);
+         Assert.InRange(dataset.CategoryIds.Count, 10, int.MaxValue);
+ 
+@@ -41,6 +42,11 @@ public sealed class FinanceSeedDatasetGeneratorTests
+             .Where(x => x.CompanyId == companyId)
+             .ToArrayAsync();
+ 
++        var payments = await dbContext.Payments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .ToArrayAsync();
++
+         Assert.All(transactions, transaction =>
+         {
+             Assert.InRange(transaction.TransactionUtc, dataset.WindowStartUtc, dataset.WindowEndUtc);
+@@ -48,6 +54,10 @@ public sealed class FinanceSeedDatasetGeneratorTests
+             Assert.Contains(transaction.TransactionType, dataset.CategoryIds);
+         });
++
++        Assert.All(payments, payment => Assert.InRange(payment.PaymentDate, dataset.WindowStartUtc, dataset.WindowEndUtc));
++        Assert.Contains(payments, payment => payment.PaymentType == "incoming");
++        Assert.Contains(payments, payment => payment.PaymentType == "outgoing");
+     }
+ 
+     [Fact]
+diff --git a/tests/VirtualCompany.Api.Tests/PaymentDomainModelTests.cs b/tests/VirtualCompany.Api.Tests/PaymentDomainModelTests.cs
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/PaymentDomainModelTests.cs
+@@ -0,0 +1,50 @@
++using VirtualCompany.Domain.Entities;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class PaymentDomainModelTests
++{
++    [Fact]
++    public void Payment_constructor_normalizes_supported_values()
++    {
++        var payment = new Payment(
++            Guid.Empty,
++            Guid.NewGuid(),
++            "Incoming",
++            2450.25m,
++            "usd",
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            "bank-transfer",
++            "Completed",
++            "ACME-001");
++
++        Assert.Equal("incoming", payment.PaymentType);
++        Assert.Equal("USD", payment.Currency);
++        Assert.Equal("bank_transfer", payment.Method);
++        Assert.Equal("completed", payment.Status);
++    }
++
++    [Fact]
++    public void Payment_constructor_rejects_non_positive_amount()
++    {
++        Assert.Throws<ArgumentOutOfRangeException>(() => new Payment(
++            Guid.Empty,
++            Guid.NewGuid(),
++            "incoming",
++            0m,
++            "USD",
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            "bank_transfer",
++            "completed",
++            "ACME-002"));
++    }
++
++    [Fact]
++    public void Payment_constructor_rejects_invalid_payment_type()
++    {
++        Assert.Throws<ArgumentOutOfRangeException>(() => new Payment(
++            Guid.Empty,
++            Guid.NewGuid(),
++            "sideways",
++            12m,
++            "USD",
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            "bank_transfer",
++            "completed",
++            "ACME-003"));
++    }
++}
+END_OF_PATCH

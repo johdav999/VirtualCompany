@@ -27,7 +27,9 @@ public sealed class DashboardFinanceSnapshotController : ControllerBase
     [HttpGet("finance-snapshot")]
     public async Task<ActionResult<DashboardFinanceSnapshotDto>> GetAsync(
         [FromQuery] Guid companyId,
-        CancellationToken cancellationToken)
+        [FromQuery] DateTime? asOfUtc,
+        CancellationToken cancellationToken,
+        [FromQuery] int upcomingWindowDays = 30)
     {
         var resolvedCompanyId = companyId != Guid.Empty ? companyId : _companyContextAccessor.CompanyId;
         if (resolvedCompanyId is not Guid effectiveCompanyId)
@@ -42,6 +44,10 @@ public sealed class DashboardFinanceSnapshotController : ControllerBase
             });
         }
 
-        return Ok(await _financeSnapshotService.GetAsync(effectiveCompanyId, cancellationToken));
+        return Ok(await _financeSnapshotService.GetAsync(
+            effectiveCompanyId,
+            asOfUtc,
+            upcomingWindowDays,
+            cancellationToken));
     }
 }

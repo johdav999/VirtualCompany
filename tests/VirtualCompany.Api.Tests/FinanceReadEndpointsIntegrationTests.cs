@@ -99,6 +99,34 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
         Assert.Equal(5, bills!.Count);
         Assert.Contains(bills, bill => bill.LinkedDocument is not null);
 
+        var customersResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/customers?limit=10");
+        Assert.Equal(HttpStatusCode.OK, customersResponse.StatusCode);
+        var customers = await customersResponse.Content.ReadFromJsonAsync<List<CounterpartyResponse>>();
+        Assert.NotNull(customers);
+        Assert.NotEmpty(customers!);
+        Assert.All(customers, x =>
+        {
+            Assert.Equal("customer", x.CounterpartyType);
+            Assert.False(string.IsNullOrWhiteSpace(x.PaymentTerms));
+            Assert.NotNull(x.CreditLimit);
+            Assert.False(string.IsNullOrWhiteSpace(x.PreferredPaymentMethod));
+            Assert.False(string.IsNullOrWhiteSpace(x.DefaultAccountMapping));
+        });
+
+        var suppliersResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/suppliers?limit=10");
+        Assert.Equal(HttpStatusCode.OK, suppliersResponse.StatusCode);
+        var suppliers = await suppliersResponse.Content.ReadFromJsonAsync<List<CounterpartyResponse>>();
+        Assert.NotNull(suppliers);
+        Assert.NotEmpty(suppliers!);
+        Assert.All(suppliers, x =>
+        {
+            Assert.Equal("supplier", x.CounterpartyType);
+            Assert.False(string.IsNullOrWhiteSpace(x.PaymentTerms));
+            Assert.NotNull(x.CreditLimit);
+            Assert.False(string.IsNullOrWhiteSpace(x.PreferredPaymentMethod));
+            Assert.False(string.IsNullOrWhiteSpace(x.DefaultAccountMapping));
+        });
+
         var linkedDocuments = transactions.Select(x => x.LinkedDocument)
             .Concat(invoices.Select(x => x.LinkedDocument))
             .Concat(bills.Select(x => x.LinkedDocument))
@@ -144,6 +172,26 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
             Assert.Equal("customer_payment", transaction.TransactionType);
             Assert.True(transaction.IsFlagged);
         });
+
+        var firstInvoice = Assert.Single(invoices.Where(x => x.Id == seed.ReviewInvoiceId));
+        var invoiceCounterparty = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/customers/{firstInvoice.CounterpartyId}");
+        Assert.NotNull(invoiceCounterparty);
+        Assert.Equal(firstInvoice.CounterpartyId, invoiceCounterparty!.Id);
+        Assert.Equal(firstInvoice.CounterpartyName, invoiceCounterparty.Name);
+        Assert.False(string.IsNullOrWhiteSpace(invoiceCounterparty.PaymentTerms));
+        Assert.NotNull(invoiceCounterparty.CreditLimit);
+        Assert.False(string.IsNullOrWhiteSpace(invoiceCounterparty.PreferredPaymentMethod));
+        Assert.False(string.IsNullOrWhiteSpace(invoiceCounterparty.DefaultAccountMapping));
+
+        var firstBill = bills.First();
+        var billCounterparty = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/suppliers/{firstBill.CounterpartyId}");
+        Assert.NotNull(billCounterparty);
+        Assert.Equal(firstBill.CounterpartyId, billCounterparty!.Id);
+        Assert.Equal(firstBill.CounterpartyName, billCounterparty.Name);
+        Assert.False(string.IsNullOrWhiteSpace(billCounterparty.PaymentTerms));
+        Assert.NotNull(billCounterparty.CreditLimit);
+        Assert.False(string.IsNullOrWhiteSpace(billCounterparty.PreferredPaymentMethod));
+        Assert.False(string.IsNullOrWhiteSpace(billCounterparty.DefaultAccountMapping));
     }
 
     [Fact]
@@ -681,6 +729,21 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
         public string Currency { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
         public LinkedDocumentResponse? LinkedDocument { get; set; }
+    }
+
+    private sealed class CounterpartyResponse
+    {
+        public Guid Id { get; set; }
+        public string CounterpartyType { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string? Email { get; set; }
+        public string? PaymentTerms { get; set; }
+        public string? TaxId { get; set; }
+        public decimal? CreditLimit { get; set; }
+        public string? PreferredPaymentMethod { get; set; }
+        public string? DefaultAccountMapping { get; set; }
+        public DateTime CreatedUtc { get; set; }
+        public DateTime UpdatedUtc { get; set; }
     }
 
     private sealed class BillResponse

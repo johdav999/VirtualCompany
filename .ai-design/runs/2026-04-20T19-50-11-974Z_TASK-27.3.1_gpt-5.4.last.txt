@@ -1,0 +1,895 @@
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.Planning.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.Planning.cs
+index 5392b61..b7eb2dc 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.Planning.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.Planning.cs
+@@ -39,6 +39,20 @@ public sealed partial class InternalFinanceController
+             () => _financeCommandService.UpdateBudgetAsync(
+                 new UpdateFinanceBudgetCommand(companyId, budgetId, request.ToDto()),
+                 cancellationToken));
++
++    [HttpGet("variance")]
++    public async Task<ActionResult<FinanceVarianceResultDto>> GetVarianceAsync(
++        Guid companyId,
++        [FromQuery] DateTime periodStartUtc,
++        [FromQuery] string comparisonType,
++        [FromQuery] DateTime? periodEndUtc,
++        [FromQuery] Guid? financeAccountId,
++        [FromQuery] Guid? costCenterId,
++        [FromQuery] string? version,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetVarianceAsync(
++                new GetFinanceVarianceQuery(companyId, periodStartUtc, comparisonType, periodEndUtc, version, financeAccountId, costCenterId),
++                cancellationToken));
+ 
+     [HttpGet("forecasts")]
+     public async Task<ActionResult<IReadOnlyList<FinanceForecastDto>>> GetForecastsAsync(
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 5950513..8fe0434 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -286,6 +286,13 @@ public sealed record GetFinanceForecastsQuery(
+     Guid? FinanceAccountId = null,
+     string? Version = null);
+ 
++public sealed record GetFinanceVarianceQuery(
++    Guid CompanyId,
++    DateTime PeriodStartUtc,
++    string ComparisonType,
++    DateTime? PeriodEndUtc = null,
++    string? Version = null,
++    Guid? FinanceAccountId = null,
++    Guid? CostCenterId = null);
+ public interface IFinanceGenerationPolicy
+ {
+     Task<CompanySimulationFinanceGenerationResultDto> GenerateAsync(
+@@ -1064,6 +1071,37 @@ public sealed record FinanceForecastDto(
+     DateTime CreatedUtc,
+     DateTime UpdatedUtc);
+ 
++public sealed record FinanceVarianceResultDto(
++    Guid CompanyId,
++    string ComparisonType,
++    DateTime PeriodStartUtc,
++    DateTime PeriodEndUtc,
++    string? Version,
++    bool IncludesCostCenters,
++    IReadOnlyList<FinanceVarianceRowDto> Rows);
++
++public sealed record FinanceVarianceRowDto(
++    DateTime PeriodStartUtc,
++    Guid FinanceAccountId,
++    string AccountCode,
++    string AccountName,
++    Guid? CostCenterId,
++    string? CostCenterCode,
++    string? CostCenterName,
++    decimal ActualAmount,
++    decimal ComparisonAmount,
++    decimal VarianceAmount,
++    decimal? VariancePercentage,
++    string Currency);
++
++public static class FinanceVarianceComparisonTypes
++{
++    public const string Budget = "budget";
++    public const string Forecast = "forecast";
++    public const string ActualVsBudget = "actual_vs_budget";
++    public const string ActualVsForecast = "actual_vs_forecast";
++
++    public static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? throw new ArgumentException("Comparison type is required.", nameof(value))
++            : value.Trim().Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant() switch
++            {
++                Budget or ActualVsBudget => Budget,
++                Forecast or ActualVsForecast => Forecast,
++                _ => throw new ArgumentOutOfRangeException(nameof(value), "Comparison type must be budget or forecast.")
++            };
++}
++
+ public sealed record FinanceSeedAnomalyDto(
+     Guid Id,
+     string AnomalyType,
+@@ -1566,6 +1604,10 @@ public interface IFinanceReadService
+     Task<IReadOnlyList<FinanceForecastDto>> GetForecastsAsync(
+         GetFinanceForecastsQuery query,
+         CancellationToken cancellationToken);
++
++    Task<FinanceVarianceResultDto> GetVarianceAsync(
++        GetFinanceVarianceQuery query,
++        CancellationToken cancellationToken);
+ }
+ 
+ public interface IFinancePolicyConfigurationService
+diff --git a/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs b/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
+index 75653ef..1480bcc 100644
+--- a/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
+@@ -453,7 +453,8 @@ public sealed class LedgerEntryLine : ICompanyOwnedEntity
+         decimal debitAmount,
+         decimal creditAmount,
+         string currency,
+-        string? description = null,
++        Guid? costCenterId = null,
++        string? description = null,
+         DateTime? createdUtc = null)
+     {
+         if (companyId == Guid.Empty)
+@@ -493,12 +494,18 @@ public sealed class LedgerEntryLine : ICompanyOwnedEntity
+             throw new ArgumentException("Ledger entry line cannot carry both debit and credit amounts.");
+         }
+ 
++        if (costCenterId == Guid.Empty)
++        {
++            throw new ArgumentException("CostCenterId cannot be empty.", nameof(costCenterId));
++        }
++
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+         LedgerEntryId = ledgerEntryId;
+         FinanceAccountId = financeAccountId;
+         DebitAmount = debitAmount;
+         CreditAmount = creditAmount;
++        CostCenterId = costCenterId;
+         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
+         Description = NormalizeOptional(description, nameof(description), 500);
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
+@@ -509,6 +516,7 @@ public sealed class LedgerEntryLine : ICompanyOwnedEntity
+     public Guid LedgerEntryId { get; private set; }
+     public Guid FinanceAccountId { get; private set; }
+     public decimal DebitAmount { get; private set; }
++    public Guid? CostCenterId { get; private set; }
+     public decimal CreditAmount { get; private set; }
+     public string Currency { get; private set; } = null!;
+     public string? Description { get; private set; }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Variance.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Variance.cs
+new file mode 100644
+index 0000000..6bfcf38
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Variance.cs
+@@ -0,0 +1,228 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed partial class CompanyFinanceReadService
++{
++    private static readonly string[] CostCenterFeatureFlagKeys =
++    [
++        "cost_centers",
++        "costcenters",
++        "finance_cost_centers",
++        "financecostcenters"
++    ];
++
++    public async Task<FinanceVarianceResultDto> GetVarianceAsync(
++        GetFinanceVarianceQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++
++        var comparisonType = FinanceVarianceComparisonTypes.Normalize(query.ComparisonType);
++        var periodStartUtc = NormalizePlanningPeriod(query.PeriodStartUtc);
++        var periodEndUtc = query.PeriodEndUtc.HasValue
++            ? NormalizePlanningPeriod(query.PeriodEndUtc.Value)
++            : periodStartUtc;
++        var endExclusiveUtc = periodEndUtc.AddMonths(1);
++        if (endExclusiveUtc <= periodStartUtc)
++        {
++            throw new ArgumentException("Variance period end must be the same month or after period start.", nameof(query));
++        }
++
++        var normalizedVersion = NormalizeOptionalText(query.Version);
++        var includesCostCenters = await AreCostCentersEnabledAsync(query.CompanyId, cancellationToken);
++        var comparisonRows = await LoadComparisonRowsAsync(
++            query,
++            comparisonType,
++            periodStartUtc,
++            endExclusiveUtc,
++            normalizedVersion,
++            includesCostCenters,
++            cancellationToken);
++
++        if (comparisonRows.Count == 0)
++        {
++            return new FinanceVarianceResultDto(
++                query.CompanyId,
++                comparisonType,
++                periodStartUtc,
++                periodEndUtc,
++                normalizedVersion,
++                includesCostCenters,
++                []);
++        }
++
++        var actualRows = await _dbContext.LedgerEntryLines
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == query.CompanyId &&
++                x.LedgerEntry.Status == LedgerEntryStatuses.Posted &&
++                (!query.FinanceAccountId.HasValue || x.FinanceAccountId == query.FinanceAccountId.Value) &&
++                (!includesCostCenters || !query.CostCenterId.HasValue || x.CostCenterId == query.CostCenterId.Value))
++            .Select(x => new ActualLedgerRow(
++                x.LedgerEntry.PostedAtUtc ?? x.LedgerEntry.EntryUtc,
++                x.FinanceAccountId,
++                x.CostCenterId,
++                x.DebitAmount - x.CreditAmount,
++                x.Currency))
++            .ToListAsync(cancellationToken);
++
++        var actualLookup = actualRows
++            .Where(x => x.PostedAtUtc >= periodStartUtc && x.PostedAtUtc < endExclusiveUtc)
++            .GroupBy(x => new VarianceGroupingKey(
++                NormalizePlanningPeriod(x.PostedAtUtc),
++                x.FinanceAccountId,
++                includesCostCenters ? x.CostCenterId : null))
++            .ToDictionary(
++                group => group.Key,
++                group => new AggregatedActualRow(
++                    Math.Round(group.Sum(x => x.Amount), 2, MidpointRounding.AwayFromZero),
++                    ResolveVarianceCurrency(group.Select(x => x.Currency))));
++
++        var comparisonGroups = comparisonRows
++            .GroupBy(x => new VarianceGroupingKey(x.PeriodStartUtc, x.FinanceAccountId, x.CostCenterId))
++            .Select(group => new AggregatedComparisonRow(
++                group.Key,
++                group.First().AccountCode,
++                group.First().AccountName,
++                group.First().CostCenterId,
++                Math.Round(group.Sum(x => x.Amount), 2, MidpointRounding.AwayFromZero),
++                ResolveVarianceCurrency(group.Select(x => x.Currency))))
++            .OrderBy(x => x.Key.PeriodStartUtc)
++            .ThenBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.CostCenterId ?? Guid.Empty)
++            .ToList();
++
++        var rows = comparisonGroups
++            .Select(group =>
++            {
++                actualLookup.TryGetValue(group.Key, out var actual);
++                var actualAmount = actual?.Amount ?? 0m;
++                var comparisonAmount = group.Amount;
++                var varianceAmount = Math.Round(actualAmount - comparisonAmount, 2, MidpointRounding.AwayFromZero);
++
++                return new FinanceVarianceRowDto(
++                    group.Key.PeriodStartUtc,
++                    group.Key.FinanceAccountId,
++                    group.AccountCode,
++                    group.AccountName,
++                    includesCostCenters ? group.CostCenterId : null,
++                    null,
++                    null,
++                    actualAmount,
++                    comparisonAmount,
++                    varianceAmount,
++                    CalculateVariancePercentage(varianceAmount, comparisonAmount),
++                    ResolveVarianceCurrency([group.Currency, actual?.Currency]));
++            })
++            .ToList();
++
++        return new FinanceVarianceResultDto(
++            query.CompanyId,
++            comparisonType,
++            periodStartUtc,
++            periodEndUtc,
++            normalizedVersion,
++            includesCostCenters,
++            rows);
++    }
++
++    private async Task<List<PlanningComparisonRow>> LoadComparisonRowsAsync(
++        GetFinanceVarianceQuery query,
++        string comparisonType,
++        DateTime periodStartUtc,
++        DateTime endExclusiveUtc,
++        string? normalizedVersion,
++        bool includesCostCenters,
++        CancellationToken cancellationToken)
++    {
++        if (comparisonType == FinanceVarianceComparisonTypes.Budget)
++        {
++            var budgets = _dbContext.Budgets
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => x.CompanyId == query.CompanyId && x.PeriodStartUtc >= periodStartUtc && x.PeriodStartUtc < endExclusiveUtc);
++
++            if (!string.IsNullOrWhiteSpace(normalizedVersion))
++            {
++                budgets = budgets.Where(x => x.Version == normalizedVersion);
++            }
++
++            if (query.FinanceAccountId.HasValue)
++            {
++                budgets = budgets.Where(x => x.FinanceAccountId == query.FinanceAccountId.Value);
++            }
++
++            if (includesCostCenters && query.CostCenterId.HasValue)
++            {
++                budgets = budgets.Where(x => x.CostCenterId == query.CostCenterId.Value);
++            }
++
++            return await budgets
++                .Select(x => new PlanningComparisonRow(
++                    x.PeriodStartUtc,
++                    x.FinanceAccountId,
++                    x.FinanceAccount.Code,
++                    x.FinanceAccount.Name,
++                    includesCostCenters ? x.CostCenterId : null,
++                    x.Amount,
++                    x.Currency))
++                .ToListAsync(cancellationToken);
++        }
++
++        var forecasts = _dbContext.Forecasts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.PeriodStartUtc >= periodStartUtc && x.PeriodStartUtc < endExclusiveUtc);
++
++        if (!string.IsNullOrWhiteSpace(normalizedVersion))
++        {
++            forecasts = forecasts.Where(x => x.Version == normalizedVersion);
++        }
++
++        if (query.FinanceAccountId.HasValue)
++        {
++            forecasts = forecasts.Where(x => x.FinanceAccountId == query.FinanceAccountId.Value);
++        }
++
++        if (includesCostCenters && query.CostCenterId.HasValue)
++        {
++            forecasts = forecasts.Where(x => x.CostCenterId == query.CostCenterId.Value);
++        }
++
++        return await forecasts
++            .Select(x => new PlanningComparisonRow(
++                x.PeriodStartUtc,
++                x.FinanceAccountId,
++                x.FinanceAccount.Code,
++                x.FinanceAccount.Name,
++                includesCostCenters ? x.CostCenterId : null,
++                x.Amount,
++                x.Currency))
++            .ToListAsync(cancellationToken);
++    }
++
++    private async Task<bool> AreCostCentersEnabledAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var settings = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.Id == companyId)
++            .Select(x => x.Settings)
++            .SingleOrDefaultAsync(cancellationToken);
++
++        if (settings?.FeatureFlags is null || settings.FeatureFlags.Count == 0)
++        {
++            return false;
++        }
++
++        return CostCenterFeatureFlagKeys.Any(key => settings.FeatureFlags.TryGetValue(key, out var enabled) && enabled);
++    }
++
++    // Variance percentage is always calculated as (actual - comparison) / comparison * 100.
++    private static decimal? CalculateVariancePercentage(decimal varianceAmount, decimal comparisonAmount) =>
++        comparisonAmount == 0m
++            ? null
++            : Math.Round(varianceAmount / comparisonAmount * 100m, 2, MidpointRounding.AwayFromZero);
++
++    private static string ResolveVarianceCurrency(IEnumerable<string?> currencies)
++    {
++        var normalized = currencies
++            .Where(x => !string.IsNullOrWhiteSpace(x))
++            .Select(x => x!.Trim().ToUpperInvariant())
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++
++        return normalized.Length switch
++        {
++            0 => "USD",
++            1 => normalized[0],
++            _ => "MIXED"
++        };
++    }
++
++    private sealed record VarianceGroupingKey(DateTime PeriodStartUtc, Guid FinanceAccountId, Guid? CostCenterId);
++    private sealed record PlanningComparisonRow(DateTime PeriodStartUtc, Guid FinanceAccountId, string AccountCode, string AccountName, Guid? CostCenterId, decimal Amount, string Currency);
++    private sealed record ActualLedgerRow(DateTime PostedAtUtc, Guid FinanceAccountId, Guid? CostCenterId, decimal Amount, string Currency);
++    private sealed record AggregatedActualRow(decimal Amount, string Currency);
++    private sealed record AggregatedComparisonRow(VarianceGroupingKey Key, string AccountCode, string AccountName, Guid? CostCenterId, decimal Amount, string Currency);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 503d1c2..95025aa 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -3129,12 +3129,14 @@ internal sealed class LedgerEntryLineConfiguration : IEntityTypeConfiguration<Le
+         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+         builder.Property(x => x.LedgerEntryId).HasColumnName("ledger_entry_id").IsRequired();
+         builder.Property(x => x.FinanceAccountId).HasColumnName("finance_account_id").IsRequired();
++        builder.Property(x => x.CostCenterId).HasColumnName("cost_center_id");
+         builder.Property(x => x.DebitAmount).HasColumnName("debit_amount").HasColumnType("decimal(18,2)").IsRequired();
+         builder.Property(x => x.CreditAmount).HasColumnName("credit_amount").HasColumnType("decimal(18,2)").IsRequired();
+         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
+         builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(500);
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+ 
++        builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId, x.CostCenterId });
+         builder.HasIndex(x => new { x.CompanyId, x.LedgerEntryId });
+         builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId });
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423090000_AddLedgerLineCostCenterForVariance.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423090000_AddLedgerLineCostCenterForVariance.cs
+new file mode 100644
+index 0000000..2640b36
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423090000_AddLedgerLineCostCenterForVariance.cs
+@@ -0,0 +1,46 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddLedgerLineCostCenterForVariance : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "cost_center_id",
++                table: "ledger_entry_lines",
++                type: guidType,
++                nullable: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_ledger_entry_lines_company_id_finance_account_id_cost_center_id",
++                table: "ledger_entry_lines",
++                columns: new[] { "company_id", "finance_account_id", "cost_center_id" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropIndex(
++                name: "IX_ledger_entry_lines_company_id_finance_account_id_cost_center_id",
++                table: "ledger_entry_lines");
++
++            migrationBuilder.DropColumn(
++                name: "cost_center_id",
++                table: "ledger_entry_lines");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceVarianceIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceVarianceIntegrationTests.cs
+new file mode 100644
+index 0000000..3c84fc7
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceVarianceIntegrationTests.cs
+@@ -0,0 +1,425 @@
++using System.Net;
++using System.Net.Http.Json;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private static readonly DateTime April2026 = new(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinanceVarianceIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Variance_endpoint_returns_actual_vs_budget_rows_grouped_by_period_account_and_cost_center()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/variance?periodStartUtc=2026-04-01T00:00:00Z&comparisonType=budget&version=baseline");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<FinanceVarianceResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!.CompanyId);
++        Assert.Equal("budget", payload.ComparisonType);
++        Assert.Equal(April2026, payload.PeriodStartUtc);
++        Assert.Equal(April2026, payload.PeriodEndUtc);
++        Assert.True(payload.IncludesCostCenters);
++        Assert.Equal("baseline", payload.Version);
++        Assert.Equal(3, payload.Rows.Count);
++        Assert.Equal(2300m, payload.Rows.Sum(x => x.ActualAmount));
++        Assert.Equal(2250m, payload.Rows.Sum(x => x.ComparisonAmount));
++
++        var payrollOps = Assert.Single(payload.Rows.Where(x => x.AccountCode == "5000" && x.CostCenterId == seed.OperationsCostCenterId));
++        Assert.Equal(900m, payrollOps.ActualAmount);
++        Assert.Equal(1000m, payrollOps.ComparisonAmount);
++        Assert.Equal(-100m, payrollOps.VarianceAmount);
++        Assert.Equal(-10m, payrollOps.VariancePercentage);
++
++        var payrollSales = Assert.Single(payload.Rows.Where(x => x.AccountCode == "5000" && x.CostCenterId == seed.SalesCostCenterId));
++        Assert.Equal(1100m, payrollSales.ActualAmount);
++        Assert.Equal(1000m, payrollSales.ComparisonAmount);
++        Assert.Equal(100m, payrollSales.VarianceAmount);
++        Assert.Equal(10m, payrollSales.VariancePercentage);
++
++        var software = Assert.Single(payload.Rows.Where(x => x.AccountCode == "5100" && x.CostCenterId is null));
++        Assert.Equal(300m, software.ActualAmount);
++        Assert.Equal(250m, software.ComparisonAmount);
++        Assert.Equal(50m, software.VarianceAmount);
++        Assert.Equal(20m, software.VariancePercentage);
++    }
++
++    [Fact]
++    public async Task Variance_endpoint_returns_actual_vs_forecast_rows_for_the_requested_company_only()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/variance?periodStartUtc=2026-04-01T00:00:00Z&comparisonType=forecast&version=baseline");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<FinanceVarianceResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("forecast", payload!.ComparisonType);
++        Assert.Equal(3, payload.Rows.Count);
++        Assert.Equal(2150m, payload.Rows.Sum(x => x.ComparisonAmount));
++        Assert.DoesNotContain(payload.Rows, x => x.ActualAmount == 700m && x.ComparisonAmount == 700m);
++
++        var payrollOps = Assert.Single(payload.Rows.Where(x => x.AccountCode == "5000" && x.CostCenterId == seed.OperationsCostCenterId));
++        Assert.Equal(900m, payrollOps.ActualAmount);
++        Assert.Equal(750m, payrollOps.ComparisonAmount);
++        Assert.Equal(150m, payrollOps.VarianceAmount);
++        Assert.Equal(20m, payrollOps.VariancePercentage);
++
++        var payrollSales = Assert.Single(payload.Rows.Where(x => x.AccountCode == "5000" && x.CostCenterId == seed.SalesCostCenterId));
++        Assert.Equal(1100m, payrollSales.ActualAmount);
++        Assert.Equal(1000m, payrollSales.ComparisonAmount);
++        Assert.Equal(100m, payrollSales.VarianceAmount);
++        Assert.Equal(10m, payrollSales.VariancePercentage);
++
++        var software = Assert.Single(payload.Rows.Where(x => x.AccountCode == "5100" && x.CostCenterId is null));
++        Assert.Equal(300m, software.ActualAmount);
++        Assert.Equal(400m, software.ComparisonAmount);
++        Assert.Equal(-100m, software.VarianceAmount);
++        Assert.Equal(-25m, software.VariancePercentage);
++    }
++
++    [Fact]
++    public async Task Variance_endpoint_returns_empty_rows_when_budget_slice_has_no_comparison_data()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/variance?periodStartUtc=2026-05-01T00:00:00Z&comparisonType=budget&version=baseline");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<FinanceVarianceResponse>();
++        Assert.NotNull(payload);
++        Assert.Empty(payload!.Rows);
++        Assert.True(payload.IncludesCostCenters);
++    }
++
++    [Fact]
++    public async Task Variance_endpoint_returns_empty_rows_when_forecast_slice_has_no_comparison_data()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/variance?periodStartUtc=2026-05-01T00:00:00Z&comparisonType=forecast&version=baseline");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<FinanceVarianceResponse>();
++        Assert.NotNull(payload);
++        Assert.Empty(payload!.Rows);
++        Assert.True(payload.IncludesCostCenters);
++    }
++
++    private async Task<VarianceSeed> SeedAsync()
++    {
++        var ownerUserId = Guid.NewGuid();
++        var subject = $"variance-owner-{Guid.NewGuid():N}";
++        var email = $"{subject}@example.com";
++        const string displayName = "Variance Owner";
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++
++        var payrollAccountId = Guid.NewGuid();
++        var softwareAccountId = Guid.NewGuid();
++        var clearingAccountId = Guid.NewGuid();
++        var otherPayrollAccountId = Guid.NewGuid();
++        var otherClearingAccountId = Guid.NewGuid();
++        var operationsCostCenterId = Guid.NewGuid();
++        var salesCostCenterId = Guid.NewGuid();
++        var fiscalPeriodId = Guid.NewGuid();
++        var otherFiscalPeriodId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(ownerUserId, email, displayName, "dev-header", subject));
++
++            var company = new Company(companyId, "Variance Company");
++            company.UpdateBrandingAndSettings(
++                null,
++                new CompanySettings
++                {
++                    FeatureFlags = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["cost_centers"] = true
++                    }
++                });
++            company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, April2026, April2026);
++
++            var otherCompany = new Company(otherCompanyId, "Other Variance Company");
++            otherCompany.UpdateBrandingAndSettings(
++                null,
++                new CompanySettings
++                {
++                    FeatureFlags = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["cost_centers"] = true
++                    }
++                });
++            otherCompany.SetFinanceSeedStatus(FinanceSeedingState.Seeded, April2026, April2026);
++
++            dbContext.Companies.AddRange(company, otherCompany);
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                ownerUserId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++
++            dbContext.FinanceAccounts.AddRange(
++                new FinanceAccount(
++                    payrollAccountId,
++                    companyId,
++                    "5000",
++                    "Payroll",
++                    "expense",
++                    "USD",
++                    0m,
++                    new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++                new FinanceAccount(
++                    softwareAccountId,
++                    companyId,
++                    "5100",
++                    "Software",
++                    "expense",
++                    "USD",
++                    0m,
++                    new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++                new FinanceAccount(
++                    clearingAccountId,
++                    companyId,
++                    "2100",
++                    "Accrued Expenses",
++                    "liability",
++                    "USD",
++                    0m,
++                    new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++                new FinanceAccount(
++                    otherPayrollAccountId,
++                    otherCompanyId,
++                    "5000",
++                    "Payroll",
++                    "expense",
++                    "USD",
++                    0m,
++                    new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++                new FinanceAccount(
++                    otherClearingAccountId,
++                    otherCompanyId,
++                    "2100",
++                    "Accrued Expenses",
++                    "liability",
++                    "USD",
++                    0m,
++                    new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++
++            dbContext.FiscalPeriods.AddRange(
++                new FiscalPeriod(
++                    fiscalPeriodId,
++                    companyId,
++                    "2026-04",
++                    April2026,
++                    April2026.AddMonths(1)),
++                new FiscalPeriod(
++                    otherFiscalPeriodId,
++                    otherCompanyId,
++                    "2026-04",
++                    April2026,
++                    April2026.AddMonths(1)));
++
++            dbContext.Budgets.AddRange(
++                new Budget(Guid.NewGuid(), companyId, payrollAccountId, April2026, "baseline", 1000m, "USD", operationsCostCenterId),
++                new Budget(Guid.NewGuid(), companyId, payrollAccountId, April2026, "baseline", 1000m, "USD", salesCostCenterId),
++                new Budget(Guid.NewGuid(), companyId, softwareAccountId, April2026, "baseline", 250m, "USD"),
++                new Budget(Guid.NewGuid(), otherCompanyId, otherPayrollAccountId, April2026, "baseline", 700m, "USD", operationsCostCenterId));
++
++            dbContext.Forecasts.AddRange(
++                new Forecast(Guid.NewGuid(), companyId, payrollAccountId, April2026, "baseline", 750m, "USD", operationsCostCenterId),
++                new Forecast(Guid.NewGuid(), companyId, payrollAccountId, April2026, "baseline", 1000m, "USD", salesCostCenterId),
++                new Forecast(Guid.NewGuid(), companyId, softwareAccountId, April2026, "baseline", 400m, "USD"),
++                new Forecast(Guid.NewGuid(), otherCompanyId, otherPayrollAccountId, April2026, "baseline", 700m, "USD", operationsCostCenterId));
++
++            AddPostedActualEntry(
++                dbContext,
++                companyId,
++                fiscalPeriodId,
++                "LE-APR-001",
++                new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc),
++                payrollAccountId,
++                clearingAccountId,
++                900m,
++                operationsCostCenterId);
++            AddPostedActualEntry(
++                dbContext,
++                companyId,
++                fiscalPeriodId,
++                "LE-APR-002",
++                new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc),
++                payrollAccountId,
++                clearingAccountId,
++                1100m,
++                salesCostCenterId);
++            AddPostedActualEntry(
++                dbContext,
++                companyId,
++                fiscalPeriodId,
++                "LE-APR-003",
++                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                softwareAccountId,
++                clearingAccountId,
++                300m,
++                null);
++
++            AddPostedActualEntry(
++                dbContext,
++                otherCompanyId,
++                otherFiscalPeriodId,
++                "LE-APR-900",
++                new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc),
++                otherPayrollAccountId,
++                otherClearingAccountId,
++                700m,
++                operationsCostCenterId);
++
++            return Task.CompletedTask;
++        });
++
++        return new VarianceSeed(
++            companyId,
++            subject,
++            email,
++            displayName,
++            operationsCostCenterId,
++            salesCostCenterId);
++    }
++
++    private static void AddPostedActualEntry(
++        Infrastructure.Persistence.VirtualCompanyDbContext dbContext,
++        Guid companyId,
++        Guid fiscalPeriodId,
++        string entryNumber,
++        DateTime postedAtUtc,
++        Guid expenseAccountId,
++        Guid offsetAccountId,
++        decimal amount,
++        Guid? costCenterId)
++    {
++        var entryId = Guid.NewGuid();
++        dbContext.LedgerEntries.Add(new LedgerEntry(
++            entryId,
++            companyId,
++            fiscalPeriodId,
++            entryNumber,
++            postedAtUtc,
++            LedgerEntryStatuses.Posted,
++            $"Actual entry {entryNumber}",
++            postedAtUtc: postedAtUtc));
++
++        dbContext.LedgerEntryLines.AddRange(
++            new LedgerEntryLine(
++                Guid.NewGuid(),
++                companyId,
++                entryId,
++                expenseAccountId,
++                amount,
++                0m,
++                "USD",
++                costCenterId,
++                $"Expense line {entryNumber}",
++                postedAtUtc),
++            new LedgerEntryLine(
++                Guid.NewGuid(),
++                companyId,
++                entryId,
++                offsetAccountId,
++                0m,
++                amount,
++                "USD",
++                null,
++                $"Offset line {entryNumber}",
++                postedAtUtc));
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private sealed record VarianceSeed(
++        Guid CompanyId,
++        string Subject,
++        string Email,
++        string DisplayName,
++        Guid OperationsCostCenterId,
++        Guid SalesCostCenterId);
++
++    private sealed class FinanceVarianceResponse
++    {
++        public Guid CompanyId { get; set; }
++        public string ComparisonType { get; set; } = string.Empty;
++        public DateTime PeriodStartUtc { get; set; }
++        public DateTime PeriodEndUtc { get; set; }
++        public string? Version { get; set; }
++        public bool IncludesCostCenters { get; set; }
++        public List<FinanceVarianceRowResponse> Rows { get; set; } = [];
++    }
++
++    private sealed class FinanceVarianceRowResponse
++    {
++        public DateTime PeriodStartUtc { get; set; }
++        public Guid FinanceAccountId { get; set; }
++        public string AccountCode { get; set; } = string.Empty;
++        public string AccountName { get; set; } = string.Empty;
++        public Guid? CostCenterId { get; set; }
++        public string? CostCenterCode { get; set; }
++        public string? CostCenterName { get; set; }
++        public decimal ActualAmount { get; set; }
++        public decimal ComparisonAmount { get; set; }
++        public decimal VarianceAmount { get; set; }
++        public decimal? VariancePercentage { get; set; }
++        public string Currency { get; set; } = string.Empty;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+index b1df7a3..17d0481 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+@@ -4879,6 +4879,9 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     b.Property<Guid>("FinanceAccountId")
+                         .HasColumnType("TEXT")
+                         .HasColumnName("finance_account_id");
++
++                    b.Property<Guid?>("CostCenterId")
++                        .HasColumnType("TEXT")
++                        .HasColumnName("cost_center_id");
+ 
+                     b.Property<Guid>("Id")
+                         .ValueGeneratedOnAdd()
+@@ -4909,6 +4912,9 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     b.HasIndex("CompanyId", "FinanceAccountId")
+                         .HasDatabaseName("IX_ledger_entry_lines_company_id_finance_account_id");
+ 
++                    b.HasIndex("CompanyId", "FinanceAccountId", "CostCenterId")
++                        .HasDatabaseName("IX_ledger_entry_lines_company_id_finance_account_id_cost_center_id");
++
+                     b.HasIndex("CompanyId", "LedgerEntryId")
+                         .HasDatabaseName("IX_ledger_entry_lines_company_id_ledger_entry_id");
+ 
+END_OF_PATCH

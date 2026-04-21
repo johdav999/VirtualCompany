@@ -32,10 +32,18 @@ public sealed class FinanceSeedDatasetGeneratorTests
         Assert.NotEmpty(dataset.BillIds);
         Assert.NotEmpty(dataset.SupplierIds);
         Assert.NotEmpty(dataset.RecurringExpenses);
+        Assert.NotEmpty(await dbContext.Payments.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
         Assert.NotEmpty(dataset.CategoryIds);
+        Assert.NotEmpty(dataset.PaymentIds);
         Assert.InRange(dataset.CategoryIds.Count, 10, int.MaxValue);
 
         var transactions = await dbContext.FinanceTransactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId)
+            .ToArrayAsync();
+
+        var payments = await dbContext.Payments
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == companyId)
@@ -47,6 +55,10 @@ public sealed class FinanceSeedDatasetGeneratorTests
             Assert.Contains(transaction.Id, dataset.TransactionIds);
             Assert.Contains(transaction.TransactionType, dataset.CategoryIds);
         });
+
+        Assert.All(payments, payment => Assert.InRange(payment.PaymentDate, dataset.WindowStartUtc, dataset.WindowEndUtc));
+        Assert.Contains(payments, payment => payment.PaymentType == "incoming");
+        Assert.Contains(payments, payment => payment.PaymentType == "outgoing");
     }
 
     [Fact]

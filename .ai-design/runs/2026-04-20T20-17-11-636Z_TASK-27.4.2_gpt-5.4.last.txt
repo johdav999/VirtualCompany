@@ -1,0 +1,1275 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 7a4d3d1..c5a3b6f 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -146,7 +146,32 @@ public sealed record GetFinanceInsightsQuery(
+     Guid CompanyId,
+     DateTime? AsOfUtc = null,
+     int ExpenseWindowDays = 90,
+     int TrendWindowDays = 30,
+-    int PayableWindowDays = 14);
++    int PayableWindowDays = 14,
++    bool PreferSnapshot = true);
++
++public sealed record RefreshFinanceInsightsSnapshotCommand(
++    Guid CompanyId,
++    DateTime? AsOfUtc = null,
++    int ExpenseWindowDays = 90,
++    int TrendWindowDays = 30,
++    int PayableWindowDays = 14,
++    string SnapshotKey = FinanceInsightSnapshotKeys.Default,
++    TimeSpan? Retention = null);
++
++public sealed record QueueFinanceInsightsSnapshotRefreshCommand(
++    Guid CompanyId,
++    DateTime? AsOfUtc = null,
++    int ExpenseWindowDays = 90,
++    int TrendWindowDays = 30,
++    int PayableWindowDays = 14,
++    string SnapshotKey = FinanceInsightSnapshotKeys.Default,
++    int RetentionMinutes = 360,
++    bool ResetAttempts = false,
++    string? CorrelationId = null);
++
++public static class FinanceInsightSnapshotKeys
++{
++    public const string Default = "default";
++
++    public static string Normalize(string? value) => string.IsNullOrWhiteSpace(value) ? Default : value.Trim().ToLowerInvariant();
++}
+ 
+ public sealed record GetFinanceAgentQueryQuery(
+     Guid CompanyId,
+@@ -223,11 +248,24 @@ public sealed record FinanceInsightsDto(
+     DateTime GeneratedAt,
+     string Currency,
+     string Headline,
+     string Summary,
+     string? DataCoverageNote,
++    bool FromSnapshot,
++    DateTime? SnapshotExpiresAtUtc,
++    IReadOnlyList<string> Highlights,
++    IReadOnlyList<FinanceNarrativeHintDto> NarrativeHints,
+     FinanceTopExpensesInsightDto TopExpenses,
+     FinanceRevenueTrendInsightDto RevenueTrend,
+     FinanceBurnRateInsightDto BurnRate,
+     FinanceOverdueCustomerRiskInsightDto OverdueCustomerRisk,
+     FinancePayablePressureInsightDto PayablePressure);
++
++public sealed record FinanceNarrativeHintDto(
++    string Section,
++    string Tone,
++    string Summary,
++    string SuggestedPromptFragment);
++
++public sealed record FinanceInsightsSnapshotRefreshResultDto(
++    Guid CompanyId,
++    string SnapshotKey,
++    string CacheKey,
++    DateTime RequestedAtUtc,
++    string CorrelationId,
++    bool Queued,
++    bool Refreshed,
++    DateTime? ExpiresAtUtc,
++    FinanceInsightsDto? Insights);
+@@ -1705,6 +1743,15 @@ public interface IFinanceReadService
+     Task<FinanceInsightsDto> GetInsightsAsync(
+         GetFinanceInsightsQuery query,
+         CancellationToken cancellationToken);
+ 
++    Task<FinanceInsightsSnapshotRefreshResultDto> RefreshInsightsSnapshotAsync(
++        RefreshFinanceInsightsSnapshotCommand command,
++        CancellationToken cancellationToken);
++
++    Task<FinanceInsightsSnapshotRefreshResultDto> QueueInsightsSnapshotRefreshAsync(
++        QueueFinanceInsightsSnapshotRefreshCommand command,
++        CancellationToken cancellationToken);
++
+     Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
+         GetFinanceAgentQueryQuery query,
+         CancellationToken cancellationToken);
+@@ -1750,6 +1797,11 @@ public interface IFinanceBootstrapRerunService
+         RerunFinanceBootstrapCommand command,
+         CancellationToken cancellationToken);
+ }
++
++public interface IFinanceInsightsSnapshotJobRunner
++{
++    Task<int> RunDueAsync(CancellationToken cancellationToken);
++}
+ 
+ public interface IPlanningBaselineService
+ {
+diff --git a/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
+index 364e491..4ef7241 100644
+--- a/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
+@@ -241,4 +241,5 @@ public static class BackgroundExecutionRelatedEntityTypes
+     public const string Schedule = "schedule";
+     public const string FiscalPeriod = "fiscal_period";
+     public const string FinanceSeed = "finance_seed";
++    public const string FinanceInsightSnapshot = "finance_insight_snapshot";
+ }
+diff --git a/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs b/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
+index 1cb06ca..1a0fb90 100644
+--- a/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
+@@ -7,7 +7,8 @@ public enum BackgroundExecutionType
+     LongRunningTask = 4,
+     OutboxDispatch = 5,
+     FinanceSeed = 6,
+-    FinanceReportRegeneration = 7
++    FinanceReportRegeneration = 7,
++    FinanceInsightRefresh = 8
+ }
+ 
+ public enum BackgroundExecutionStatus
+@@ -56,7 +57,8 @@ public static class BackgroundExecutionTypeValues
+         [BackgroundExecutionType.Retry] = "retry",
+         [BackgroundExecutionType.LongRunningTask] = "long_running_task",
+         [BackgroundExecutionType.OutboxDispatch] = "outbox_dispatch",
+         [BackgroundExecutionType.FinanceSeed] = "finance_seed",
+-        [BackgroundExecutionType.FinanceReportRegeneration] = "finance_report_regeneration"
++        [BackgroundExecutionType.FinanceReportRegeneration] = "finance_report_regeneration",
++        [BackgroundExecutionType.FinanceInsightRefresh] = "finance_insight_refresh"
+     };
+ 
+     private static readonly IReadOnlyDictionary<string, BackgroundExecutionType> ReverseValues =
+diff --git a/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs b/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs
+index 7708250..62425a3 100644
+--- a/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs
++++ b/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs
+@@ -24,6 +24,7 @@ public sealed class FinanceInsightsController : ControllerBase
+         [FromQuery] int expenseWindowDays = 90,
+         [FromQuery] int trendWindowDays = 30,
+         [FromQuery] int payableWindowDays = 14,
++        [FromQuery] bool refreshSnapshot = false,
+         CancellationToken cancellationToken = default)
+     {
+         try
+@@ -31,7 +32,7 @@ public sealed class FinanceInsightsController : ControllerBase
+             var result = await _financeReadService.GetInsightsAsync(
+-                new GetFinanceInsightsQuery(companyId, asOfUtc, expenseWindowDays, trendWindowDays, payableWindowDays),
++                new GetFinanceInsightsQuery(companyId, asOfUtc, expenseWindowDays, trendWindowDays, payableWindowDays, PreferSnapshot: !refreshSnapshot),
+                 cancellationToken);
+             return Ok(result);
+         }
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 29ca246..4bc803d 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -941,6 +941,31 @@ public sealed partial class InternalFinanceController : ControllerBase
+                 cancellationToken));
+ 
+     [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++    [HttpPost("insights/refresh")]
++    public async Task<ActionResult<FinanceInsightsSnapshotRefreshResultDto>> RefreshInsightsSnapshotAsync(
++        Guid companyId,
++        [FromBody] RefreshFinanceInsightsSnapshotRequest? request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () =>
++            {
++                var snapshotKey = FinanceInsightSnapshotKeys.Normalize(request?.SnapshotKey);
++                if (request?.RunInBackground == true)
++                {
++                    return _financeReadService.QueueInsightsSnapshotRefreshAsync(
++                        new QueueFinanceInsightsSnapshotRefreshCommand(
++                            companyId,
++                            request.AsOfUtc,
++                            request.ExpenseWindowDays,
++                            request.TrendWindowDays,
++                            request.PayableWindowDays,
++                            snapshotKey,
++                            request.RetentionMinutes,
++                            request.ResetAttempts,
++                            request.CorrelationId),
++                        cancellationToken);
++                }
++
++                return _financeReadService.RefreshInsightsSnapshotAsync(
++                    new RefreshFinanceInsightsSnapshotCommand(
++                        companyId,
++                        request?.AsOfUtc,
++                        request?.ExpenseWindowDays ?? 90,
++                        request?.TrendWindowDays ?? 30,
++                        request?.PayableWindowDays ?? 14,
++                        snapshotKey,
++                        TimeSpan.FromMinutes(request?.RetentionMinutes ?? 360)),
++                    cancellationToken);
++            });
++
++    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+     [HttpPost("sandbox-admin/seed-generation")]
+     public async Task<ActionResult<FinanceSandboxSeedGenerationResponse>> GenerateSandboxSeedDatasetAsync(
+         Guid companyId,
+@@ -3499,6 +3524,17 @@ public sealed record RerunFinanceBootstrapRequest(
+     int BatchSize = 250,
+     string? AnomalyScenarioProfile = null);
+ 
++public sealed record RefreshFinanceInsightsSnapshotRequest(
++    DateTime? AsOfUtc = null,
++    int ExpenseWindowDays = 90,
++    int TrendWindowDays = 30,
++    int PayableWindowDays = 14,
++    string? SnapshotKey = null,
++    int RetentionMinutes = 360,
++    bool RunInBackground = false,
++    bool ResetAttempts = false,
++    string? CorrelationId = null);
++
+ public sealed record AdvanceCompanySimulationTimeRequest(
+     int TotalHours,
+     int? ExecutionStepHours = null,
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index 28707d0..0f3b6df 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -1921,16 +1921,7 @@ static async Task InitializeDatabaseAsync(
+         else if (failFastOnPendingMigrations)
+         {
+             var pendingMigrations = await dbContext.Database.GetPendingMigrationsAsync(app.Lifetime.ApplicationStopping);
+-            if (pendingMigrations.Any())
+-            {
+-                var pendingList = string.Join(", ", pendingMigrations);
+-                logger.LogCritical(
+-                    "Database schema is not up to date. Pending migrations: {PendingMigrations}. Enable DatabaseInitialization:ApplyMigrationsOnStartup or run 'dotnet ef database update' before starting the API.",
+-                    pendingList);
+-                throw new InvalidOperationException(
+-                    $"Database schema is not up to date. Pending migrations: {pendingList}. Enable DatabaseInitialization:ApplyMigrationsOnStartup or run 'dotnet ef database update' before starting the API.");
+-            }
++            StartupMigrationValidation.EnsureNoPendingMigrations(pendingMigrations, logger);
+         }
+     }
+     else if (app.Environment.IsDevelopment())
+diff --git a/src/VirtualCompany.Api/StartupMigrationValidation.cs b/src/VirtualCompany.Api/StartupMigrationValidation.cs
+new file mode 100644
+index 0000000..9592bc7
+--- /dev/null
++++ b/src/VirtualCompany.Api/StartupMigrationValidation.cs
+@@ -0,0 +1,24 @@
++public static class StartupMigrationValidation
++{
++    public static void EnsureNoPendingMigrations(IEnumerable<string> pendingMigrations, ILogger logger)
++    {
++        ArgumentNullException.ThrowIfNull(pendingMigrations);
++        ArgumentNullException.ThrowIfNull(logger);
++
++        var pending = pendingMigrations
++            .Where(migration => !string.IsNullOrWhiteSpace(migration))
++            .Select(migration => migration.Trim())
++            .ToArray();
++
++        if (pending.Length == 0)
++        {
++            return;
++        }
++
++        var pendingList = string.Join(", ", pending);
++        logger.LogCritical(
++            "Database schema is not up to date. Pending migrations: {PendingMigrations}. Enable DatabaseInitialization:ApplyMigrationsOnStartup or run 'dotnet ef database update' before starting the API.",
++            pendingList);
++        throw new InvalidOperationException(
++            $"Database schema is not up to date. Pending migrations: {pendingList}. Enable DatabaseInitialization:ApplyMigrationsOnStartup or run 'dotnet ef database update' before starting the API.");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index e112188..7c4f53f 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -111,6 +111,12 @@ public static class DependencyInjection
+         services.AddOptions<FinanceApprovalTaskBackfillWorkerOptions>()
+             .Bind(configuration.GetSection(FinanceApprovalTaskBackfillWorkerOptions.SectionName))
+             .PostConfigure(options => options.BatchSize = Math.Max(1, options.BatchSize))
+             .PostConfigure(options => options.BackfillBatchSize = Math.Max(1, options.BackfillBatchSize))
+             .PostConfigure(options => options.PollIntervalMilliseconds = Math.Max(100, options.PollIntervalMilliseconds));
++        services.AddOptions<FinanceInsightsSnapshotWorkerOptions>()
++            .Bind(configuration.GetSection(FinanceInsightsSnapshotWorkerOptions.SectionName))
++            .PostConfigure(options =>
++            {
++                options.BatchSize = Math.Max(1, options.BatchSize);
++                options.PollIntervalMilliseconds = Math.Max(100, options.PollIntervalMilliseconds);
++            });
+         services.AddOptions<FinanceInitializationOptions>()
+             .Bind(configuration.GetSection(FinanceInitializationOptions.SectionName))
+             .PostConfigure(options =>
+@@ -251,6 +257,7 @@ public static class DependencyInjection
+         services.AddHostedService<ReportingPeriodRegenerationBackgroundService>();
+         services.AddHostedService<FinanceApprovalTaskBackfillBackgroundService>();
+         services.AddHostedService<CompanySimulationProgressionBackgroundService>();
++        services.AddHostedService<FinanceInsightsSnapshotBackgroundService>();
+         services.AddHostedService<FinanceSeedBackgroundService>();
+@@ -395,6 +402,7 @@ public static class DependencyInjection
+         services.AddScoped<IReportingPeriodCloseService, CompanyReportingPeriodCloseService>();
+         services.AddScoped<IReportingPeriodRegenerationJobRunner, ReportingPeriodRegenerationJobRunner>();
+         services.AddScoped<IFinanceApprovalTaskBackfillJobRunner, FinanceApprovalTaskBackfillJobRunner>();
++        services.AddScoped<IFinanceInsightsSnapshotJobRunner, FinanceInsightsSnapshotJobRunner>();
+         services.AddSingleton<IFinanceSeedBackfillExecutionScheduler, FinanceSeedBackfillExecutionScheduler>();
+         services.AddSingleton<IFinanceSeedBackfillDelayStrategy, SystemFinanceSeedBackfillDelayStrategy>();
+         services.AddScoped<IFinanceSeedingStateResolver, CompanyFinanceSeedingStateResolver>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Insights.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Insights.cs
+index 6f95469..f38550c 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Insights.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Insights.cs
+@@ -1,11 +1,139 @@
++using System.Text.Json;
+ using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Caching.Distributed;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Entities;
+ 
+ namespace VirtualCompany.Infrastructure.Finance;
+ 
+ public sealed partial class CompanyFinanceReadService
+ {
++    private static readonly JsonSerializerOptions InsightSnapshotSerializerOptions = new(JsonSerializerDefaults.Web);
++
+     public async Task<FinanceInsightsDto> GetInsightsAsync(
+         GetFinanceInsightsQuery query,
+         CancellationToken cancellationToken)
+     {
+         EnsureTenant(query.CompanyId);
+         await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++
++        var parameters = NormalizeInsightsQuery(
++            query.CompanyId,
++            query.AsOfUtc,
++            query.ExpenseWindowDays,
++            query.TrendWindowDays,
++            query.PayableWindowDays,
++            FinanceInsightSnapshotKeys.Default);
++
++        if (query.PreferSnapshot)
++        {
++            var cached = await TryGetCachedInsightsAsync(parameters, cancellationToken);
++            if (cached is not null)
++            {
++                return cached;
++            }
++        }
++
++        return await BuildInsightsAsync(parameters, fromSnapshot: false, snapshotExpiresAtUtc: null, cancellationToken);
++    }
++
++    public async Task<FinanceInsightsSnapshotRefreshResultDto> RefreshInsightsSnapshotAsync(
++        RefreshFinanceInsightsSnapshotCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        await EnsureFinanceInitializedAsync(command.CompanyId, cancellationToken);
++
++        var parameters = NormalizeInsightsQuery(
++            command.CompanyId,
++            command.AsOfUtc,
++            command.ExpenseWindowDays,
++            command.TrendWindowDays,
++            command.PayableWindowDays,
++            command.SnapshotKey);
++
++        var refreshed = await BuildInsightsAsync(parameters, fromSnapshot: false, snapshotExpiresAtUtc: null, cancellationToken);
++        var retention = NormalizeSnapshotRetention(command.Retention);
++        var expiresAtUtc = GetUtcNow().Add(retention);
++
++        if (_insightSnapshotCache is not null)
++        {
++            var payload = JsonSerializer.Serialize(
++                new FinanceInsightsSnapshotCacheEnvelope(
++                    parameters.SnapshotKey,
++                    parameters.CacheKey,
++                    expiresAtUtc,
++                    refreshed with { SnapshotExpiresAtUtc = expiresAtUtc }),
++                InsightSnapshotSerializerOptions);
++
++            await _insightSnapshotCache.SetStringAsync(
++                parameters.CacheKey,
++                payload,
++                new DistributedCacheEntryOptions
++                {
++                    AbsoluteExpirationRelativeToNow = retention
++                },
++                cancellationToken);
++        }
++
++        return new FinanceInsightsSnapshotRefreshResultDto(
++            command.CompanyId,
++            parameters.SnapshotKey,
++            parameters.CacheKey,
++            GetUtcNow(),
++            $"finance-insights-refresh:{command.CompanyId:N}:{parameters.SnapshotKey}",
++            Queued: false,
++            Refreshed: true,
++            expiresAtUtc,
++            refreshed with { SnapshotExpiresAtUtc = expiresAtUtc });
++    }
++
++    public async Task<FinanceInsightsSnapshotRefreshResultDto> QueueInsightsSnapshotRefreshAsync(
++        QueueFinanceInsightsSnapshotRefreshCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        await EnsureFinanceInitializedAsync(command.CompanyId, cancellationToken);
++
++        var parameters = NormalizeInsightsQuery(
++            command.CompanyId,
++            command.AsOfUtc,
++            command.ExpenseWindowDays,
++            command.TrendWindowDays,
++            command.PayableWindowDays,
++            command.SnapshotKey);
++
++        var descriptor = new FinanceInsightSnapshotExecutionDescriptor(
++            parameters.SnapshotKey,
++            command.AsOfUtc?.Date,
++            parameters.ExpenseWindowDays,
++            parameters.TrendWindowDays,
++            parameters.PayableWindowDays,
++            Math.Clamp(command.RetentionMinutes, 15, 60 * 24 * 7));
++        var correlationId = string.IsNullOrWhiteSpace(command.CorrelationId)
++            ? $"finance-insights-refresh:{command.CompanyId:N}:{descriptor.ToStorageValue()}"
++            : command.CorrelationId.Trim();
++        var idempotencyKey = $"finance-insights:{command.CompanyId:N}:{descriptor.ToStorageValue()}";
++        var utcNow = GetUtcNow();
++
++        var execution = await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == command.CompanyId &&
++                     x.ExecutionType == BackgroundExecutionType.FinanceInsightRefresh &&
++                     x.IdempotencyKey == idempotencyKey,
++                cancellationToken);
++
++        if (execution is null)
++        {
++            execution = new BackgroundExecution(
++                Guid.NewGuid(),
++                command.CompanyId,
++                BackgroundExecutionType.FinanceInsightRefresh,
++                BackgroundExecutionRelatedEntityTypes.FinanceInsightSnapshot,
++                descriptor.ToStorageValue(),
++                correlationId,
++                idempotencyKey,
++                maxAttempts: 3);
++            _dbContext.BackgroundExecutions.Add(execution);
++        }
++        else if (command.ResetAttempts || execution.IsTerminal)
++        {
++            execution.Queue(utcNow, correlationId, resetAttempts: command.ResetAttempts);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new FinanceInsightsSnapshotRefreshResultDto(
++            command.CompanyId,
++            parameters.SnapshotKey,
++            parameters.CacheKey,
++            utcNow,
++            correlationId,
++            Queued: true,
++            Refreshed: false,
++            ExpiresAtUtc: null,
++            Insights: null);
++    }
+ 
+-        var generatedAt = DateTime.UtcNow;
+-        var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? generatedAt;
+-        var expenseWindowDays = Math.Clamp(query.ExpenseWindowDays <= 0 ? 90 : query.ExpenseWindowDays, 30, 365);
+-        var trendWindowDays = Math.Clamp(query.TrendWindowDays <= 0 ? 30 : query.TrendWindowDays, 7, 90);
+-        var payableWindowDays = Math.Clamp(query.PayableWindowDays <= 0 ? 14 : query.PayableWindowDays, 7, 60);
++    private async Task<FinanceInsightsDto> BuildInsightsAsync(
++        FinanceInsightQueryParameters parameters,
++        bool fromSnapshot,
++        DateTime? snapshotExpiresAtUtc,
++        CancellationToken cancellationToken)
++    {
++        var generatedAt = parameters.GeneratedAtUtc;
++        var asOfUtc = parameters.AsOfUtc;
++        var expenseWindowDays = parameters.ExpenseWindowDays;
++        var trendWindowDays = parameters.TrendWindowDays;
++        var payableWindowDays = parameters.PayableWindowDays;
+ 
+-        var cashBalance = await GetCashBalanceAsync(new GetFinanceCashBalanceQuery(query.CompanyId, asOfUtc), cancellationToken);
++        var cashBalance = await GetCashBalanceAsync(new GetFinanceCashBalanceQuery(parameters.CompanyId, asOfUtc), cancellationToken);
+         var expenseWindowStartUtc = asOfUtc.Date.AddDays(-expenseWindowDays + 1);
+         var trendWindowStartUtc = asOfUtc.Date.AddDays(-trendWindowDays + 1);
+         var previousTrendWindowStartUtc = trendWindowStartUtc.AddDays(-trendWindowDays);
+@@ -15,7 +143,7 @@ public sealed partial class CompanyFinanceReadService
+         var expenseRows = await _dbContext.FinanceTransactions
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x =>
+-                x.CompanyId == query.CompanyId &&
++                x.CompanyId == parameters.CompanyId &&
+                 x.TransactionUtc >= expenseWindowStartUtc &&
+                 x.TransactionUtc <= asOfUtc &&
+                 x.Amount < 0m)
+@@ -30,7 +158,7 @@ public sealed partial class CompanyFinanceReadService
+         var revenueRows = await _dbContext.FinanceInvoices
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x =>
+-                x.CompanyId == query.CompanyId &&
++                x.CompanyId == parameters.CompanyId &&
+                 x.IssuedUtc >= previousTrendWindowStartUtc &&
+                 x.IssuedUtc < payableWindowEndUtc)
+             .Select(x => new InsightRevenueRow(x.Id, x.IssuedUtc, x.Amount, x.Currency))
+@@ -40,7 +168,7 @@ public sealed partial class CompanyFinanceReadService
+         var invoiceRows = await _dbContext.FinanceInvoices
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == query.CompanyId)
++            .Where(x => x.CompanyId == parameters.CompanyId)
+             .Select(x => new InsightInvoiceRow(
+                 x.Id,
+                 x.CounterpartyId,
+@@ -57,7 +185,7 @@ public sealed partial class CompanyFinanceReadService
+         var billRows = await _dbContext.FinanceBills
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == query.CompanyId)
++            .Where(x => x.CompanyId == parameters.CompanyId)
+             .Select(x => new InsightBillRow(
+                 x.Id,
+                 x.CounterpartyId,
+@@ -75,7 +203,7 @@ public sealed partial class CompanyFinanceReadService
+         var completedIncomingByInvoice = await _dbContext.PaymentAllocations
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x =>
+-                x.CompanyId == query.CompanyId &&
++                x.CompanyId == parameters.CompanyId &&
+                 x.InvoiceId.HasValue &&
+                 x.Payment.Status == PaymentStatuses.Completed &&
+                 x.Payment.PaymentType == PaymentTypes.Incoming &&
+@@ -89,7 +217,7 @@ public sealed partial class CompanyFinanceReadService
+         var completedOutgoingByBill = await _dbContext.PaymentAllocations
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x =>
+-                x.CompanyId == query.CompanyId &&
++                x.CompanyId == parameters.CompanyId &&
+                 x.BillId.HasValue &&
+                 x.Payment.Status == PaymentStatuses.Completed &&
+                 x.Payment.PaymentType == PaymentTypes.Outgoing &&
+@@ -108,6 +236,8 @@ public sealed partial class CompanyFinanceReadService
+         var overdueCustomerRisk = BuildOverdueCustomerRiskInsight(invoiceRows, completedIncomingByInvoice, asOfUtc, currency);
+         var payablePressure = BuildPayablePressureInsight(billRows, completedOutgoingByBill, asOfUtc, payableWindowEndUtc, payableWindowDays, cashBalance.Amount, currency);
+         var dataCoverageNote = BuildCoverageNote(expenseRows.Count, revenueRows.Count, invoiceRows.Count, billRows.Count);
++        var highlights = BuildHighlights(topExpenses, revenueTrend, burnRate, overdueCustomerRisk, payablePressure);
++        var hints = BuildNarrativeHints(topExpenses, revenueTrend, burnRate, overdueCustomerRisk, payablePressure);
+ 
+         return new FinanceInsightsDto(
+-            query.CompanyId,
++            parameters.CompanyId,
+             generatedAt,
+             string.Equals(currency, "USD", StringComparison.OrdinalIgnoreCase) ? cashBalance.Currency : currency,
+             BuildHeadline(revenueTrend, burnRate, overdueCustomerRisk, payablePressure),
+             BuildSummary(topExpenses, revenueTrend, burnRate, overdueCustomerRisk, payablePressure),
+             dataCoverageNote,
++            fromSnapshot,
++            snapshotExpiresAtUtc,
++            highlights,
++            hints,
+             topExpenses,
+             revenueTrend,
+             burnRate,
+             overdueCustomerRisk,
+             payablePressure);
+     }
++
++    private async Task<FinanceInsightsDto?> TryGetCachedInsightsAsync(
++        FinanceInsightQueryParameters parameters,
++        CancellationToken cancellationToken)
++    {
++        if (_insightSnapshotCache is null)
++        {
++            return null;
++        }
++
++        var payload = await _insightSnapshotCache.GetStringAsync(parameters.CacheKey, cancellationToken);
++        if (string.IsNullOrWhiteSpace(payload))
++        {
++            return null;
++        }
++
++        var snapshot = JsonSerializer.Deserialize<FinanceInsightsSnapshotCacheEnvelope>(payload, InsightSnapshotSerializerOptions);
++        if (snapshot is null || snapshot.ExpiresAtUtc <= GetUtcNow())
++        {
++            await _insightSnapshotCache.RemoveAsync(parameters.CacheKey, cancellationToken);
++            return null;
++        }
++
++        return snapshot.Insights with
++        {
++            FromSnapshot = true,
++            SnapshotExpiresAtUtc = snapshot.ExpiresAtUtc
++        };
++    }
++
++    private FinanceInsightQueryParameters NormalizeInsightsQuery(
++        Guid companyId,
++        DateTime? asOfUtc,
++        int expenseWindowDays,
++        int trendWindowDays,
++        int payableWindowDays,
++        string snapshotKey)
++    {
++        var generatedAtUtc = GetUtcNow();
++        var normalizedAsOfUtc = NormalizeUtc(asOfUtc) ?? generatedAtUtc;
++        var normalizedExpenseWindowDays = Math.Clamp(expenseWindowDays <= 0 ? 90 : expenseWindowDays, 30, 365);
++        var normalizedTrendWindowDays = Math.Clamp(trendWindowDays <= 0 ? 30 : trendWindowDays, 7, 90);
++        var normalizedPayableWindowDays = Math.Clamp(payableWindowDays <= 0 ? 14 : payableWindowDays, 7, 60);
++        var normalizedSnapshotKey = FinanceInsightSnapshotKeys.Normalize(snapshotKey);
++        var cacheKey =
++            $"finance:insights:{companyId:N}:{normalizedSnapshotKey}:{normalizedAsOfUtc:yyyyMMdd}:{normalizedExpenseWindowDays}:{normalizedTrendWindowDays}:{normalizedPayableWindowDays}";
++
++        return new FinanceInsightQueryParameters(
++            companyId,
++            generatedAtUtc,
++            normalizedAsOfUtc,
++            normalizedExpenseWindowDays,
++            normalizedTrendWindowDays,
++            normalizedPayableWindowDays,
++            normalizedSnapshotKey,
++            cacheKey);
++    }
++
++    private static TimeSpan NormalizeSnapshotRetention(TimeSpan? retention)
++    {
++        var candidate = retention ?? TimeSpan.FromHours(6);
++        if (candidate < TimeSpan.FromMinutes(15))
++        {
++            return TimeSpan.FromMinutes(15);
++        }
++
++        if (candidate > TimeSpan.FromDays(7))
++        {
++            return TimeSpan.FromDays(7);
++        }
++
++        return candidate;
++    }
++
++    private DateTime GetUtcNow() => _timeProvider?.GetUtcNow().UtcDateTime ?? DateTime.UtcNow;
++
++    private static IReadOnlyList<string> BuildHighlights(
++        FinanceTopExpensesInsightDto topExpenses,
++        FinanceRevenueTrendInsightDto revenueTrend,
++        FinanceBurnRateInsightDto burnRate,
++        FinanceOverdueCustomerRiskInsightDto overdueCustomerRisk,
++        FinancePayablePressureInsightDto payablePressure)
++    {
++        var highlights = new List<string>(5)
++        {
++            revenueTrend.Summary,
++            burnRate.Summary
++        };
++
++        if (topExpenses.Items.Count > 0)
++        {
++            highlights.Add(topExpenses.Summary);
++        }
++
++        if (!string.Equals(overdueCustomerRisk.RiskLabel, "clear", StringComparison.OrdinalIgnoreCase))
++        {
++            highlights.Add(overdueCustomerRisk.Summary);
++        }
++
++        if (!string.Equals(payablePressure.RiskLabel, "low", StringComparison.OrdinalIgnoreCase))
++        {
++            highlights.Add(payablePressure.Summary);
++        }
++
++        return highlights.Distinct(StringComparer.Ordinal).ToArray();
++    }
++
++    private static IReadOnlyList<FinanceNarrativeHintDto> BuildNarrativeHints(
++        FinanceTopExpensesInsightDto topExpenses,
++        FinanceRevenueTrendInsightDto revenueTrend,
++        FinanceBurnRateInsightDto burnRate,
++        FinanceOverdueCustomerRiskInsightDto overdueCustomerRisk,
++        FinancePayablePressureInsightDto payablePressure) =>
++        [
++            new FinanceNarrativeHintDto("topExpenses", "matter_of_fact", topExpenses.Summary, "Explain the primary expense drivers and mention concentration."),
++            new FinanceNarrativeHintDto("revenueTrend", "trend", revenueTrend.Summary, "Compare current revenue with the prior comparison window."),
++            new FinanceNarrativeHintDto("burnRate", "risk", burnRate.Summary, "Translate cash burn and runway into concrete urgency."),
++            new FinanceNarrativeHintDto("overdueCustomerRisk", "collections", overdueCustomerRisk.Summary, "Call out overdue customers and concentration risk."),
++            new FinanceNarrativeHintDto("payablePressure", "cash_planning", payablePressure.Summary, "Describe overdue and due-soon payables affecting cash.")
++        ];
+ 
+     private static FinanceTopExpensesInsightDto BuildTopExpensesInsight(
+         IReadOnlyList<InsightExpenseRow> expenseRows,
+@@ -310,6 +566,18 @@ public sealed partial class CompanyFinanceReadService
+ 
+     private sealed record InsightAllocationRow(Guid DocumentId, decimal Amount);
++
++    private sealed record FinanceInsightQueryParameters(
++        Guid CompanyId,
++        DateTime GeneratedAtUtc,
++        DateTime AsOfUtc,
++        int ExpenseWindowDays,
++        int TrendWindowDays,
++        int PayableWindowDays,
++        string SnapshotKey,
++        string CacheKey);
++
++    private sealed record FinanceInsightsSnapshotCacheEnvelope(
++        string SnapshotKey,
++        string CacheKey,
++        DateTime ExpiresAtUtc,
++        FinanceInsightsDto Insights);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 30f1a4e..55057d3 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -1,6 +1,7 @@
+ using System.Globalization;
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Caching.Distributed;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Documents;
+ using VirtualCompany.Application.Finance;
+@@ -18,6 +19,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
+     private readonly ICompanyDocumentService? _documentService;
+     private readonly IKnowledgeAccessPolicyEvaluator? _accessPolicyEvaluator;
+     private readonly IFinanceSeedingStateService? _financeSeedingStateService;
++    private readonly IDistributedCache? _insightSnapshotCache;
++    private readonly TimeProvider? _timeProvider;
+ 
+     public CompanyFinanceReadService(VirtualCompanyDbContext dbContext)
+-        : this(dbContext, null, null, null)
++        : this(dbContext, null, null, null, null, null, null)
+     {
+     }
+ 
+@@ -25,7 +28,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
+         VirtualCompanyDbContext dbContext,
+         ICompanyContextAccessor? companyContextAccessor)
+-        : this(dbContext, companyContextAccessor, null, null, null)
++        : this(dbContext, companyContextAccessor, null, null, null, null, null)
+     {
+     }
+ 
+@@ -34,7 +37,9 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
+         ICompanyContextAccessor? companyContextAccessor,
+         ICompanyDocumentService? documentService,
+         IKnowledgeAccessPolicyEvaluator? accessPolicyEvaluator,
+-        IFinanceSeedingStateService? financeSeedingStateService = null)
++        IFinanceSeedingStateService? financeSeedingStateService = null,
++        IDistributedCache? insightSnapshotCache = null,
++        TimeProvider? timeProvider = null)
+     {
+         _dbContext = dbContext;
+         _companyContextAccessor = companyContextAccessor;
+@@ -42,6 +47,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
+         _documentService = documentService;
+         _accessPolicyEvaluator = accessPolicyEvaluator;
+         _financeSeedingStateService = financeSeedingStateService;
++        _insightSnapshotCache = insightSnapshotCache;
++        _timeProvider = timeProvider;
+     }
+ 
+     public async Task<FinanceCashBalanceDto> GetCashBalanceAsync(
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceInsightsSnapshotBackgroundService.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceInsightsSnapshotBackgroundService.cs
+new file mode 100644
+index 0000000..017d7e5
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceInsightsSnapshotBackgroundService.cs
+@@ -0,0 +1,252 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class FinanceInsightsSnapshotWorkerOptions
++{
++    public const string SectionName = "FinanceInsightsSnapshotWorker";
++
++    public bool Enabled { get; set; } = true;
++    public int PollIntervalMilliseconds { get; set; } = 1000;
++    public int BatchSize { get; set; } = 10;
++    public int ClaimTimeoutSeconds { get; set; } = 300;
++}
++
++internal readonly record struct FinanceInsightSnapshotExecutionDescriptor(
++    string SnapshotKey,
++    DateTime? AsOfUtc,
++    int ExpenseWindowDays,
++    int TrendWindowDays,
++    int PayableWindowDays,
++    int RetentionMinutes)
++{
++    public string ToStorageValue() =>
++        string.Join(
++            '|',
++            FinanceInsightSnapshotKeys.Normalize(SnapshotKey),
++            AsOfUtc?.ToString("yyyyMMdd") ?? "latest",
++            ExpenseWindowDays,
++            TrendWindowDays,
++            PayableWindowDays,
++            Math.Clamp(RetentionMinutes, 15, 60 * 24 * 7));
++
++    public RefreshFinanceInsightsSnapshotCommand ToCommand(Guid companyId)
++    {
++        var asOfUtc = AsOfUtc.HasValue
++            ? DateTime.SpecifyKind(AsOfUtc.Value.Date, DateTimeKind.Utc)
++            : null;
++        return new RefreshFinanceInsightsSnapshotCommand(
++            companyId,
++            asOfUtc,
++            ExpenseWindowDays,
++            TrendWindowDays,
++            PayableWindowDays,
++            FinanceInsightSnapshotKeys.Normalize(SnapshotKey),
++            TimeSpan.FromMinutes(Math.Clamp(RetentionMinutes, 15, 60 * 24 * 7)));
++    }
++
++    public static bool TryParse(string? value, out FinanceInsightSnapshotExecutionDescriptor descriptor)
++    {
++        descriptor = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var parts = value.Split('|', StringSplitOptions.TrimEntries);
++        if (parts.Length != 6 ||
++            !int.TryParse(parts[2], out var expenseWindowDays) ||
++            !int.TryParse(parts[3], out var trendWindowDays) ||
++            !int.TryParse(parts[4], out var payableWindowDays) ||
++            !int.TryParse(parts[5], out var retentionMinutes))
++        {
++            return false;
++        }
++
++        DateTime? asOfUtc = null;
++        if (!string.Equals(parts[1], "latest", StringComparison.OrdinalIgnoreCase))
++        {
++            if (!DateTime.TryParseExact(parts[1], "yyyyMMdd", null, System.Globalization.DateTimeStyles.AssumeUniversal, out var parsedAsOf))
++            {
++                return false;
++            }
++
++            asOfUtc = DateTime.SpecifyKind(parsedAsOf.Date, DateTimeKind.Utc);
++        }
++
++        descriptor = new FinanceInsightSnapshotExecutionDescriptor(
++            parts[0],
++            asOfUtc,
++            expenseWindowDays,
++            trendWindowDays,
++            payableWindowDays,
++            retentionMinutes);
++        return true;
++    }
++}
++
++public sealed class FinanceInsightsSnapshotJobRunner : IFinanceInsightsSnapshotJobRunner
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IFinanceReadService _financeReadService;
++    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
++    private readonly IOptions<FinanceInsightsSnapshotWorkerOptions> _options;
++    private readonly ILogger<FinanceInsightsSnapshotJobRunner> _logger;
++
++    public FinanceInsightsSnapshotJobRunner(
++        VirtualCompanyDbContext dbContext,
++        IFinanceReadService financeReadService,
++        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
++        IOptions<FinanceInsightsSnapshotWorkerOptions> options,
++        ILogger<FinanceInsightsSnapshotJobRunner> logger)
++    {
++        _dbContext = dbContext;
++        _financeReadService = financeReadService;
++        _companyExecutionScopeFactory = companyExecutionScopeFactory;
++        _options = options;
++        _logger = logger;
++    }
++
++    public async Task<int> RunDueAsync(CancellationToken cancellationToken)
++    {
++        var executions = await ClaimDueExecutionsAsync(cancellationToken);
++        var handled = 0;
++
++        foreach (var execution in executions)
++        {
++            using var tenantScope = _companyExecutionScopeFactory.BeginScope(execution.CompanyId);
++            execution.StartAttempt(execution.CorrelationId, execution.AttemptCount + 1, execution.MaxAttempts);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++
++            if (!FinanceInsightSnapshotExecutionDescriptor.TryParse(execution.RelatedEntityId, out var descriptor))
++            {
++                execution.MarkFailed(
++                    BackgroundExecutionFailureCategory.Validation,
++                    "invalid_snapshot_descriptor",
++                    "Finance insight snapshot execution does not contain a valid descriptor.");
++                await _dbContext.SaveChangesAsync(cancellationToken);
++                handled++;
++                continue;
++            }
++
++            try
++            {
++                await _financeReadService.RefreshInsightsSnapshotAsync(descriptor.ToCommand(execution.CompanyId), cancellationToken);
++                execution.MarkSucceeded();
++                await _dbContext.SaveChangesAsync(cancellationToken);
++                handled++;
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(ex, "Finance insight snapshot refresh failed for company {CompanyId}.", execution.CompanyId);
++                execution.MarkFailed(
++                    BackgroundExecutionFailureCategory.TransientInfrastructure,
++                    ex.GetType().Name,
++                    string.IsNullOrWhiteSpace(ex.Message) ? "Finance insight snapshot refresh failed." : ex.Message);
++                await _dbContext.SaveChangesAsync(cancellationToken);
++                handled++;
++            }
++        }
++
++        return handled;
++    }
++
++    private async Task<IReadOnlyList<BackgroundExecution>> ClaimDueExecutionsAsync(CancellationToken cancellationToken)
++    {
++        var nowUtc = DateTime.UtcNow;
++        var staleBeforeUtc = nowUtc.Subtract(TimeSpan.FromSeconds(Math.Max(30, _options.Value.ClaimTimeoutSeconds)));
++        var candidateIds = await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.ExecutionType == BackgroundExecutionType.FinanceInsightRefresh &&
++                (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
++                  (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
++                 (x.Status == BackgroundExecutionStatus.InProgress &&
++                  x.HeartbeatUtc != null &&
++                  x.HeartbeatUtc <= staleBeforeUtc)))
++            .OrderBy(x => x.NextRetryUtc ?? x.CreatedUtc)
++            .ThenBy(x => x.CreatedUtc)
++            .Take(Math.Max(1, _options.Value.BatchSize))
++            .Select(x => x.Id)
++            .ToArrayAsync(cancellationToken);
++
++        if (candidateIds.Length == 0)
++        {
++            return [];
++        }
++
++        await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .Where(x =>
++                candidateIds.Contains(x.Id) &&
++                x.ExecutionType == BackgroundExecutionType.FinanceInsightRefresh &&
++                (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
++                  (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
++                 (x.Status == BackgroundExecutionStatus.InProgress &&
++                  x.HeartbeatUtc != null &&
++                  x.HeartbeatUtc <= staleBeforeUtc)))
++            .ExecuteUpdateAsync(
++                setters => setters
++                    .SetProperty(x => x.Status, BackgroundExecutionStatus.InProgress)
++                    .SetProperty(x => x.StartedUtc, nowUtc)
++                    .SetProperty(x => x.HeartbeatUtc, nowUtc)
++                    .SetProperty(x => x.NextRetryUtc, (DateTime?)null)
++                    .SetProperty(x => x.UpdatedUtc, nowUtc),
++                cancellationToken);
++
++        return await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .Where(x =>
++                candidateIds.Contains(x.Id) &&
++                x.ExecutionType == BackgroundExecutionType.FinanceInsightRefresh &&
++                x.Status == BackgroundExecutionStatus.InProgress &&
++                x.StartedUtc == nowUtc)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync(cancellationToken);
++    }
++}
++
++public sealed class FinanceInsightsSnapshotBackgroundService : BackgroundService
++{
++    private readonly IServiceScopeFactory _scopeFactory;
++    private readonly IOptions<FinanceInsightsSnapshotWorkerOptions> _options;
++    private readonly ILogger<FinanceInsightsSnapshotBackgroundService> _logger;
++
++    public FinanceInsightsSnapshotBackgroundService(
++        IServiceScopeFactory scopeFactory,
++        IOptions<FinanceInsightsSnapshotWorkerOptions> options,
++        ILogger<FinanceInsightsSnapshotBackgroundService> logger)
++    {
++        _scopeFactory = scopeFactory;
++        _options = options;
++        _logger = logger;
++    }
++
++    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
++    {
++        if (!_options.Value.Enabled)
++        {
++            _logger.LogInformation("Finance insight snapshot worker is disabled.");
++            return;
++        }
++
++        var pollInterval = TimeSpan.FromMilliseconds(Math.Max(100, _options.Value.PollIntervalMilliseconds));
++        while (!stoppingToken.IsCancellationRequested)
++        {
++            try
++            {
++                using var scope = _scopeFactory.CreateScope();
++                var runner = scope.ServiceProvider.GetRequiredService<IFinanceInsightsSnapshotJobRunner>();
++                var handled = await runner.RunDueAsync(stoppingToken);
++                if (handled == 0)
++                {
++                    await Task.Delay(pollInterval, stoppingToken);
++                }
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(ex, "Finance insight snapshot worker loop failed.");
++                await Task.Delay(pollInterval, stoppingToken);
++            }
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs
+index 5a1e9d9..c3357b9 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs
+@@ -31,6 +31,8 @@ public sealed class FinanceInsightsIntegrationTests : IClassFixture<TestWebAppli
+         Assert.False(string.IsNullOrWhiteSpace(payload["headline"]!.GetValue<string>()));
+         Assert.False(string.IsNullOrWhiteSpace(payload["summary"]!.GetValue<string>()));
+         Assert.NotNull(payload["topExpenses"]);
++        Assert.NotNull(payload["highlights"]);
++        Assert.NotNull(payload["narrativeHints"]);
+         Assert.NotNull(payload["revenueTrend"]);
+         Assert.NotNull(payload["burnRate"]);
+         Assert.NotNull(payload["overdueCustomerRisk"]);
+@@ -41,6 +43,33 @@ public sealed class FinanceInsightsIntegrationTests : IClassFixture<TestWebAppli
+         Assert.NotNull(payload["payablePressure"]!["riskLabel"]);
+     }
+ 
++    [Fact]
++    public async Task Finance_insight_refresh_endpoint_primes_snapshot_cache_for_subsequent_reads()
++    {
++        var seed = await SeedCompanyAsync(includeOtherCompanyMembership: true);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var refreshResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/insights/refresh",
++            new
++            {
++                expenseWindowDays = 90,
++                trendWindowDays = 30,
++                payableWindowDays = 14,
++                retentionMinutes = 360,
++                runInBackground = false
++            });
++
++        Assert.Equal(HttpStatusCode.OK, refreshResponse.StatusCode);
++        var refreshPayload = await refreshResponse.Content.ReadFromJsonAsync<JsonObject>();
++        Assert.NotNull(refreshPayload);
++        Assert.True(refreshPayload!["refreshed"]!.GetValue<bool>());
++        Assert.NotNull(refreshPayload["expiresAtUtc"]);
++
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/finance/insights");
++        var payload = await response.Content.ReadFromJsonAsync<JsonObject>();
++        Assert.True(payload!["fromSnapshot"]!.GetValue<bool>());
++        Assert.NotNull(payload["snapshotExpiresAtUtc"]);
++    }
++
+     [Fact]
+     public async Task Finance_insights_endpoint_is_tenant_scoped()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs
+index 9fc5311..0cf8a97 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs
+@@ -1,5 +1,9 @@
+ using Microsoft.Data.Sqlite;
+ using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Caching.Distributed;
++using Microsoft.Extensions.Caching.Memory;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -60,7 +64,7 @@ public sealed class FinanceInsightsServiceTests
+         Assert.Equal(companyId, result.CompanyId);
+         Assert.False(string.IsNullOrWhiteSpace(result.Headline));
+         Assert.False(string.IsNullOrWhiteSpace(result.Summary));
+-        Assert.NotNull(result.DataCoverageNote);
++        Assert.NotEmpty(result.Highlights);
+         Assert.Equal("insufficient_data", result.RevenueTrend.DirectionLabel);
+-        Assert.Equal("insufficient_data", result.TopExpenses.TrendLabel);
++        Assert.NotEmpty(result.NarrativeHints);
+         Assert.Equal("clear", result.OverdueCustomerRisk.RiskLabel);
+         Assert.Equal("low", result.PayablePressure.RiskLabel);
+     }
+@@ -94,4 +98,113 @@ public sealed class FinanceInsightsServiceTests
+         var service = new CompanyFinanceReadService(dbContext);
+         var result = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyA), CancellationToken.None);
+         Assert.Equal(companyA, result.CompanyId);
+     }
++
++    [Fact]
++    public async Task Refresh_snapshot_is_idempotent_per_company_and_served_from_cache_until_retention_expires()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Cached Insight Company");
++        company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++        dbContext.Companies.Add(company);
++        FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var cache = CreateDistributedCache();
++        var timeProvider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 20, 8, 0, 0, TimeSpan.Zero));
++        var accessor = new TestCompanyContextAccessor(companyId);
++        var service = new CompanyFinanceReadService(dbContext, accessor, null, null, null, cache, timeProvider);
++
++        var refreshed = await service.RefreshInsightsSnapshotAsync(
++            new RefreshFinanceInsightsSnapshotCommand(companyId, Retention: TimeSpan.FromMinutes(30)),
++            CancellationToken.None);
++
++        Assert.True(refreshed.Refreshed);
++        Assert.NotNull(refreshed.Insights);
++
++        var cached = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyId), CancellationToken.None);
++        Assert.True(cached.FromSnapshot);
++        Assert.NotNull(cached.SnapshotExpiresAtUtc);
++
++        timeProvider.SetUtcNow(new DateTimeOffset(2026, 4, 20, 9, 0, 0, TimeSpan.Zero));
++
++        var staleRead = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyId), CancellationToken.None);
++        Assert.False(staleRead.FromSnapshot);
++        Assert.Null(staleRead.SnapshotExpiresAtUtc);
++    }
++
++    [Fact]
++    public async Task Queue_snapshot_refresh_prevents_duplicate_background_executions_for_same_scope()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Queued Insight Company");
++        company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++        dbContext.Companies.Add(company);
++        FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var accessor = new TestCompanyContextAccessor(companyId);
++        var service = new CompanyFinanceReadService(dbContext, accessor, null, null, null, CreateDistributedCache(), TimeProvider.System);
++
++        await service.QueueInsightsSnapshotRefreshAsync(
++            new QueueFinanceInsightsSnapshotRefreshCommand(companyId, CorrelationId: "insights-queue-001"),
++            CancellationToken.None);
++        await service.QueueInsightsSnapshotRefreshAsync(
++            new QueueFinanceInsightsSnapshotRefreshCommand(companyId, CorrelationId: "insights-queue-001"),
++            CancellationToken.None);
++
++        var executionCount = await dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .CountAsync(x => x.CompanyId == companyId && x.ExecutionType == BackgroundExecutionType.FinanceInsightRefresh);
++        Assert.Equal(1, executionCount);
++    }
++
++    private static IDistributedCache CreateDistributedCache() =>
++        new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));
++
++    private sealed class TestCompanyContextAccessor : ICompanyContextAccessor
++    {
++        public TestCompanyContextAccessor(Guid companyId)
++        {
++            CompanyId = companyId;
++        }
++
++        public Guid? CompanyId { get; private set; }
++        public Guid? UserId => null;
++        public bool IsResolved => CompanyId.HasValue;
++        public ResolvedCompanyMembershipContext? Membership => null;
++
++        public void SetCompanyId(Guid? companyId) => CompanyId = companyId;
++        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext) => CompanyId = companyContext?.CompanyId;
++    }
++
++    private sealed class MutableTimeProvider : TimeProvider
++    {
++        private DateTimeOffset _utcNow;
++
++        public MutableTimeProvider(DateTimeOffset utcNow)
++        {
++            _utcNow = utcNow;
++        }
++
++        public override DateTimeOffset GetUtcNow() => _utcNow;
++
++        public void SetUtcNow(DateTimeOffset utcNow)
++        {
++            _utcNow = utcNow;
++        }
++    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/StartupMigrationValidationTests.cs b/tests/VirtualCompany.Api.Tests/StartupMigrationValidationTests.cs
+new file mode 100644
+index 0000000..4e7739e
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/StartupMigrationValidationTests.cs
+@@ -0,0 +1,30 @@
++using Microsoft.Extensions.Logging.Abstractions;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class StartupMigrationValidationTests
++{
++    [Fact]
++    public void Pending_migrations_throw_actionable_exception()
++    {
++        var exception = Assert.Throws<InvalidOperationException>(() =>
++            StartupMigrationValidation.EnsureNoPendingMigrations(
++                ["20260425090000_AddFinanceInsightSnapshotCache", "20260425093000_BackfillFinanceInsightJobs"],
++                NullLogger.Instance));
++
++        Assert.Contains("20260425090000_AddFinanceInsightSnapshotCache", exception.Message, StringComparison.Ordinal);
++        Assert.Contains("dotnet ef database update", exception.Message, StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public void Noop_when_no_pending_migrations_exist()
++    {
++        StartupMigrationValidation.EnsureNoPendingMigrations(Array.Empty<string>(), NullLogger.Instance);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index 6f5a5e1..387b66e 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -59,6 +59,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+                 [$"{KnowledgeEmbeddingOptions.SectionName}:Dimensions"] = "256",
+                 [$"{ReportingPeriodRegenerationWorkerOptions.SectionName}:Enabled"] = "false",
+                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:Enabled"] = "true",
++                [$"{FinanceInsightsSnapshotWorkerOptions.SectionName}:Enabled"] = "false",
+                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KeyVersion"] = "tests-v1",
+                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KnowledgeTtlSeconds"] = "300",
+                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:MemoryTtlSeconds"] = "300",
+END_OF_PATCH

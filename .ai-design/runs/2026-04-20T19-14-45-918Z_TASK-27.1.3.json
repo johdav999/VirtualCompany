@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-27.1.3",
+  "promptPath": ".ai-design/prompts/TASK-27.1.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T19:14:45.918Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T19-14-45-918Z_TASK-27.1.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T19-14-45-918Z_TASK-27.1.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T19:19:06.271Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ontains(\"IX_approval_tasks_company_id_assignee_id_status\", indexes);\r\n+        Assert.Contains(\"IX_approval_tasks_assignee_id\", indexes);\r\n+        Assert.Contains(\"IX_approval_tasks_status\", indexes);\r\n+        Assert.Contains(\"IX_approval_tasks_due_date\", indexes);\r\n         Assert.Contains(\"IX_approval_tasks_company_id_status_due_date\", indexes);\r\n         Assert.Contains(\"IX_approval_tasks_company_id_target_type_target_id\", indexes);\r\n \r\n         var company = new Company(Guid.NewGuid(), \"Approval Task Persistence Company\");\r\ndiff --git a/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskWorkflowTests.cs b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskWorkflowTests.cs\n--- a/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskWorkflowTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskWorkflowTests.cs\n@@ -88,6 +88,30 @@ public sealed class FinanceApprovalTaskWorkflowTests\n         Assert.False(created);\r\n         Assert.Empty(await dbContext.ApprovalTasks.IgnoreQueryFilters().AsNoTracking().ToListAsync());\r\n     }\r\n+\r\n+    [Fact]\r\n+    public void Approval_task_terminal_transitions_are_guarded_but_escalated_tasks_remain_actionable()\r\n+    {\r\n+        var pendingTask = new ApprovalTask(\r\n+            Guid.NewGuid(),\r\n+            Guid.NewGuid(),\r\n+            ApprovalTargetType.Bill,\r\n+            Guid.NewGuid(),\r\n+            dueDate: new DateTime(2026, 4, 25, 0, 0, 0, DateTimeKind.Utc));\r\n+\r\n+        pendingTask.Escalate();\r\n+        pendingTask.Approve();\r\n+\r\n+        Assert.Equal(ApprovalTaskStatus.Approved, pendingTask.Status);\r\n+\r\n+        var terminalTask = new ApprovalTask(\r\n+            Guid.NewGuid(),\r\n+            Guid.NewGuid(),\r\n+            ApprovalTargetType.Payment,\r\n+            Guid.NewGuid(),\r\n+            status: ApprovalTaskStatus.Rejected);\r\n+\r\n+        Assert.Throws<InvalidOperationException>(() => terminalTask.Approve());\r\n+    }\r\n \r\n     private static async Task<SqliteConnection> OpenConnectionAsync()\r\n     {\r\nEND_OF_PATCH\n",
+  "stderrTail": "_tasks_company_id_assignee_id_status\", indexes);\r\n+        Assert.Contains(\"IX_approval_tasks_assignee_id\", indexes);\r\n+        Assert.Contains(\"IX_approval_tasks_status\", indexes);\r\n+        Assert.Contains(\"IX_approval_tasks_due_date\", indexes);\r\n         Assert.Contains(\"IX_approval_tasks_company_id_status_due_date\", indexes);\r\n         Assert.Contains(\"IX_approval_tasks_company_id_target_type_target_id\", indexes);\r\n \r\n         var company = new Company(Guid.NewGuid(), \"Approval Task Persistence Company\");\r\ndiff --git a/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskWorkflowTests.cs b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskWorkflowTests.cs\n--- a/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskWorkflowTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskWorkflowTests.cs\n@@ -88,6 +88,30 @@ public sealed class FinanceApprovalTaskWorkflowTests\n         Assert.False(created);\r\n         Assert.Empty(await dbContext.ApprovalTasks.IgnoreQueryFilters().AsNoTracking().ToListAsync());\r\n     }\r\n+\r\n+    [Fact]\r\n+    public void Approval_task_terminal_transitions_are_guarded_but_escalated_tasks_remain_actionable()\r\n+    {\r\n+        var pendingTask = new ApprovalTask(\r\n+            Guid.NewGuid(),\r\n+            Guid.NewGuid(),\r\n+            ApprovalTargetType.Bill,\r\n+            Guid.NewGuid(),\r\n+            dueDate: new DateTime(2026, 4, 25, 0, 0, 0, DateTimeKind.Utc));\r\n+\r\n+        pendingTask.Escalate();\r\n+        pendingTask.Approve();\r\n+\r\n+        Assert.Equal(ApprovalTaskStatus.Approved, pendingTask.Status);\r\n+\r\n+        var terminalTask = new ApprovalTask(\r\n+            Guid.NewGuid(),\r\n+            Guid.NewGuid(),\r\n+            ApprovalTargetType.Payment,\r\n+            Guid.NewGuid(),\r\n+            status: ApprovalTaskStatus.Rejected);\r\n+\r\n+        Assert.Throws<InvalidOperationException>(() => terminalTask.Approve());\r\n+    }\r\n \r\n     private static async Task<SqliteConnection> OpenConnectionAsync()\r\n     {\r\nEND_OF_PATCH\ntokens used\n129,436\n",
+  "verbosityMode": "verbose"
+}

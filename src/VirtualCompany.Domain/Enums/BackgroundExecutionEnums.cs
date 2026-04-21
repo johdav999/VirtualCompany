@@ -7,7 +7,9 @@ public enum BackgroundExecutionType
     Retry = 3,
     LongRunningTask = 4,
     OutboxDispatch = 5,
-    FinanceSeed = 6
+    FinanceSeed = 6,
+    FinanceReportRegeneration = 7,
+    FinanceInsightRefresh = 8
 }
 
 public enum BackgroundExecutionStatus
@@ -54,7 +56,9 @@ public static class BackgroundExecutionTypeValues
         [BackgroundExecutionType.Retry] = "retry",
         [BackgroundExecutionType.LongRunningTask] = "long_running_task",
         [BackgroundExecutionType.OutboxDispatch] = "outbox_dispatch",
-        [BackgroundExecutionType.FinanceSeed] = "finance_seed"
+        [BackgroundExecutionType.FinanceSeed] = "finance_seed",
+        [BackgroundExecutionType.FinanceReportRegeneration] = "finance_report_regeneration",
+        [BackgroundExecutionType.FinanceInsightRefresh] = "finance_insight_refresh"
     };
 
     private static readonly IReadOnlyDictionary<string, BackgroundExecutionType> ReverseValues =

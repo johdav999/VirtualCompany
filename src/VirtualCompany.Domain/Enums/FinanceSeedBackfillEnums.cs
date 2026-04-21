@@ -79,6 +79,7 @@ public static class FinanceSeedBackfillEligibilityReasons
 {
     public const string NotSeeded = "not_seeded";
     public const string PartialSeedResume = "partial_seed_resume";
+    public const string BankingUpgrade = "banking_upgrade";
     public const string OrphanedPartialSeed = "orphaned_partial_seed";
 }
 

@@ -1,0 +1,1674 @@
+diff --git a/src/VirtualCompany.Domain/Entities/PlanningEntities.cs b/src/VirtualCompany.Domain/Entities/PlanningEntities.cs
+new file mode 100644
+index 0000000..f7c5c41
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/PlanningEntities.cs
+@@ -0,0 +1,242 @@
++namespace VirtualCompany.Domain.Entities;
++
++public static class FinancePlanningVersions
++{
++    public const string Baseline = "baseline";
++}
++
++public sealed class Budget : ICompanyOwnedEntity
++{
++    private Budget()
++    {
++    }
++
++    public Budget(
++        Guid id,
++        Guid companyId,
++        Guid financeAccountId,
++        DateTime periodStartUtc,
++        string version,
++        decimal amount,
++        string currency,
++        Guid? costCenterId = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (financeAccountId == Guid.Empty)
++        {
++            throw new ArgumentException("FinanceAccountId is required.", nameof(financeAccountId));
++        }
++
++        if (costCenterId == Guid.Empty)
++        {
++            throw new ArgumentException("CostCenterId cannot be empty.", nameof(costCenterId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        FinanceAccountId = financeAccountId;
++        PeriodStartUtc = FinancePlanningEntityRules.NormalizePeriodStart(periodStartUtc, nameof(periodStartUtc));
++        Version = FinancePlanningEntityRules.NormalizeVersion(version);
++        Amount = amount;
++        Currency = FinancePlanningEntityRules.NormalizeCurrency(currency);
++        CostCenterId = costCenterId;
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid FinanceAccountId { get; private set; }
++    public DateTime PeriodStartUtc { get; private set; }
++    public string Version { get; private set; } = null!;
++    public Guid? CostCenterId { get; private set; }
++    public decimal Amount { get; private set; }
++    public string Currency { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FinanceAccount FinanceAccount { get; private set; } = null!;
++
++    public void Update(
++        Guid financeAccountId,
++        DateTime periodStartUtc,
++        string version,
++        decimal amount,
++        string currency,
++        Guid? costCenterId = null)
++    {
++        if (financeAccountId == Guid.Empty)
++        {
++            throw new ArgumentException("FinanceAccountId is required.", nameof(financeAccountId));
++        }
++
++        if (costCenterId == Guid.Empty)
++        {
++            throw new ArgumentException("CostCenterId cannot be empty.", nameof(costCenterId));
++        }
++
++        FinanceAccountId = financeAccountId;
++        PeriodStartUtc = FinancePlanningEntityRules.NormalizePeriodStart(periodStartUtc, nameof(periodStartUtc));
++        Version = FinancePlanningEntityRules.NormalizeVersion(version);
++        Amount = amount;
++        Currency = FinancePlanningEntityRules.NormalizeCurrency(currency);
++        CostCenterId = costCenterId;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++}
++
++public sealed class Forecast : ICompanyOwnedEntity
++{
++    private Forecast()
++    {
++    }
++
++    public Forecast(
++        Guid id,
++        Guid companyId,
++        Guid financeAccountId,
++        DateTime periodStartUtc,
++        string version,
++        decimal amount,
++        string currency,
++        Guid? costCenterId = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (financeAccountId == Guid.Empty)
++        {
++            throw new ArgumentException("FinanceAccountId is required.", nameof(financeAccountId));
++        }
++
++        if (costCenterId == Guid.Empty)
++        {
++            throw new ArgumentException("CostCenterId cannot be empty.", nameof(costCenterId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        FinanceAccountId = financeAccountId;
++        PeriodStartUtc = FinancePlanningEntityRules.NormalizePeriodStart(periodStartUtc, nameof(periodStartUtc));
++        Version = FinancePlanningEntityRules.NormalizeVersion(version);
++        Amount = amount;
++        Currency = FinancePlanningEntityRules.NormalizeCurrency(currency);
++        CostCenterId = costCenterId;
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid FinanceAccountId { get; private set; }
++    public DateTime PeriodStartUtc { get; private set; }
++    public string Version { get; private set; } = null!;
++    public Guid? CostCenterId { get; private set; }
++    public decimal Amount { get; private set; }
++    public string Currency { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FinanceAccount FinanceAccount { get; private set; } = null!;
++
++    public void Update(
++        Guid financeAccountId,
++        DateTime periodStartUtc,
++        string version,
++        decimal amount,
++        string currency,
++        Guid? costCenterId = null)
++    {
++        if (financeAccountId == Guid.Empty)
++        {
++            throw new ArgumentException("FinanceAccountId is required.", nameof(financeAccountId));
++        }
++
++        if (costCenterId == Guid.Empty)
++        {
++            throw new ArgumentException("CostCenterId cannot be empty.", nameof(costCenterId));
++        }
++
++        FinanceAccountId = financeAccountId;
++        PeriodStartUtc = FinancePlanningEntityRules.NormalizePeriodStart(periodStartUtc, nameof(periodStartUtc));
++        Version = FinancePlanningEntityRules.NormalizeVersion(version);
++        Amount = amount;
++        Currency = FinancePlanningEntityRules.NormalizeCurrency(currency);
++        CostCenterId = costCenterId;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++}
++
++internal static class FinancePlanningEntityRules
++{
++    public static DateTime NormalizePeriodStart(DateTime value, string name)
++    {
++        var normalized = EntityTimestampNormalizer.NormalizeUtc(value, name);
++        return new DateTime(normalized.Year, normalized.Month, 1, 0, 0, 0, DateTimeKind.Utc);
++    }
++
++    public static string NormalizeVersion(string value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException("Version is required.", nameof(value));
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > 64)
++        {
++            throw new ArgumentOutOfRangeException(nameof(value), "Version must be 64 characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    public static string NormalizeCurrency(string value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException("Currency is required.", nameof(value));
++        }
++
++        var trimmed = value.Trim().ToUpperInvariant();
++        if (trimmed.Length != 3 || !trimmed.All(char.IsLetter))
++        {
++            throw new ArgumentOutOfRangeException(nameof(value), "Currency must be a three-letter ISO code.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 1a9dd57..ae0c11e 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -194,6 +194,27 @@ public sealed record GenerateCompanySimulationFinanceCommand(
+     int Seed,
+     string? DeterministicConfigurationJson);
+ 
++public sealed record FinancePlanningEntryUpsertDto(
++    Guid FinanceAccountId,
++    DateTime PeriodStartUtc,
++    string Version,
++    decimal Amount,
++    string? Currency = null,
++    Guid? CostCenterId = null);
++
++public sealed record CreateFinanceBudgetCommand(
++    Guid CompanyId,
++    FinancePlanningEntryUpsertDto Budget);
++
++public sealed record UpdateFinanceBudgetCommand(
++    Guid CompanyId,
++    Guid BudgetId,
++    FinancePlanningEntryUpsertDto Budget);
++
++public sealed record GetFinanceBudgetsQuery(
++    Guid CompanyId,
++    DateTime PeriodStartUtc,
++    DateTime? PeriodEndUtc = null,
++    string? Version = null);
++
+ public sealed record CompanySimulationFinanceGenerationDayLogDto(
+     DateTime SimulatedDateUtc,
+     int TransactionsCreated,
+@@ -289,6 +310,13 @@ public sealed record FinanceScenarioSelection(
+ public sealed record FinanceAnomalySchedule(
+     bool IsAnomalyDay,
+     int? AnomalyIndex,
++    int TargetTransactionIndex);
++
++public sealed record GetFinanceForecastsQuery(
++    Guid CompanyId,
++    DateTime PeriodStartUtc,
++    DateTime PeriodEndUtc,
++    Guid? FinanceAccountId = null,
++    string? Version = null);
+     int TargetTransactionIndex);
+ 
+ public interface IFinanceGenerationPolicy
+@@ -987,6 +1015,34 @@ public sealed record FinanceSeedBootstrapResultDto(
+     IReadOnlyList<FinanceSeedValidationErrorDto> ValidationErrors,
+     IReadOnlyList<FinanceSeedAnomalyDto> Anomalies);
+ 
++public sealed record FinanceBudgetDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid FinanceAccountId,
++    string AccountCode,
++    string AccountName,
++    DateTime PeriodStartUtc,
++    string Version,
++    Guid? CostCenterId,
++    decimal Amount,
++    string Currency,
++    DateTime CreatedUtc,
++    DateTime UpdatedUtc);
++
++public sealed record FinanceForecastDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid FinanceAccountId,
++    string AccountCode,
++    string AccountName,
++    DateTime PeriodStartUtc,
++    string Version,
++    Guid? CostCenterId,
++    decimal Amount,
++    string Currency,
++    DateTime CreatedUtc,
++    DateTime UpdatedUtc);
++
+ public sealed record FinanceSeedAnomalyDto(
+     Guid Id,
+     string AnomalyType,
+@@ -1378,6 +1434,14 @@ public interface IFinanceCommandService
+     Task<FinanceCounterpartyDto> UpdateCounterpartyAsync(
+         UpdateFinanceCounterpartyCommand command,
+         CancellationToken cancellationToken);
++
++    Task<FinanceBudgetDto> CreateBudgetAsync(
++        CreateFinanceBudgetCommand command,
++        CancellationToken cancellationToken);
++
++    Task<FinanceBudgetDto> UpdateBudgetAsync(
++        UpdateFinanceBudgetCommand command,
++        CancellationToken cancellationToken);
+ }
+ 
+ public interface IFinanceReadService
+@@ -1469,6 +1533,14 @@ public interface IFinanceReadService
+     Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
+         GetFinanceAgentQueryQuery query,
+         CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<FinanceBudgetDto>> GetBudgetsAsync(
++        GetFinanceBudgetsQuery query,
++        CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<FinanceForecastDto>> GetForecastsAsync(
++        GetFinanceForecastsQuery query,
++        CancellationToken cancellationToken);
+ }
+ 
+ public interface IFinancePolicyConfigurationService
+@@ -1491,6 +1563,12 @@ public interface IFinanceApprovalTaskService
+     Task<FinancePendingApprovalTaskDto> ActOnTaskAsync(ActOnFinanceApprovalTaskCommand command, CancellationToken cancellationToken);
+ }
+ 
++public interface IPlanningBaselineService
++{
++    Task<int> EnsureBaselineAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<int> BackfillAllCompaniesAsync(CancellationToken cancellationToken);
++}
++
+ public interface ICompanySimulationService
+ {
+     Task<CompanySimulationClockDto> GetClockAsync(
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 4a6f1a7..372dd85 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -83,6 +83,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<FinanceAccount> FinanceAccounts => Set<FinanceAccount>();
+     public DbSet<Payment> Payments => Set<Payment>();
+     public DbSet<CompanyBankAccount> CompanyBankAccounts => Set<CompanyBankAccount>();
++    public DbSet<Budget> Budgets => Set<Budget>();
++    public DbSet<Forecast> Forecasts => Set<Forecast>();
+     public DbSet<BankTransaction> BankTransactions => Set<BankTransaction>();
+     public DbSet<BankTransactionPaymentLink> BankTransactionPaymentLinks => Set<BankTransactionPaymentLinks>();
+     public DbSet<BankTransactionPostingStateRecord> BankTransactionPostingStateRecords => Set<BankTransactionPostingStateRecord>();
+@@ -187,6 +189,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is Alert ||
+                 entry.Entity is FinanceAccount ||
+                 entry.Entity is Payment ||
++                entry.Entity is Budget ||
++                entry.Entity is Forecast ||
+                 entry.Entity is CompanyBankAccount ||
+                 entry.Entity is BankTransaction ||
+                 entry.Entity is BankTransactionPaymentLink ||
+@@ -334,6 +338,12 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FinanceAccount>()
+             .HasQueryFilter(account =>
+                 CurrentCompanyId.HasValue && account.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<Budget>()
++            .HasQueryFilter(budget =>
++                CurrentCompanyId.HasValue && budget.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<Forecast>()
++            .HasQueryFilter(forecast =>
++                CurrentCompanyId.HasValue && forecast.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<Payment>()
+             .HasQueryFilter(payment =>
+                 CurrentCompanyId.HasValue && payment.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/PlanningEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/PlanningEntityConfigurations.cs
+new file mode 100644
+index 0000000..91a0ca4
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/PlanningEntityConfigurations.cs
+@@ -0,0 +1,92 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class BudgetConfiguration : IEntityTypeConfiguration<Budget>
++{
++    public void Configure(EntityTypeBuilder<Budget> builder)
++    {
++        builder.ToTable("budgets");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.FinanceAccountId).HasColumnName("finance_account_id").IsRequired();
++        builder.Property(x => x.PeriodStartUtc).HasColumnName("period_start_at").IsRequired();
++        builder.Property(x => x.Version).HasColumnName("version").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.CostCenterId).HasColumnName("cost_center_id");
++        builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.PeriodStartUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.PeriodStartUtc, x.Version });
++        builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId, x.Version, x.PeriodStartUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.PeriodStartUtc, x.FinanceAccountId, x.Version, x.CostCenterId })
++            .HasFilter("cost_center_id IS NOT NULL")
++            .IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.PeriodStartUtc, x.FinanceAccountId, x.Version })
++            .HasFilter("cost_center_id IS NULL")
++            .IsUnique();
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.FinanceAccount)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.FinanceAccountId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class ForecastConfiguration : IEntityTypeConfiguration<Forecast>
++{
++    public void Configure(EntityTypeBuilder<Forecast> builder)
++    {
++        builder.ToTable("forecasts");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.FinanceAccountId).HasColumnName("finance_account_id").IsRequired();
++        builder.Property(x => x.PeriodStartUtc).HasColumnName("period_start_at").IsRequired();
++        builder.Property(x => x.Version).HasColumnName("version").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.CostCenterId).HasColumnName("cost_center_id");
++        builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.PeriodStartUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.PeriodStartUtc, x.Version });
++        builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId, x.Version, x.PeriodStartUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.PeriodStartUtc, x.FinanceAccountId, x.Version, x.CostCenterId })
++            .HasFilter("cost_center_id IS NOT NULL")
++            .IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.PeriodStartUtc, x.FinanceAccountId, x.Version })
++            .HasFilter("cost_center_id IS NULL")
++            .IsUnique();
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.FinanceAccount)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.FinanceAccountId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/PlanningBaselineService.cs b/src/VirtualCompany.Infrastructure/Finance/PlanningBaselineService.cs
+new file mode 100644
+index 0000000..484d0fe
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/PlanningBaselineService.cs
+@@ -0,0 +1,166 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class PlanningBaselineService : IPlanningBaselineService
++{
++    private const int BaselineHorizonMonths = 12;
++
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public PlanningBaselineService(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<int> BackfillAllCompaniesAsync(CancellationToken cancellationToken)
++    {
++        var companyIds = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Select(x => x.Id)
++            .ToListAsync(cancellationToken);
++
++        var inserted = 0;
++        foreach (var companyId in companyIds)
++        {
++            inserted += await EnsureBaselineAsync(companyId, cancellationToken);
++        }
++
++        return inserted;
++    }
++
++    public async Task<int> EnsureBaselineAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++
++        var company = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.Id == companyId, cancellationToken);
++        if (company is null)
++        {
++            throw new KeyNotFoundException($"Company '{companyId}' was not found.");
++        }
++
++        var accounts = await _dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.Code)
++            .Select(x => new PlanningAccountRow(x.Id, x.Currency))
++            .ToListAsync(cancellationToken);
++
++        if (accounts.Count == 0)
++        {
++            return 0;
++        }
++
++        var horizonStartUtc = await ResolveHorizonStartAsync(companyId, company.CreatedUtc, cancellationToken);
++        var periods = Enumerable.Range(0, BaselineHorizonMonths)
++            .Select(offset => horizonStartUtc.AddMonths(offset))
++            .ToArray();
++        var periodEndExclusiveUtc = periods[^1].AddMonths(1);
++
++        var existingBudgetKeys = await _dbContext.Budgets
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.Version == FinancePlanningVersions.Baseline &&
++                x.CostCenterId == null &&
++                x.PeriodStartUtc >= horizonStartUtc &&
++                x.PeriodStartUtc < periodEndExclusiveUtc)
++            .Select(x => new PlanningKey(x.FinanceAccountId, x.PeriodStartUtc))
++            .ToHashSetAsync(cancellationToken);
++
++        var existingForecastKeys = await _dbContext.Forecasts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.Version == FinancePlanningVersions.Baseline &&
++                x.CostCenterId == null &&
++                x.PeriodStartUtc >= horizonStartUtc &&
++                x.PeriodStartUtc < periodEndExclusiveUtc)
++            .Select(x => new PlanningKey(x.FinanceAccountId, x.PeriodStartUtc))
++            .ToHashSetAsync(cancellationToken);
++
++        var budgetsToAdd = new List<Budget>();
++        var forecastsToAdd = new List<Forecast>();
++
++        foreach (var account in accounts)
++        {
++            foreach (var period in periods)
++            {
++                var key = new PlanningKey(account.AccountId, period);
++                if (!existingBudgetKeys.Contains(key))
++                {
++                    budgetsToAdd.Add(new Budget(
++                        Guid.NewGuid(),
++                        companyId,
++                        account.AccountId,
++                        period,
++                        FinancePlanningVersions.Baseline,
++                        0m,
++                        account.Currency));
++                }
++
++                if (!existingForecastKeys.Contains(key))
++                {
++                    forecastsToAdd.Add(new Forecast(
++                        Guid.NewGuid(),
++                        companyId,
++                        account.AccountId,
++                        period,
++                        FinancePlanningVersions.Baseline,
++                        0m,
++                        account.Currency));
++                }
++            }
++        }
++
++        if (budgetsToAdd.Count == 0 && forecastsToAdd.Count == 0)
++        {
++            return 0;
++        }
++
++        if (budgetsToAdd.Count > 0)
++        {
++            _dbContext.Budgets.AddRange(budgetsToAdd);
++        }
++
++        if (forecastsToAdd.Count > 0)
++        {
++            _dbContext.Forecasts.AddRange(forecastsToAdd);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return budgetsToAdd.Count + forecastsToAdd.Count;
++    }
++
++    private async Task<DateTime> ResolveHorizonStartAsync(Guid companyId, DateTime companyCreatedUtc, CancellationToken cancellationToken)
++    {
++        var latestFiscalPeriodStartUtc = await _dbContext.FiscalPeriods
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderByDescending(x => x.StartUtc)
++            .Select(x => (DateTime?)x.StartUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++
++        var anchorUtc = latestFiscalPeriodStartUtc ?? companyCreatedUtc;
++        var normalizedAnchorUtc = anchorUtc.Kind == DateTimeKind.Utc ? anchorUtc : anchorUtc.ToUniversalTime();
++        return new DateTime(normalizedAnchorUtc.Year, normalizedAnchorUtc.Month, 1, 0, 0, 0, DateTimeKind.Utc);
++    }
++
++    private sealed record PlanningAccountRow(Guid AccountId, string Currency);
++
++    private sealed record PlanningKey(Guid FinanceAccountId, DateTime PeriodStartUtc);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+index 0a44e90..5fb0330 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -11,7 +11,7 @@ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Finance;
+ 
+-public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFinancePolicyConfigurationService, IFinancePaymentCommandService
++public sealed partial class CompanyFinanceCommandService : IFinanceCommandService, IFinancePolicyConfigurationService, IFinancePaymentCommandService
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyContextAccessor? _companyContextAccessor;
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.Planning.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.Planning.cs
+new file mode 100644
+index 0000000..80668fe
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.Planning.cs
+@@ -0,0 +1,191 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed partial class CompanyFinanceCommandService
++{
++    public async Task<FinanceBudgetDto> CreateBudgetAsync(
++        CreateFinanceBudgetCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        ValidatePlanningEntry(command.Budget);
++
++        var financeAccount = await LoadFinanceAccountAsync(command.CompanyId, command.Budget.FinanceAccountId, cancellationToken);
++        var budget = new Budget(
++            Guid.NewGuid(),
++            command.CompanyId,
++            financeAccount.Id,
++            command.Budget.PeriodStartUtc,
++            command.Budget.Version,
++            command.Budget.Amount,
++            ResolvePlanningCurrency(command.Budget.Currency, financeAccount.Currency),
++            command.Budget.CostCenterId);
++
++        _dbContext.Budgets.Add(budget);
++        await SavePlanningChangesAsync(cancellationToken);
++        return MapBudget(budget, financeAccount);
++    }
++
++    public async Task<FinanceBudgetDto> UpdateBudgetAsync(
++        UpdateFinanceBudgetCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        if (command.BudgetId == Guid.Empty)
++        {
++            throw new ArgumentException("Budget id is required.", nameof(command));
++        }
++
++        ValidatePlanningEntry(command.Budget);
++
++        var budget = await _dbContext.Budgets
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.Id == command.BudgetId, cancellationToken);
++        EnsureRecordTenant(budget, command.CompanyId, "budget");
++
++        var financeAccount = await LoadFinanceAccountAsync(command.CompanyId, command.Budget.FinanceAccountId, cancellationToken);
++        budget!.Update(
++            financeAccount.Id,
++            command.Budget.PeriodStartUtc,
++            command.Budget.Version,
++            command.Budget.Amount,
++            ResolvePlanningCurrency(command.Budget.Currency, financeAccount.Currency),
++            command.Budget.CostCenterId);
++
++        await SavePlanningChangesAsync(cancellationToken);
++        return MapBudget(budget, financeAccount);
++    }
++
++    private async Task<FinanceAccount> LoadFinanceAccountAsync(
++        Guid companyId,
++        Guid financeAccountId,
++        CancellationToken cancellationToken)
++    {
++        if (financeAccountId == Guid.Empty)
++        {
++            throw CreateValidationException(nameof(FinancePlanningEntryUpsertDto.FinanceAccountId), "Finance account id is required.");
++        }
++
++        var financeAccount = await _dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == financeAccountId, cancellationToken);
++
++        return financeAccount ?? throw CreateValidationException(
++            nameof(FinancePlanningEntryUpsertDto.FinanceAccountId),
++            "The selected finance account was not found in the active company.");
++    }
++
++    private async Task SavePlanningChangesAsync(CancellationToken cancellationToken)
++    {
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++        catch (DbUpdateException)
++        {
++            throw CreateValidationException(
++                "Budget",
++                "A planning entry already exists for the selected company, period, account, version, and cost center.");
++        }
++    }
++
++    private static FinanceBudgetDto MapBudget(Budget budget, FinanceAccount financeAccount) =>
++        new(
++            budget.Id,
++            budget.CompanyId,
++            budget.FinanceAccountId,
++            financeAccount.Code,
++            financeAccount.Name,
++            budget.PeriodStartUtc,
++            budget.Version,
++            budget.CostCenterId,
++            budget.Amount,
++            budget.Currency,
++            budget.CreatedUtc,
++            budget.UpdatedUtc);
++
++    private static void ValidatePlanningEntry(FinancePlanningEntryUpsertDto entry)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++
++        if (entry.FinanceAccountId == Guid.Empty)
++        {
++            errors[nameof(FinancePlanningEntryUpsertDto.FinanceAccountId)] = ["Finance account id is required."];
++        }
++
++        if (entry.PeriodStartUtc == default)
++        {
++            errors[nameof(FinancePlanningEntryUpsertDto.PeriodStartUtc)] = ["Period start is required."];
++        }
++
++        if (string.IsNullOrWhiteSpace(entry.Version))
++        {
++            errors[nameof(FinancePlanningEntryUpsertDto.Version)] = ["Version is required."];
++        }
++        else if (entry.Version.Trim().Length > 64)
++        {
++            errors[nameof(FinancePlanningEntryUpsertDto.Version)] = ["Version must be 64 characters or fewer."];
++        }
++
++        if (!string.IsNullOrWhiteSpace(entry.Currency))
++        {
++            var normalizedCurrency = entry.Currency.Trim();
++            if (normalizedCurrency.Length != 3 || !normalizedCurrency.All(char.IsLetter))
++            {
++                errors[nameof(FinancePlanningEntryUpsertDto.Currency)] = ["Currency must be a three-letter ISO code when supplied."];
++            }
++        }
++
++        if (entry.CostCenterId == Guid.Empty)
++        {
++            errors[nameof(FinancePlanningEntryUpsertDto.CostCenterId)] = ["Cost center id cannot be empty."];
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new FinanceValidationException(errors);
++        }
++    }
++
++    private static string ResolvePlanningCurrency(string? requestedCurrency, string fallbackCurrency) =>
++        string.IsNullOrWhiteSpace(requestedCurrency)
++            ? fallbackCurrency.Trim().ToUpperInvariant()
++            : requestedCurrency.Trim().ToUpperInvariant();
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 7724f5e..d4a61a6 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -11,7 +11,7 @@ using VirtualCompany.Shared;
+ 
+ namespace VirtualCompany.Infrastructure.Finance;
+ 
+-public sealed class CompanyFinanceReadService : IFinanceReadService, IFinancePaymentReadService
++public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFinancePaymentReadService
+ {
+     private const int DefaultLimit = 100;
+     private const int MaxLimit = 500;
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Planning.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Planning.cs
+new file mode 100644
+index 0000000..83ec69f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Planning.cs
+@@ -0,0 +1,116 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed partial class CompanyFinanceReadService
++{
++    public async Task<IReadOnlyList<FinanceBudgetDto>> GetBudgetsAsync(
++        GetFinanceBudgetsQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++
++        var startUtc = NormalizePlanningPeriod(query.PeriodStartUtc);
++        var endExclusiveUtc = query.PeriodEndUtc.HasValue
++            ? NormalizePlanningPeriod(query.PeriodEndUtc.Value).AddMonths(1)
++            : startUtc.AddMonths(1);
++        if (endExclusiveUtc <= startUtc)
++        {
++            throw new ArgumentException("Period end must be the same month or after period start.", nameof(query));
++        }
++
++        var budgets = _dbContext.Budgets
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.PeriodStartUtc >= startUtc && x.PeriodStartUtc < endExclusiveUtc);
++
++        if (!string.IsNullOrWhiteSpace(query.Version))
++        {
++            var normalizedVersion = query.Version.Trim();
++            budgets = budgets.Where(x => x.Version == normalizedVersion);
++        }
++
++        return await budgets
++            .OrderBy(x => x.PeriodStartUtc)
++            .ThenBy(x => x.FinanceAccount.Code)
++            .ThenBy(x => x.Version)
++            .Select(x => new FinanceBudgetDto(
++                x.Id,
++                x.CompanyId,
++                x.FinanceAccountId,
++                x.FinanceAccount.Code,
++                x.FinanceAccount.Name,
++                x.PeriodStartUtc,
++                x.Version,
++                x.CostCenterId,
++                x.Amount,
++                x.Currency,
++                x.CreatedUtc,
++                x.UpdatedUtc))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<FinanceForecastDto>> GetForecastsAsync(
++        GetFinanceForecastsQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++
++        var startUtc = NormalizePlanningPeriod(query.PeriodStartUtc);
++        var endExclusiveUtc = NormalizePlanningPeriod(query.PeriodEndUtc).AddMonths(1);
++        if (endExclusiveUtc <= startUtc)
++        {
++            throw new ArgumentException("Forecast period end must be the same month or after period start.", nameof(query));
++        }
++
++        var forecasts = _dbContext.Forecasts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.PeriodStartUtc >= startUtc && x.PeriodStartUtc < endExclusiveUtc);
++
++        if (query.FinanceAccountId.HasValue)
++        {
++            forecasts = forecasts.Where(x => x.FinanceAccountId == query.FinanceAccountId.Value);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.Version))
++        {
++            var normalizedVersion = query.Version.Trim();
++            forecasts = forecasts.Where(x => x.Version == normalizedVersion);
++        }
++
++        return await forecasts
++            .OrderBy(x => x.PeriodStartUtc)
++            .ThenBy(x => x.FinanceAccount.Code)
++            .ThenBy(x => x.Version)
++            .Select(x => new FinanceForecastDto(
++                x.Id,
++                x.CompanyId,
++                x.FinanceAccountId,
++                x.FinanceAccount.Code,
++                x.FinanceAccount.Name,
++                x.PeriodStartUtc,
++                x.Version,
++                x.CostCenterId,
++                x.Amount,
++                x.Currency,
++                x.CreatedUtc,
++                x.UpdatedUtc))
++            .ToListAsync(cancellationToken);
++    }
++
++    private static DateTime NormalizePlanningPeriod(DateTime value)
++    {
++        if (value == default)
++        {
++            throw new ArgumentException("Planning period is required.", nameof(value));
++        }
++
++        var normalized = value.Kind switch
++        {
++            DateTimeKind.Utc => value,
++            DateTimeKind.Local => value.ToUniversalTime(),
++            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
++        };
++
++        return new DateTime(normalized.Year, normalized.Month, 1, 0, 0, 0, DateTimeKind.Utc);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+index 0bb7f3b..c7337af 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+@@ -13,16 +13,18 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyOutboxEnqueuer? _outboxEnqueuer;
++    private readonly IPlanningBaselineService? _planningBaselineService;
+     private readonly FinanceTransactionCreationOptions _transactionCreationOptions;
+ 
+     public CompanyFinanceSeedBootstrapService(VirtualCompanyDbContext dbContext)
+-        : this(dbContext, null, Microsoft.Extensions.Options.Options.Create(new FinanceTransactionCreationOptions()))
++        : this(dbContext, null, null, Microsoft.Extensions.Options.Options.Create(new FinanceTransactionCreationOptions()))
+     {
+     }
+ 
+     public CompanyFinanceSeedBootstrapService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyOutboxEnqueuer? outboxEnqueuer,
++        IPlanningBaselineService? planningBaselineService,
+         IOptions<FinanceTransactionCreationOptions> transactionCreationOptions)
+     {
+         _dbContext = dbContext;
+@@ -30,6 +32,7 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+         _transactionCreationOptions = transactionCreationOptions.Value;
++        _planningBaselineService = planningBaselineService;
+     }
+     public async Task<FinanceSeedBootstrapResultDto> GenerateAsync(
+         FinanceSeedBootstrapCommand command,
+@@ -48,6 +51,7 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+ 
+         if (!command.ReplaceExisting && bootstrapState.HasExistingFinanceSeed && !bootstrapState.RequiresBankingBootstrap)
+         {
++            await EnsurePlanningBaselineAsync(command.CompanyId, cancellationToken);
+             return PreviewExistingSeed(command);
+         }
+ 
+@@ -87,6 +91,7 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+         // Historical mock data predates explicit payment allocations, so backfill them before
+         // the company is marked as fully seeded.
+         var allocationService = new FinancePaymentAllocationService(_dbContext);
+         await allocationService.BackfillAsync(new BackfillFinancePaymentAllocationsCommand(command.CompanyId, true), cancellationToken);
++        await EnsurePlanningBaselineAsync(command.CompanyId, cancellationToken);
+ 
+         FinanceSeedingMetadata.MarkSeeded(company, "finance_seed_bootstrap:v1", command.SeedValue);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -135,6 +140,7 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+ 
+         var allocationService = new FinancePaymentAllocationService(_dbContext);
+         await allocationService.BackfillAsync(new BackfillFinancePaymentAllocationsCommand(command.CompanyId, true), cancellationToken);
++        await EnsurePlanningBaselineAsync(command.CompanyId, cancellationToken);
+ 
+         var company = await _dbContext.Companies
+             .IgnoreQueryFilters()
+@@ -345,6 +351,14 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+     {
+         if (_outboxEnqueuer is null)
+         {
++            return;
++        }
++
++        var counterpartiesById = _dbContext.ChangeTracker.Entries<FinanceCounterparty>()
++            .Where(x => x.Entity.CompanyId == companyId)
++            .Select(x => x.Entity)
++            .GroupBy(x => x.Id)
++            .ToDictionary(x => x.Key, x => x.First().Name, EqualityComparer<Guid>.Default);
+             return;
+         }
+ 
+@@ -401,6 +415,12 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+         return details;
+     }
+ 
++    private Task EnsurePlanningBaselineAsync(Guid companyId, CancellationToken cancellationToken) =>
++        _planningBaselineService is null
++            ? Task.CompletedTask
++            : _planningBaselineService.EnsureBaselineAsync(companyId, cancellationToken);
++
+     private sealed record FinanceSeedBootstrapState(
+         bool HasExistingFinanceSeed,
+         bool HasCoreFinanceSeed,
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 08b7f63..40fb6f5 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -390,6 +390,7 @@ public static class DependencyInjection
+         services.AddScoped<IFinanceSeedingStateService, CompanyFinanceSeedingStateResolver>();
+         services.AddScoped<IFinanceSeedBackfillOrchestrator, FinanceSeedBackfillOrchestrator>();
+         services.AddScoped<IFinanceSeedBackfillQueryService, FinanceSeedBackfillQueryService>();
++        services.AddScoped<IPlanningBaselineService, PlanningBaselineService>();
+         services.AddScoped<IFinanceEntryService, CompanyFinanceEntryService>();
+         services.AddScoped<IFinanceSeedJobRunner, CompanyFinanceSeedJobRunner>();
+         services.AddScoped<IReportingPeriodCloseService, CompanyReportingPeriodCloseService>();
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index 0e3a9cb..fe0e9fd 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -78,12 +78,14 @@ using (var scope = app.Services.CreateScope())
+     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("DatabaseInitialization");
+     var templateSeeder = scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>();
+     var workflowDefinitionSeeder = scope.ServiceProvider.GetRequiredService<CompanyWorkflowDefinitionSeeder>();
++    var planningBaselineService = scope.ServiceProvider.GetRequiredService<IPlanningBaselineService>();
+     await InitializeDatabaseAsync(
+         app,
+         dbContext,
+         logger,
+         templateSeeder,
+         workflowDefinitionSeeder,
++        planningBaselineService,
+         applyMigrationsOnStartup,
+         builder.Configuration.GetValue<bool?>("SimulationStartup:StopRunningSessionsOnStartup") ?? true);
+ }
+@@ -962,6 +964,7 @@ static async Task InitializeDatabaseAsync(
+     ILogger logger,
+     CompanySetupTemplateSeeder templateSeeder,
+     CompanyWorkflowDefinitionSeeder workflowDefinitionSeeder,
++    IPlanningBaselineService planningBaselineService,
+     bool applyMigrationsOnStartup,
+     bool stopRunningSimulationSessionsOnStartup)
+ {
+@@ -1000,6 +1003,7 @@ static async Task InitializeDatabaseAsync(
+ 
+     await templateSeeder.SeedAsync();
+     await workflowDefinitionSeeder.SeedAsync();
++    await planningBaselineService.BackfillAllCompaniesAsync(app.Lifetime.ApplicationStopping);
+ }
+ 
+ static async Task StopRunningSimulationSessionsAsync(
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 4d26d6f..547e3bc 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -22,7 +22,7 @@ namespace VirtualCompany.Api.Controllers;
+ [Route("internal/companies/{companyId:guid}/finance")]
+ [Authorize(Policy = CompanyPolicies.FinanceView)]
+ [RequireCompanyContext]
+-public sealed class InternalFinanceController : ControllerBase
++public sealed partial class InternalFinanceController : ControllerBase
+ {
+     private const string FinanceSimulationCurrentRunKey = "financeSimulationLatestRun";
+     private const string FinanceSimulationRunHistoryKey = "financeSimulationRunHistory";
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.Planning.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.Planning.cs
+new file mode 100644
+index 0000000..64a709f
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.Planning.cs
+@@ -0,0 +1,76 @@
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Finance;
++
++namespace VirtualCompany.Api.Controllers;
++
++public sealed partial class InternalFinanceController
++{
++    [HttpGet("budgets")]
++    public async Task<ActionResult<IReadOnlyList<FinanceBudgetDto>>> GetBudgetsAsync(
++        Guid companyId,
++        [FromQuery] DateTime periodStartUtc,
++        [FromQuery] DateTime? periodEndUtc,
++        [FromQuery] string? version,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetBudgetsAsync(
++                new GetFinanceBudgetsQuery(companyId, periodStartUtc, periodEndUtc, version),
++                cancellationToken));
++
++    [HttpPost("budgets")]
++    public async Task<ActionResult<FinanceBudgetDto>> CreateBudgetAsync(
++        Guid companyId,
++        [FromBody] UpsertFinanceBudgetRequest request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _financeCommandService.CreateBudgetAsync(
++                new CreateFinanceBudgetCommand(companyId, request.ToDto()),
++                cancellationToken));
++
++    [HttpPut("budgets/{budgetId:guid}")]
++    public async Task<ActionResult<FinanceBudgetDto>> UpdateBudgetAsync(
++        Guid companyId,
++        Guid budgetId,
++        [FromBody] UpsertFinanceBudgetRequest request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _financeCommandService.UpdateBudgetAsync(
++                new UpdateFinanceBudgetCommand(companyId, budgetId, request.ToDto()),
++                cancellationToken));
++
++    [HttpGet("forecasts")]
++    public async Task<ActionResult<IReadOnlyList<FinanceForecastDto>>> GetForecastsAsync(
++        Guid companyId,
++        [FromQuery] DateTime periodStartUtc,
++        [FromQuery] DateTime periodEndUtc,
++        [FromQuery] Guid? financeAccountId,
++        [FromQuery] string? version,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetForecastsAsync(
++                new GetFinanceForecastsQuery(companyId, periodStartUtc, periodEndUtc, financeAccountId, version),
++                cancellationToken));
++}
++
++public sealed record UpsertFinanceBudgetRequest(
++    Guid FinanceAccountId,
++    DateTime PeriodStartUtc,
++    string Version,
++    decimal Amount,
++    string? Currency = null,
++    Guid? CostCenterId = null)
++{
++    public FinancePlanningEntryUpsertDto ToDto() =>
++        new(
++            FinanceAccountId,
++            PeriodStartUtc,
++            Version,
++            Amount,
++            Currency,
++            CostCenterId);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260422120000_AddBudgetAndForecastPlanning.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260422120000_AddBudgetAndForecastPlanning.cs
+new file mode 100644
+index 0000000..6684b92
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260422120000_AddBudgetAndForecastPlanning.cs
+@@ -0,0 +1,159 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddBudgetAndForecastPlanning : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var decimalType = isPostgres ? "numeric(18,2)" : "decimal(18,2)";
++            var string3Type = isPostgres ? "character varying(3)" : "nvarchar(3)";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var nullCostCenterFilter = isPostgres ? "\"cost_center_id\" IS NULL" : "[cost_center_id] IS NULL";
++            var nonNullCostCenterFilter = isPostgres ? "\"cost_center_id\" IS NOT NULL" : "[cost_center_id] IS NOT NULL";
++
++            migrationBuilder.CreateTable(
++                name: "budgets",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    finance_account_id = table.Column<Guid>(type: guidType, nullable: false),
++                    period_start_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    version = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    cost_center_id = table.Column<Guid>(type: guidType, nullable: true),
++                    amount = table.Column<decimal>(type: decimalType, nullable: false),
++                    currency = table.Column<string>(type: string3Type, maxLength: 3, nullable: false),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_budgets", x => x.id);
++                    table.UniqueConstraint("AK_budgets_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(
++                        name: "FK_budgets_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_budgets_finance_accounts_company_id_finance_account_id",
++                        columns: x => new { x.company_id, x.finance_account_id },
++                        principalTable: "finance_accounts",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "forecasts",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    finance_account_id = table.Column<Guid>(type: guidType, nullable: false),
++                    period_start_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    version = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    cost_center_id = table.Column<Guid>(type: guidType, nullable: true),
++                    amount = table.Column<decimal>(type: decimalType, nullable: false),
++                    currency = table.Column<string>(type: string3Type, maxLength: 3, nullable: false),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_forecasts", x => x.id);
++                    table.UniqueConstraint("AK_forecasts_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(
++                        name: "FK_forecasts_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_forecasts_finance_accounts_company_id_finance_account_id",
++                        columns: x => new { x.company_id, x.finance_account_id },
++                        principalTable: "finance_accounts",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateIndex(name: "IX_budgets_company_id_period_start_at", table: "budgets", columns: new[] { "company_id", "period_start_at" });
++            migrationBuilder.CreateIndex(name: "IX_budgets_company_id_period_start_at_version", table: "budgets", columns: new[] { "company_id", "period_start_at", "version" });
++            migrationBuilder.CreateIndex(name: "IX_budgets_company_id_finance_account_id_version_period_start_at", table: "budgets", columns: new[] { "company_id", "finance_account_id", "version", "period_start_at" });
++            migrationBuilder.CreateIndex(
++                name: "IX_budgets_company_id_period_start_at_finance_account_id_version_cost_center_id",
++                table: "budgets",
++                columns: new[] { "company_id", "period_start_at", "finance_account_id", "version", "cost_center_id" },
++                unique: true,
++                filter: nonNullCostCenterFilter);
++            migrationBuilder.CreateIndex(
++                name: "IX_budgets_company_id_period_start_at_finance_account_id_version_null_cost_center",
++                table: "budgets",
++                columns: new[] { "company_id", "period_start_at", "finance_account_id", "version" },
++                unique: true,
++                filter: nullCostCenterFilter);
++
++            migrationBuilder.CreateIndex(name: "IX_forecasts_company_id_period_start_at", table: "forecasts", columns: new[] { "company_id", "period_start_at" });
++            migrationBuilder.CreateIndex(name: "IX_forecasts_company_id_period_start_at_version", table: "forecasts", columns: new[] { "company_id", "period_start_at", "version" });
++            migrationBuilder.CreateIndex(name: "IX_forecasts_company_id_finance_account_id_version_period_start_at", table: "forecasts", columns: new[] { "company_id", "finance_account_id", "version", "period_start_at" });
++            migrationBuilder.CreateIndex(
++                name: "IX_forecasts_company_id_period_start_at_finance_account_id_version_cost_center_id",
++                table: "forecasts",
++                columns: new[] { "company_id", "period_start_at", "finance_account_id", "version", "cost_center_id" },
++                unique: true,
++                filter: nonNullCostCenterFilter);
++            migrationBuilder.CreateIndex(
++                name: "IX_forecasts_company_id_period_start_at_finance_account_id_version_null_cost_center",
++                table: "forecasts",
++                columns: new[] { "company_id", "period_start_at", "finance_account_id", "version" },
++                unique: true,
++                filter: nullCostCenterFilter);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(name: "budgets");
++            migrationBuilder.DropTable(name: "forecasts");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePlanningPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/FinancePlanningPersistenceTests.cs
+new file mode 100644
+index 0000000..7f495b0
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinancePlanningPersistenceTests.cs
+@@ -0,0 +1,194 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinancePlanningPersistenceTests
++{
++    [Fact]
++    public async Task Budget_configuration_rejects_duplicate_null_cost_center_entries()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        var accountId = Guid.NewGuid();
++
++        dbContext.Companies.Add(new Company(companyId, "Planning Co"));
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            accountId,
++            companyId,
++            "4000",
++            "Sales",
++            "revenue",
++            "USD",
++            0m,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        await dbContext.SaveChangesAsync();
++
++        var periodStartUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
++        dbContext.Budgets.Add(new Budget(Guid.NewGuid(), companyId, accountId, periodStartUtc, "baseline", 100m, "USD"));
++        await dbContext.SaveChangesAsync();
++
++        dbContext.Budgets.Add(new Budget(Guid.NewGuid(), companyId, accountId, periodStartUtc, "baseline", 200m, "USD"));
++
++        await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());
++    }
++
++    [Fact]
++    public async Task Budget_configuration_allows_same_period_when_version_differs()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        var accountId = Guid.NewGuid();
++
++        dbContext.Companies.Add(new Company(companyId, "Planning Co"));
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            accountId,
++            companyId,
++            "5000",
++            "Payroll",
++            "expense",
++            "USD",
++            0m,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        await dbContext.SaveChangesAsync();
++
++        var periodStartUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
++        dbContext.Budgets.Add(new Budget(Guid.NewGuid(), companyId, accountId, periodStartUtc, "baseline", 100m, "USD"));
++        dbContext.Budgets.Add(new Budget(Guid.NewGuid(), companyId, accountId, periodStartUtc, "working", 125m, "USD"));
++
++        await dbContext.SaveChangesAsync();
++
++        Assert.Equal(2, await dbContext.Budgets.CountAsync());
++    }
++
++    [Fact]
++    public async Task Planning_baseline_service_is_idempotent()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++
++        var company = new Company(companyId, "Planning Co");
++        company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++        dbContext.Companies.Add(company);
++        dbContext.FinanceAccounts.AddRange(
++            new FinanceAccount(
++                Guid.NewGuid(),
++                companyId,
++                "1000",
++                "Cash",
++                "asset",
++                "USD",
++                0m,
++                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FinanceAccount(
++                Guid.NewGuid(),
++                companyId,
++                "4000",
++                "Sales",
++                "revenue",
++                "USD",
++                0m,
++                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.FiscalPeriods.Add(new FiscalPeriod(
++            Guid.NewGuid(),
++            companyId,
++            "2026-04",
++            new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 30, 23, 59, 59, DateTimeKind.Utc)));
++        await dbContext.SaveChangesAsync();
++
++        var service = new PlanningBaselineService(dbContext);
++
++        var insertedFirstRun = await service.EnsureBaselineAsync(companyId, CancellationToken.None);
++        var insertedSecondRun = await service.EnsureBaselineAsync(companyId, CancellationToken.None);
++
++        Assert.True(insertedFirstRun > 0);
++        Assert.Equal(0, insertedSecondRun);
++        Assert.Equal(24, await dbContext.Budgets.CountAsync());
++        Assert.Equal(24, await dbContext.Forecasts.CountAsync());
++    }
++
++    [Fact]
++    public async Task Budget_command_rejects_cross_tenant_account_reference()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var accountBId = Guid.NewGuid();
++
++        dbContext.Companies.AddRange(
++            new Company(companyAId, "Tenant A"),
++            new Company(companyBId, "Tenant B"));
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            accountBId,
++            companyBId,
++            "4000",
++            "Sales",
++            "revenue",
++            "USD",
++            0m,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext);
++
++        await Assert.ThrowsAsync<FinanceValidationException>(() =>
++            service.CreateBudgetAsync(
++                new CreateFinanceBudgetCommand(
++                    companyAId,
++                    new FinancePlanningEntryUpsertDto(
++                        accountBId,
++                        new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                        "baseline",
++                        100m,
++                        "USD")),
++                CancellationToken.None));
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static async Task<VirtualCompanyDbContext> CreateDbContextAsync(SqliteConnection connection)
++    {
++        var dbContext = new VirtualCompanyDbContext(
++            new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++                .UseSqlite(connection)
++                .Options);
++        await dbContext.Database.EnsureCreatedAsync();
++        return dbContext;
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePlanningEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePlanningEndpointsIntegrationTests.cs
+new file mode 100644
+index 0000000..3f3a2cd
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinancePlanningEndpointsIntegrationTests.cs
+@@ -0,0 +1,180 @@
++using System.Net;
++using System.Net.Http.Json;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinancePlanningEndpointsIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinancePlanningEndpointsIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Budget_and_forecast_endpoints_apply_version_and_range_filters()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var budgetsResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/budgets?periodStartUtc=2026-04-01T00:00:00Z&periodEndUtc=2026-05-01T00:00:00Z&version=baseline");
++        Assert.Equal(HttpStatusCode.OK, budgetsResponse.StatusCode);
++        var budgets = await budgetsResponse.Content.ReadFromJsonAsync<List<BudgetResponse>>();
++        Assert.NotNull(budgets);
++        Assert.Equal(2, budgets!.Count);
++        Assert.All(budgets, x => Assert.Equal("baseline", x.Version));
++
++        var forecastsResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/forecasts?periodStartUtc=2026-04-01T00:00:00Z&periodEndUtc=2026-06-01T00:00:00Z&financeAccountId={seed.RevenueAccountId}&version=baseline");
++        Assert.Equal(HttpStatusCode.OK, forecastsResponse.StatusCode);
++        var forecasts = await forecastsResponse.Content.ReadFromJsonAsync<List<ForecastResponse>>();
++        Assert.NotNull(forecasts);
++        Assert.Equal(3, forecasts!.Count);
++        Assert.All(forecasts, x =>
++        {
++            Assert.Equal(seed.RevenueAccountId, x.FinanceAccountId);
++            Assert.Equal("baseline", x.Version);
++        });
++    }
++
++    [Fact]
++    public async Task Budget_create_and_update_endpoints_persist_company_scoped_rows()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var createResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/budgets",
++            new
++            {
++                FinanceAccountId = seed.ExpenseAccountId,
++                PeriodStartUtc = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
++                Version = "working",
++                Amount = 875m,
++                Currency = "USD"
++            });
++        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
++        var created = await createResponse.Content.ReadFromJsonAsync<BudgetResponse>();
++        Assert.NotNull(created);
++        Assert.Equal("working", created!.Version);
++        Assert.Equal(875m, created.Amount);
++
++        var updateResponse = await client.PutAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/budgets/{created.Id}",
++            new
++            {
++                FinanceAccountId = seed.ExpenseAccountId,
++                PeriodStartUtc = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
++                Version = "working",
++                Amount = 925m,
++                Currency = "USD"
++            });
++        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
++        var updated = await updateResponse.Content.ReadFromJsonAsync<BudgetResponse>();
++        Assert.NotNull(updated);
++        Assert.Equal(created.Id, updated!.Id);
++        Assert.Equal(925m, updated.Amount);
++    }
++
++    private async Task<PlanningEndpointSeed> SeedAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var subject = $"planning-{Guid.NewGuid():N}";
++        var email = $"{subject}@example.com";
++        const string displayName = "Planning Owner";
++        var revenueAccountId = Guid.NewGuid();
++        var expenseAccountId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++
++            var company = new Company(companyId, "Planning Company");
++            company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++            dbContext.Companies.Add(company);
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++
++            dbContext.FinanceAccounts.AddRange(
++                new FinanceAccount(
++                    revenueAccountId,
++                    companyId,
++                    "4000",
++                    "Sales",
++                    "revenue",
++                    "USD",
++                    0m,
++                    new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++                new FinanceAccount(
++                    expenseAccountId,
++                    companyId,
++                    "5000",
++                    "Payroll",
++                    "expense",
++                    "USD",
++                    0m,
++                    new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++
++            dbContext.Budgets.AddRange(
++                new Budget(Guid.NewGuid(), companyId, revenueAccountId, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), "baseline", 5000m, "USD"),
++                new Budget(Guid.NewGuid(), companyId, expenseAccountId, new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc), "baseline", 1800m, "USD"),
++                new Budget(Guid.NewGuid(), companyId, expenseAccountId, new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc), "working", 1900m, "USD"));
++
++            dbContext.Forecasts.AddRange(
++                new Forecast(Guid.NewGuid(), companyId, revenueAccountId, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), "baseline", 5100m, "USD"),
++                new Forecast(Guid.NewGuid(), companyId, revenueAccountId, new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc), "baseline", 5200m, "USD"),
++                new Forecast(Guid.NewGuid(), companyId, revenueAccountId, new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc), "baseline", 5300m, "USD"),
++                new Forecast(Guid.NewGuid(), companyId, expenseAccountId, new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc), "working", 2100m, "USD"));
++
++            return Task.CompletedTask;
++        });
++
++        return new PlanningEndpointSeed(companyId, subject, email, displayName, revenueAccountId, expenseAccountId);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private sealed record PlanningEndpointSeed(
++        Guid CompanyId,
++        string Subject,
++        string Email,
++        string DisplayName,
++        Guid RevenueAccountId,
++        Guid ExpenseAccountId);
++
++    private sealed class BudgetResponse
++    {
++        public Guid Id { get; set; }
++        public Guid FinanceAccountId { get; set; }
++        public string Version { get; set; } = string.Empty;
++        public decimal Amount { get; set; }
++    }
++
++    private sealed class ForecastResponse
++    {
++        public Guid Id { get; set; }
++        public Guid FinanceAccountId { get; set; }
++        public string Version { get; set; } = string.Empty;
++        public decimal Amount { get; set; }
++    }
++}
+END_OF_PATCH

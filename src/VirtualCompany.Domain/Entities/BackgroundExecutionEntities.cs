@@ -240,5 +240,7 @@ public static class BackgroundExecutionRelatedEntityTypes
     public const string WorkTask = "task";
     public const string OutboxMessage = "outbox_message";
     public const string Schedule = "schedule";
+    public const string FiscalPeriod = "fiscal_period";
     public const string FinanceSeed = "finance_seed";
+    public const string FinanceInsightSnapshot = "finance_insight_snapshot";
 }

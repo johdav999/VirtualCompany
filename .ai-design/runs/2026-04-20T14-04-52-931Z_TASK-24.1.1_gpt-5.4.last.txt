@@ -1,0 +1,1242 @@
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+@@ -72,6 +72,11 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
+         string name,
+         string counterpartyType,
+         string? email = null,
++        string? paymentTerms = null,
++        string? taxId = null,
++        decimal? creditLimit = null,
++        string? preferredPaymentMethod = null,
++        string? defaultAccountMapping = null,
+         DateTime? createdUtc = null,
+         DateTime? updatedUtc = null)
+     {
+@@ -84,8 +89,13 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
+ 
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+-        Name = NormalizeRequired(name, nameof(name), 200);
+-        CounterpartyType = NormalizeRequired(counterpartyType, nameof(counterpartyType), 64);
++        CounterpartyType = NormalizeCounterpartyType(counterpartyType);
++        Name = NormalizeRequired(name, nameof(name), 200);
+         Email = NormalizeOptional(email, nameof(email), 256);
++        PaymentTerms = NormalizeOptionalOrDefault(paymentTerms, nameof(paymentTerms), 64, ResolveDefaultPaymentTerms(CounterpartyType));
++        TaxId = NormalizeOptional(taxId, nameof(taxId), 64);
++        CreditLimit = creditLimit ?? 0m;
++        PreferredPaymentMethod = NormalizeOptionalOrDefault(preferredPaymentMethod, nameof(preferredPaymentMethod), 64, DefaultPreferredPaymentMethod);
++        DefaultAccountMapping = NormalizeOptionalOrDefault(defaultAccountMapping, nameof(defaultAccountMapping), 64, ResolveDefaultAccountMapping(CounterpartyType));
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
+         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
+     }
+@@ -95,6 +105,11 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
+     public string Name { get; private set; } = null!;
+     public string CounterpartyType { get; private set; } = null!;
+     public string? Email { get; private set; }
++    public string? PaymentTerms { get; private set; }
++    public string? TaxId { get; private set; }
++    public decimal? CreditLimit { get; private set; }
++    public string? PreferredPaymentMethod { get; private set; }
++    public string? DefaultAccountMapping { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+@@ -102,6 +117,32 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
+     public ICollection<FinanceInvoice> Invoices { get; } = new List<FinanceInvoice>();
+     public ICollection<FinanceBill> Bills { get; } = new List<FinanceBill>();
+ 
++    public void UpdateMasterData(
++        string name,
++        string counterpartyType,
++        string? email = null,
++        string? paymentTerms = null,
++        string? taxId = null,
++        decimal? creditLimit = null,
++        string? preferredPaymentMethod = null,
++        string? defaultAccountMapping = null)
++    {
++        CounterpartyType = NormalizeCounterpartyType(counterpartyType);
++        Name = NormalizeRequired(name, nameof(name), 200);
++        Email = NormalizeOptional(email, nameof(email), 256);
++        PaymentTerms = NormalizeOptionalOrDefault(paymentTerms, nameof(paymentTerms), 64, ResolveDefaultPaymentTerms(CounterpartyType));
++        TaxId = NormalizeOptional(taxId, nameof(taxId), 64);
++        CreditLimit = creditLimit ?? 0m;
++        PreferredPaymentMethod = NormalizeOptionalOrDefault(preferredPaymentMethod, nameof(preferredPaymentMethod), 64, DefaultPreferredPaymentMethod);
++        DefaultAccountMapping = NormalizeOptionalOrDefault(defaultAccountMapping, nameof(defaultAccountMapping), 64, ResolveDefaultAccountMapping(CounterpartyType));
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private const string DefaultPreferredPaymentMethod = "bank_transfer";
++
++    private static string NormalizeCounterpartyType(string value) =>
++        NormalizeRequired(value, nameof(value), 64).ToLowerInvariant() switch
++        {
++            "vendor" => "supplier",
++            var normalized => normalized
++        };
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+@@ -128,6 +169,31 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
+ 
+         return trimmed;
+     }
++
++    private static string NormalizeOptionalOrDefault(string? value, string name, int maxLength, string fallback)
++    {
++        var normalized = NormalizeOptional(value, name, maxLength);
++        return string.IsNullOrWhiteSpace(normalized) ? fallback : normalized;
++    }
++
++    private static string ResolveDefaultPaymentTerms(string counterpartyType) =>
++        counterpartyType switch
++        {
++            "customer" => "Net30",
++            "supplier" => "Net30",
++            _ => "Net30"
++        };
++
++    private static string ResolveDefaultAccountMapping(string counterpartyType) =>
++        counterpartyType switch
++        {
++            "customer" => "1100",
++            "supplier" => "2000",
++            _ => "2000"
++        };
++
++    public static string NormalizeCounterpartyKind(string value) =>
++        NormalizeCounterpartyType(value) switch
++        {
++            "supplier" => "supplier",
++            _ => "customer"
++        };
+ }
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -63,6 +63,12 @@ public sealed record GetFinanceTransactionDetailQuery(
+ public sealed record GetFinanceInvoicesQuery(
+     Guid CompanyId,
+     DateTime? StartUtc = null,
++    DateTime? EndUtc = null,
++    int Limit = 100);
++
++public sealed record GetFinanceCounterpartiesQuery(
++    Guid CompanyId,
++    string CounterpartyType,
+     DateTime? EndUtc = null,
+     int Limit = 100);
+ 
+@@ -71,6 +77,18 @@ public sealed record GetFinanceInvoiceDetailQuery(
+     Guid CompanyId,
+     Guid InvoiceId);
+ 
++public sealed record GetFinanceCounterpartyQuery(
++    Guid CompanyId,
++    Guid CounterpartyId,
++    string CounterpartyType);
++
++public sealed record CreateFinanceCounterpartyCommand(
++    Guid CompanyId,
++    string CounterpartyType,
++    FinanceCounterpartyUpsertDto Counterparty);
++
++public sealed record UpdateFinanceCounterpartyCommand(
++    Guid CompanyId,
++    Guid CounterpartyId,
++    string CounterpartyType,
++    FinanceCounterpartyUpsertDto Counterparty);
++
+ public sealed record GetFinanceSeedAnomaliesQuery(
+     Guid CompanyId,
+     string? AnomalyType = null,
+@@ -701,6 +719,28 @@ public sealed record FinanceBillDto(
+     string Status,
+     FinanceLinkedDocumentDto? LinkedDocument);
+ 
++public sealed record FinanceCounterpartyDto(
++    Guid Id,
++    Guid CompanyId,
++    string CounterpartyType,
++    string Name,
++    string? Email,
++    string? PaymentTerms,
++    string? TaxId,
++    decimal? CreditLimit,
++    string? PreferredPaymentMethod,
++    string? DefaultAccountMapping,
++    DateTime CreatedUtc,
++    DateTime UpdatedUtc);
++
++public sealed record FinanceCounterpartyUpsertDto(
++    string Name,
++    string? Email,
++    string? PaymentTerms,
++    string? TaxId,
++    decimal? CreditLimit,
++    string? PreferredPaymentMethod,
++    string? DefaultAccountMapping);
++
+ public sealed record FinanceTransactionDetailDto(
+     Guid Id,
+     Guid AccountId,
+@@ -1114,6 +1154,14 @@ public interface IFinanceCommandService
+     Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(
+         UpdateFinanceTransactionCategoryCommand command,
+         CancellationToken cancellationToken);
++
++    Task<FinanceCounterpartyDto> CreateCounterpartyAsync(
++        CreateFinanceCounterpartyCommand command,
++        CancellationToken cancellationToken);
++
++    Task<FinanceCounterpartyDto> UpdateCounterpartyAsync(
++        UpdateFinanceCounterpartyCommand command,
++        CancellationToken cancellationToken);
+ }
+ 
+ public interface IFinanceReadService
+@@ -1158,6 +1206,14 @@ public interface IFinanceReadService
+     Task<FinanceInvoiceDetailDto?> GetInvoiceDetailAsync(
+         GetFinanceInvoiceDetailQuery query,
+         CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<FinanceCounterpartyDto>> GetCounterpartiesAsync(
++        GetFinanceCounterpartiesQuery query,
++        CancellationToken cancellationToken);
++
++    Task<FinanceCounterpartyDto?> GetCounterpartyAsync(
++        GetFinanceCounterpartyQuery query,
++        CancellationToken cancellationToken);
+ 
+     Task<IReadOnlyList<FinanceSeedAnomalyDto>> GetSeedAnomaliesAsync(
+         GetFinanceSeedAnomaliesQuery query,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -2950,10 +2950,17 @@ internal sealed class FinanceCounterpartyConfiguration : IEntityTypeConfiguration
+         builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
+         builder.Property(x => x.CounterpartyType).HasColumnName("counterparty_type").HasMaxLength(64).IsRequired();
+         builder.Property(x => x.Email).HasColumnName("email").HasMaxLength(256);
++        builder.Property(x => x.PaymentTerms).HasColumnName("payment_terms").HasMaxLength(64);
++        builder.Property(x => x.TaxId).HasColumnName("tax_id").HasMaxLength(64);
++        builder.Property(x => x.CreditLimit).HasColumnName("credit_limit").HasColumnType("decimal(18,2)");
++        builder.Property(x => x.PreferredPaymentMethod).HasColumnName("preferred_payment_method").HasMaxLength(64);
++        builder.Property(x => x.DefaultAccountMapping).HasColumnName("default_account_mapping").HasMaxLength(64);
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.Name });
++        builder.HasIndex(x => new { x.CompanyId, x.CounterpartyType, x.Name });
++        builder.HasIndex(x => new { x.CompanyId, x.Email });
+         builder.HasIndex(x => new { x.CompanyId, x.CounterpartyType });
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -750,6 +750,54 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .ToList();
+     }
+ 
++    public async Task<IReadOnlyList<FinanceCounterpartyDto>> GetCounterpartiesAsync(
++        GetFinanceCounterpartiesQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++
++        var normalizedType = NormalizeCounterpartyType(query.CounterpartyType);
++        var rows = await _dbContext.FinanceCounterparties
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && MatchesCounterpartyType(x.CounterpartyType, normalizedType))
++            .OrderBy(x => x.Name)
++            .ThenBy(x => x.CreatedUtc)
++            .Take(NormalizeLimit(query.Limit))
++            .Select(x => new FinanceCounterpartyRow(
++                x.Id,
++                x.CompanyId,
++                NormalizeCounterpartyType(x.CounterpartyType),
++                x.Name,
++                x.Email,
++                x.PaymentTerms,
++                x.TaxId,
++                x.CreditLimit,
++                x.PreferredPaymentMethod,
++                x.DefaultAccountMapping,
++                x.CreatedUtc,
++                x.UpdatedUtc))
++            .ToListAsync(cancellationToken);
++
++        return rows.Select(MapCounterparty).ToList();
++    }
++
++    public async Task<FinanceCounterpartyDto?> GetCounterpartyAsync(
++        GetFinanceCounterpartyQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++
++        var normalizedType = NormalizeCounterpartyType(query.CounterpartyType);
++        var row = await _dbContext.FinanceCounterparties
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.CounterpartyId && MatchesCounterpartyType(x.CounterpartyType, normalizedType))
++            .Select(x => new FinanceCounterpartyRow(x.Id, x.CompanyId, NormalizeCounterpartyType(x.CounterpartyType), x.Name, x.Email, x.PaymentTerms, x.TaxId, x.CreditLimit, x.PreferredPaymentMethod, x.DefaultAccountMapping, x.CreatedUtc, x.UpdatedUtc))
++            .SingleOrDefaultAsync(cancellationToken);
++
++        return row is null ? null : MapCounterparty(row);
++    }
++
+     public async Task<IReadOnlyList<FinanceSeedAnomalyDto>> GetSeedAnomaliesAsync(
+         GetFinanceSeedAnomaliesQuery query,
+         CancellationToken cancellationToken)
+@@ -2460,6 +2508,28 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+         string Status,
+         Guid? DocumentId);
+ 
++    private sealed record FinanceCounterpartyRow(
++        Guid Id,
++        Guid CompanyId,
++        string CounterpartyType,
++        string Name,
++        string? Email,
++        string? PaymentTerms,
++        string? TaxId,
++        decimal? CreditLimit,
++        string? PreferredPaymentMethod,
++        string? DefaultAccountMapping,
++        DateTime CreatedUtc,
++        DateTime UpdatedUtc);
++
+     private sealed record FinanceBillRow(
+         Guid Id,
+         Guid CounterpartyId,
+@@ -2635,4 +2705,26 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .AsNoTracking()
+             .AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+     }
++
++    private static FinanceCounterpartyDto MapCounterparty(FinanceCounterpartyRow row) =>
++        new(
++            row.Id,
++            row.CompanyId,
++            row.CounterpartyType,
++            row.Name,
++            row.Email,
++            row.PaymentTerms,
++            row.TaxId,
++            row.CreditLimit,
++            row.PreferredPaymentMethod,
++            row.DefaultAccountMapping,
++            row.CreatedUtc,
++            row.UpdatedUtc);
++
++    private static string NormalizeCounterpartyType(string value) =>
++        FinanceCounterparty.NormalizeCounterpartyKind(value);
++
++    private static bool MatchesCounterpartyType(string actual, string expected) =>
++        expected == "supplier"
++            ? string.Equals(actual, "supplier", StringComparison.OrdinalIgnoreCase) || string.Equals(actual, "vendor", StringComparison.OrdinalIgnoreCase)
++            : string.Equals(actual, "customer", StringComparison.OrdinalIgnoreCase);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -131,6 +131,51 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFinan
+         return MapTransaction(transaction);
+     }
+ 
++    public async Task<FinanceCounterpartyDto> CreateCounterpartyAsync(
++        CreateFinanceCounterpartyCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++
++        var normalizedType = NormalizeCounterpartyType(command.CounterpartyType);
++        var counterparty = new FinanceCounterparty(
++            Guid.NewGuid(),
++            command.CompanyId,
++            command.Counterparty.Name,
++            normalizedType,
++            command.Counterparty.Email,
++            command.Counterparty.PaymentTerms,
++            command.Counterparty.TaxId,
++            command.Counterparty.CreditLimit,
++            command.Counterparty.PreferredPaymentMethod,
++            command.Counterparty.DefaultAccountMapping);
++
++        _dbContext.FinanceCounterparties.Add(counterparty);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return MapCounterparty(counterparty);
++    }
++
++    public async Task<FinanceCounterpartyDto> UpdateCounterpartyAsync(
++        UpdateFinanceCounterpartyCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++
++        var normalizedType = NormalizeCounterpartyType(command.CounterpartyType);
++        var counterparty = await _dbContext.FinanceCounterparties
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.Id == command.CounterpartyId, cancellationToken);
++
++        EnsureRecordTenant(counterparty, command.CompanyId, "counterparty");
++        EnsureCounterpartyType(counterparty!, normalizedType);
++
++        counterparty!.UpdateMasterData(
++            command.Counterparty.Name,
++            normalizedType,
++            command.Counterparty.Email,
++            command.Counterparty.PaymentTerms,
++            command.Counterparty.TaxId,
++            command.Counterparty.CreditLimit,
++            command.Counterparty.PreferredPaymentMethod,
++            command.Counterparty.DefaultAccountMapping);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapCounterparty(counterparty);
++    }
++
+     public async Task<FinancePolicyConfigurationDto> GetPolicyConfigurationAsync(
+         GetFinancePolicyConfigurationQuery query,
+         CancellationToken cancellationToken)
+@@ -304,6 +349,15 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFinan
+         }
+     }
+ 
++    private static void EnsureCounterpartyType(FinanceCounterparty counterparty, string requestedType)
++    {
++        var actualType = NormalizeCounterpartyType(counterparty.CounterpartyType);
++        if (!string.Equals(actualType, requestedType, StringComparison.OrdinalIgnoreCase))
++        {
++            throw new KeyNotFoundException($"Finance {requestedType} was not found.");
++        }
++    }
++
+     private static FinanceValidationException CreateValidationException(string field, string message) =>
+         new(
+             new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+@@ -325,6 +379,23 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFinan
+             invoice.Status,
+             null);
+ 
++    private static FinanceCounterpartyDto MapCounterparty(FinanceCounterparty counterparty) =>
++        new(
++            counterparty.Id,
++            counterparty.CompanyId,
++            NormalizeCounterpartyType(counterparty.CounterpartyType),
++            counterparty.Name,
++            counterparty.Email,
++            counterparty.PaymentTerms,
++            counterparty.TaxId,
++            counterparty.CreditLimit,
++            counterparty.PreferredPaymentMethod,
++            counterparty.DefaultAccountMapping,
++            counterparty.CreatedUtc,
++            counterparty.UpdatedUtc);
++
++    private static string NormalizeCounterpartyType(string value) =>
++        FinanceCounterparty.NormalizeCounterpartyKind(value);
++
+     private static FinanceTransactionDto MapTransaction(FinanceTransaction transaction) =>
+         new(
+             transaction.Id,
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -595,6 +595,66 @@ public sealed class InternalFinanceController : ControllerBase
+             () => _financeReadService.GetBillsAsync(
+                 new GetFinanceBillsQuery(companyId, startUtc, endUtc, limit),
+                 cancellationToken));
++
++    [HttpGet("customers")]
++    public async Task<ActionResult<IReadOnlyList<FinanceCounterpartyDto>>> GetCustomersAsync(
++        Guid companyId,
++        [FromQuery] int limit,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetCounterpartiesAsync(
++                new GetFinanceCounterpartiesQuery(companyId, "customer", Limit: limit),
++                cancellationToken));
++
++    [HttpGet("customers/{counterpartyId:guid}")]
++    public async Task<ActionResult<FinanceCounterpartyDto>> GetCustomerAsync(
++        Guid companyId,
++        Guid counterpartyId,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadOptionalAsync(
++            () => _financeReadService.GetCounterpartyAsync(
++                new GetFinanceCounterpartyQuery(companyId, counterpartyId, "customer"),
++                cancellationToken),
++            "Finance customer was not found.");
++
++    [HttpGet("suppliers")]
++    public async Task<ActionResult<IReadOnlyList<FinanceCounterpartyDto>>> GetSuppliersAsync(
++        Guid companyId,
++        [FromQuery] int limit,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financeReadService.GetCounterpartiesAsync(
++                new GetFinanceCounterpartiesQuery(companyId, "supplier", Limit: limit),
++                cancellationToken));
++
++    [HttpGet("suppliers/{counterpartyId:guid}")]
++    public async Task<ActionResult<FinanceCounterpartyDto>> GetSupplierAsync(
++        Guid companyId,
++        Guid counterpartyId,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadOptionalAsync(
++            () => _financeReadService.GetCounterpartyAsync(
++                new GetFinanceCounterpartyQuery(companyId, counterpartyId, "supplier"),
++                cancellationToken),
++            "Finance supplier was not found.");
++
++    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
++    [HttpPost("customers")]
++    public async Task<ActionResult<FinanceCounterpartyDto>> CreateCustomerAsync(
++        Guid companyId,
++        [FromBody] UpsertFinanceCounterpartyRequest request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _financeCommandService.CreateCounterpartyAsync(
++                new CreateFinanceCounterpartyCommand(companyId, "customer", request.ToDto()),
++                cancellationToken));
++
++    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
++    [HttpPut("customers/{counterpartyId:guid}")]
++    public async Task<ActionResult<FinanceCounterpartyDto>> UpdateCustomerAsync(
++        Guid companyId,
++        Guid counterpartyId,
++        [FromBody] UpsertFinanceCounterpartyRequest request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _financeCommandService.UpdateCounterpartyAsync(
++                new UpdateFinanceCounterpartyCommand(companyId, counterpartyId, "customer", request.ToDto()),
++                cancellationToken));
++
++    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
++    [HttpPost("suppliers")]
++    public async Task<ActionResult<FinanceCounterpartyDto>> CreateSupplierAsync(
++        Guid companyId,
++        [FromBody] UpsertFinanceCounterpartyRequest request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _financeCommandService.CreateCounterpartyAsync(
++                new CreateFinanceCounterpartyCommand(companyId, "supplier", request.ToDto()),
++                cancellationToken));
++
++    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
++    [HttpPut("suppliers/{counterpartyId:guid}")]
++    public async Task<ActionResult<FinanceCounterpartyDto>> UpdateSupplierAsync(
++        Guid companyId,
++        Guid counterpartyId,
++        [FromBody] UpsertFinanceCounterpartyRequest request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _financeCommandService.UpdateCounterpartyAsync(
++                new UpdateFinanceCounterpartyCommand(companyId, counterpartyId, "supplier", request.ToDto()),
++                cancellationToken));
+ 
+     [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+     [HttpPatch("invoices/{invoiceId:guid}/approval-status")]
+@@ -2798,6 +2858,20 @@ public sealed record UpdateFinanceTransactionCategoryRequest(string Category);
+ public sealed record BootstrapFinanceSeedRequest(
+     int SeedValue,
+     DateTime? SeedAnchorUtc = null,
++    bool ReplaceExisting = true,
++    bool InjectAnomalies = false,
++    string? AnomalyScenarioProfile = null);
++
++public sealed record UpsertFinanceCounterpartyRequest(
++    string Name,
++    string? Email,
++    string? PaymentTerms,
++    string? TaxId,
++    decimal? CreditLimit,
++    string? PreferredPaymentMethod,
++    string? DefaultAccountMapping)
++{
++    public FinanceCounterpartyUpsertDto ToDto() =>
++        new(Name, Email, PaymentTerms, TaxId, CreditLimit, PreferredPaymentMethod, DefaultAccountMapping);
++}
++
++public sealed record BootstrapFinanceSeedRequest(
++    int SeedValue,
++    DateTime? SeedAnchorUtc = null,
+     bool ReplaceExisting = true,
+     bool InjectAnomalies = false,
+     string? AnomalyScenarioProfile = null);
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -378,6 +378,44 @@ public sealed class FinanceApiClient
+         var uri = $"internal/companies/{companyId}/finance/invoices{BuildQuery((\"startUtc\", startUtc?.ToString(\"O\")), (\"endUtc\", endUtc?.ToString(\"O\")), (\"limit\", limit.ToString()))}";
+         return GetListAsync<FinanceInvoiceResponse>(companyId, uri, cancellationToken);
+     }
++
++    public Task<IReadOnlyList<FinanceCounterpartyResponse>> GetCustomersAsync(Guid companyId, int limit = 200, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<IReadOnlyList<FinanceCounterpartyResponse>>([]);
++        }
++
++        return GetListAsync<FinanceCounterpartyResponse>(companyId, $"internal/companies/{companyId}/finance/customers?limit={limit}", cancellationToken);
++    }
++
++    public Task<IReadOnlyList<FinanceCounterpartyResponse>> GetSuppliersAsync(Guid companyId, int limit = 200, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<IReadOnlyList<FinanceCounterpartyResponse>>([]);
++        }
++
++        return GetListAsync<FinanceCounterpartyResponse>(companyId, $"internal/companies/{companyId}/finance/suppliers?limit={limit}", cancellationToken);
++    }
++
++    public Task<FinanceCounterpartyResponse?> GetCustomerAsync(Guid companyId, Guid counterpartyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode ? Task.FromResult<FinanceCounterpartyResponse?>(null) : GetAsync<FinanceCounterpartyResponse>(companyId, $"internal/companies/{companyId}/finance/customers/{counterpartyId}", allowNotFound: true, cancellationToken);
++
++    public Task<FinanceCounterpartyResponse?> GetSupplierAsync(Guid companyId, Guid counterpartyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode ? Task.FromResult<FinanceCounterpartyResponse?>(null) : GetAsync<FinanceCounterpartyResponse>(companyId, $"internal/companies/{companyId}/finance/suppliers/{counterpartyId}", allowNotFound: true, cancellationToken);
++
++    public Task<FinanceCounterpartyResponse> CreateCustomerAsync(Guid companyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
++        SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/customers", request, cancellationToken);
++
++    public Task<FinanceCounterpartyResponse> UpdateCustomerAsync(Guid companyId, Guid counterpartyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
++        SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Put, $"internal/companies/{companyId}/finance/customers/{counterpartyId}", request, cancellationToken);
++
++    public Task<FinanceCounterpartyResponse> CreateSupplierAsync(Guid companyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
++        SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/suppliers", request, cancellationToken);
++
++    public Task<FinanceCounterpartyResponse> UpdateSupplierAsync(Guid companyId, Guid counterpartyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
++        SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Put, $"internal/companies/{companyId}/finance/suppliers/{counterpartyId}", request, cancellationToken);
+ 
+     public Task<FinanceInvoiceDetailResponse?> GetInvoiceDetailAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+@@ -897,6 +935,20 @@ public sealed class FinanceInvoiceResponse
+     public FinanceLinkedDocumentResponse? LinkedDocument { get; set; }
+ }
+ 
++public sealed class FinanceCounterpartyResponse
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string CounterpartyType { get; set; } = string.Empty;
++    public string Name { get; set; } = string.Empty;
++    public string? Email { get; set; }
++    public string? PaymentTerms { get; set; }
++    public string? TaxId { get; set; }
++    public decimal? CreditLimit { get; set; }
++    public string? PreferredPaymentMethod { get; set; }
++    public string? DefaultAccountMapping { get; set; }
++    public DateTime CreatedUtc { get; set; }
++    public DateTime UpdatedUtc { get; set; }
++}
++
+ public sealed class FinanceInvoiceDetailResponse
+ {
+     public Guid Id { get; set; }
+@@ -1130,3 +1182,14 @@ public sealed class UpdateFinanceInvoiceApprovalStatusRequest
+ {
+     public string Status { get; set; } = string.Empty;
+ }
++
++public sealed class UpsertFinanceCounterpartyRequest
++{
++    public string Name { get; set; } = string.Empty;
++    public string? Email { get; set; }
++    public string? PaymentTerms { get; set; }
++    public string? TaxId { get; set; }
++    public decimal? CreditLimit { get; set; }
++    public string? PreferredPaymentMethod { get; set; }
++    public string? DefaultAccountMapping { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Services/FinanceRoutes.cs b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+--- a/src/VirtualCompany.Web/Services/FinanceRoutes.cs
++++ b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+@@ -23,6 +23,7 @@ public static class FinanceRoutes
+     public const string Reviews = "/finance/reviews";
+     public const string ReviewDetail = "/finance/reviews/{invoiceId:guid}";
+     public const string InvoiceDetail = "/finance/invoices/{invoiceId:guid}";
++    public const string Counterparties = "/finance/admin/counterparties";
+     public const string Balances = "/finance/balances";
+     public const string MonthlySummary = "/finance/monthly-summary";
+     public const string Anomalies = "/finance/anomalies";
+@@ -56,6 +57,7 @@ public static class FinanceRoutes
+             new("Invoices", Invoices, "Track invoice review and collection workflows inside the active company."),
+             new("Balances", Balances, "Browse account balances with explicit tenant-scoped routing."),
+             new("Transparency events", TransparencyEvents, "Inspect finance domain events, payload summaries, and trigger trace coverage.", true),
++            new("Counterparties", Counterparties, "Manage customer and supplier master data used by finance documents.", true),
+             new("Tool registry", TransparencyToolRegistry, "Inspect finance tool manifests, schema summaries, and provider metadata.", true),
+             new("Tool executions", TransparencyToolExecutions, "Review finance tool execution history and related approval links.", true),
+             new("Sandbox admin", SandboxAdmin, "Inspect sandbox dataset generation, anomaly injection, simulation controls, tool execution visibility, and domain events.", true),
+diff --git a/src/VirtualCompany.Web/Pages/Finance/CounterpartiesPage.razor b/src/VirtualCompany.Web/Pages/Finance/CounterpartiesPage.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/CounterpartiesPage.razor
+@@ -0,0 +1,143 @@
++@page "/finance/admin/counterparties"
++@inherits FinancePageBase
++
++<PageTitle>Finance Counterparties</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Finance counterparties"
++    Description="Manage customer and supplier master data used by invoices, bills, and finance transactions."
++    LoadingMessage="Loading finance counterparties...">
++    <div class="row g-4 align-items-start">
++        <div class="col-lg-5">
++            <div class="wizard-card wizard-card--compact">
++                <div class="d-flex justify-content-between align-items-center mb-3">
++                    <div class="btn-group" role="group" aria-label="Counterparty type">
++                        <button type="button" class="btn @(SelectedType == "customer" ? "btn-primary" : "btn-outline-primary")" @onclick="() => HandleTypeChangedAsync("customer")">Customers</button>
++                        <button type="button" class="btn @(SelectedType == "supplier" ? "btn-primary" : "btn-outline-primary")" @onclick="() => HandleTypeChangedAsync("supplier")">Suppliers</button>
++                    </div>
++                    <button type="button" class="btn btn-outline-secondary" @onclick="HandleNewAsync" disabled="@(!CanEdit)">New</button>
++                </div>
++
++                <FinanceDataState
++                    IsLoading="@IsListLoading"
++                    IsEmpty="@(!IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Items.Count == 0)"
++                    ErrorMessage="@ListErrorMessage"
++                    LoadingTitle="Loading counterparties"
++                    LoadingMessage="Fetching finance counterparties for the selected company."
++                    EmptyTitle="No counterparties available"
++                    EmptyMessage="Create a finance counterparty to start populating customer and supplier master data."
++                    OnRetry="@ReloadAsync">
++                    <div class="list-group">
++                        @foreach (var item in Items)
++                        {
++                            <button type="button" class="@(SelectedId == item.Id ? "list-group-item list-group-item-action active" : "list-group-item list-group-item-action")" @onclick="() => HandleSelectAsync(item.Id)">
++                                <div class="d-flex justify-content-between gap-3">
++                                    <div>
++                                        <div class="fw-semibold">@item.Name</div>
++                                        <div class="small text-body-secondary">@item.Email</div>
++                                    </div>
++                                    <div class="text-end small">
++                                        <div>@item.PaymentTerms</div>
++                                        <div>@item.PreferredPaymentMethod</div>
++                                    </div>
++                                </div>
++                            </button>
++                        }
++                    </div>
++                </FinanceDataState>
++            </div>
++        </div>
++
++        <div class="col-lg-7">
++            <div class="wizard-card wizard-card--compact">
++                <h2 class="h5 mb-3">@((IsCreatingNew ? "Create" : "Edit")) @TitleCase(SelectedType)</h2>
++
++                @if (!string.IsNullOrWhiteSpace(SaveMessage))
++                {
++                    <div class="alert alert-success" role="status">@SaveMessage</div>
++                }
++
++                @if (!string.IsNullOrWhiteSpace(ValidationMessage))
++                {
++                    <div class="alert alert-danger" role="alert">@ValidationMessage</div>
++                }
++
++                <EditForm Model="@Editor" OnValidSubmit="@HandleSaveAsync">
++                    <div class="row g-3">
++                        <div class="col-md-6">
++                            <label class="form-label" for="counterparty-name">Name</label>
++                            <InputText id="counterparty-name" class="form-control" @bind-Value="Editor.Name" />
++                        </div>
++                        <div class="col-md-6">
++                            <label class="form-label" for="counterparty-email">Email</label>
++                            <InputText id="counterparty-email" class="form-control" @bind-Value="Editor.Email" />
++                        </div>
++                        <div class="col-md-6">
++                            <label class="form-label" for="counterparty-payment-terms">Payment terms</label>
++                            <InputText id="counterparty-payment-terms" class="form-control" @bind-Value="Editor.PaymentTerms" />
++                        </div>
++                        <div class="col-md-6">
++                            <label class="form-label" for="counterparty-tax-id">Tax ID</label>
++                            <InputText id="counterparty-tax-id" class="form-control" @bind-Value="Editor.TaxId" />
++                        </div>
++                        <div class="col-md-6">
++                            <label class="form-label" for="counterparty-credit-limit">Credit limit</label>
++                            <InputNumber id="counterparty-credit-limit" class="form-control" @bind-Value="Editor.CreditLimit" />
++                        </div>
++                        <div class="col-md-6">
++                            <label class="form-label" for="counterparty-payment-method">Preferred payment method</label>
++                            <InputText id="counterparty-payment-method" class="form-control" @bind-Value="Editor.PreferredPaymentMethod" />
++                        </div>
++                        <div class="col-12">
++                            <label class="form-label" for="counterparty-account-mapping">Default account mapping</label>
++                            <InputText id="counterparty-account-mapping" class="form-control" @bind-Value="Editor.DefaultAccountMapping" />
++                            <div class="form-text">Use the existing account code format already used by finance mappings.</div>
++                        </div>
++                        @if (!IsCreatingNew && Selected is not null)
++                        {
++                            <div class="col-12">
++                                <dl class="row mb-0">
++                                    <dt class="col-sm-3">Created</dt>
++                                    <dd class="col-sm-9">@Selected.CreatedUtc.ToString("u")</dd>
++                                    <dt class="col-sm-3">Updated</dt>
++                                    <dd class="col-sm-9">@Selected.UpdatedUtc.ToString("u")</dd>
++                                </dl>
++                            </div>
++                        }
++                        <div class="col-12 d-flex gap-2">
++                            <button type="submit" class="btn btn-primary" disabled="@(!CanEdit || IsSaving)">@(IsSaving ? "Saving..." : "Save")</button>
++                            <button type="button" class="btn btn-outline-secondary" @onclick="HandleNewAsync">Reset</button>
++                        </div>
++                    </div>
++                </EditForm>
++            </div>
++        </div>
++    </div>
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/CounterpartiesPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/CounterpartiesPage.razor.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/CounterpartiesPage.razor.cs
+@@ -0,0 +1,146 @@
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++using VirtualCompany.Shared;
++
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class CounterpartiesPage : FinancePageBase
++{
++    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
++
++    private IReadOnlyList<FinanceCounterpartyResponse> Items { get; set; } = [];
++    private FinanceCounterpartyResponse? Selected { get; set; }
++    private Guid? SelectedId { get; set; }
++    private string SelectedType { get; set; } = "customer";
++    private CounterpartyEditorModel Editor { get; set; } = new();
++    private bool IsCreatingNew { get; set; } = true;
++    private bool IsListLoading { get; set; }
++    private bool IsSaving { get; set; }
++    private string? ListErrorMessage { get; set; }
++    private string? ValidationMessage { get; set; }
++    private string? SaveMessage { get; set; }
++    private bool CanEdit => FinanceAccess.CanEdit(AccessState.MembershipRole);
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadListAsync(companyId);
++    }
++
++    private async Task ReloadAsync()
++    {
++        if (AccessState.CompanyId is Guid companyId)
++        {
++            await LoadListAsync(companyId);
++        }
++    }
++
++    private async Task HandleTypeChangedAsync(string type)
++    {
++        SelectedType = type;
++        SelectedId = null;
++        Selected = null;
++        IsCreatingNew = true;
++        Editor = CounterpartyEditorModel.CreateDefaults(type);
++        await ReloadAsync();
++    }
++
++    private Task HandleNewAsync()
++    {
++        SelectedId = null;
++        Selected = null;
++        IsCreatingNew = true;
++        Editor = CounterpartyEditorModel.CreateDefaults(SelectedType);
++        ValidationMessage = null;
++        SaveMessage = null;
++        return Task.CompletedTask;
++    }
++
++    private async Task HandleSelectAsync(Guid id)
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        Selected = SelectedType == "customer"
++            ? await FinanceApiClient.GetCustomerAsync(companyId, id)
++            : await FinanceApiClient.GetSupplierAsync(companyId, id);
++
++        if (Selected is null)
++        {
++            return;
++        }
++
++        SelectedId = id;
++        IsCreatingNew = false;
++        Editor = CounterpartyEditorModel.FromResponse(Selected);
++        ValidationMessage = null;
++        SaveMessage = null;
++    }
++
++    private async Task LoadListAsync(Guid companyId)
++    {
++        IsListLoading = true;
++        ListErrorMessage = null;
++        try
++        {
++            Items = SelectedType == "customer"
++                ? await FinanceApiClient.GetCustomersAsync(companyId)
++                : await FinanceApiClient.GetSuppliersAsync(companyId);
++        }
++        catch (FinanceApiException ex)
++        {
++            Items = [];
++            ListErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsListLoading = false;
++        }
++    }
++
++    private async Task HandleSaveAsync()
++    {
++        if (!CanEdit || AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        ValidationMessage = null;
++        SaveMessage = null;
++        IsSaving = true;
++        try
++        {
++            var request = Editor.ToRequest();
++            Selected = IsCreatingNew
++                ? SelectedType == "customer" ? await FinanceApiClient.CreateCustomerAsync(companyId, request) : await FinanceApiClient.CreateSupplierAsync(companyId, request)
++                : SelectedType == "customer" ? await FinanceApiClient.UpdateCustomerAsync(companyId, SelectedId!.Value, request) : await FinanceApiClient.UpdateSupplierAsync(companyId, SelectedId!.Value, request);
++            SelectedId = Selected.Id;
++            IsCreatingNew = false;
++            Editor = CounterpartyEditorModel.FromResponse(Selected);
++            SaveMessage = $"{TitleCase(SelectedType)} saved.";
++            await LoadListAsync(companyId);
++        }
++        catch (FinanceApiValidationException ex)
++        {
++            ValidationMessage = ex.Errors.Values.SelectMany(x => x).FirstOrDefault() ?? ex.Message;
++        }
++        catch (FinanceApiException ex)
++        {
++            ValidationMessage = ex.Message;
++        }
++        finally
++        {
++            IsSaving = false;
++        }
++    }
++
++    private static string TitleCase(string value) =>
++        string.IsNullOrWhiteSpace(value) ? "Counterparty" : char.ToUpperInvariant(value[0]) + value[1..];
++
++    private sealed class CounterpartyEditorModel
++    {
++        public string Name { get; set; } = string.Empty;
++        public string? Email { get; set; }
++        public string? PaymentTerms { get; set; }
++        public string? TaxId { get; set; }
++        public decimal? CreditLimit { get; set; }
++        public string? PreferredPaymentMethod { get; set; }
++        public string? DefaultAccountMapping { get; set; }
++
++        public static CounterpartyEditorModel CreateDefaults(string type) => new()
++        {
++            PaymentTerms = "Net30",
++            CreditLimit = 0m,
++            PreferredPaymentMethod = "bank_transfer",
++            DefaultAccountMapping = type == "customer" ? "1100" : "2000"
++        };
++
++        public static CounterpartyEditorModel FromResponse(FinanceCounterpartyResponse response) => new()
++        {
++            Name = response.Name,
++            Email = response.Email,
++            PaymentTerms = response.PaymentTerms,
++            TaxId = response.TaxId,
++            CreditLimit = response.CreditLimit,
++            PreferredPaymentMethod = response.PreferredPaymentMethod,
++            DefaultAccountMapping = response.DefaultAccountMapping
++        };
++
++        public UpsertFinanceCounterpartyRequest ToRequest() => new()
++        {
++            Name = Name,
++            Email = Email,
++            PaymentTerms = PaymentTerms,
++            TaxId = TaxId,
++            CreditLimit = CreditLimit,
++            PreferredPaymentMethod = PreferredPaymentMethod,
++            DefaultAccountMapping = DefaultAccountMapping
++        };
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420120000_AddFinanceCounterpartyMasterData.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420120000_AddFinanceCounterpartyMasterData.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420120000_AddFinanceCounterpartyMasterData.cs
+@@ -0,0 +1,76 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddFinanceCounterpartyMasterData : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<string>(name: "payment_terms", table: "finance_counterparties", type: "nvarchar(64)", maxLength: 64, nullable: true);
++            migrationBuilder.AddColumn<string>(name: "tax_id", table: "finance_counterparties", type: "nvarchar(64)", maxLength: 64, nullable: true);
++            migrationBuilder.AddColumn<decimal>(name: "credit_limit", table: "finance_counterparties", type: "decimal(18,2)", nullable: true);
++            migrationBuilder.AddColumn<string>(name: "preferred_payment_method", table: "finance_counterparties", type: "nvarchar(64)", maxLength: 64, nullable: true);
++            migrationBuilder.AddColumn<string>(name: "default_account_mapping", table: "finance_counterparties", type: "nvarchar(64)", maxLength: 64, nullable: true);
++
++            migrationBuilder.Sql(
++                """
++                UPDATE finance_counterparties
++                SET
++                    payment_terms = COALESCE(NULLIF(payment_terms, ''), 'Net30'),
++                    credit_limit = COALESCE(credit_limit, 0),
++                    preferred_payment_method = COALESCE(NULLIF(preferred_payment_method, ''), 'bank_transfer'),
++                    default_account_mapping = COALESCE(
++                        NULLIF(default_account_mapping, ''),
++                        CASE
++                            WHEN LOWER(counterparty_type) = 'customer' THEN '1100'
++                            ELSE '2000'
++                        END)
++                WHERE payment_terms IS NULL
++                    OR credit_limit IS NULL
++                    OR preferred_payment_method IS NULL
++                    OR default_account_mapping IS NULL;
++                """);
++
++            migrationBuilder.Sql(
++                """
++                IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_counterparty_type_name' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
++                BEGIN
++                    CREATE INDEX [IX_finance_counterparties_company_id_counterparty_type_name]
++                    ON [finance_counterparties] ([company_id], [counterparty_type], [name]);
++                END
++                """);
++
++            migrationBuilder.Sql(
++                """
++                IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_email' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
++                BEGIN
++                    CREATE INDEX [IX_finance_counterparties_company_id_email]
++                    ON [finance_counterparties] ([company_id], [email]);
++                END
++                """);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.Sql(
++                """
++                IF EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_counterparty_type_name' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
++                BEGIN
++                    DROP INDEX [IX_finance_counterparties_company_id_counterparty_type_name] ON [finance_counterparties];
++                END
++                """);
++
++            migrationBuilder.Sql(
++                """
++                IF EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_email' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
++                BEGIN
++                    DROP INDEX [IX_finance_counterparties_company_id_email] ON [finance_counterparties];
++                END
++                """);
++
++            migrationBuilder.DropColumn(name: "payment_terms", table: "finance_counterparties");
++            migrationBuilder.DropColumn(name: "tax_id", table: "finance_counterparties");
++            migrationBuilder.DropColumn(name: "credit_limit", table: "finance_counterparties");
++            migrationBuilder.DropColumn(name: "preferred_payment_method", table: "finance_counterparties");
++            migrationBuilder.DropColumn(name: "default_account_mapping", table: "finance_counterparties");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs
+@@ -176,6 +176,53 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Test
+             await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());
+     }
+ 
++    [Fact]
++    public async Task Internal_finance_counterparty_endpoints_round_trip_customer_and_supplier_master_data()
++    {
++        var seed = await SeedFinanceWriteCompanyAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var createCustomer = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/customers",
++            new
++            {
++                Name = "Fourth Coffee",
++                Email = "finance@fourthcoffee.example",
++                PaymentTerms = "Net45",
++                TaxId = "SE556677-8899",
++                CreditLimit = 25000m,
++                PreferredPaymentMethod = "bank_transfer",
++                DefaultAccountMapping = "1100"
++            });
++        var createSupplier = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/suppliers",
++            new
++            {
++                Name = "Litware Services",
++                Email = "ap@litware.example",
++                PaymentTerms = "Net15",
++                TaxId = "SE998877-6655",
++                CreditLimit = 0m,
++                PreferredPaymentMethod = "bank_transfer",
++                DefaultAccountMapping = "2000"
++            });
++
++        Assert.Equal(HttpStatusCode.OK, createCustomer.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, createSupplier.StatusCode);
++
++        var customer = await createCustomer.Content.ReadFromJsonAsync<CounterpartyResponse>();
++        var supplier = await createSupplier.Content.ReadFromJsonAsync<CounterpartyResponse>();
++        Assert.NotNull(customer);
++        Assert.NotNull(supplier);
++
++        var updateSupplier = await client.PutAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/suppliers/{supplier!.Id}",
++            new
++            {
++                supplier.Name,
++                supplier.Email,
++                PaymentTerms = "Net30",
++                TaxId = supplier.TaxId,
++                CreditLimit = 5000m,
++                PreferredPaymentMethod = "bank_transfer",
++                DefaultAccountMapping = "2100"
++            });
++        Assert.Equal(HttpStatusCode.OK, updateSupplier.StatusCode);
++
++        var customers = await client.GetFromJsonAsync<List<CounterpartyResponse>>($"/internal/companies/{seed.CompanyId}/finance/customers?limit=50");
++        var suppliers = await client.GetFromJsonAsync<List<CounterpartyResponse>>($"/internal/companies/{seed.CompanyId}/finance/suppliers?limit=50");
++        var supplierDetail = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/suppliers/{supplier.Id}");
++
++        Assert.Contains(customers!, x => x.Id == customer!.Id && x.PaymentTerms == "Net45" && x.CreditLimit == 25000m);
++        Assert.Contains(suppliers!, x => x.Id == supplier.Id);
++        Assert.Equal("Net30", supplierDetail!.PaymentTerms);
++        Assert.Equal(5000m, supplierDetail.CreditLimit);
++        Assert.Equal("2100", supplierDetail.DefaultAccountMapping);
++    }
++
+     [Fact]
+     public async Task Internal_finance_write_endpoints_reject_employee_invoice_and_transaction_mutations()
+     {
+@@ -455,6 +502,19 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Test
+         public Guid Id { get; set; }
+         public string TransactionType { get; set; } = string.Empty;
+     }
++
++    private sealed class CounterpartyResponse
++    {
++        public Guid Id { get; set; }
++        public string CounterpartyType { get; set; } = string.Empty;
++        public string Name { get; set; } = string.Empty;
++        public string? Email { get; set; }
++        public string? PaymentTerms { get; set; }
++        public string? TaxId { get; set; }
++        public decimal? CreditLimit { get; set; }
++        public string? PreferredPaymentMethod { get; set; }
++        public string? DefaultAccountMapping { get; set; }
++    }
++
+     private sealed record PolicyConfigurationResponse(
+         Guid CompanyId,
+         string ApprovalCurrency,
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -99,6 +99,23 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+         Assert.Equal(5, bills!.Count);
+         Assert.Contains(bills, bill => bill.LinkedDocument is not null);
+ 
++        var customersResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/customers?limit=10");
++        Assert.Equal(HttpStatusCode.OK, customersResponse.StatusCode);
++        var customers = await customersResponse.Content.ReadFromJsonAsync<List<CounterpartyResponse>>();
++        Assert.NotNull(customers);
++        Assert.NotEmpty(customers!);
++        Assert.All(customers, x =>
++        {
++            Assert.Equal("customer", x.CounterpartyType);
++            Assert.False(string.IsNullOrWhiteSpace(x.PaymentTerms));
++            Assert.False(string.IsNullOrWhiteSpace(x.PreferredPaymentMethod));
++        });
++
++        var suppliersResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/suppliers?limit=10");
++        Assert.Equal(HttpStatusCode.OK, suppliersResponse.StatusCode);
++        var suppliers = await suppliersResponse.Content.ReadFromJsonAsync<List<CounterpartyResponse>>();
++        Assert.NotNull(suppliers);
++        Assert.NotEmpty(suppliers!);
++
+         var linkedDocuments = transactions.Select(x => x.LinkedDocument)
+             .Concat(invoices.Select(x => x.LinkedDocument))
+             .Concat(bills.Select(x => x.LinkedDocument))
+@@ -144,6 +161,17 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+             Assert.Equal("customer_payment", transaction.TransactionType);
+             Assert.True(transaction.IsFlagged);
+         });
++
++        var firstInvoice = Assert.Single(invoices.Where(x => x.Id == seed.ReviewInvoiceId));
++        var invoiceCounterparty = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/customers/{firstInvoice.CounterpartyId}");
++        Assert.NotNull(invoiceCounterparty);
++        Assert.Equal(firstInvoice.CounterpartyId, invoiceCounterparty!.Id);
++        Assert.Equal(firstInvoice.CounterpartyName, invoiceCounterparty.Name);
++
++        var firstBill = bills.First();
++        var billCounterparty = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/suppliers/{firstBill.CounterpartyId}");
++        Assert.NotNull(billCounterparty);
++        Assert.Equal(firstBill.CounterpartyId, billCounterparty!.Id);
++        Assert.Equal(firstBill.CounterpartyName, billCounterparty.Name);
+     }
+@@ -698,6 +726,20 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebA
+         public string Status { get; set; } = string.Empty;
+         public LinkedDocumentResponse? LinkedDocument { get; set; }
+     }
++
++    private sealed class CounterpartyResponse
++    {
++        public Guid Id { get; set; }
++        public string CounterpartyType { get; set; } = string.Empty;
++        public string Name { get; set; } = string.Empty;
++        public string? Email { get; set; }
++        public string? PaymentTerms { get; set; }
++        public string? TaxId { get; set; }
++        public decimal? CreditLimit { get; set; }
++        public string? PreferredPaymentMethod { get; set; }
++        public string? DefaultAccountMapping { get; set; }
++        public DateTime CreatedUtc { get; set; }
++        public DateTime UpdatedUtc { get; set; }
++    }
+ 
+     private sealed class BillResponse
+     {
+END_OF_PATCH

@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-26.3.3",
+  "promptPath": ".ai-design/prompts/TASK-26.3.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T18:20:18.441Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T18-20-18-441Z_TASK-26.3.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T18-20-18-441Z_TASK-26.3.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T18:26:57.616Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "utive-cockpit-expected-incoming-cash']\").TextContent); Assert.Contains(\"USD 725.00\", cut.Find(\"[data-testid='executive-cockpit-expected-outgoing-cash']\").TextContent); Assert.Contains(\"USD 300.00\", cut.Find(\"[data-testid='executive-cockpit-overdue-receivables']\").TextContent); Assert.Contains(\"USD 350.00\", cut.Find(\"[data-testid='executive-cockpit-upcoming-payables']\").TextContent); });\r\n+    }\r\n+\n     [Fact]\r\n     public void Executive_cockpit_renders_business_signals_panel_instead_of_legacy_summary_kpis()\r\n     {\r\n@@ -265,7 +304,8 @@ public sealed class ExecutiveCockpitDashboardPageTests\n     private static DashboardHarness CreateDashboardHarness(\r\n         Guid companyId,\r\n         ExecutiveCockpitDashboardViewModel dashboard,\r\n-        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? financeHandler = null)\r\n+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? financeHandler = null,\r\n+        Func<DashboardFinanceSnapshotViewModel>? financeSnapshotFactory = null)\r\n     {\r\n         var context = new TestContext();\r\n         var financeRequests = new List<CapturedFinanceRequest>();\r\n@@ -296,7 +336,7 @@ public sealed class ExecutiveCockpitDashboardPageTests\n                     }),\r\n                 var path when request.Method == HttpMethod.Get &&\r\n                                path == \"/api/dashboard/finance-snapshot\" =>\r\n-                    CreateJsonResponse(CreateFinanceSnapshot(companyId, dashboard.Finance?.Runway.Status ?? \"critical\")),\r\n+                    CreateJsonResponse((financeSnapshotFactory ?? (() => CreateFinanceSnapshot(companyId, dashboard.Finance?.Runway.Status ?? \"critical\")))()),\r\n                 var path when request.Method == HttpMethod.Get &&\r\n                                path == $\"/api/companies/{companyId:D}/executive-cockpit/widgets/business-signals\" =>\r\n                     CreateJsonResponse(new ExecutiveCockpitWidgetPayloadViewModel<List<BusinessSignalViewModel>>\r\nEND_OF_PATCH\n",
+  "stderrTail": "ed-incoming-cash']\").TextContent); Assert.Contains(\"USD 725.00\", cut.Find(\"[data-testid='executive-cockpit-expected-outgoing-cash']\").TextContent); Assert.Contains(\"USD 300.00\", cut.Find(\"[data-testid='executive-cockpit-overdue-receivables']\").TextContent); Assert.Contains(\"USD 350.00\", cut.Find(\"[data-testid='executive-cockpit-upcoming-payables']\").TextContent); });\r\n+    }\r\n+\n     [Fact]\r\n     public void Executive_cockpit_renders_business_signals_panel_instead_of_legacy_summary_kpis()\r\n     {\r\n@@ -265,7 +304,8 @@ public sealed class ExecutiveCockpitDashboardPageTests\n     private static DashboardHarness CreateDashboardHarness(\r\n         Guid companyId,\r\n         ExecutiveCockpitDashboardViewModel dashboard,\r\n-        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? financeHandler = null)\r\n+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? financeHandler = null,\r\n+        Func<DashboardFinanceSnapshotViewModel>? financeSnapshotFactory = null)\r\n     {\r\n         var context = new TestContext();\r\n         var financeRequests = new List<CapturedFinanceRequest>();\r\n@@ -296,7 +336,7 @@ public sealed class ExecutiveCockpitDashboardPageTests\n                     }),\r\n                 var path when request.Method == HttpMethod.Get &&\r\n                                path == \"/api/dashboard/finance-snapshot\" =>\r\n-                    CreateJsonResponse(CreateFinanceSnapshot(companyId, dashboard.Finance?.Runway.Status ?? \"critical\")),\r\n+                    CreateJsonResponse((financeSnapshotFactory ?? (() => CreateFinanceSnapshot(companyId, dashboard.Finance?.Runway.Status ?? \"critical\")))()),\r\n                 var path when request.Method == HttpMethod.Get &&\r\n                                path == $\"/api/companies/{companyId:D}/executive-cockpit/widgets/business-signals\" =>\r\n                     CreateJsonResponse(new ExecutiveCockpitWidgetPayloadViewModel<List<BusinessSignalViewModel>>\r\nEND_OF_PATCH\ntokens used\n120,888\n",
+  "verbosityMode": "verbose"
+}

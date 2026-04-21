@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-23.4.3",
+  "promptPath": ".ai-design/prompts/TASK-23.4.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T14:00:09.708Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T14-00-09-708Z_TASK-23.4.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T14-00-09-708Z_TASK-23.4.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T14:04:14.576Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "try.EntryUtc >= new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) &&\n+                        entry.EntryUtc < new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc)));\n+\n+        Assert.Equal(snapshotPayload.SelectedLine.Amount, livePayload.SelectedLine.Amount);\n+        Assert.Equal(snapshotPayload.JournalLineTotal, livePayload.JournalLineTotal);\n+        Assert.Equal(snapshotPayload.ReconciliationTotal, livePayload.ReconciliationTotal);\n+    }\n+\n+    [Fact]\n+    public async Task Snapshot_drilldown_returns_not_found_for_unknown_snapshot_line()\n+    {\n+        var seed = await SeedScenarioAsync();\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+\n+        await client.PostAsJsonAsync(\n+            $\"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.JanuaryPeriodId:D}/reporting/stored-statements/regenerate\",\n+            new { runInBackground = false });\n+        var summaries = await client.GetFromJsonAsync<List<FinancialStatementSnapshotSummaryResponse>>(\n+            $\"/api/companies/{seed.CompanyId:D}/financial-statements/snapshots?fiscalPeriodId={seed.JanuaryPeriodId:D}&statementType=profit_and_loss\");\n+        var snapshotSummary = Assert.Single(summaries!, x => x.VersionNumber == 1);\n+\n+        var response = await client.GetAsync(\n+            $\"/api/companies/{seed.CompanyId:D}/financial-statements/snapshots/{snapshotSummary.SnapshotId:D}/lines/unknown-line/drilldown\");\n+\n+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);\n     }\n \n     [Fact]\n@@ -346,6 +367,7 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass\n         public decimal OpeningBalanceAdjustment { get; set; }\n         public decimal JournalLineTotal { get; set; }\n         public decimal ReconciliationTotal { get; set; }\n+        public decimal ReconciliationDelta { get; set; }\n         public List<DrilldownEntryResponse> JournalEntries { get; set; } = [];\n     }\n \nEND_OF_PATCH\n",
+  "stderrTail": "DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) &&\n+                        entry.EntryUtc < new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc)));\n+\n+        Assert.Equal(snapshotPayload.SelectedLine.Amount, livePayload.SelectedLine.Amount);\n+        Assert.Equal(snapshotPayload.JournalLineTotal, livePayload.JournalLineTotal);\n+        Assert.Equal(snapshotPayload.ReconciliationTotal, livePayload.ReconciliationTotal);\n+    }\n+\n+    [Fact]\n+    public async Task Snapshot_drilldown_returns_not_found_for_unknown_snapshot_line()\n+    {\n+        var seed = await SeedScenarioAsync();\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+\n+        await client.PostAsJsonAsync(\n+            $\"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.JanuaryPeriodId:D}/reporting/stored-statements/regenerate\",\n+            new { runInBackground = false });\n+        var summaries = await client.GetFromJsonAsync<List<FinancialStatementSnapshotSummaryResponse>>(\n+            $\"/api/companies/{seed.CompanyId:D}/financial-statements/snapshots?fiscalPeriodId={seed.JanuaryPeriodId:D}&statementType=profit_and_loss\");\n+        var snapshotSummary = Assert.Single(summaries!, x => x.VersionNumber == 1);\n+\n+        var response = await client.GetAsync(\n+            $\"/api/companies/{seed.CompanyId:D}/financial-statements/snapshots/{snapshotSummary.SnapshotId:D}/lines/unknown-line/drilldown\");\n+\n+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);\n     }\n \n     [Fact]\n@@ -346,6 +367,7 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass\n         public decimal OpeningBalanceAdjustment { get; set; }\n         public decimal JournalLineTotal { get; set; }\n         public decimal ReconciliationTotal { get; set; }\n+        public decimal ReconciliationDelta { get; set; }\n         public List<DrilldownEntryResponse> JournalEntries { get; set; } = [];\n     }\n \nEND_OF_PATCH\ntokens used\n118,360\n",
+  "verbosityMode": "verbose"
+}

@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-26.1.4",
+  "promptPath": ".ai-design/prompts/TASK-26.1.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T17:38:47.270Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T17-38-47-270Z_TASK-26.1.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T17-38-47-270Z_TASK-26.1.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T17:42:05.974Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ssert.Equal(postedAtUtc, sourceMapping.PostedAtUtc);\n+        Assert.Equal(lines.Sum(x => x.DebitAmount), lines.Sum(x => x.CreditAmount));\n     }\n \n     [Fact]\n-    public async Task Ensure_created_maps_traceability_columns_unique_source_index_and_source_mapping_table()\n+    public async Task Ensure_created_maps_traceability_columns_unique_source_index_and_source_mapping_table()\n     {\n         await using var connection = await OpenConnectionAsync();\n         await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(Guid.NewGuid()));\n@@ -397,6 +481,33 @@ public sealed class CashSettlementPostingServiceTests\n         return values;\n     }\n \n+    private static Task<LedgerEntry> LoadLedgerEntryAsync(\n+        VirtualCompanyDbContext dbContext,\n+        Guid companyId,\n+        Guid ledgerEntryId) =>\n+        dbContext.LedgerEntries\n+            .IgnoreQueryFilters()\n+            .AsNoTracking()\n+            .SingleAsync(x => x.CompanyId == companyId && x.Id == ledgerEntryId);\n+\n+    private static Task<List<LedgerEntryLine>> LoadLedgerLinesAsync(\n+        VirtualCompanyDbContext dbContext,\n+        Guid companyId,\n+        Guid ledgerEntryId) =>\n+        dbContext.LedgerEntryLines\n+            .IgnoreQueryFilters()\n+            .AsNoTracking()\n+            .Where(x => x.CompanyId == companyId && x.LedgerEntryId == ledgerEntryId)\n+            .OrderBy(x => x.DebitAmount == 0m)\n+            .ToListAsync();\n+\n+    private static Task<LedgerEntrySourceMapping> LoadSourceMappingAsync(\n+        VirtualCompanyDbContext dbContext,\n+        Guid companyId,\n+        Guid ledgerEntryId) =>\n+        dbContext.LedgerEntrySourceMappings\n+            .IgnoreQueryFilters()\n+            .AsNoTracking()\n+            .SingleAsync(x => x.CompanyId == companyId && x.LedgerEntryId == ledgerEntryId);\n+\n     private static async Task<SqliteConnection> OpenConnectionAsync()\n     {\n         var connection = new SqliteConnection(\"Data Source=:memory:\");\nEND_OF_PATCH\n",
+  "stderrTail": "Utc, sourceMapping.PostedAtUtc);\n+        Assert.Equal(lines.Sum(x => x.DebitAmount), lines.Sum(x => x.CreditAmount));\n     }\n \n     [Fact]\n-    public async Task Ensure_created_maps_traceability_columns_unique_source_index_and_source_mapping_table()\n+    public async Task Ensure_created_maps_traceability_columns_unique_source_index_and_source_mapping_table()\n     {\n         await using var connection = await OpenConnectionAsync();\n         await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(Guid.NewGuid()));\n@@ -397,6 +481,33 @@ public sealed class CashSettlementPostingServiceTests\n         return values;\n     }\n \n+    private static Task<LedgerEntry> LoadLedgerEntryAsync(\n+        VirtualCompanyDbContext dbContext,\n+        Guid companyId,\n+        Guid ledgerEntryId) =>\n+        dbContext.LedgerEntries\n+            .IgnoreQueryFilters()\n+            .AsNoTracking()\n+            .SingleAsync(x => x.CompanyId == companyId && x.Id == ledgerEntryId);\n+\n+    private static Task<List<LedgerEntryLine>> LoadLedgerLinesAsync(\n+        VirtualCompanyDbContext dbContext,\n+        Guid companyId,\n+        Guid ledgerEntryId) =>\n+        dbContext.LedgerEntryLines\n+            .IgnoreQueryFilters()\n+            .AsNoTracking()\n+            .Where(x => x.CompanyId == companyId && x.LedgerEntryId == ledgerEntryId)\n+            .OrderBy(x => x.DebitAmount == 0m)\n+            .ToListAsync();\n+\n+    private static Task<LedgerEntrySourceMapping> LoadSourceMappingAsync(\n+        VirtualCompanyDbContext dbContext,\n+        Guid companyId,\n+        Guid ledgerEntryId) =>\n+        dbContext.LedgerEntrySourceMappings\n+            .IgnoreQueryFilters()\n+            .AsNoTracking()\n+            .SingleAsync(x => x.CompanyId == companyId && x.LedgerEntryId == ledgerEntryId);\n+\n     private static async Task<SqliteConnection> OpenConnectionAsync()\n     {\n         var connection = new SqliteConnection(\"Data Source=:memory:\");\nEND_OF_PATCH\ntokens used\n105,710\n",
+  "verbosityMode": "verbose"
+}

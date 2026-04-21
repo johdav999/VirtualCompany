@@ -181,6 +181,7 @@ public static class AuditTargetTypes
     public const string CompanyNotification = "company_notification";
     public const string ProactiveMessage = "proactive_message";
     public const string AgentResponsibilityPolicy = "agent_responsibility_policy";
+    public const string FiscalPeriod = "fiscal_period";
 }
 
 public static class AuditEventOutcomes
@@ -257,6 +258,10 @@ public static class AuditEventActions
     public const string CompanyNotificationActioned = "company.notification.actioned";
     public const string ProactiveMessageDelivered = "proactive_message.delivered";
     public const string ProactiveMessageBlocked = "proactive_message.blocked";
+    public const string ReportingPeriodCloseValidationExecuted = "finance.reporting_period.close_validation.executed";
+    public const string ReportingPeriodLockApplied = "finance.reporting_period.lock.applied";
+    public const string ReportingPeriodLockRemoved = "finance.reporting_period.lock.removed";
+    public const string ReportingPeriodRegenerationBlocked = "finance.reporting_period.regeneration.blocked";
     public const string AgentResponsibilityOutOfScopeHandled = "agent.responsibility.out_of_scope_handled";
 }
 

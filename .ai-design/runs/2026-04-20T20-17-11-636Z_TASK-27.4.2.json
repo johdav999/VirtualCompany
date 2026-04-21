@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-27.4.2",
+  "promptPath": ".ai-design/prompts/TASK-27.4.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T20:17:11.636Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T20-17-11-636Z_TASK-27.4.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T20-17-11-636Z_TASK-27.4.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T20:26:14.418Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ging.Abstractions;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class StartupMigrationValidationTests\n+{\n+    [Fact]\n+    public void Pending_migrations_throw_actionable_exception()\n+    {\n+        var exception = Assert.Throws<InvalidOperationException>(() =>\n+            StartupMigrationValidation.EnsureNoPendingMigrations(\n+                [\"20260425090000_AddFinanceInsightSnapshotCache\", \"20260425093000_BackfillFinanceInsightJobs\"],\n+                NullLogger.Instance));\n+\n+        Assert.Contains(\"20260425090000_AddFinanceInsightSnapshotCache\", exception.Message, StringComparison.Ordinal);\n+        Assert.Contains(\"dotnet ef database update\", exception.Message, StringComparison.OrdinalIgnoreCase);\n+    }\n+\n+    [Fact]\n+    public void Noop_when_no_pending_migrations_exist()\n+    {\n+        StartupMigrationValidation.EnsureNoPendingMigrations(Array.Empty<string>(), NullLogger.Instance);\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\nindex 6f5a5e1..387b66e 100644\n--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\n+++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\n@@ -59,6 +59,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>\n                 [$\"{KnowledgeEmbeddingOptions.SectionName}:Dimensions\"] = \"256\",\n                 [$\"{ReportingPeriodRegenerationWorkerOptions.SectionName}:Enabled\"] = \"false\",\n                 [$\"{GroundedContextRetrievalCacheOptions.SectionName}:Enabled\"] = \"true\",\n+                [$\"{FinanceInsightsSnapshotWorkerOptions.SectionName}:Enabled\"] = \"false\",\n                 [$\"{GroundedContextRetrievalCacheOptions.SectionName}:KeyVersion\"] = \"tests-v1\",\n                 [$\"{GroundedContextRetrievalCacheOptions.SectionName}:KnowledgeTtlSeconds\"] = \"300\",\n                 [$\"{GroundedContextRetrievalCacheOptions.SectionName}:MemoryTtlSeconds\"] = \"300\",\nEND_OF_PATCH\n",
+  "stderrTail": "using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class StartupMigrationValidationTests\n+{\n+    [Fact]\n+    public void Pending_migrations_throw_actionable_exception()\n+    {\n+        var exception = Assert.Throws<InvalidOperationException>(() =>\n+            StartupMigrationValidation.EnsureNoPendingMigrations(\n+                [\"20260425090000_AddFinanceInsightSnapshotCache\", \"20260425093000_BackfillFinanceInsightJobs\"],\n+                NullLogger.Instance));\n+\n+        Assert.Contains(\"20260425090000_AddFinanceInsightSnapshotCache\", exception.Message, StringComparison.Ordinal);\n+        Assert.Contains(\"dotnet ef database update\", exception.Message, StringComparison.OrdinalIgnoreCase);\n+    }\n+\n+    [Fact]\n+    public void Noop_when_no_pending_migrations_exist()\n+    {\n+        StartupMigrationValidation.EnsureNoPendingMigrations(Array.Empty<string>(), NullLogger.Instance);\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\nindex 6f5a5e1..387b66e 100644\n--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\n+++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\n@@ -59,6 +59,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>\n                 [$\"{KnowledgeEmbeddingOptions.SectionName}:Dimensions\"] = \"256\",\n                 [$\"{ReportingPeriodRegenerationWorkerOptions.SectionName}:Enabled\"] = \"false\",\n                 [$\"{GroundedContextRetrievalCacheOptions.SectionName}:Enabled\"] = \"true\",\n+                [$\"{FinanceInsightsSnapshotWorkerOptions.SectionName}:Enabled\"] = \"false\",\n                 [$\"{GroundedContextRetrievalCacheOptions.SectionName}:KeyVersion\"] = \"tests-v1\",\n                 [$\"{GroundedContextRetrievalCacheOptions.SectionName}:KnowledgeTtlSeconds\"] = \"300\",\n                 [$\"{GroundedContextRetrievalCacheOptions.SectionName}:MemoryTtlSeconds\"] = \"300\",\nEND_OF_PATCH\ntokens used\n133,227\n",
+  "verbosityMode": "verbose"
+}

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Approvals;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Agents;
@@ -24,7 +25,7 @@ namespace VirtualCompany.Api.Controllers;
 [Route("internal/companies/{companyId:guid}/finance")]
 [Authorize(Policy = CompanyPolicies.FinanceView)]
 [RequireCompanyContext]
-public sealed class InternalFinanceController : ControllerBase
+public sealed partial class InternalFinanceController : ControllerBase
 {
     private const string FinanceSimulationCurrentRunKey = "financeSimulationLatestRun";
     private const string FinanceSimulationRunHistoryKey = "financeSimulationRunHistory";
@@ -32,7 +33,10 @@ public sealed class InternalFinanceController : ControllerBase
     private static readonly JsonSerializerOptions SandboxSerializerOptions = new(JsonSerializerDefaults.Web);
 
     private readonly IFinanceReadService _financeReadService;
+    private readonly IDashboardFinanceSnapshotService _dashboardFinanceSnapshotService;
     private readonly IFinanceCommandService _financeCommandService;
+    private readonly IFinancePaymentReadService _financePaymentReadService;
+    private readonly IFinancePaymentCommandService _financePaymentCommandService;
     private readonly IAuditQueryService _auditQueryService;
     private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
     private readonly IFinanceSeedBootstrapService _financeSeedBootstrapService;
@@ -46,6 +50,7 @@ public sealed class InternalFinanceController : ControllerBase
     private readonly ICompanyToolRegistry _toolRegistry;
     private readonly IFinanceToolProvider _financeToolProvider;
     private readonly ISimulationFeatureGate _simulationFeatureGate;
+    private readonly IFinanceBootstrapRerunService _financeBootstrapRerunService;
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IAuditEventWriter _auditEventWriter;
     private readonly IOptions<FinanceInitializationOptions> _financeInitializationOptions;
@@ -53,7 +58,10 @@ public sealed class InternalFinanceController : ControllerBase
 
     public InternalFinanceController(
         IFinanceReadService financeReadService,
+        IDashboardFinanceSnapshotService dashboardFinanceSnapshotService,
         IFinanceCommandService financeCommandService,
+        IFinancePaymentReadService financePaymentReadService,
+        IFinancePaymentCommandService financePaymentCommandService,
         IAuditQueryService auditQueryService,
         IFinancePolicyConfigurationService financePolicyConfigurationService,
         IFinanceEntryService financeEntryService,
@@ -66,6 +74,7 @@ public sealed class InternalFinanceController : ControllerBase
         ICompanyToolRegistry toolRegistry,
         IFinanceToolProvider financeToolProvider,
         VirtualCompanyDbContext dbContext,
+        IFinanceBootstrapRerunService financeBootstrapRerunService,
         ISimulationFeatureGate simulationFeatureGate,
         ICompanySimulationService companySimulationService,
         IAuditEventWriter auditEventWriter,
@@ -73,7 +82,10 @@ public sealed class InternalFinanceController : ControllerBase
         ILogger<InternalFinanceController> logger)
     {
         _financeReadService = financeReadService;
+        _dashboardFinanceSnapshotService = dashboardFinanceSnapshotService;
         _toolRegistry = toolRegistry;
+        _financePaymentReadService = financePaymentReadService;
+        _financePaymentCommandService = financePaymentCommandService;
         _financeToolProvider = financeToolProvider;
         _financeCommandService = financeCommandService;
         _auditQueryService = auditQueryService;
@@ -85,6 +97,7 @@ public sealed class InternalFinanceController : ControllerBase
         _approvalRequestService = approvalRequestService;
         _anomalyDetectionService = anomalyDetectionService;
         _dbContext = dbContext;
+        _financeBootstrapRerunService = financeBootstrapRerunService;
         _simulationFeatureGate = simulationFeatureGate;
         _cashPositionWorkflowService = cashPositionWorkflowService;
         _companySimulationService = companySimulationService;
@@ -127,6 +140,64 @@ public sealed class InternalFinanceController : ControllerBase
                     request?.WorkflowInstanceId,
                     request?.AgentId),
                 cancellationToken));
+
+    [HttpGet("dashboard/cash-metrics")]
+    public async Task<ActionResult<DashboardFinanceSnapshotDto>> GetDashboardCashMetricsAsync(
+        Guid companyId,
+        [FromQuery] DateTime? asOfUtc,
+        CancellationToken cancellationToken,
+        [FromQuery] int upcomingWindowDays = 30) =>
+        await ExecuteReadAsync(
+            () => _dashboardFinanceSnapshotService.GetAsync(
+                companyId,
+                asOfUtc,
+                upcomingWindowDays,
+                cancellationToken));
+
+    [HttpGet("dashboard/current-cash-balance")]
+    public Task<ActionResult<FinanceDashboardMetricDto>> GetCurrentCashBalanceAsync(
+        Guid companyId,
+        [FromQuery] DateTime? asOfUtc,
+        CancellationToken cancellationToken,
+        [FromQuery] int upcomingWindowDays = 30) =>
+        GetDashboardMetricAsync(companyId, asOfUtc, upcomingWindowDays, snapshot =>
+            new FinanceDashboardMetricDto("current_cash_balance", snapshot.CurrentCashBalance, snapshot.Currency, snapshot.AsOfUtc, snapshot.UpcomingWindowDays), cancellationToken);
+
+    [HttpGet("dashboard/expected-incoming-cash")]
+    public Task<ActionResult<FinanceDashboardMetricDto>> GetExpectedIncomingCashAsync(
+        Guid companyId,
+        [FromQuery] DateTime? asOfUtc,
+        CancellationToken cancellationToken,
+        [FromQuery] int upcomingWindowDays = 30) =>
+        GetDashboardMetricAsync(companyId, asOfUtc, upcomingWindowDays, snapshot =>
+            new FinanceDashboardMetricDto("expected_incoming_cash", snapshot.ExpectedIncomingCash, snapshot.Currency, snapshot.AsOfUtc, snapshot.UpcomingWindowDays), cancellationToken);
+
+    [HttpGet("dashboard/expected-outgoing-cash")]
+    public Task<ActionResult<FinanceDashboardMetricDto>> GetExpectedOutgoingCashAsync(
+        Guid companyId,
+        [FromQuery] DateTime? asOfUtc,
+        CancellationToken cancellationToken,
+        [FromQuery] int upcomingWindowDays = 30) =>
+        GetDashboardMetricAsync(companyId, asOfUtc, upcomingWindowDays, snapshot =>
+            new FinanceDashboardMetricDto("expected_outgoing_cash", snapshot.ExpectedOutgoingCash, snapshot.Currency, snapshot.AsOfUtc, snapshot.UpcomingWindowDays), cancellationToken);
+
+    [HttpGet("dashboard/overdue-receivables")]
+    public Task<ActionResult<FinanceDashboardMetricDto>> GetOverdueReceivablesAsync(
+        Guid companyId,
+        [FromQuery] DateTime? asOfUtc,
+        CancellationToken cancellationToken,
+        [FromQuery] int upcomingWindowDays = 30) =>
+        GetDashboardMetricAsync(companyId, asOfUtc, upcomingWindowDays, snapshot =>
+            new FinanceDashboardMetricDto("overdue_receivables", snapshot.OverdueReceivables, snapshot.Currency, snapshot.AsOfUtc, snapshot.UpcomingWindowDays), cancellationToken);
+
+    [HttpGet("dashboard/upcoming-payables")]
+    public Task<ActionResult<FinanceDashboardMetricDto>> GetUpcomingPayablesAsync(
+        Guid companyId,
+        [FromQuery] DateTime? asOfUtc,
+        CancellationToken cancellationToken,
+        [FromQuery] int upcomingWindowDays = 30) =>
+        GetDashboardMetricAsync(companyId, asOfUtc, upcomingWindowDays, snapshot =>
+            new FinanceDashboardMetricDto("upcoming_payables", snapshot.UpcomingPayables, snapshot.Currency, snapshot.AsOfUtc, snapshot.UpcomingWindowDays), cancellationToken);
 
     [HttpGet("seeding-state")]
     public async Task<ActionResult<FinanceSeedingStateResponse>> GetSeedingStateAsync(
@@ -249,6 +320,44 @@ public sealed class InternalFinanceController : ControllerBase
                 new GetFinanceMonthlyProfitAndLossQuery(companyId, year, month),
                 cancellationToken));
 
+    [HttpGet("reports/profit-loss")]
+    public async Task<ActionResult<ProfitAndLossReportDto>> GetProfitAndLossReportAsync(
+        Guid companyId,
+        [FromQuery] Guid fiscalPeriodId,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadAsync(
+            () => _financeReadService.GetProfitAndLossReportAsync(
+                new GetFinanceProfitAndLossReportQuery(companyId, fiscalPeriodId),
+                cancellationToken));
+
+    [HttpGet("reports/balance-sheet")]
+    public async Task<ActionResult<BalanceSheetReportDto>> GetBalanceSheetReportAsync(
+        Guid companyId,
+        [FromQuery] Guid fiscalPeriodId,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadAsync(
+            () => _financeReadService.GetBalanceSheetReportAsync(
+                new GetFinanceBalanceSheetReportQuery(companyId, fiscalPeriodId),
+                cancellationToken));
+
+    [HttpGet("reports/drilldown")]
+    public async Task<ActionResult<FinancialStatementDrilldownDto>> GetFinancialStatementDrilldownAsync(
+        Guid companyId,
+        [FromQuery] Guid fiscalPeriodId,
+        [FromQuery] string statementType,
+        [FromQuery] string lineCode,
+        [FromQuery] int? snapshotVersionNumber,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadAsync(
+            () => _financeReadService.GetFinancialStatementDrilldownAsync(
+                new GetFinancialStatementDrilldownQuery(
+                    companyId,
+                    fiscalPeriodId,
+                    FinancialStatementTypeValues.Parse(statementType),
+                    lineCode,
+                    snapshotVersionNumber),
+                cancellationToken));
+
     [HttpGet("expense-breakdown")]
     public async Task<ActionResult<FinanceExpenseBreakdownDto>> GetExpenseBreakdownAsync(
         Guid companyId,
@@ -285,6 +394,62 @@ public sealed class InternalFinanceController : ControllerBase
                 cancellationToken),
             "Finance transaction was not found.");
 
+    [HttpGet("payments")]
+    public async Task<ActionResult<IReadOnlyList<FinancePaymentDto>>> GetPaymentsAsync(
+        Guid companyId,
+        [FromQuery(Name = "type")] string? paymentType,
+        [FromQuery] int limit,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadAsync(
+            () => _financePaymentReadService.GetPaymentsAsync(
+                new GetFinancePaymentsQuery(companyId, paymentType, limit),
+                cancellationToken));
+
+    [HttpGet("payments/{paymentId:guid}")]
+    public async Task<ActionResult<FinancePaymentDto>> GetPaymentDetailAsync(
+        Guid companyId,
+        Guid paymentId,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadOptionalAsync(
+            () => _financePaymentReadService.GetPaymentDetailAsync(
+                new GetFinancePaymentDetailQuery(companyId, paymentId),
+                cancellationToken),
+            "Finance payment was not found.");
+
+    [HttpGet("payments/{paymentId:guid}/allocations")]
+    public async Task<ActionResult<IReadOnlyList<FinancePaymentAllocationDto>>> GetPaymentAllocationsAsync(
+        Guid companyId,
+        Guid paymentId,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadOptionalAsync(
+            () => _financePaymentReadService.GetAllocationsByPaymentAsync(
+                new GetFinancePaymentAllocationsByPaymentQuery(companyId, paymentId),
+                cancellationToken),
+            "Finance payment was not found.");
+
+    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
+    [HttpPost("payments")]
+    public async Task<ActionResult<FinancePaymentDto>> CreatePaymentAsync(
+        Guid companyId,
+        [FromBody] CreateFinancePaymentRequest request,
+        CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(
+            () => _financePaymentCommandService.CreatePaymentAsync(
+                new CreateFinancePaymentCommand(companyId, request.ToDto()),
+                cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
+    [HttpPost("payments/{paymentId:guid}/allocations")]
+    public async Task<ActionResult<FinancePaymentAllocationDto>> CreatePaymentAllocationAsync(
+        Guid companyId,
+        Guid paymentId,
+        [FromBody] CreateFinancePaymentAllocationRequest request,
+        CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(
+            () => _financePaymentCommandService.CreateAllocationAsync(
+                new CreateFinancePaymentAllocationCommand(companyId, request.ToDto(paymentId)),
+                cancellationToken));
+
     [HttpGet("invoices")]
     public async Task<ActionResult<IReadOnlyList<FinanceInvoiceDto>>> GetInvoicesAsync(
         Guid companyId,
@@ -296,6 +461,17 @@ public sealed class InternalFinanceController : ControllerBase
             () => _financeReadService.GetInvoicesAsync(
                 new GetFinanceInvoicesQuery(companyId, startUtc, endUtc, limit),
                 cancellationToken));
+
+    [HttpGet("invoices/{invoiceId:guid}/allocations")]
+    public async Task<ActionResult<IReadOnlyList<FinancePaymentAllocationDto>>> GetInvoiceAllocationsAsync(
+        Guid companyId,
+        Guid invoiceId,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadOptionalAsync(
+            () => _financePaymentReadService.GetAllocationsByInvoiceAsync(
+                new GetFinanceInvoiceAllocationsQuery(companyId, invoiceId),
+                cancellationToken),
+            "Finance invoice was not found.");
 
     [HttpGet("reviews")]
     public async Task<ActionResult<IReadOnlyList<FinanceInvoiceReviewListItemResponse>>> GetInvoiceReviewsAsync(
@@ -555,6 +731,105 @@ public sealed class InternalFinanceController : ControllerBase
                 new GetFinanceBillsQuery(companyId, startUtc, endUtc, limit),
                 cancellationToken));
 
+    [HttpGet("bills/{billId:guid}/allocations")]
+    public async Task<ActionResult<IReadOnlyList<FinancePaymentAllocationDto>>> GetBillAllocationsAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadOptionalAsync(
+            () => _financePaymentReadService.GetAllocationsByBillAsync(
+                new GetFinanceBillAllocationsQuery(companyId, billId),
+                cancellationToken),
+            "Finance bill was not found.");
+
+    [HttpGet("customers")]
+    public async Task<ActionResult<IReadOnlyList<FinanceCounterpartyDto>>> GetCustomersAsync(
+        Guid companyId,
+        [FromQuery] int limit,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadAsync(
+            () => _financeReadService.GetCounterpartiesAsync(
+                new GetFinanceCounterpartiesQuery(companyId, "customer", Limit: limit),
+                cancellationToken));
+
+    [HttpGet("customers/{counterpartyId:guid}")]
+    public async Task<ActionResult<FinanceCounterpartyDto>> GetCustomerAsync(
+        Guid companyId,
+        Guid counterpartyId,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadOptionalAsync(
+            () => _financeReadService.GetCounterpartyAsync(
+                new GetFinanceCounterpartyQuery(companyId, counterpartyId, "customer"),
+                cancellationToken),
+            "Finance customer was not found.");
+
+    [HttpGet("suppliers")]
+    public async Task<ActionResult<IReadOnlyList<FinanceCounterpartyDto>>> GetSuppliersAsync(
+        Guid companyId,
+        [FromQuery] int limit,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadAsync(
+            () => _financeReadService.GetCounterpartiesAsync(
+                new GetFinanceCounterpartiesQuery(companyId, "supplier", Limit: limit),
+                cancellationToken));
+
+    [HttpGet("suppliers/{counterpartyId:guid}")]
+    public async Task<ActionResult<FinanceCounterpartyDto>> GetSupplierAsync(
+        Guid companyId,
+        Guid counterpartyId,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadOptionalAsync(
+            () => _financeReadService.GetCounterpartyAsync(
+                new GetFinanceCounterpartyQuery(companyId, counterpartyId, "supplier"),
+                cancellationToken),
+            "Finance supplier was not found.");
+
+    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
+    [HttpPost("customers")]
+    public async Task<ActionResult<FinanceCounterpartyDto>> CreateCustomerAsync(
+        Guid companyId,
+        [FromBody] UpsertFinanceCounterpartyRequest request,
+        CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(
+            () => _financeCommandService.CreateCounterpartyAsync(
+                new CreateFinanceCounterpartyCommand(companyId, "customer", request.ToDto()),
+                cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
+    [HttpPut("customers/{counterpartyId:guid}")]
+    public async Task<ActionResult<FinanceCounterpartyDto>> UpdateCustomerAsync(
+        Guid companyId,
+        Guid counterpartyId,
+        [FromBody] UpsertFinanceCounterpartyRequest request,
+        CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(
+            () => _financeCommandService.UpdateCounterpartyAsync(
+                new UpdateFinanceCounterpartyCommand(companyId, counterpartyId, "customer", request.ToDto()),
+                cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
+    [HttpPost("suppliers")]
+    public async Task<ActionResult<FinanceCounterpartyDto>> CreateSupplierAsync(
+        Guid companyId,
+        [FromBody] UpsertFinanceCounterpartyRequest request,
+        CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(
+            () => _financeCommandService.CreateCounterpartyAsync(
+                new CreateFinanceCounterpartyCommand(companyId, "supplier", request.ToDto()),
+                cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
+    [HttpPut("suppliers/{counterpartyId:guid}")]
+    public async Task<ActionResult<FinanceCounterpartyDto>> UpdateSupplierAsync(
+        Guid companyId,
+        Guid counterpartyId,
+        [FromBody] UpsertFinanceCounterpartyRequest request,
+        CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(
+            () => _financeCommandService.UpdateCounterpartyAsync(
+                new UpdateFinanceCounterpartyCommand(companyId, counterpartyId, "supplier", request.ToDto()),
+                cancellationToken));
+
     [Authorize(Policy = CompanyPolicies.FinanceApproval)]
     [HttpPatch("invoices/{invoiceId:guid}/approval-status")]
     public async Task<ActionResult<FinanceInvoiceDto>> UpdateInvoiceApprovalStatusAsync(
@@ -653,7 +928,76 @@ public sealed class InternalFinanceController : ControllerBase
                     request.AnomalyScenarioProfile),
                 cancellationToken));
 
-    [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    [HttpPost("bootstrap/rerun")]
+    public async Task<ActionResult<FinanceBootstrapRerunResultDto>> RerunBootstrapAsync(
+        Guid companyId,
+        [FromBody] RerunFinanceBootstrapRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        if (request is not null && request.BatchSize <= 0)
+        {
+            errors[nameof(RerunFinanceBootstrapRequest.BatchSize)] = ["Batch size must be greater than zero."];
+        }
+
+        if (request is not null && !request.RerunPlanningBackfill && !request.RerunApprovalBackfill)
+        {
+            errors[nameof(RerunFinanceBootstrapRequest.RerunPlanningBackfill)] = ["Enable at least one bootstrap rerun operation."];
+        }
+
+        if (errors.Count > 0)
+        {
+            return ValidationProblem(new ValidationProblemDetails(errors)
+            {
+                Title = "Finance validation failed",
+                Status = StatusCodes.Status400BadRequest,
+                Instance = HttpContext.Request.Path
+            });
+        }
+
+        return await ExecuteWriteAsync(() => _financeBootstrapRerunService.RerunAsync(new RerunFinanceBootstrapCommand(companyId, request?.RerunPlanningBackfill ?? true, request?.RerunApprovalBackfill ?? true, request?.BatchSize ?? 250, request?.CorrelationId), cancellationToken));
+    }
+
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    [HttpPost("insights/refresh")]
+    public async Task<ActionResult<FinanceInsightsSnapshotRefreshResultDto>> RefreshInsightsSnapshotAsync(
+        Guid companyId,
+        [FromBody] RefreshFinanceInsightsSnapshotRequest? request,
+        CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(
+            () =>
+            {
+                var snapshotKey = FinanceInsightSnapshotKeys.Normalize(request?.SnapshotKey);
+                if (request?.RunInBackground == true)
+                {
+                    return _financeReadService.QueueInsightsSnapshotRefreshAsync(
+                        new QueueFinanceInsightsSnapshotRefreshCommand(
+                            companyId,
+                            request.AsOfUtc,
+                            request.ExpenseWindowDays,
+                            request.TrendWindowDays,
+                            request.PayableWindowDays,
+                            snapshotKey,
+                            request.RetentionMinutes,
+                            request.ResetAttempts,
+                            request.CorrelationId),
+                        cancellationToken);
+                }
+
+                return _financeReadService.RefreshInsightsSnapshotAsync(
+                    new RefreshFinanceInsightsSnapshotCommand(
+                        companyId,
+                        request?.AsOfUtc,
+                        request?.ExpenseWindowDays ?? 90,
+                        request?.TrendWindowDays ?? 30,
+                        request?.PayableWindowDays ?? 14,
+                        snapshotKey,
+                        TimeSpan.FromMinutes(request?.RetentionMinutes ?? 360)),
+                    cancellationToken);
+            });
+
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
     [HttpPost("sandbox-admin/seed-generation")]
     public async Task<ActionResult<FinanceSandboxSeedGenerationResponse>> GenerateSandboxSeedDatasetAsync(
         Guid companyId,
@@ -1029,6 +1373,7 @@ public sealed class InternalFinanceController : ControllerBase
         result.RecurringExpenseCount +
         result.TransactionCount +
         result.BalanceCount +
+        result.PaymentCount +
         result.DocumentCount +
         result.Anomalies.Count +
         1;
@@ -2123,6 +2468,23 @@ public sealed class InternalFinanceController : ControllerBase
             : TruncateSummary(string.Join(" | ", parts), 240);
     }
 
+    private Task<ActionResult<FinanceDashboardMetricDto>> GetDashboardMetricAsync(
+        Guid companyId,
+        DateTime? asOfUtc,
+        int upcomingWindowDays,
+        Func<DashboardFinanceSnapshotDto, FinanceDashboardMetricDto> selector,
+        CancellationToken cancellationToken) =>
+        ExecuteReadAsync(async () =>
+        {
+            var snapshot = await _dashboardFinanceSnapshotService.GetAsync(
+                companyId,
+                asOfUtc,
+                upcomingWindowDays,
+                cancellationToken);
+
+            return selector(snapshot);
+        });
+
     private static bool IsReferentialIntegrityCode(string? code)
     {
         if (string.IsNullOrWhiteSpace(code))
@@ -2556,6 +2918,11 @@ public sealed class InternalFinanceController : ControllerBase
             LogHandledFinanceException("read_not_initialized", ex);
             return await CreateFinanceNotInitializedResultAsync<T>(ex);
         }
+        catch (KeyNotFoundException ex)
+        {
+            LogHandledFinanceException("read_not_found", ex);
+            return NotFound(CreateProblemDetails(ex.Message, "Finance record was not found.", StatusCodes.Status404NotFound));
+        }
         catch (ArgumentOutOfRangeException ex)
         {
             LogHandledFinanceException("read_argument_out_of_range", ex);
@@ -2587,6 +2954,11 @@ public sealed class InternalFinanceController : ControllerBase
         {
             LogHandledFinanceException("read_optional_not_initialized", ex);
             return await CreateFinanceNotInitializedResultAsync<T>(ex);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            LogHandledFinanceException("read_optional_not_found", ex);
+            return NotFound(CreateProblemDetails(ex.Message, "Finance record was not found.", StatusCodes.Status404NotFound));
         }
         catch (ArgumentOutOfRangeException ex)
         {
@@ -3116,12 +3488,54 @@ public sealed record EvaluateFinanceCashPositionRequest(
 
 public sealed record UpdateFinanceTransactionCategoryRequest(string Category);
 
+public sealed record CreateFinancePaymentRequest(
+    string PaymentType,
+    decimal Amount,
+    string Currency,
+    DateTime PaymentDate,
+    string Method,
+    string Status,
+    string CounterpartyReference)
+{
+    public CreateFinancePaymentDto ToDto() =>
+        new(PaymentType, Amount, Currency, PaymentDate, Method, Status, CounterpartyReference);
+}
+
 public sealed record BootstrapFinanceSeedRequest(
     int SeedValue,
     DateTime? SeedAnchorUtc = null,
     bool ReplaceExisting = true,
     bool InjectAnomalies = false,
     string? AnomalyScenarioProfile = null);
+public sealed record UpsertFinanceCounterpartyRequest(
+    string Name,
+    string? Email,
+    string? PaymentTerms,
+    string? TaxId,
+    decimal? CreditLimit,
+    string? PreferredPaymentMethod,
+    string? DefaultAccountMapping)
+{
+    public FinanceCounterpartyUpsertDto ToDto() =>
+        new(Name, Email, PaymentTerms, TaxId, CreditLimit, PreferredPaymentMethod, DefaultAccountMapping);
+}
+
+public sealed record RerunFinanceBootstrapRequest(
+    int BatchSize = 250,
+    bool RerunPlanningBackfill = true,
+    bool RerunApprovalBackfill = true,
+    string? CorrelationId = null);
+
+public sealed record RefreshFinanceInsightsSnapshotRequest(
+    DateTime? AsOfUtc = null,
+    int ExpenseWindowDays = 90,
+    int TrendWindowDays = 30,
+    int PayableWindowDays = 14,
+    string? SnapshotKey = null,
+    int RetentionMinutes = 360,
+    bool RunInBackground = false,
+    bool ResetAttempts = false,
+    string? CorrelationId = null);
 
 public sealed record AdvanceCompanySimulationTimeRequest(
     int TotalHours,

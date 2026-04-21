@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-24.1.3",
+  "promptPath": ".ai-design/prompts/TASK-24.1.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T14:18:59.836Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T14-18-59-836Z_TASK-24.1.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T14-18-59-836Z_TASK-24.1.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T14:25:07.299Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "nanceCounterparties.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));\n+    }\n \n     [Fact]\n     public async Task Finance_writes_reject_records_from_another_tenant()\ndiff --git a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\nindex 9c9c9c9..adadada 100644\n--- a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\n@@ -79,6 +79,29 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Te\n             await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());\n     }\n \n+    [Fact]\n+    public async Task Internal_finance_counterparty_create_returns_validation_problem_for_negative_credit_limit()\n+    {\n+        var seed = await SeedFinanceWriteCompanyAsync();\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+\n+        var response = await client.PostAsJsonAsync(\n+            $\"/internal/companies/{seed.CompanyId}/finance/customers\",\n+            new\n+            {\n+                Name = \"Invalid Credit Customer\",\n+                Email = \"finance@invalid-credit.example\",\n+                PaymentTerms = \"Net30\",\n+                CreditLimit = -5m,\n+                PreferredPaymentMethod = \"bank_transfer\",\n+                DefaultAccountMapping = \"1100\"\n+            });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();\n+        Assert.NotNull(payload);\n+        Assert.True(payload!.Errors.ContainsKey(\"CreditLimit\"));\n+    }\n+\n     [Fact]\n     public async Task Internal_finance_invoice_pending_approval_update_runs_review_workflow_and_exposes_updated_detail_state()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));\n+    }\n \n     [Fact]\n     public async Task Finance_writes_reject_records_from_another_tenant()\ndiff --git a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\nindex 9c9c9c9..adadada 100644\n--- a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs\n@@ -79,6 +79,29 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Te\n             await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());\n     }\n \n+    [Fact]\n+    public async Task Internal_finance_counterparty_create_returns_validation_problem_for_negative_credit_limit()\n+    {\n+        var seed = await SeedFinanceWriteCompanyAsync();\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+\n+        var response = await client.PostAsJsonAsync(\n+            $\"/internal/companies/{seed.CompanyId}/finance/customers\",\n+            new\n+            {\n+                Name = \"Invalid Credit Customer\",\n+                Email = \"finance@invalid-credit.example\",\n+                PaymentTerms = \"Net30\",\n+                CreditLimit = -5m,\n+                PreferredPaymentMethod = \"bank_transfer\",\n+                DefaultAccountMapping = \"1100\"\n+            });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();\n+        Assert.NotNull(payload);\n+        Assert.True(payload!.Errors.ContainsKey(\"CreditLimit\"));\n+    }\n+\n     [Fact]\n     public async Task Internal_finance_invoice_pending_approval_update_runs_review_workflow_and_exposes_updated_detail_state()\n     {\nEND_OF_PATCH\ntokens used\n152,864\n",
+  "verbosityMode": "verbose"
+}

@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-24.3.2",
+  "promptPath": ".ai-design/prompts/TASK-24.3.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T15:24:05.103Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T15-24-05-103Z_TASK-24.3.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T15-24-05-103Z_TASK-24.3.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T15:28:00.221Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "    paidInvoiceId,\n+            companyId,\n+            counterpartyId,\n+            \"INV-BACKFILL-SPLIT-001\",\n+            new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),\n+            new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),\n+            125m,\n+            \"USD\",\n+            \"paid\"));\n+        dbContext.Payments.AddRange(\n+            new Payment(\n+                Guid.NewGuid(),\n+                companyId,\n+                PaymentTypes.Incoming,\n+                75m,\n+                \"USD\",\n+                new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc),\n+                \"bank_transfer\",\n+                \"completed\",\n+                \"INV-BACKFILL-SPLIT-001\"),\n+            new Payment(\n+                Guid.NewGuid(),\n+                companyId,\n+                PaymentTypes.Incoming,\n+                50m,\n+                \"USD\",\n+                new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc),\n+                \"bank_transfer\",\n+                \"completed\",\n+                \"INV-BACKFILL-SPLIT-001\"));\n+        await dbContext.SaveChangesAsync();\n+\n+        var service = new CompanyFinanceCommandService(dbContext, accessor);\n+\n+        var result = await service.BackfillAllocationsAsync(\n+            new BackfillFinancePaymentAllocationsCommand(companyId, true),\n+            CancellationToken.None);\n+\n+        Assert.Equal(2, result.CreatedAllocationCount);\n+        Assert.Equal(0, result.CreatedPaymentCount);\n+        Assert.Equal(125m, await dbContext.PaymentAllocations.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && x.InvoiceId == paidInvoiceId).SumAsync(x => x.AllocatedAmount));\n+        Assert.Equal(\n+            FinanceSettlementStatuses.Paid,\n+            await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == paidInvoiceId).Select(x => x.SettlementStatus).SingleAsync());\n     }\n \n     private static AllocationSeed SeedAllocationScenario(VirtualCompanyDbContext dbContext, Guid companyId)\nEND_OF_PATCH\n",
+  "stderrTail": "            companyId,\n+            counterpartyId,\n+            \"INV-BACKFILL-SPLIT-001\",\n+            new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),\n+            new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),\n+            125m,\n+            \"USD\",\n+            \"paid\"));\n+        dbContext.Payments.AddRange(\n+            new Payment(\n+                Guid.NewGuid(),\n+                companyId,\n+                PaymentTypes.Incoming,\n+                75m,\n+                \"USD\",\n+                new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc),\n+                \"bank_transfer\",\n+                \"completed\",\n+                \"INV-BACKFILL-SPLIT-001\"),\n+            new Payment(\n+                Guid.NewGuid(),\n+                companyId,\n+                PaymentTypes.Incoming,\n+                50m,\n+                \"USD\",\n+                new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc),\n+                \"bank_transfer\",\n+                \"completed\",\n+                \"INV-BACKFILL-SPLIT-001\"));\n+        await dbContext.SaveChangesAsync();\n+\n+        var service = new CompanyFinanceCommandService(dbContext, accessor);\n+\n+        var result = await service.BackfillAllocationsAsync(\n+            new BackfillFinancePaymentAllocationsCommand(companyId, true),\n+            CancellationToken.None);\n+\n+        Assert.Equal(2, result.CreatedAllocationCount);\n+        Assert.Equal(0, result.CreatedPaymentCount);\n+        Assert.Equal(125m, await dbContext.PaymentAllocations.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && x.InvoiceId == paidInvoiceId).SumAsync(x => x.AllocatedAmount));\n+        Assert.Equal(\n+            FinanceSettlementStatuses.Paid,\n+            await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == paidInvoiceId).Select(x => x.SettlementStatus).SingleAsync());\n     }\n \n     private static AllocationSeed SeedAllocationScenario(VirtualCompanyDbContext dbContext, Guid companyId)\nEND_OF_PATCH\ntokens used\n117,218\n",
+  "verbosityMode": "verbose"
+}

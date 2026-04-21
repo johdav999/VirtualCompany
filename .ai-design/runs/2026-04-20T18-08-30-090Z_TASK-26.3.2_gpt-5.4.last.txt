@@ -1,0 +1,1387 @@
+diff --git a/docs/finance-dashboard-cash-metrics.md b/docs/finance-dashboard-cash-metrics.md
+new file mode 100644
+index 0000000..4ef7208
+--- /dev/null
++++ b/docs/finance-dashboard-cash-metrics.md
+@@ -0,0 +1,16 @@
++# Finance dashboard cash metric rules
++
++The finance dashboard cash widgets use the selected company and `asOfUtc` context on every query.
++
++- Current cash balance: sum posted ledger entry lines for cash-classified accounts where `posted_at` (or `entry_at` when `posted_at` is null) is on or before `asOfUtc`.
++- Expected incoming cash: for each open receivable, use pending incoming payment allocations scheduled inside the upcoming window when they exist; otherwise use the remaining open receivable balance when the receivable due date falls inside the same window.
++- Expected outgoing cash: for each open payable, use pending outgoing payment allocations scheduled inside the upcoming window when they exist; otherwise use the remaining open payable balance when the payable due date falls inside the same window.
++- Overdue receivables: sum remaining open receivable balances with due dates before `asOfUtc`.
++- Upcoming payables: sum remaining open payable balances with due dates on or after `asOfUtc` and before the upcoming-window end.
++
++Remaining open balances are calculated as:
++
++- document amount minus completed payment allocations posted on or before `asOfUtc`
++- clamped to zero so partially over-allocated seed data cannot produce negative balances
++
++Pending scheduled allocations replace, rather than supplement, the unscheduled remainder in expected incoming and outgoing metrics so the forecast does not double count both the scheduled installment and the full document balance.
+diff --git a/src/VirtualCompany.Application/Cockpit/BusinessSignalsContracts.cs b/src/VirtualCompany.Application/Cockpit/BusinessSignalsContracts.cs
+index 4206f88..380b131 100644
+--- a/src/VirtualCompany.Application/Cockpit/BusinessSignalsContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/BusinessSignalsContracts.cs
+@@ -8,12 +8,28 @@ public interface ISignalEngine
+ }
+ 
+ public sealed record DashboardFinanceSnapshotDto(
+-    Guid CompanyId,
+-    decimal Cash,
+-    decimal BurnRate,
+-    int? RunwayDays,
+-    string RiskLevel,
+-    bool HasFinanceData,
+-    string Currency,
+-    DateTime AsOfUtc);
++    Guid CompanyId,
++    decimal CurrentCashBalance,
++    decimal ExpectedIncomingCash,
++    decimal ExpectedOutgoingCash,
++    decimal OverdueReceivables,
++    decimal UpcomingPayables,
++    string Currency,
++    DateTime AsOfUtc,
++    int UpcomingWindowDays,
++    decimal Cash,
++    decimal BurnRate,
++    int? RunwayDays,
++    string RiskLevel,
++    bool HasFinanceData);
++
++public sealed record FinanceDashboardMetricDto(
++    string MetricKey,
++    decimal Amount,
++    string Currency,
++    DateTime AsOfUtc,
++    int UpcomingWindowDays);
+ 
+ public interface IDashboardFinanceSnapshotService
+ {
+-    Task<DashboardFinanceSnapshotDto> GetAsync(Guid companyId, CancellationToken cancellationToken = default);
++    Task<DashboardFinanceSnapshotDto> GetAsync(
++        Guid companyId,
++        DateTime? asOfUtc = null,
++        int upcomingWindowDays = 30,
++        CancellationToken cancellationToken = default);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyDashboardFinanceSnapshotService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyDashboardFinanceSnapshotService.cs
+index 29b25e6..f9c7a31 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyDashboardFinanceSnapshotService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyDashboardFinanceSnapshotService.cs
+@@ -1,118 +1,291 @@
+ using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Finance;
+ 
+ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSnapshotService
+ {
++    private const int DefaultUpcomingWindowDays = 30;
++
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly TimeProvider _timeProvider;
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
+ 
+     public CompanyDashboardFinanceSnapshotService(
+         VirtualCompanyDbContext dbContext,
+-        TimeProvider timeProvider)
++        TimeProvider timeProvider,
++        ICompanyContextAccessor? companyContextAccessor = null)
+     {
+         _dbContext = dbContext;
+         _timeProvider = timeProvider;
++        _companyContextAccessor = companyContextAccessor;
+     }
+ 
+-    public async Task<DashboardFinanceSnapshotDto> GetAsync(Guid companyId, CancellationToken cancellationToken = default)
++    public async Task<DashboardFinanceSnapshotDto> GetAsync(
++        Guid companyId,
++        DateTime? asOfUtc = null,
++        int upcomingWindowDays = DefaultUpcomingWindowDays,
++        CancellationToken cancellationToken = default)
+     {
+-        if (companyId == Guid.Empty)
+-        {
+-            throw new ArgumentException("Company id is required.", nameof(companyId));
+-        }
++        EnsureTenant(companyId);
+ 
+-        var asOfUtc = _timeProvider.GetUtcNow().UtcDateTime;
+-        var expenseWindowStartUtc = asOfUtc.Date.AddDays(-29);
++        var effectiveAsOfUtc = NormalizeUtc(asOfUtc) ?? _timeProvider.GetUtcNow().UtcDateTime;
++        var normalizedUpcomingWindowDays = Math.Clamp(
++            upcomingWindowDays <= 0 ? DefaultUpcomingWindowDays : upcomingWindowDays,
++            1,
++            90);
++        var upcomingWindowEndUtc = effectiveAsOfUtc.Date.AddDays(normalizedUpcomingWindowDays + 1);
++        var expenseWindowStartUtc = effectiveAsOfUtc.Date.AddDays(-29);
+ 
+         var accounts = await _dbContext.FinanceAccounts
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId)
+-            .Select(x => new
+-            {
+-                x.Id,
+-                x.Code,
+-                x.Name,
+-                x.AccountType,
+-                x.Currency,
+-                x.OpeningBalance
+-            })
++            .Select(x => new FinanceAccountSnapshotRow(
++                x.Id,
++                x.Code,
++                x.Name,
++                x.AccountType,
++                x.Currency))
+             .ToListAsync(cancellationToken);
+ 
+-        if (accounts.Count == 0)
+-        {
+-            return Missing(companyId, asOfUtc);
+-        }
++        var cashAccounts = accounts
++            .Where(IsCashAccount)
++            .ToList();
++        var cashAccountIds = cashAccounts
++            .Select(x => x.Id)
++            .ToArray();
+ 
+-        var transactionSums = await _dbContext.FinanceTransactions
++        var currentCashBalance = cashAccountIds.Length == 0
++            ? 0m
++            : Math.Round(
++                await _dbContext.LedgerEntryLines
++                    .IgnoreQueryFilters()
++                    .AsNoTracking()
++                    .Where(x =>
++                        x.CompanyId == companyId &&
++                        cashAccountIds.Contains(x.FinanceAccountId) &&
++                        x.LedgerEntry.Status == LedgerEntryStatuses.Posted &&
++                        (x.LedgerEntry.PostedAtUtc ?? x.LedgerEntry.EntryUtc) <= effectiveAsOfUtc)
++                    .SumAsync(x => (decimal?)(x.DebitAmount - x.CreditAmount), cancellationToken) ?? 0m,
++                2,
++                MidpointRounding.AwayFromZero);
++
++        var invoiceRows = await _dbContext.FinanceInvoices
+             .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.TransactionUtc <= asOfUtc)
+-            .GroupBy(x => x.AccountId)
+-            .Select(group => new { AccountId = group.Key, Amount = group.Sum(x => x.Amount) })
+-            .ToDictionaryAsync(x => x.AccountId, x => x.Amount, cancellationToken);
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => new ReceivableSnapshotRow(
++                x.Id,
++                x.DueUtc,
++                x.Amount,
++                x.Currency,
++                x.Status,
++                x.SettlementStatus))
++            .ToListAsync(cancellationToken);
+ 
+-        var latestBalances = await _dbContext.FinanceBalances
++        var billRows = await _dbContext.FinanceBills
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.AsOfUtc <= asOfUtc)
+-            .GroupBy(x => x.AccountId)
+-            .Select(group => group
+-                .OrderByDescending(x => x.AsOfUtc)
+-                .Select(x => new
+-                {
+-                    x.AccountId,
+-                    x.Amount,
+-                    x.Currency
+-                })
+-                .First())
+-            .ToDictionaryAsync(x => x.AccountId, x => x.Amount, cancellationToken);
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => new PayableSnapshotRow(
++                x.Id,
++                x.DueUtc,
++                x.Amount,
++                x.Currency,
++                x.Status,
++                x.SettlementStatus))
++            .ToListAsync(cancellationToken);
++
++        var completedIncomingByInvoice = await LoadInvoiceAllocationLookupAsync(
++            companyId,
++            PaymentStatuses.Completed,
++            PaymentTypes.Incoming,
++            paymentDateFromUtc: null,
++            paymentDateToExclusiveUtc: effectiveAsOfUtc.AddTicks(1),
++            cancellationToken);
++        var scheduledIncomingByInvoice = await LoadInvoiceAllocationLookupAsync(
++            companyId,
++            PaymentStatuses.Pending,
++            PaymentTypes.Incoming,
++            paymentDateFromUtc: effectiveAsOfUtc,
++            paymentDateToExclusiveUtc: upcomingWindowEndUtc,
++            cancellationToken);
++        var completedOutgoingByBill = await LoadBillAllocationLookupAsync(
++            companyId,
++            PaymentStatuses.Completed,
++            PaymentTypes.Outgoing,
++            paymentDateFromUtc: null,
++            paymentDateToExclusiveUtc: effectiveAsOfUtc.AddTicks(1),
++            cancellationToken);
++        var scheduledOutgoingByBill = await LoadBillAllocationLookupAsync(
++            companyId,
++            PaymentStatuses.Pending,
++            PaymentTypes.Outgoing,
++            paymentDateFromUtc: effectiveAsOfUtc,
++            paymentDateToExclusiveUtc: upcomingWindowEndUtc,
++            cancellationToken);
+ 
+-        var cashAccounts = accounts
+-            .Where(x =>
+-                x.AccountType.Equals("cash", StringComparison.OrdinalIgnoreCase) ||
+-                x.Name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
+-                x.Code.StartsWith("10", StringComparison.OrdinalIgnoreCase))
++        var openReceivables = invoiceRows
++            .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus))
++            .Select(x => new OpenDocumentSnapshotRow(
++                x.Id,
++                x.DueUtc,
++                CalculateRemainingBalance(x.Amount, completedIncomingByInvoice.GetValueOrDefault(x.Id)),
++                x.Currency))
++            .Where(x => x.RemainingBalance > 0m)
+             .ToList();
+ 
+-        if (cashAccounts.Count == 0)
+-        {
+-            cashAccounts = accounts.Where(x => x.AccountType.Equals("asset", StringComparison.OrdinalIgnoreCase)).ToList();
+-        }
++        var openPayables = billRows
++            .Where(x => IsIncludedPayable(x.Status, x.SettlementStatus))
++            .Select(x => new OpenDocumentSnapshotRow(
++                x.Id,
++                x.DueUtc,
++                CalculateRemainingBalance(x.Amount, completedOutgoingByBill.GetValueOrDefault(x.Id)),
++                x.Currency))
++            .Where(x => x.RemainingBalance > 0m)
++            .ToList();
++
++        // Query rules:
++        // - completed allocations reduce the open document balance as of the selected date.
++        // - pending scheduled allocations inside the upcoming window replace the unscheduled balance for expected cash metrics.
++        // - when no schedule exists, the remaining open balance is forecast only when the due date falls inside the same window.
++        // This prevents double counting a pending installment and the full document remainder at the same time.
++        var expectedIncomingCash = Math.Round(openReceivables.Sum(receivable =>
++        {
++            var scheduledAmount = Math.Min(
++                receivable.RemainingBalance,
++                scheduledIncomingByInvoice.GetValueOrDefault(receivable.DocumentId));
++
++            if (scheduledAmount > 0m)
++            {
++                return scheduledAmount;
++            }
++
++            return receivable.DueUtc < upcomingWindowEndUtc
++                ? receivable.RemainingBalance
++                : 0m;
++        }), 2, MidpointRounding.AwayFromZero);
++
++        var expectedOutgoingCash = Math.Round(openPayables.Sum(payable =>
++        {
++            var scheduledAmount = Math.Min(
++                payable.RemainingBalance,
++                scheduledOutgoingByBill.GetValueOrDefault(payable.DocumentId));
++
++            if (scheduledAmount > 0m)
++            {
++                return scheduledAmount;
++            }
+ 
+-        var cash = cashAccounts.Sum(x =>
+-            latestBalances.TryGetValue(x.Id, out var latestBalance)
+-                ? latestBalance
+-                : x.OpeningBalance + transactionSums.GetValueOrDefault(x.Id));
+-        var currency = cashAccounts.Select(x => x.Currency).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1
+-            ? cashAccounts[0].Currency
+-            : "USD";
++            return payable.DueUtc < upcomingWindowEndUtc
++                ? payable.RemainingBalance
++                : 0m;
++        }), 2, MidpointRounding.AwayFromZero);
++
++        var overdueReceivables = Math.Round(
++            openReceivables
++                .Where(x => x.DueUtc < effectiveAsOfUtc)
++                .Sum(x => x.RemainingBalance),
++            2,
++            MidpointRounding.AwayFromZero);
++
++        var upcomingPayables = Math.Round(
++            openPayables
++                .Where(x => x.DueUtc >= effectiveAsOfUtc && x.DueUtc < upcomingWindowEndUtc)
++                .Sum(x => x.RemainingBalance),
++            2,
++            MidpointRounding.AwayFromZero);
++
++        var hasFinanceData =
++            cashAccounts.Count > 0 ||
++            openReceivables.Count > 0 ||
++            openPayables.Count > 0;
++        var currency = ResolveCurrency(cashAccounts, openReceivables, openPayables);
+ 
+         var expenseAmounts = await _dbContext.FinanceTransactions
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.TransactionUtc >= expenseWindowStartUtc && x.TransactionUtc <= asOfUtc && x.Amount < 0)
++            .Where(x => x.CompanyId == companyId && x.TransactionUtc >= expenseWindowStartUtc && x.TransactionUtc <= effectiveAsOfUtc && x.Amount < 0)
+             .Select(x => Math.Abs(x.Amount))
+             .ToListAsync(cancellationToken);
+ 
+         var totalExpenses = expenseAmounts.Sum();
+-        var hasExpenseData = expenseAmounts.Count > 0;
+         var burnRate = Math.Round(totalExpenses / 30m, 2, MidpointRounding.AwayFromZero);
+-        var runwayDays = burnRate > 0m ? (int?)Math.Max(0, (int)Math.Floor(cash / burnRate)) : null;
+-        var hasCashData = cashAccounts.Count > 0;
+-        var hasFinanceData = hasCashData && hasExpenseData;
++        var runwayDays = burnRate > 0m
++            ? (int?)Math.Max(0, (int)Math.Floor(currentCashBalance / burnRate))
++            : null;
+         var riskLevel = !hasFinanceData
+             ? "missing"
+             : runwayDays <= 30 ? "critical"
+             : runwayDays <= 90 ? "warning"
+             : "healthy";
+ 
+-        return new DashboardFinanceSnapshotDto(companyId, Math.Round(cash, 2, MidpointRounding.AwayFromZero), burnRate, runwayDays, riskLevel, hasFinanceData, currency, asOfUtc);
++        return new DashboardFinanceSnapshotDto(
++            companyId,
++            currentCashBalance,
++            expectedIncomingCash,
++            expectedOutgoingCash,
++            overdueReceivables,
++            upcomingPayables,
++            currency,
++            effectiveAsOfUtc,
++            normalizedUpcomingWindowDays,
++            currentCashBalance,
++            burnRate,
++            runwayDays,
++            riskLevel,
++            hasFinanceData);
+     }
+ 
+-    private static DashboardFinanceSnapshotDto Missing(Guid companyId, DateTime asOfUtc) =>
+-        new(companyId, 0m, 0m, null, "missing", false, "USD", asOfUtc);
++    private async Task<Dictionary<Guid, decimal>> LoadInvoiceAllocationLookupAsync(
++        Guid companyId,
++        string paymentStatus,
++        string paymentType,
++        DateTime? paymentDateFromUtc,
++        DateTime? paymentDateToExclusiveUtc,
++        CancellationToken cancellationToken)
++    {
++        var allocations = _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.InvoiceId.HasValue &&
++                x.Payment.Status == paymentStatus &&
++                x.Payment.PaymentType == paymentType);
++
++        if (paymentDateFromUtc.HasValue)
++        {
++            allocations = allocations.Where(x => x.Payment.PaymentDate >= paymentDateFromUtc.Value);
++        }
++
++        if (paymentDateToExclusiveUtc.HasValue)
++        {
++            allocations = allocations.Where(x => x.Payment.PaymentDate < paymentDateToExclusiveUtc.Value);
++        }
++
++        return await allocations
++            .GroupBy(x => x.InvoiceId!.Value)
++            .Select(group => new AllocationLookupRow(group.Key, group.Sum(x => x.AllocatedAmount)))
++            .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
++    }
++
++    private async Task<Dictionary<Guid, decimal>> LoadBillAllocationLookupAsync(
++        Guid companyId,
++        string paymentStatus,
++        string paymentType,
++        DateTime? paymentDateFromUtc,
++        DateTime? paymentDateToExclusiveUtc,
++        CancellationToken cancellationToken)
++    {
++        var allocations = _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.BillId.HasValue &&
++                x.Payment.Status == paymentStatus &&
++                x.Payment.PaymentType == paymentType);
++
++        if (paymentDateFromUtc.HasValue)
++        {
++            allocations = allocations.Where(x => x.Payment.PaymentDate >= paymentDateFromUtc.Value);
++        }
++
++        if (paymentDateToExclusiveUtc.HasValue)
++        {
++            allocations = allocations.Where(x => x.Payment.PaymentDate < paymentDateToExclusiveUtc.Value);
++        }
++
++        return await allocations
++            .GroupBy(x => x.BillId!.Value)
++            .Select(group => new AllocationLookupRow(group.Key, group.Sum(x => x.AllocatedAmount)))
++            .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
++    }
++
++    private void EnsureTenant(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++
++        if (_companyContextAccessor?.CompanyId is Guid scopedCompanyId &&
++            scopedCompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException("Finance dashboard metrics are scoped to the active company context.");
++        }
++    }
++
++    private static string ResolveCurrency(
++        IReadOnlyCollection<FinanceAccountSnapshotRow> cashAccounts,
++        IReadOnlyCollection<OpenDocumentSnapshotRow> receivables,
++        IReadOnlyCollection<OpenDocumentSnapshotRow> payables)
++    {
++        var currencies = cashAccounts
++            .Select(x => x.Currency)
++            .Concat(receivables.Select(x => x.Currency))
++            .Concat(payables.Select(x => x.Currency))
++            .Where(x => !string.IsNullOrWhiteSpace(x))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++        return currencies.Count switch
++        {
++            0 => "USD",
++            1 => currencies[0],
++            _ => "MIXED"
++        };
++    }
++
++    private static bool IsCashAccount(FinanceAccountSnapshotRow account) =>
++        account.AccountType.Equals("cash", StringComparison.OrdinalIgnoreCase) ||
++        account.Name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
++        account.Code.StartsWith("10", StringComparison.OrdinalIgnoreCase);
++
++    private static bool IsIncludedReceivable(string status, string settlementStatus)
++    {
++        if (string.Equals(FinanceSettlementStatuses.Normalize(settlementStatus), FinanceSettlementStatuses.Paid, StringComparison.Ordinal))
++        {
++            return false;
++        }
++
++        var normalizedStatus = NormalizeStatus(status);
++        return normalizedStatus is not ("paid" or "cancelled" or "canceled" or "void" or "voided" or "written_off" or "rejected");
++    }
++
++    private static bool IsIncludedPayable(string status, string settlementStatus)
++    {
++        if (string.Equals(FinanceSettlementStatuses.Normalize(settlementStatus), FinanceSettlementStatuses.Paid, StringComparison.Ordinal))
++        {
++            return false;
++        }
++
++        var normalizedStatus = NormalizeStatus(status);
++        return normalizedStatus is not ("paid" or "cancelled" or "canceled" or "void" or "voided");
++    }
++
++    private static decimal CalculateRemainingBalance(decimal amount, decimal completedAllocatedAmount) =>
++        Math.Round(Math.Max(0m, amount - completedAllocatedAmount), 2, MidpointRounding.AwayFromZero);
++
++    private static DateTime? NormalizeUtc(DateTime? value) =>
++        value is null
++            ? null
++            : value.Value.Kind == DateTimeKind.Utc
++                ? value.Value
++                : value.Value.ToUniversalTime();
++
++    private static string NormalizeStatus(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    private sealed record FinanceAccountSnapshotRow(
++        Guid Id,
++        string Code,
++        string Name,
++        string AccountType,
++        string Currency);
++
++    private sealed record ReceivableSnapshotRow(
++        Guid Id,
++        DateTime DueUtc,
++        decimal Amount,
++        string Currency,
++        string Status,
++        string SettlementStatus);
++
++    private sealed record PayableSnapshotRow(
++        Guid Id,
++        DateTime DueUtc,
++        decimal Amount,
++        string Currency,
++        string Status,
++        string SettlementStatus);
++
++    private sealed record OpenDocumentSnapshotRow(
++        Guid DocumentId,
++        DateTime DueUtc,
++        decimal RemainingBalance,
++        string Currency);
++
++    private sealed record AllocationLookupRow(
++        Guid DocumentId,
++        decimal Amount);
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/DashboardFinanceSnapshotController.cs b/src/VirtualCompany.Api/Controllers/DashboardFinanceSnapshotController.cs
+index 12dd616..94b4f1f 100644
+--- a/src/VirtualCompany.Api/Controllers/DashboardFinanceSnapshotController.cs
++++ b/src/VirtualCompany.Api/Controllers/DashboardFinanceSnapshotController.cs
+@@ -25,8 +25,10 @@ public sealed class DashboardFinanceSnapshotController : ControllerBase
+     [HttpGet("finance-snapshot")]
+     public async Task<ActionResult<DashboardFinanceSnapshotDto>> GetAsync(
+         [FromQuery] Guid companyId,
++        [FromQuery] DateTime? asOfUtc,
++        [FromQuery] int upcomingWindowDays = 30,
+         CancellationToken cancellationToken)
+     {
+         var resolvedCompanyId = companyId != Guid.Empty ? companyId : _companyContextAccessor.CompanyId;
+         if (resolvedCompanyId is not Guid effectiveCompanyId)
+         {
+@@ -39,6 +41,11 @@ public sealed class DashboardFinanceSnapshotController : ControllerBase
+                 Status = StatusCodes.Status400BadRequest
+             });
+         }
+ 
+-        return Ok(await _financeSnapshotService.GetAsync(effectiveCompanyId, cancellationToken));
++        return Ok(await _financeSnapshotService.GetAsync(
++            effectiveCompanyId,
++            asOfUtc,
++            upcomingWindowDays,
++            cancellationToken));
+     }
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 6112e3c..7823011 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Application.Agents;
+@@ -29,6 +30,7 @@ public sealed class InternalFinanceController : ControllerBase
+     private static readonly JsonSerializerOptions SandboxSerializerOptions = new(JsonSerializerDefaults.Web);
+ 
+     private readonly IFinanceReadService _financeReadService;
++    private readonly IDashboardFinanceSnapshotService _dashboardFinanceSnapshotService;
+     private readonly IFinanceCommandService _financeCommandService;
+     private readonly IFinancePaymentReadService _financePaymentReadService;
+     private readonly IFinancePaymentCommandService _financePaymentCommandService;
+@@ -49,6 +51,7 @@ public sealed class InternalFinanceController : ControllerBase
+ 
+     public InternalFinanceController(
+         IFinanceReadService financeReadService,
++        IDashboardFinanceSnapshotService dashboardFinanceSnapshotService,
+         IFinanceCommandService financeCommandService,
+         IFinancePaymentReadService financePaymentReadService,
+         IFinancePaymentCommandService financePaymentCommandService,
+@@ -71,6 +74,7 @@ public sealed class InternalFinanceController : ControllerBase
+         ILogger<InternalFinanceController> logger)
+     {
+         _financeReadService = financeReadService;
++        _dashboardFinanceSnapshotService = dashboardFinanceSnapshotService;
+         _toolRegistry = toolRegistry;
+         _financePaymentReadService = financePaymentReadService;
+         _financePaymentCommandService = financePaymentCommandService;
+@@ -124,6 +128,64 @@ public sealed class InternalFinanceController : ControllerBase
+                 cancellationToken));
+ 
++    [HttpGet("dashboard/cash-metrics")]
++    public async Task<ActionResult<DashboardFinanceSnapshotDto>> GetDashboardCashMetricsAsync(
++        Guid companyId,
++        [FromQuery] DateTime? asOfUtc,
++        [FromQuery] int upcomingWindowDays = 30,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _dashboardFinanceSnapshotService.GetAsync(
++                companyId,
++                asOfUtc,
++                upcomingWindowDays,
++                cancellationToken));
++
++    [HttpGet("dashboard/current-cash-balance")]
++    public Task<ActionResult<FinanceDashboardMetricDto>> GetCurrentCashBalanceAsync(
++        Guid companyId,
++        [FromQuery] DateTime? asOfUtc,
++        [FromQuery] int upcomingWindowDays = 30,
++        CancellationToken cancellationToken) =>
++        GetDashboardMetricAsync(companyId, asOfUtc, upcomingWindowDays, snapshot =>
++            new FinanceDashboardMetricDto("current_cash_balance", snapshot.CurrentCashBalance, snapshot.Currency, snapshot.AsOfUtc, snapshot.UpcomingWindowDays), cancellationToken);
++
++    [HttpGet("dashboard/expected-incoming-cash")]
++    public Task<ActionResult<FinanceDashboardMetricDto>> GetExpectedIncomingCashAsync(
++        Guid companyId,
++        [FromQuery] DateTime? asOfUtc,
++        [FromQuery] int upcomingWindowDays = 30,
++        CancellationToken cancellationToken) =>
++        GetDashboardMetricAsync(companyId, asOfUtc, upcomingWindowDays, snapshot =>
++            new FinanceDashboardMetricDto("expected_incoming_cash", snapshot.ExpectedIncomingCash, snapshot.Currency, snapshot.AsOfUtc, snapshot.UpcomingWindowDays), cancellationToken);
++
++    [HttpGet("dashboard/expected-outgoing-cash")]
++    public Task<ActionResult<FinanceDashboardMetricDto>> GetExpectedOutgoingCashAsync(
++        Guid companyId,
++        [FromQuery] DateTime? asOfUtc,
++        [FromQuery] int upcomingWindowDays = 30,
++        CancellationToken cancellationToken) =>
++        GetDashboardMetricAsync(companyId, asOfUtc, upcomingWindowDays, snapshot =>
++            new FinanceDashboardMetricDto("expected_outgoing_cash", snapshot.ExpectedOutgoingCash, snapshot.Currency, snapshot.AsOfUtc, snapshot.UpcomingWindowDays), cancellationToken);
++
++    [HttpGet("dashboard/overdue-receivables")]
++    public Task<ActionResult<FinanceDashboardMetricDto>> GetOverdueReceivablesAsync(
++        Guid companyId,
++        [FromQuery] DateTime? asOfUtc,
++        [FromQuery] int upcomingWindowDays = 30,
++        CancellationToken cancellationToken) =>
++        GetDashboardMetricAsync(companyId, asOfUtc, upcomingWindowDays, snapshot =>
++            new FinanceDashboardMetricDto("overdue_receivables", snapshot.OverdueReceivables, snapshot.Currency, snapshot.AsOfUtc, snapshot.UpcomingWindowDays), cancellationToken);
++
++    [HttpGet("dashboard/upcoming-payables")]
++    public Task<ActionResult<FinanceDashboardMetricDto>> GetUpcomingPayablesAsync(
++        Guid companyId,
++        [FromQuery] DateTime? asOfUtc,
++        [FromQuery] int upcomingWindowDays = 30,
++        CancellationToken cancellationToken) =>
++        GetDashboardMetricAsync(companyId, asOfUtc, upcomingWindowDays, snapshot =>
++            new FinanceDashboardMetricDto("upcoming_payables", snapshot.UpcomingPayables, snapshot.Currency, snapshot.AsOfUtc, snapshot.UpcomingWindowDays), cancellationToken);
++
+     [HttpGet("seeding-state")]
+     public async Task<ActionResult<FinanceSeedingStateResponse>> GetSeedingStateAsync(
+         Guid companyId,
+@@ -2392,6 +2454,22 @@ public sealed class InternalFinanceController : ControllerBase
+             return Problem(title: "Unexpected finance failure", detail: "An unexpected finance error occurred.", statusCode: StatusCodes.Status500InternalServerError);
+         }
+     }
++
++    private Task<ActionResult<FinanceDashboardMetricDto>> GetDashboardMetricAsync(
++        Guid companyId,
++        DateTime? asOfUtc,
++        int upcomingWindowDays,
++        Func<DashboardFinanceSnapshotDto, FinanceDashboardMetricDto> selector,
++        CancellationToken cancellationToken) =>
++        ExecuteReadAsync(async () =>
++        {
++            var snapshot = await _dashboardFinanceSnapshotService.GetAsync(
++                companyId,
++                asOfUtc,
++                upcomingWindowDays,
++                cancellationToken);
++
++            return selector(snapshot);
++        });
+ }
+ 
+ public sealed class FinanceTransactionCategoryRequest
+diff --git a/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor b/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor
+index 897f2d9..26bafb6 100644
+--- a/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor
++++ b/src/VirtualCompany.Web/Components/Finance/FinanceSnapshotCard.razor
+@@ -6,7 +6,7 @@
+     <div class="cockpit-card__header">
+         <div>
+             <span class="dashboard-kicker">Finance snapshot</span>
+-            <h4 class="h6 mt-2 mb-1">Decision-ready cash view</h4>
+-            <p class="text-body-secondary mb-0">Cash, daily burn, and runway for the active company.</p>
++            <h4 class="h6 mt-2 mb-1">Decision-ready cash view</h4>
++            <p class="text-body-secondary mb-0">Live cash, receivables, and payables for the active company.</p>
+         </div>
+     </div>
+ 
+@@ -24,22 +24,33 @@
+     else
+     {
+         <div class="finance-snapshot-card__grid mt-3">
+-            <section>
+-                <div class="dashboard-kicker">Cash</div>
+-                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-cash-position">@FormatCurrency(Snapshot.Cash, Snapshot.Currency)</strong>
++            <section class="finance-snapshot-card__metric">
++                <div class="dashboard-kicker">Current cash balance</div>
++                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-cash-position">@FormatCurrency(Snapshot.CurrentCashBalance, Snapshot.Currency)</strong>
+             </section>
+-            <section>
+-                <div class="dashboard-kicker">Runway</div>
+-                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-runway">@(Snapshot.RunwayDays.HasValue ? $"{Snapshot.RunwayDays.Value} days" : "Unavailable")</strong>
++            <section class="finance-snapshot-card__metric">
++                <div class="dashboard-kicker">Expected incoming cash</div>
++                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-expected-incoming-cash">@FormatCurrency(Snapshot.ExpectedIncomingCash, Snapshot.Currency)</strong>
+             </section>
+-            <section>
+-                <div class="dashboard-kicker">Risk</div>
+-                <span class="finance-risk-pill finance-risk-pill--@CssToken(Snapshot.RiskLevel)" data-testid="executive-cockpit-runway-status">@DisplayRisk(Snapshot.RiskLevel)</span>
++            <section class="finance-snapshot-card__metric">
++                <div class="dashboard-kicker">Expected outgoing cash</div>
++                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-expected-outgoing-cash">@FormatCurrency(Snapshot.ExpectedOutgoingCash, Snapshot.Currency)</strong>
++            </section>
++            <section class="finance-snapshot-card__metric">
++                <div class="dashboard-kicker">Overdue receivables</div>
++                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-overdue-receivables">@FormatCurrency(Snapshot.OverdueReceivables, Snapshot.Currency)</strong>
++            </section>
++            <section class="finance-snapshot-card__metric">
++                <div class="dashboard-kicker">Upcoming payables</div>
++                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-upcoming-payables">@FormatCurrency(Snapshot.UpcomingPayables, Snapshot.Currency)</strong>
+             </section>
+         </div>
+-        <p class="text-body-secondary mt-3 mb-0">Burn rate: @FormatCurrency(Snapshot.BurnRate, Snapshot.Currency) per day. Snapshot time: @Snapshot.AsOfUtc.ToLocalTime():g</p>
++        <p class="text-body-secondary mt-3 mb-0">
++            As of @Snapshot.AsOfUtc.ToLocalTime():g.
++            Upcoming window: next @Snapshot.UpcomingWindowDays day(s).
++        </p>
+         <div class="dashboard-actions mt-3">
+             <a class="btn btn-sm btn-outline-primary"
+-               href="@DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.CashPosition, "view-cash-position", "this-month")"
++               href="@DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.CashPosition, "view-cash-position", "this-month")"
+                @onclick="NavigateToCashPositionAsync"
+                @onclick:preventDefault="true">Open cash position</a>
+             <a class="btn btn-sm btn-outline-secondary"
+@@ -58,20 +69,6 @@
+     [Parameter]
+     public DashboardFinanceSnapshotViewModel? Snapshot { get; set; }
+     [Parameter] public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
+-
+-    private static string CssToken(string? value) =>
+-        string.IsNullOrWhiteSpace(value)
+-            ? "neutral"
+-            : value.Trim().ToLowerInvariant().Replace("_", "-");
+-
+-    private static string DisplayRisk(string? riskLevel) =>
+-        CssToken(riskLevel) switch
+-        {
+-            "critical" => "Critical",
+-            "warning" => "Warning",
+-            "healthy" => "Healthy",
+-            _ => "Missing"
+-        };
+ 
+     private static string FormatCurrency(decimal amount, string currency) =>
+         $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 4d79611..fdc3dc4 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -32,7 +32,7 @@
+             <article class="wizard-card wizard-card--compact cockpit-card dashboard-snapshot-panel" data-testid="executive-cockpit-finance-widget">
+                 <div class="cockpit-card__header">
+                     <div>
+                         <h2 class="h5 mb-1">Finance snapshot</h2>
+-                        <p class="text-body-secondary mb-0">Cash, runway, and finance entry points for the active company.</p>
++                        <p class="text-body-secondary mb-0">Cash balance plus receivable and payable signals for the active company.</p>
+                     </div>
+                     <div class="cockpit-toolbar">
+                         <button class="btn btn-outline-secondary btn-sm" @onclick="RefreshFinanceSnapshotAsync" disabled="@IsWidgetLoading("finance-snapshot")">Refresh snapshot</button>
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+index 37e4e88..c1e4a84 100644
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -384,13 +384,19 @@ public sealed class ExecutiveCockpitApiClient
+         new()
+         {
+             CompanyId = companyId,
+-            Cash = 0m,
+-            BurnRate = 0m,
+-            RunwayDays = null,
+-            RiskLevel = "missing",
+-            HasFinanceData = false,
+-            Currency = "USD",
+-            AsOfUtc = DateTime.UtcNow
++            CurrentCashBalance = 0m,
++            ExpectedIncomingCash = 0m,
++            ExpectedOutgoingCash = 0m,
++            OverdueReceivables = 0m,
++            UpcomingPayables = 0m,
++            Currency = "USD",
++            AsOfUtc = DateTime.UtcNow,
++            UpcomingWindowDays = 30,
++            Cash = 0m,
++            BurnRate = 0m,
++            RunwayDays = null,
++            RiskLevel = "missing",
++            HasFinanceData = false
+         };
+ 
+     private sealed class ApiProblemResponse
+@@ -502,13 +508,19 @@ public sealed class ExecutiveCockpitSummaryKpiViewModel
+ 
+ public sealed class DashboardFinanceSnapshotViewModel
+ {
+     public Guid CompanyId { get; set; }
+-    public decimal Cash { get; set; }
+-    public decimal BurnRate { get; set; }
+-    public int? RunwayDays { get; set; }
+-    public string RiskLevel { get; set; } = string.Empty;
+-    public bool HasFinanceData { get; set; }
++    public decimal CurrentCashBalance { get; set; }
++    public decimal ExpectedIncomingCash { get; set; }
++    public decimal ExpectedOutgoingCash { get; set; }
++    public decimal OverdueReceivables { get; set; }
++    public decimal UpcomingPayables { get; set; }
+     public string Currency { get; set; } = "USD";
+     public DateTime AsOfUtc { get; set; }
++    public int UpcomingWindowDays { get; set; } = 30;
++    public decimal Cash { get; set; }
++    public decimal BurnRate { get; set; }
++    public int? RunwayDays { get; set; }
++    public string RiskLevel { get; set; } = string.Empty;
++    public bool HasFinanceData { get; set; }
+ }
+ 
+ public sealed class ExecutiveCockpitFinanceViewModel
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index d7dc9bc..adbf646 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -557,10 +557,24 @@
+     display: grid;
+     gap: 1rem;
+-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
++    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+ }
+ 
+ .finance-snapshot-card__value {
+     color: #0f172a;
+     font-size: 1.35rem;
+     line-height: 1.15;
+ }
++
++.finance-snapshot-card__metric {
++    background: #f8fafc;
++    border: 1px solid #e2e8f0;
++    border-radius: 1rem;
++    min-height: 100%;
++    padding: 0.9rem 1rem;
++}
++
++.finance-snapshot-card__metric .dashboard-kicker {
++    display: block;
++    margin-bottom: 0.4rem;
++}
+ 
+ .finance-risk-pill {
+     border-radius: 999px;
+diff --git a/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs
+index 8815fb9..3a67284 100644
+--- a/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DashboardFinanceSnapshotIntegrationTests.cs
+@@ -15,29 +15,52 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
+     }
+ 
+     [Fact]
+-    public async Task Finance_snapshot_returns_cash_burn_rate_runway_and_risk_level()
++    public async Task Finance_snapshot_returns_cash_receivable_and_payable_metrics_for_seeded_company()
+     {
+-        var seed = await SeedFinanceCompanyAsync();
++        var seed = await SeedFinanceDashboardCompanyAsync();
+ 
+         using var client = CreateAuthenticatedClient();
+-        var response = await client.GetAsync($"/api/dashboard/finance-snapshot?companyId={seed.CompanyId:D}");
++        var response = await client.GetAsync(
++            $"/api/dashboard/finance-snapshot?companyId={seed.CompanyId:D}&asOfUtc={Uri.EscapeDataString(seed.AsOfUtc.ToString("O"))}");
+ 
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+         var snapshot = await response.Content.ReadFromJsonAsync<FinanceSnapshotResponse>();
+ 
+         Assert.NotNull(snapshot);
+         Assert.Equal(seed.CompanyId, snapshot!.CompanyId);
+-        Assert.Equal(60000m, snapshot.Cash);
+-        Assert.Equal(1000m, snapshot.BurnRate);
+-        Assert.Equal(60, snapshot.RunwayDays);
++        Assert.Equal(3750m, snapshot.CurrentCashBalance);
++        Assert.Equal(1000m, snapshot.ExpectedIncomingCash);
++        Assert.Equal(800m, snapshot.ExpectedOutgoingCash);
++        Assert.Equal(1200m, snapshot.OverdueReceivables);
++        Assert.Equal(1300m, snapshot.UpcomingPayables);
++        Assert.Equal(3750m, snapshot.Cash);
+         Assert.Equal("USD", snapshot.Currency);
+-        Assert.Equal("warning", snapshot.RiskLevel);
+         Assert.True(snapshot.HasFinanceData);
++        Assert.Equal(30, snapshot.UpcomingWindowDays);
+     }
+ 
+     [Fact]
+     public async Task Finance_snapshot_returns_missing_state_when_finance_data_is_incomplete()
+     {
+         var companyId = Guid.NewGuid();
+@@ -60,18 +83,55 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
+         var snapshot = await response.Content.ReadFromJsonAsync<FinanceSnapshotResponse>();
+ 
+         Assert.NotNull(snapshot);
++        Assert.Equal(0m, snapshot!.CurrentCashBalance);
++        Assert.Equal(0m, snapshot.ExpectedIncomingCash);
++        Assert.Equal(0m, snapshot.ExpectedOutgoingCash);
++        Assert.Equal(0m, snapshot.OverdueReceivables);
++        Assert.Equal(0m, snapshot.UpcomingPayables);
+         Assert.False(snapshot!.HasFinanceData);
+         Assert.Equal("missing", snapshot.RiskLevel);
+         Assert.Equal(0m, snapshot.Cash);
+-        Assert.Equal(0m, snapshot.BurnRate);
+-        Assert.Null(snapshot.RunwayDays);
+     }
+ 
+     [Fact]
+-    public async Task Finance_snapshot_averages_last_thirty_days_of_expenses_and_keeps_company_data_isolated()
++    public async Task Finance_dashboard_metric_endpoints_return_individual_values_and_honor_window_filters()
+     {
+-        var asOfUtc = new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero);
+-        using var factory = new TestWebApplicationFactory(new FixedTimeProvider(asOfUtc));
++        var seed = await SeedFinanceDashboardCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var baseRoute =
++            $"/internal/companies/{seed.CompanyId:D}/finance/dashboard";
++        var query =
++            $"asOfUtc={Uri.EscapeDataString(seed.AsOfUtc.ToString("O"))}&upcomingWindowDays=15";
++
++        var aggregateResponse = await client.GetAsync($"{baseRoute}/cash-metrics?{query}");
++        Assert.Equal(HttpStatusCode.OK, aggregateResponse.StatusCode);
++
++        var aggregate = await aggregateResponse.Content.ReadFromJsonAsync<FinanceSnapshotResponse>();
++        Assert.NotNull(aggregate);
++        Assert.Equal(15, aggregate!.UpcomingWindowDays);
++        Assert.Equal(800m, aggregate.UpcomingPayables);
++        Assert.Equal(300m, aggregate.ExpectedOutgoingCash);
++
++        await AssertMetricAsync(client, $"{baseRoute}/current-cash-balance?{query}", "current_cash_balance", 3750m);
++        await AssertMetricAsync(client, $"{baseRoute}/expected-incoming-cash?{query}", "expected_incoming_cash", 1000m);
++        await AssertMetricAsync(client, $"{baseRoute}/expected-outgoing-cash?{query}", "expected_outgoing_cash", 300m);
++        await AssertMetricAsync(client, $"{baseRoute}/overdue-receivables?{query}", "overdue_receivables", 1200m);
++        await AssertMetricAsync(client, $"{baseRoute}/upcoming-payables?{query}", "upcoming_payables", 800m);
++    }
++
++    private async Task AssertMetricAsync(HttpClient client, string route, string key, decimal amount)
++    {
++        var response = await client.GetAsync(route);
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var metric = await response.Content.ReadFromJsonAsync<FinanceDashboardMetricResponse>();
++        Assert.NotNull(metric);
++        Assert.Equal(key, metric!.MetricKey);
++        Assert.Equal(amount, metric.Amount);
++        Assert.Equal("USD", metric.Currency);
++    }
++
++    private async Task<(Guid CompanyId, DateTime AsOfUtc)> SeedFinanceDashboardCompanyAsync()
++    {
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var asOfUtc = new DateTime(2026, 4, 19, 12, 0, 0, DateTimeKind.Utc);
+ 
+         var companyId = Guid.NewGuid();
+         var otherCompanyId = Guid.NewGuid();
+@@ -80,56 +140,158 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
+         var expenseAccountId = Guid.NewGuid();
+         var otherCashAccountId = Guid.NewGuid();
+         var otherExpenseAccountId = Guid.NewGuid();
++        var revenueAccountId = Guid.NewGuid();
++        var payableExpenseAccountId = Guid.NewGuid();
++        var customerId = Guid.NewGuid();
++        var supplierId = Guid.NewGuid();
++        var fiscalPeriodId = Guid.NewGuid();
++        var incomingPendingPaymentId = Guid.NewGuid();
++        var incomingCompletedPaymentId = Guid.NewGuid();
++        var outgoingPendingPaymentId = Guid.NewGuid();
++        var outgoingCompletedPaymentId = Guid.NewGuid();
++        var overdueInvoiceId = Guid.NewGuid();
++        var scheduledInvoiceId = Guid.NewGuid();
++        var paidInvoiceId = Guid.NewGuid();
++        var upcomingBillId = Guid.NewGuid();
++        var scheduledBillId = Guid.NewGuid();
++        var paidBillId = Guid.NewGuid();
++        var openingEntryId = Guid.NewGuid();
++        var paymentEntryId = Guid.NewGuid();
+ 
+-        await factory.SeedAsync(dbContext =>
++        await _factory.SeedAsync(dbContext =>
+         {
+             dbContext.Users.Add(new User(userId, "dashboard-finance-window@example.com", "Dashboard Finance Window", "dev-header", "dashboard-finance-user"));
+             dbContext.Companies.AddRange(
+                 new Company(companyId, "Windowed Finance Co"),
+                 new Company(otherCompanyId, "Other Finance Co"));
+             dbContext.CompanyMemberships.AddRange(
+                 new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
+                 new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+ 
+             dbContext.FinanceAccounts.AddRange(
+-                new FinanceAccount(cashAccountId, companyId, "1000", "Operating Cash", "cash", "USD", 60000m, asOfUtc.AddMonths(-2).UtcDateTime),
+-                new FinanceAccount(expenseAccountId, companyId, "6000", "Operating Expenses", "expense", "USD", 0m, asOfUtc.AddMonths(-2).UtcDateTime),
++                new FinanceAccount(cashAccountId, companyId, "1000", "Operating Cash", "cash", "USD", 0m, asOfUtc.AddMonths(-2)),
++                new FinanceAccount(expenseAccountId, companyId, "6000", "Operating Expenses", "expense", "USD", 0m, asOfUtc.AddMonths(-2)),
++                new FinanceAccount(revenueAccountId, companyId, "4000", "Revenue", "revenue", "USD", 0m, asOfUtc.AddMonths(-2)),
++                new FinanceAccount(payableExpenseAccountId, companyId, "6100", "Accounts Payable Expense", "expense", "USD", 0m, asOfUtc.AddMonths(-2)),
+                 new FinanceAccount(otherCashAccountId, otherCompanyId, "1000", "Other Cash", "cash", "USD", 200000m, asOfUtc.AddMonths(-2).UtcDateTime),
+                 new FinanceAccount(otherExpenseAccountId, otherCompanyId, "6000", "Other Expenses", "expense", "USD", 0m, asOfUtc.AddMonths(-2).UtcDateTime));
+ 
++            dbContext.FiscalPeriods.Add(new FiscalPeriod(
++                fiscalPeriodId,
++                companyId,
++                "FY26-Q2",
++                new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc)));
++
++            dbContext.LedgerEntries.AddRange(
++                new LedgerEntry(
++                    openingEntryId,
++                    companyId,
++                    fiscalPeriodId,
++                    "LE-OPEN-001",
++                    asOfUtc.AddDays(-7),
++                    LedgerEntryStatuses.Posted,
++                    "Customer receipt",
++                    postedAtUtc: asOfUtc.AddDays(-7)),
++                new LedgerEntry(
++                    paymentEntryId,
++                    companyId,
++                    fiscalPeriodId,
++                    "LE-PAY-001",
++                    asOfUtc.AddDays(-1),
++                    LedgerEntryStatuses.Posted,
++                    "Supplier payment",
++                    postedAtUtc: asOfUtc.AddDays(-1)));
++
++            dbContext.LedgerEntryLines.AddRange(
++                new LedgerEntryLine(Guid.NewGuid(), companyId, openingEntryId, cashAccountId, 5000m, 0m, "USD", "Cash in"),
++                new LedgerEntryLine(Guid.NewGuid(), companyId, openingEntryId, revenueAccountId, 0m, 5000m, "USD", "Revenue offset"),
++                new LedgerEntryLine(Guid.NewGuid(), companyId, paymentEntryId, payableExpenseAccountId, 1250m, 0m, "USD", "Expense offset"),
++                new LedgerEntryLine(Guid.NewGuid(), companyId, paymentEntryId, cashAccountId, 0m, 1250m, "USD", "Cash out"));
++
++            dbContext.FinanceCounterparties.AddRange(
++                new FinanceCounterparty(customerId, companyId, "Northwind", "customer", "northwind@example.com"),
++                new FinanceCounterparty(supplierId, companyId, "Wingtip", "supplier", "wingtip@example.com"));
++
++            dbContext.FinanceInvoices.AddRange(
++                new FinanceInvoice(overdueInvoiceId, companyId, customerId, "INV-001", asOfUtc.AddDays(-20), asOfUtc.AddDays(-5), 1200m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid),
++                new FinanceInvoice(scheduledInvoiceId, companyId, customerId, "INV-002", asOfUtc.AddDays(-10), asOfUtc.AddDays(14), 900m, "USD", "open", settlementStatus: FinanceSettlementStatuses.PartiallyPaid),
++                new FinanceInvoice(paidInvoiceId, companyId, customerId, "INV-003", asOfUtc.AddDays(-15), asOfUtc.AddDays(-2), 400m, "USD", "paid", settlementStatus: FinanceSettlementStatuses.Paid));
++
++            dbContext.FinanceBills.AddRange(
++                new FinanceBill(upcomingBillId, companyId, supplierId, "BILL-001", asOfUtc.AddDays(-7), asOfUtc.AddDays(10), 800m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid),
++                new FinanceBill(scheduledBillId, companyId, supplierId, "BILL-002", asOfUtc.AddDays(-12), asOfUtc.AddDays(25), 700m, "USD", "open", settlementStatus: FinanceSettlementStatuses.PartiallyPaid),
++                new FinanceBill(paidBillId, companyId, supplierId, "BILL-003", asOfUtc.AddDays(-20), asOfUtc.AddDays(-3), 300m, "USD", "paid", settlementStatus: FinanceSettlementStatuses.Paid));
++
++            dbContext.Payments.AddRange(
++                new Payment(incomingPendingPaymentId, companyId, PaymentTypes.Incoming, 600m, "USD", asOfUtc.AddDays(2), "bank_transfer", PaymentStatuses.Pending, "INV-001"),
++                new Payment(incomingCompletedPaymentId, companyId, PaymentTypes.Incoming, 500m, "USD", asOfUtc.AddDays(-1), "bank_transfer", PaymentStatuses.Completed, "INV-002"),
++                new Payment(outgoingPendingPaymentId, companyId, PaymentTypes.Outgoing, 300m, "USD", asOfUtc.AddDays(3), "bank_transfer", PaymentStatuses.Pending, "BILL-001"),
++                new Payment(outgoingCompletedPaymentId, companyId, PaymentTypes.Outgoing, 200m, "USD", asOfUtc.AddDays(-2), "bank_transfer", PaymentStatuses.Completed, "BILL-002"));
++
++            dbContext.PaymentAllocations.AddRange(
++                new PaymentAllocation(Guid.NewGuid(), companyId, incomingPendingPaymentId, overdueInvoiceId, null, 600m, "USD"),
++                new PaymentAllocation(Guid.NewGuid(), companyId, incomingCompletedPaymentId, scheduledInvoiceId, null, 500m, "USD"),
++                new PaymentAllocation(Guid.NewGuid(), companyId, outgoingPendingPaymentId, null, upcomingBillId, 300m, "USD"),
++                new PaymentAllocation(Guid.NewGuid(), companyId, outgoingCompletedPaymentId, null, scheduledBillId, 200m, "USD"));
++
+             dbContext.FinanceTransactions.AddRange(
+-                new FinanceTransaction(Guid.NewGuid(), companyId, expenseAccountId, null, null, null, asOfUtc.AddDays(-5).UtcDateTime, "operating_expense", -12000m, "USD", "Payroll", "exp-1"),
+-                new FinanceTransaction(Guid.NewGuid(), companyId, expenseAccountId, null, null, null, asOfUtc.AddDays(-15).UtcDateTime, "operating_expense", -9000m, "USD", "Infrastructure", "exp-2"),
+-                new FinanceTransaction(Guid.NewGuid(), companyId, expenseAccountId, null, null, null, asOfUtc.AddDays(-29).UtcDateTime, "operating_expense", -9000m, "USD", "Contractors", "exp-3"),
+-                new FinanceTransaction(Guid.NewGuid(), companyId, expenseAccountId, null, null, null, asOfUtc.AddDays(-31).UtcDateTime, "operating_expense", -15000m, "USD", "Older expense", "exp-4"),
++                new FinanceTransaction(Guid.NewGuid(), companyId, expenseAccountId, null, null, null, asOfUtc.AddDays(-5).UtcDateTime, "operating_expense", -12000m, "USD", "Payroll", "exp-1"),
+                 new FinanceTransaction(Guid.NewGuid(), otherCompanyId, otherExpenseAccountId, null, null, null, asOfUtc.AddDays(-7).UtcDateTime, "operating_expense", -60000m, "USD", "Other payroll", "other-exp-1"));
+ 
+             return Task.CompletedTask;
+         });
+ 
+-        using var client = CreateAuthenticatedClient(factory);
+-        var response = await client.GetAsync($"/api/dashboard/finance-snapshot?companyId={companyId:D}");
+-
+-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+-
+-        var payload = await response.Content.ReadAsStringAsync();
+-        var snapshot = JsonSerializer.Deserialize<FinanceSnapshotResponse>(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+-
+-        Assert.NotNull(snapshot);
+-        Assert.Equal(companyId, snapshot!.CompanyId);
+-        Assert.Equal(60000m, snapshot.Cash);
+-        Assert.Equal(1000m, snapshot.BurnRate);
+-        Assert.Equal(60, snapshot.RunwayDays);
+-        Assert.Equal("warning", snapshot.RiskLevel);
+-        Assert.True(snapshot.HasFinanceData);
+-        Assert.Contains("\"cash\":", payload);
+-        Assert.Contains("\"burnRate\":", payload);
+-        Assert.Contains("\"runwayDays\":", payload);
+-        Assert.Contains("\"riskLevel\":", payload);
+-    }
+-
+-    private HttpClient CreateAuthenticatedClient(TestWebApplicationFactory? factory = null)
++        return (companyId, asOfUtc);
++    }
++
++    private HttpClient CreateAuthenticatedClient(TestWebApplicationFactory? factory = null)
+     {
+         var client = (factory ?? _factory).CreateClient();
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "dashboard-finance-user");
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "dashboard-finance@example.com");
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Dashboard Finance");
+         return client;
+     }
+ 
+-    private async Task<(Guid CompanyId)> SeedFinanceCompanyAsync()
+-    {
+-        var companyId = Guid.NewGuid();
+-        var userId = Guid.NewGuid();
+-        var accountId = Guid.NewGuid();
+-        var nowUtc = DateTime.UtcNow;
+-
+-        await _factory.SeedAsync(dbContext =>
+-        {
+-            dbContext.Users.Add(new User(userId, "dashboard-finance@example.com", "Dashboard Finance", "dev-header", "dashboard-finance-user"));
+-            dbContext.Companies.Add(new Company(companyId, "Dashboard Finance Co"));
+-            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+-
+-            dbContext.FinanceAccounts.Add(new FinanceAccount(
+-                accountId,
+-                companyId,
+-                "1000",
+-                "Operating Cash",
+-                "cash",
+-                "USD",
+-                90000m,
+-                nowUtc.AddMonths(-2)));
+-
+-            dbContext.FinanceTransactions.AddRange(
+-                new FinanceTransaction(Guid.NewGuid(), companyId, accountId, null, null, null, nowUtc.AddDays(-10), "operating_expense", -15000m, "USD", "Payroll", "exp-1"),
+-                new FinanceTransaction(Guid.NewGuid(), companyId, accountId, null, null, null, nowUtc.AddDays(-20), "operating_expense", -15000m, "USD", "Infrastructure", "exp-2"));
+-
+-            return Task.CompletedTask;
+-        });
+-
+-        return (companyId);
+-    }
+-
+     private sealed class FinanceSnapshotResponse
+     {
+         public Guid CompanyId { get; set; }
++        public decimal CurrentCashBalance { get; set; }
++        public decimal ExpectedIncomingCash { get; set; }
++        public decimal ExpectedOutgoingCash { get; set; }
++        public decimal OverdueReceivables { get; set; }
++        public decimal UpcomingPayables { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public DateTime AsOfUtc { get; set; }
++        public int UpcomingWindowDays { get; set; }
+         public decimal Cash { get; set; }
+         public decimal BurnRate { get; set; }
+         public int? RunwayDays { get; set; }
+@@ -138,12 +300,12 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
+         public string Currency { get; set; } = string.Empty;
+     }
+ 
+-    private sealed class FixedTimeProvider : TimeProvider
++    private sealed class FinanceDashboardMetricResponse
+     {
+-        private readonly DateTimeOffset _utcNow;
+-
+-        public FixedTimeProvider(DateTimeOffset utcNow) => _utcNow = utcNow;
+-
+-        public override DateTimeOffset GetUtcNow() => _utcNow;
++        public string MetricKey { get; set; } = string.Empty;
++        public decimal Amount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public DateTime AsOfUtc { get; set; }
++        public int UpcomingWindowDays { get; set; }
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+index 2d4a8cb..5c46ed4 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+@@ -29,15 +29,15 @@ public sealed class ExecutiveCockpitDashboardPageTests
+         cut.WaitForAssertion(() =>
+         {
+             Assert.Contains("USD 125,400.25", cut.Find("[data-testid='executive-cockpit-cash-position']").TextContent);
+-            Assert.Contains("22 days", cut.Find("[data-testid='executive-cockpit-runway']").TextContent);
+-
+-            var runwayStatus = cut.Find("[data-testid='executive-cockpit-runway-status']");
+-            Assert.Contains("Critical", runwayStatus.TextContent);
+-            Assert.Contains("finance-risk-pill--critical", runwayStatus.ClassName);
++            Assert.Contains("USD 18,400.00", cut.Find("[data-testid='executive-cockpit-expected-incoming-cash']").TextContent);
++            Assert.Contains("USD 12,650.00", cut.Find("[data-testid='executive-cockpit-expected-outgoing-cash']").TextContent);
++            Assert.Contains("USD 7,200.00", cut.Find("[data-testid='executive-cockpit-overdue-receivables']").TextContent);
++            Assert.Contains("USD 24,300.00", cut.Find("[data-testid='executive-cockpit-upcoming-payables']").TextContent);
+             Assert.DoesNotContain("Connect accounting", cut.Markup);
+ 
+             Assert.Contains("Cash runway dropped below the critical threshold.", cut.Find("[data-testid='executive-cockpit-low-cash-alert']").TextContent);
+             Assert.Contains("Average monthly burn is USD 18,500.00.", cut.Find("[data-testid='executive-cockpit-low-cash-alert']").TextContent);
++
+             Assert.Equal(
+                 DashboardRoutes.EnsureCompanyContext(FinanceRoutes.BuildAlertDetailPath(alertId, companyId), companyId, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)),
+                 cut.Find("[data-testid='executive-cockpit-low-cash-alert-open-detail']").GetAttribute("href"));
+@@ -71,7 +71,7 @@ public sealed class ExecutiveCockpitDashboardPageTests
+     [InlineData("warning", "Warning", "65 days", "finance-risk-pill--warning", true)]
+     [InlineData("critical", "Critical", "22 days", "finance-risk-pill--critical", true)]
+     [InlineData("missing", "Missing", "Unavailable", "finance-risk-pill--missing", false)]
+-    public void Executive_cockpit_finance_snapshot_applies_risk_styling_and_empty_state(
++    public void Executive_cockpit_finance_snapshot_renders_cash_metrics_or_empty_state(
+         string runwayStatus,
+         string runwayLabel,
+         string runwayDisplay,
+@@ -93,10 +93,10 @@ public sealed class ExecutiveCockpitDashboardPageTests
+         {
+             if (hasFinanceData)
+             {
+-                var statusPill = cut.Find("[data-testid='executive-cockpit-runway-status']");
+-                Assert.Contains(runwayLabel, statusPill.TextContent);
+-                Assert.Contains(expectedClass, statusPill.ClassName);
+-                Assert.Contains(runwayDisplay, cut.Find("[data-testid='executive-cockpit-runway']").TextContent);
++                Assert.Contains("USD 125,400.25", cut.Find("[data-testid='executive-cockpit-cash-position']").TextContent);
++                Assert.Contains("USD 18,400.00", cut.Find("[data-testid='executive-cockpit-expected-incoming-cash']").TextContent);
++                Assert.Contains("USD 12,650.00", cut.Find("[data-testid='executive-cockpit-expected-outgoing-cash']").TextContent);
++                Assert.Contains("USD 24,300.00", cut.Find("[data-testid='executive-cockpit-upcoming-payables']").TextContent);
+             }
+             else
+             {
+@@ -372,13 +372,19 @@ public sealed class ExecutiveCockpitDashboardPageTests
+     private static DashboardFinanceSnapshotViewModel CreateFinanceSnapshot(Guid companyId, string runwayStatus) =>
+         runwayStatus == "missing"
+             ? new DashboardFinanceSnapshotViewModel
+             {
+                 CompanyId = companyId,
++                CurrentCashBalance = 0m,
++                ExpectedIncomingCash = 0m,
++                ExpectedOutgoingCash = 0m,
++                OverdueReceivables = 0m,
++                UpcomingPayables = 0m,
++                Currency = "USD",
++                AsOfUtc = CashLastRefreshedUtc,
++                UpcomingWindowDays = 30,
+                 Cash = 0m,
+                 BurnRate = 0m,
+-                RunwayDays = null,
+-                RiskLevel = "missing",
+                 HasFinanceData = false,
+-                Currency = "USD",
+-                AsOfUtc = CashLastRefreshedUtc
++                RunwayDays = null,
++                RiskLevel = "missing"
+             }
+             : new DashboardFinanceSnapshotViewModel
+             {
+                 CompanyId = companyId,
++                CurrentCashBalance = 125400.25m,
++                ExpectedIncomingCash = 18400m,
++                ExpectedOutgoingCash = 12650m,
++                OverdueReceivables = 7200m,
++                UpcomingPayables = 24300m,
++                Currency = "USD",
++                AsOfUtc = CashLastRefreshedUtc,
++                UpcomingWindowDays = 30,
+                 Cash = 125400.25m,
+                 BurnRate = 18500m / 30m,
+                 RunwayDays = runwayStatus == "healthy" ? 180 : runwayStatus == "warning" ? 65 : 22,
+                 RiskLevel = runwayStatus,
+-                HasFinanceData = true,
+-                Currency = "USD",
+-                AsOfUtc = CashLastRefreshedUtc
++                HasFinanceData = true
+             };
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSnapshotCardTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSnapshotCardTests.cs
+index 056bb64..596a3a0 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSnapshotCardTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSnapshotCardTests.cs
+@@ -18,13 +18,19 @@ public sealed class FinanceSnapshotCardTests
+             .Add(component => component.CompanyId, companyId)
+             .Add(component => component.Snapshot, new DashboardFinanceSnapshotViewModel
+             {
+                 CompanyId = companyId,
++                CurrentCashBalance = 0m,
++                ExpectedIncomingCash = 0m,
++                ExpectedOutgoingCash = 0m,
++                OverdueReceivables = 0m,
++                UpcomingPayables = 0m,
++                Currency = "USD",
++                AsOfUtc = SnapshotUtc,
++                UpcomingWindowDays = 30,
+                 Cash = 0m,
+                 BurnRate = 0m,
+                 RunwayDays = null,
+                 RiskLevel = "missing",
+                 HasFinanceData = false,
+-                Currency = "USD",
+-                AsOfUtc = SnapshotUtc
+             }));
+ 
+         var cta = cut.Find("[data-testid='connect-accounting-cta']");
+@@ -33,7 +39,7 @@ public sealed class FinanceSnapshotCardTests
+         Assert.NotEmpty(cut.FindAll("[data-testid='finance-snapshot-empty']"));
+     }
+ 
+     [Fact]
+-    public void Finance_snapshot_card_shows_cash_runway_and_risk_badge_when_finance_data_is_available()
++    public void Finance_snapshot_card_shows_all_cash_metrics_when_finance_data_is_available()
+     {
+         using var context = new TestContext();
+         var companyId = Guid.Parse("5d7ae44d-04db-43a0-ab8d-97a21544d9ba");
+@@ -41,24 +47,28 @@ public sealed class FinanceSnapshotCardTests
+         var cut = context.RenderComponent<FinanceSnapshotCard>(parameters => parameters
+             .Add(component => component.CompanyId, companyId)
+             .Add(component => component.Snapshot, new DashboardFinanceSnapshotViewModel
+             {
+                 CompanyId = companyId,
++                CurrentCashBalance = 125400.25m,
++                ExpectedIncomingCash = 18400m,
++                ExpectedOutgoingCash = 12650m,
++                OverdueReceivables = 7200m,
++                UpcomingPayables = 24300m,
++                Currency = "USD",
++                AsOfUtc = SnapshotUtc,
++                UpcomingWindowDays = 30,
+                 Cash = 125400.25m,
+                 BurnRate = 5700m,
+                 RunwayDays = 22,
+                 RiskLevel = "critical",
+                 HasFinanceData = true,
+-                Currency = "USD",
+-                AsOfUtc = SnapshotUtc
+             }));
+ 
+         Assert.Contains("USD 125,400.25", cut.Find("[data-testid='executive-cockpit-cash-position']").TextContent);
+-        Assert.Contains("22 days", cut.Find("[data-testid='executive-cockpit-runway']").TextContent);
+-
+-        var riskBadge = cut.Find("[data-testid='executive-cockpit-runway-status']");
+-        Assert.Contains("Critical", riskBadge.TextContent);
+-        Assert.Contains("finance-risk-pill--critical", riskBadge.ClassName);
+-
+-        Assert.Contains("Burn rate: USD 5,700.00 per day.", cut.Markup);
++        Assert.Contains("USD 18,400.00", cut.Find("[data-testid='executive-cockpit-expected-incoming-cash']").TextContent);
++        Assert.Contains("USD 12,650.00", cut.Find("[data-testid='executive-cockpit-expected-outgoing-cash']").TextContent);
++        Assert.Contains("USD 7,200.00", cut.Find("[data-testid='executive-cockpit-overdue-receivables']").TextContent);
++        Assert.Contains("USD 24,300.00", cut.Find("[data-testid='executive-cockpit-upcoming-payables']").TextContent);
++        Assert.Contains("Upcoming window: next 30 day(s).", cut.Markup);
+         Assert.Empty(cut.FindAll("[data-testid='connect-accounting-cta']"));
+     }
+ }
+END_OF_PATCH

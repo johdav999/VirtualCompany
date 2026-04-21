@@ -189,6 +189,7 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
             new[]
             {
                 "get_cash_balance",
+                "resolve_finance_agent_query",
                 "list_transactions",
                 "list_uncategorized_transactions",
                 "list_invoices_awaiting_approval",

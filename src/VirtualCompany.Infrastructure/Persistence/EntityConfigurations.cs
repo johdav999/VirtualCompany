@@ -2778,11 +2778,14 @@ internal sealed class FinanceBillConfiguration : IEntityTypeConfiguration<Financ
         builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
+        builder.Property(x => x.SettlementStatus).HasColumnName("settlement_status").HasMaxLength(32).HasDefaultValue(FinanceSettlementStatuses.Unpaid).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
+        builder.HasCheckConstraint("CK_finance_bills_settlement_status", FinanceSettlementStatuses.BuildCheckConstraintSql("settlement_status"));
         builder.HasIndex(x => new { x.CompanyId, x.BillNumber }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.SettlementStatus, x.DueUtc });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Counterparty).WithMany(x => x.Bills).HasForeignKey(x => new { x.CompanyId, x.CounterpartyId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         builder.HasMany(x => x.Transactions).WithOne(x => x.Bill).HasForeignKey(x => new { x.CompanyId, x.BillId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
@@ -2889,6 +2892,54 @@ internal sealed class FinanceAccountConfiguration : IEntityTypeConfiguration<Fin
     }
 }
 
+internal sealed class FinancialStatementMappingConfiguration : IEntityTypeConfiguration<FinancialStatementMapping>
+{
+    public void Configure(EntityTypeBuilder<FinancialStatementMapping> builder)
+    {
+        builder.ToTable("financial_statement_mappings");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.FinanceAccountId).HasColumnName("finance_account_id").IsRequired();
+        builder.Property(x => x.StatementType)
+            .HasColumnName("statement_type")
+            .HasConversion(value => value.ToStorageValue(), value => FinancialStatementTypeValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.ReportSection)
+            .HasColumnName("report_section")
+            .HasConversion(value => value.ToStorageValue(), value => FinancialStatementReportSectionValues.Parse(value))
+            .HasMaxLength(64)
+            .IsRequired();
+        builder.Property(x => x.LineClassification)
+            .HasColumnName("line_classification")
+            .HasConversion(value => value.ToStorageValue(), value => FinancialStatementLineClassificationValues.Parse(value))
+            .HasMaxLength(64)
+            .IsRequired();
+        builder.Property(x => x.IsActive).HasColumnName("is_active").HasDefaultValue(true).IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+
+        builder.HasCheckConstraint("CK_financial_statement_mappings_statement_type", FinancialStatementTypeValues.BuildCheckConstraintSql("statement_type"));
+        builder.HasCheckConstraint("CK_financial_statement_mappings_report_section", FinancialStatementReportSectionValues.BuildCheckConstraintSql("report_section"));
+        builder.HasCheckConstraint("CK_financial_statement_mappings_line_classification", FinancialStatementLineClassificationValues.BuildCheckConstraintSql("line_classification"));
+
+        builder.HasIndex(x => x.CompanyId);
+        builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId });
+        builder.HasIndex(x => x.FinanceAccountId);
+        builder.HasIndex(x => new { x.CompanyId, x.StatementType, x.IsActive });
+        builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId, x.StatementType }).HasFilter("is_active = 1").IsUnique();
+
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.FinanceAccount)
+            .WithMany(x => x.FinancialStatementMappings)
+            .HasForeignKey(x => new { x.CompanyId, x.FinanceAccountId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
 internal sealed class FinanceCounterpartyConfiguration : IEntityTypeConfiguration<FinanceCounterparty>
 {
     public void Configure(EntityTypeBuilder<FinanceCounterparty> builder)
@@ -2902,10 +2953,17 @@ internal sealed class FinanceCounterpartyConfiguration : IEntityTypeConfiguratio
         builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
         builder.Property(x => x.CounterpartyType).HasColumnName("counterparty_type").HasMaxLength(64).IsRequired();
         builder.Property(x => x.Email).HasColumnName("email").HasMaxLength(256);
+        builder.Property(x => x.PaymentTerms).HasColumnName("payment_terms").HasMaxLength(64);
+        builder.Property(x => x.TaxId).HasColumnName("tax_id").HasMaxLength(64);
+        builder.Property(x => x.CreditLimit).HasColumnName("credit_limit").HasColumnType("decimal(18,2)");
+        builder.Property(x => x.PreferredPaymentMethod).HasColumnName("preferred_payment_method").HasMaxLength(64);
+        builder.Property(x => x.DefaultAccountMapping).HasColumnName("default_account_mapping").HasMaxLength(64);
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
         builder.HasIndex(x => new { x.CompanyId, x.Name });
+        builder.HasIndex(x => new { x.CompanyId, x.CounterpartyType, x.Name });
+        builder.HasIndex(x => new { x.CompanyId, x.Email });
         builder.HasIndex(x => new { x.CompanyId, x.CounterpartyType });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
     }
@@ -2928,11 +2986,14 @@ internal sealed class FinanceInvoiceConfiguration : IEntityTypeConfiguration<Fin
         builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
+        builder.Property(x => x.SettlementStatus).HasColumnName("settlement_status").HasMaxLength(32).HasDefaultValue(FinanceSettlementStatuses.Unpaid).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
+        builder.HasCheckConstraint("CK_finance_invoices_settlement_status", FinanceSettlementStatuses.BuildCheckConstraintSql("settlement_status"));
         builder.HasIndex(x => new { x.CompanyId, x.InvoiceNumber }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.SettlementStatus, x.DueUtc });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Counterparty).WithMany(x => x.Invoices).HasForeignKey(x => new { x.CompanyId, x.CounterpartyId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         builder.HasMany(x => x.Transactions).WithOne(x => x.Invoice).HasForeignKey(x => new { x.CompanyId, x.InvoiceId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
@@ -2964,6 +3025,222 @@ internal sealed class FinanceTransactionConfiguration : IEntityTypeConfiguration
         builder.HasIndex(x => new { x.CompanyId, x.ExternalReference }).IsUnique();
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Counterparty).WithMany(x => x.Transactions).HasForeignKey(x => new { x.CompanyId, x.CounterpartyId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class FiscalPeriodConfiguration : IEntityTypeConfiguration<FiscalPeriod>
+{
+    public void Configure(EntityTypeBuilder<FiscalPeriod> builder)
+    {
+        builder.ToTable("finance_fiscal_periods");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(128).IsRequired();
+        builder.Property(x => x.StartUtc).HasColumnName("start_at").IsRequired();
+        builder.Property(x => x.EndUtc).HasColumnName("end_at").IsRequired();
+        builder.Property(x => x.IsClosed).HasColumnName("is_closed").HasDefaultValue(false).IsRequired();
+        builder.Property(x => x.IsReportingLocked).HasColumnName("is_reporting_locked").HasDefaultValue(false).IsRequired();
+        builder.Property(x => x.ReportingLockedUtc).HasColumnName("reporting_locked_at");
+        builder.Property(x => x.ReportingLockedByUserId).HasColumnName("reporting_locked_by_user_id");
+        builder.Property(x => x.ReportingUnlockedUtc).HasColumnName("reporting_unlocked_at");
+        builder.Property(x => x.ReportingUnlockedByUserId).HasColumnName("reporting_unlocked_by_user_id");
+        builder.Property(x => x.LastCloseValidatedUtc).HasColumnName("last_close_validated_at");
+        builder.Property(x => x.LastCloseValidatedByUserId).HasColumnName("last_close_validated_by_user_id");
+        builder.Property(x => x.ClosedUtc).HasColumnName("closed_at");
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.StartUtc, x.EndUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.IsClosed, x.IsReportingLocked });
+        builder.HasIndex(x => new { x.CompanyId, x.Name }).IsUnique();
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class LedgerEntryConfiguration : IEntityTypeConfiguration<LedgerEntry>
+{
+    public void Configure(EntityTypeBuilder<LedgerEntry> builder)
+    {
+        builder.ToTable("ledger_entries");
+
+        builder.HasKey(x => x.Id);
+        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.FiscalPeriodId).HasColumnName("fiscal_period_id").IsRequired();
+        builder.Property(x => x.EntryNumber).HasColumnName("entry_number").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.EntryUtc).HasColumnName("entry_at").IsRequired();
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
+        builder.Property(x => x.SourceType).HasColumnName("source_type").HasMaxLength(64);
+        builder.Property(x => x.SourceId).HasColumnName("source_id").HasMaxLength(128);
+        builder.Property(x => x.PostedAtUtc).HasColumnName("posted_at");
+        builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(500);
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.FiscalPeriodId, x.EntryUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.SourceId, x.PostedAtUtc }).IsUnique().HasFilter("source_type IS NOT NULL AND source_id IS NOT NULL AND posted_at IS NOT NULL");
+        builder.HasIndex(x => new { x.CompanyId, x.EntryNumber }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.EntryUtc });
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.FiscalPeriod)
+            .WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.FiscalPeriodId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class LedgerEntrySourceMappingConfiguration : IEntityTypeConfiguration<LedgerEntrySourceMapping>
+{
+    public void Configure(EntityTypeBuilder<LedgerEntrySourceMapping> builder)
+    {
+        builder.ToTable("ledger_entry_source_mappings");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.LedgerEntryId).HasColumnName("ledger_entry_id").IsRequired();
+        builder.Property(x => x.SourceType).HasColumnName("source_type").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.SourceId).HasColumnName("source_id").HasMaxLength(128).IsRequired();
+        builder.Property(x => x.PostedAtUtc).HasColumnName("posted_at").IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.LedgerEntryId }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.SourceId, x.PostedAtUtc }).IsUnique();
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.LedgerEntry)
+            .WithMany(x => x.SourceMappings)
+            .HasForeignKey(x => new { x.CompanyId, x.LedgerEntryId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class LedgerEntryLineConfiguration : IEntityTypeConfiguration<LedgerEntryLine>
+{
+    public void Configure(EntityTypeBuilder<LedgerEntryLine> builder)
+    {
+        builder.ToTable("ledger_entry_lines");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.LedgerEntryId).HasColumnName("ledger_entry_id").IsRequired();
+        builder.Property(x => x.FinanceAccountId).HasColumnName("finance_account_id").IsRequired();
+        builder.Property(x => x.CostCenterId).HasColumnName("cost_center_id");
+        builder.Property(x => x.DebitAmount).HasColumnName("debit_amount").HasColumnType("decimal(18,2)").IsRequired();
+        builder.Property(x => x.CreditAmount).HasColumnName("credit_amount").HasColumnType("decimal(18,2)").IsRequired();
+        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
+        builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(500);
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId, x.CostCenterId });
+        builder.HasIndex(x => new { x.CompanyId, x.LedgerEntryId });
+        builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId });
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.LedgerEntry)
+            .WithMany(x => x.Lines)
+            .HasForeignKey(x => new { x.CompanyId, x.LedgerEntryId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.FinanceAccount)
+            .WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.FinanceAccountId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class TrialBalanceSnapshotConfiguration : IEntityTypeConfiguration<TrialBalanceSnapshot>
+{
+    public void Configure(EntityTypeBuilder<TrialBalanceSnapshot> builder)
+    {
+        builder.ToTable("trial_balance_snapshots");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.FiscalPeriodId).HasColumnName("fiscal_period_id").IsRequired();
+        builder.Property(x => x.FinanceAccountId).HasColumnName("finance_account_id").IsRequired();
+        builder.Property(x => x.BalanceAmount).HasColumnName("balance_amount").HasColumnType("decimal(18,2)").IsRequired();
+        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.FiscalPeriodId, x.FinanceAccountId }).IsUnique();
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.FiscalPeriod).WithMany().HasForeignKey(x => new { x.CompanyId, x.FiscalPeriodId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.FinanceAccount).WithMany().HasForeignKey(x => new { x.CompanyId, x.FinanceAccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class FinancialStatementSnapshotConfiguration : IEntityTypeConfiguration<FinancialStatementSnapshot>
+{
+    public void Configure(EntityTypeBuilder<FinancialStatementSnapshot> builder)
+    {
+        builder.ToTable("financial_statement_snapshots");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.FiscalPeriodId).HasColumnName("fiscal_period_id").IsRequired();
+        builder.Property(x => x.StatementType)
+            .HasColumnName("statement_type")
+            .HasConversion(value => value.ToStorageValue(), value => FinancialStatementTypeValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.SourcePeriodStartUtc).HasColumnName("source_period_start_at").IsRequired();
+        builder.Property(x => x.SourcePeriodEndUtc).HasColumnName("source_period_end_at").IsRequired();
+        builder.Property(x => x.VersionNumber).HasColumnName("version_number").IsRequired();
+        builder.Property(x => x.BalancesChecksum).HasColumnName("balances_checksum").HasMaxLength(128).IsRequired();
+        builder.Property(x => x.GeneratedAtUtc).HasColumnName("generated_at").IsRequired();
+        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
+
+        builder.HasCheckConstraint("CK_financial_statement_snapshots_statement_type", FinancialStatementTypeValues.BuildCheckConstraintSql("statement_type"));
+
+        builder.HasIndex(x => new { x.CompanyId, x.StatementType, x.FiscalPeriodId, x.VersionNumber }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.StatementType, x.FiscalPeriodId, x.GeneratedAtUtc });
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.FiscalPeriod).WithMany().HasForeignKey(x => new { x.CompanyId, x.FiscalPeriodId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        builder.HasMany(x => x.Lines).WithOne(x => x.Snapshot).HasForeignKey(x => x.SnapshotId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class FinancialStatementSnapshotLineConfiguration : IEntityTypeConfiguration<FinancialStatementSnapshotLine>
+{
+    public void Configure(EntityTypeBuilder<FinancialStatementSnapshotLine> builder)
+    {
+        builder.ToTable("financial_statement_snapshot_lines");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.SnapshotId).HasColumnName("snapshot_id").IsRequired();
+        builder.Property(x => x.FinanceAccountId).HasColumnName("finance_account_id");
+        builder.Property(x => x.LineCode).HasColumnName("line_code").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.LineName).HasColumnName("line_name").HasMaxLength(160).IsRequired();
+        builder.Property(x => x.LineOrder).HasColumnName("line_order").IsRequired();
+        builder.Property(x => x.ReportSection)
+            .HasColumnName("report_section")
+            .HasConversion(value => value.ToStorageValue(), value => FinancialStatementReportSectionValues.Parse(value))
+            .HasMaxLength(64)
+            .IsRequired();
+        builder.Property(x => x.LineClassification)
+            .HasColumnName("line_classification")
+            .HasConversion(value => value.ToStorageValue(), value => FinancialStatementLineClassificationValues.Parse(value))
+            .HasMaxLength(64)
+            .IsRequired();
+        builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
+        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
+
+        builder.HasCheckConstraint("CK_financial_statement_snapshot_lines_report_section", FinancialStatementReportSectionValues.BuildCheckConstraintSql("report_section"));
+        builder.HasCheckConstraint("CK_financial_statement_snapshot_lines_line_classification", FinancialStatementLineClassificationValues.BuildCheckConstraintSql("line_classification"));
+        builder.HasIndex(x => new { x.SnapshotId, x.LineCode }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.SnapshotId, x.LineOrder });
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.FinanceAccount).WithMany().HasForeignKey(x => new { x.CompanyId, x.FinanceAccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
     }
 }
 

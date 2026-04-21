@@ -1,0 +1,231 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationSuggestionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationSuggestionService.cs
+index 0d23c5f..6b2d89e 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationSuggestionService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationSuggestionService.cs
+@@ -34,7 +34,7 @@ public sealed class CompanyReconciliationSuggestionService :
+     public async Task<ReconciliationSuggestionRecordDto> CreateSuggestionAsync(
+         CreateReconciliationSuggestionCommand command,
+         CancellationToken cancellationToken)
+     {
+         EnsureTenant(command.CompanyId);
+-        await ValidateActorAsync(command.ActorUserId, cancellationToken);
++        await ValidateActorAsync(command.CompanyId, command.ActorUserId, cancellationToken);
+ 
+         var normalizedSourceType = NormalizeRecordType(command.SourceRecordType, nameof(command.SourceRecordType));
+         var normalizedTargetType = NormalizeRecordType(command.TargetRecordType, nameof(command.TargetRecordType));
+@@ -117,7 +117,7 @@ public sealed class CompanyReconciliationSuggestionService :
+         ExecuteInTransactionAsync(async () =>
+         {
+             EnsureTenant(command.CompanyId);
+-            await ValidateActorAsync(command.ActorUserId, cancellationToken);
++            await ValidateActorAsync(command.CompanyId, command.ActorUserId, cancellationToken);
+ 
+             var suggestion = await _dbContext.ReconciliationSuggestionRecords
+                 .IgnoreQueryFilters()
+@@ -183,7 +183,7 @@ public sealed class CompanyReconciliationSuggestionService :
+         ExecuteInTransactionAsync(async () =>
+         {
+             EnsureTenant(command.CompanyId);
+-            await ValidateActorAsync(command.ActorUserId, cancellationToken);
++            await ValidateActorAsync(command.CompanyId, command.ActorUserId, cancellationToken);
+ 
+             var suggestion = await _dbContext.ReconciliationSuggestionRecords
+                 .IgnoreQueryFilters()
+@@ -356,21 +356,23 @@ public sealed class CompanyReconciliationSuggestionService :
+         }
+     }
+ 
+-    private async Task ValidateActorAsync(Guid userId, CancellationToken cancellationToken)
++    private async Task ValidateActorAsync(Guid companyId, Guid userId, CancellationToken cancellationToken)
+     {
+         if (userId == Guid.Empty)
+         {
+             throw new ArgumentException("Actor user id is required.", nameof(userId));
+         }
+ 
+-        var exists = await _dbContext.Users
++        var isActiveCompanyMember = await _dbContext.CompanyMemberships
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .AnyAsync(x => x.Id == userId, cancellationToken);
++            .AnyAsync(
++                x => x.CompanyId == companyId &&
++                     x.UserId == userId &&
++                     x.Status == CompanyMembershipStatus.Active,
++                cancellationToken);
+ 
+-        if (!exists)
++        if (!isActiveCompanyMember)
+         {
+-            throw new KeyNotFoundException($"User '{userId}' was not found.");
++            throw new UnauthorizedAccessException("Reconciliation suggestion actors must be active members of the target company.");
+         }
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/ReconciliationPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/ReconciliationPersistenceTests.cs
+index 790b5ef..a42f8d9 100644
+--- a/tests/VirtualCompany.Api.Tests/ReconciliationPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ReconciliationPersistenceTests.cs
+@@ -22,9 +22,10 @@ public sealed class ReconciliationPersistenceTests
+         await dbContext.Database.EnsureCreatedAsync();
+ 
+         await SeedUsersAsync(dbContext, (creatorUserId, "creator@reconciliation.example", "Creator"));
+         var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++        await SeedMembershipsAsync(dbContext, companyId, creatorUserId);
+ 
+         var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
+         await service.CreateSuggestionAsync(
+             CreateCommand(companyId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, ReconciliationRecordTypes.BankTransaction, seed.BankTransactionId, creatorUserId),
+             CancellationToken.None);
+@@ -78,9 +79,10 @@ public sealed class ReconciliationPersistenceTests
+             dbContext,
+             (creatorUserId, "creator@payment-bank.example", "Creator"),
+             (approverUserId, "approver@payment-bank.example", "Approver"));
+         var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++        await SeedMembershipsAsync(dbContext, companyId, creatorUserId, approverUserId);
+ 
+         var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
+         var first = await service.CreateSuggestionAsync(
+             CreateCommand(companyId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, ReconciliationRecordTypes.BankTransaction, seed.BankTransactionId, creatorUserId, ReconciliationMatchTypes.RuleBased, 0.98m),
+             CancellationToken.None);
+@@ -152,9 +154,10 @@ public sealed class ReconciliationPersistenceTests
+             dbContext,
+             (creatorUserId, "creator@invoice-accept.example", "Creator"),
+             (approverUserId, "approver@invoice-accept.example", "Approver"));
+         var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++        await SeedMembershipsAsync(dbContext, companyId, creatorUserId, approverUserId);
+ 
+         var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
+         var first = await service.CreateSuggestionAsync(
+             CreateCommand(companyId, ReconciliationRecordTypes.Invoice, seed.InvoiceId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, creatorUserId, ReconciliationMatchTypes.RuleBased, 0.97m),
+             CancellationToken.None);
+@@ -219,9 +222,10 @@ public sealed class ReconciliationPersistenceTests
+             dbContext,
+             (creatorUserId, "creator@invoice-payment.example", "Creator"),
+             (reviewerUserId, "reviewer@invoice-payment.example", "Reviewer"));
+         var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++        await SeedMembershipsAsync(dbContext, companyId, creatorUserId, reviewerUserId);
+ 
+         var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
+         var created = await service.CreateSuggestionAsync(
+             CreateCommand(companyId, ReconciliationRecordTypes.Invoice, seed.InvoiceId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, creatorUserId),
+             CancellationToken.None);
+@@ -262,9 +266,10 @@ public sealed class ReconciliationPersistenceTests
+             dbContext,
+             (creatorUserId, "creator@bill-payment.example", "Creator"),
+             (approverUserId, "approver@bill-payment.example", "Approver"));
+         var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++        await SeedMembershipsAsync(dbContext, companyId, creatorUserId, approverUserId);
+ 
+         var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
+         var created = await service.CreateSuggestionAsync(
+             CreateCommand(companyId, ReconciliationRecordTypes.Bill, seed.BillId, ReconciliationRecordTypes.Payment, seed.OutgoingPaymentId, creatorUserId, ReconciliationMatchTypes.Exact, 1.00m),
+             CancellationToken.None);
+@@ -333,6 +338,8 @@ public sealed class ReconciliationPersistenceTests
+                 (creatorAUserId, "creator-a@tenant.example", "Creator A"),
+                 (creatorBUserId, "creator-b@tenant.example", "Creator B"));
+             var seedA = await SeedCompanyFinanceScenarioAsync(seedContext, companyAId);
+             var seedB = await SeedCompanyFinanceScenarioAsync(seedContext, companyBId);
++            await SeedMembershipsAsync(seedContext, companyAId, creatorAUserId);
++            await SeedMembershipsAsync(seedContext, companyBId, creatorBUserId);
+ 
+             var seedService = new CompanyReconciliationSuggestionService(seedContext);
+             await seedService.CreateSuggestionAsync(
+                 CreateCommand(companyAId, ReconciliationRecordTypes.Payment, seedA.IncomingPaymentId, ReconciliationRecordTypes.BankTransaction, seedA.BankTransactionId, creatorAUserId),
+                 CancellationToken.None);
+@@ -365,6 +372,52 @@ public sealed class ReconciliationPersistenceTests
+                 new GetOpenReconciliationSuggestionsQuery(companyBId, Limit: 10),
+                 CancellationToken.None));
+     }
+ 
++    [Fact]
++    public async Task Reconciliation_write_paths_require_actor_membership_in_target_company()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var creatorUserId = Guid.NewGuid();
++        var outsiderUserId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        await SeedUsersAsync(
++            dbContext,
++            (creatorUserId, "creator@membership.example", "Creator"),
++            (outsiderUserId, "outsider@membership.example", "Outsider"));
++        var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++        dbContext.Companies.Add(new Company(otherCompanyId, $"Other Company {otherCompanyId:N}"));
++        await dbContext.SaveChangesAsync();
++        await SeedMembershipsAsync(dbContext, companyId, creatorUserId);
++        await SeedMembershipsAsync(dbContext, otherCompanyId, outsiderUserId);
++
++        var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
++
++        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
++            service.CreateSuggestionAsync(
++                CreateCommand(companyId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, ReconciliationRecordTypes.BankTransaction, seed.BankTransactionId, outsiderUserId),
++                CancellationToken.None));
++
++        var created = await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, ReconciliationRecordTypes.BankTransaction, seed.BankTransactionId, creatorUserId),
++            CancellationToken.None);
++
++        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
++            service.AcceptSuggestionAsync(
++                new AcceptReconciliationSuggestionCommand(companyId, created.Id, outsiderUserId),
++                CancellationToken.None));
++
++        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
++            service.RejectSuggestionAsync(
++                new RejectReconciliationSuggestionCommand(companyId, created.Id, outsiderUserId),
++                CancellationToken.None));
++
++        var persisted = await dbContext.ReconciliationSuggestionRecords
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.Id == created.Id);
++        Assert.Equal(ReconciliationSuggestionStatuses.Open, persisted.Status);
++        Assert.Equal(creatorUserId, persisted.CreatedByUserId);
++        Assert.Equal(creatorUserId, persisted.UpdatedByUserId);
++    }
++
+     [Fact]
+     public async Task Audit_metadata_is_persisted_and_updated_for_create_reject_and_accept_transitions()
+     {
+         var companyId = Guid.NewGuid();
+@@ -380,6 +433,7 @@ public sealed class ReconciliationPersistenceTests
+             dbContext,
+             (creatorUserId, "creator@audit.example", "Creator"),
+             (reviewerUserId, "reviewer@audit.example", "Reviewer"));
+         var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++        await SeedMembershipsAsync(dbContext, companyId, creatorUserId, reviewerUserId);
+ 
+         var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
+         var rejectedCandidate = await service.CreateSuggestionAsync(
+             CreateCommand(companyId, ReconciliationRecordTypes.Invoice, seed.InvoiceId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, creatorUserId, ReconciliationMatchTypes.RuleBased, 0.72m),
+@@ -438,6 +492,22 @@ public sealed class ReconciliationPersistenceTests
+             dbContext.Users.Add(new User(user.Id, user.Email, user.DisplayName, "dev-header", $"sub-{user.Id:N}"));
+         }
+ 
++        await dbContext.SaveChangesAsync();
++    }
++
++    private static async Task SeedMembershipsAsync(
++        VirtualCompanyDbContext dbContext,
++        Guid companyId,
++        params Guid[] userIds)
++    {
++        foreach (var userId in userIds)
++        {
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Employee,
++                CompanyMembershipStatus.Active));
++        }
++
+         await dbContext.SaveChangesAsync();
+     }
+ 
+ END_OF_PATCH

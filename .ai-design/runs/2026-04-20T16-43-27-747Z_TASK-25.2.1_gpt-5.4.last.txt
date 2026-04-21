@@ -1,0 +1,1713 @@
+diff --git a/src/VirtualCompany.Application/Finance/ReconciliationContracts.cs b/src/VirtualCompany.Application/Finance/ReconciliationContracts.cs
+--- a/src/VirtualCompany.Application/Finance/ReconciliationContracts.cs
++++ b/src/VirtualCompany.Application/Finance/ReconciliationContracts.cs
+@@ -1,3 +1,5 @@
++using System.Text.Json.Nodes;
++
+ using VirtualCompany.Domain.Finance;
+ 
+ namespace VirtualCompany.Application.Finance;
+@@ -66,3 +68,59 @@ public interface IReconciliationScoringSettingsProvider
+     Task<ReconciliationScoringSettings> GetSettingsAsync(
+         Guid companyId,
+         CancellationToken cancellationToken);
++
++public sealed record CreateReconciliationSuggestionCommand(
++    Guid CompanyId,
++    string SourceRecordType,
++    Guid SourceRecordId,
++    string TargetRecordType,
++    Guid TargetRecordId,
++    string MatchType,
++    decimal ConfidenceScore,
++    IDictionary<string, JsonNode?>? RuleBreakdown,
++    Guid ActorUserId);
++
++public sealed record AcceptReconciliationSuggestionCommand(
++    Guid CompanyId,
++    Guid SuggestionId,
++    Guid ActorUserId);
++
++public sealed record RejectReconciliationSuggestionCommand(
++    Guid CompanyId,
++    Guid SuggestionId,
++    Guid ActorUserId);
++
++public sealed record GetOpenReconciliationSuggestionsQuery(
++    Guid CompanyId,
++    string? SourceRecordType = null,
++    Guid? SourceRecordId = null,
++    string? TargetRecordType = null,
++    Guid? TargetRecordId = null,
++    int Limit = 100);
++
++public sealed record ReconciliationSuggestionRecordDto(
++    Guid Id,
++    Guid CompanyId,
++    string SourceRecordType,
++    Guid SourceRecordId,
++    string TargetRecordType,
++    Guid TargetRecordId,
++    string MatchType,
++    decimal ConfidenceScore,
++    IReadOnlyDictionary<string, JsonNode?> RuleBreakdown,
++    string Status,
++    DateTime CreatedUtc,
++    DateTime UpdatedUtc,
++    Guid CreatedByUserId,
++    Guid UpdatedByUserId,
++    DateTime? AcceptedUtc,
++    DateTime? RejectedUtc,
++    DateTime? SupersededUtc);
++
++public sealed record ReconciliationResultRecordDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid AcceptedSuggestionId,
++    string SourceRecordType,
++    Guid SourceRecordId,
++    string TargetRecordType,
++    Guid TargetRecordId,
++    string MatchType,
++    decimal ConfidenceScore,
++    IReadOnlyDictionary<string, JsonNode?> RuleBreakdown,
++    DateTime CreatedUtc,
++    DateTime UpdatedUtc,
++    Guid CreatedByUserId,
++    Guid UpdatedByUserId);
++
++public sealed record AcceptedReconciliationSuggestionDto(
++    ReconciliationSuggestionRecordDto Suggestion,
++    ReconciliationResultRecordDto Result,
++    int SupersededSuggestionCount);
++
++public interface IReconciliationSuggestionReadService
++{
++    Task<IReadOnlyList<ReconciliationSuggestionRecordDto>> GetOpenSuggestionsAsync(
++        GetOpenReconciliationSuggestionsQuery query,
++        CancellationToken cancellationToken);
++}
++
++public interface IReconciliationSuggestionCommandService
++{
++    Task<ReconciliationSuggestionRecordDto> CreateSuggestionAsync(
++        CreateReconciliationSuggestionCommand command,
++        CancellationToken cancellationToken);
++
++    Task<AcceptedReconciliationSuggestionDto> AcceptSuggestionAsync(
++        AcceptReconciliationSuggestionCommand command,
++        CancellationToken cancellationToken);
++
++    Task<ReconciliationSuggestionRecordDto> RejectSuggestionAsync(
++        RejectReconciliationSuggestionCommand command,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Domain/Entities/ReconciliationPersistenceEntities.cs b/src/VirtualCompany.Domain/Entities/ReconciliationPersistenceEntities.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/ReconciliationPersistenceEntities.cs
+@@ -0,0 +1,265 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class ReconciliationSuggestionRecord : ICompanyOwnedEntity
++{
++    private const int RecordTypeMaxLength = 32;
++    private const int MatchTypeMaxLength = 32;
++
++    private ReconciliationSuggestionRecord()
++    {
++    }
++
++    public ReconciliationSuggestionRecord(
++        Guid id,
++        Guid companyId,
++        string sourceRecordType,
++        Guid sourceRecordId,
++        string targetRecordType,
++        Guid targetRecordId,
++        string matchType,
++        decimal confidenceScore,
++        IDictionary<string, JsonNode?>? ruleBreakdown,
++        Guid createdByUserId,
++        DateTime? createdUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (sourceRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceRecordId is required.", nameof(sourceRecordId));
++        }
++
++        if (targetRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("TargetRecordId is required.", nameof(targetRecordId));
++        }
++
++        if (createdByUserId == Guid.Empty)
++        {
++            throw new ArgumentException("CreatedByUserId is required.", nameof(createdByUserId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        SourceRecordType = NormalizeRecordType(sourceRecordType, nameof(sourceRecordType));
++        SourceRecordId = sourceRecordId;
++        TargetRecordType = NormalizeRecordType(targetRecordType, nameof(targetRecordType));
++        TargetRecordId = targetRecordId;
++        MatchType = NormalizeMatchType(matchType, nameof(matchType));
++        ConfidenceScore = NormalizeConfidenceScore(confidenceScore, nameof(confidenceScore));
++        RuleBreakdown = CloneNodes(ruleBreakdown);
++        Status = ReconciliationSuggestionStatuses.Open;
++        CreatedByUserId = createdByUserId;
++        UpdatedByUserId = createdByUserId;
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string SourceRecordType { get; private set; } = null!;
++    public Guid SourceRecordId { get; private set; }
++    public string TargetRecordType { get; private set; } = null!;
++    public Guid TargetRecordId { get; private set; }
++    public string MatchType { get; private set; } = null!;
++    public decimal ConfidenceScore { get; private set; }
++    public Dictionary<string, JsonNode?> RuleBreakdown { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public string Status { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Guid CreatedByUserId { get; private set; }
++    public Guid UpdatedByUserId { get; private set; }
++    public DateTime? AcceptedUtc { get; private set; }
++    public DateTime? RejectedUtc { get; private set; }
++    public DateTime? SupersededUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User CreatedByUser { get; private set; } = null!;
++    public User UpdatedByUser { get; private set; } = null!;
++    public ICollection<ReconciliationResultRecord> AcceptedResults { get; } = new List<ReconciliationResultRecord>();
++
++    public void Accept(Guid updatedByUserId, DateTime? acceptedUtc = null)
++    {
++        EnsureActionableTransition(nameof(Accept));
++        UpdatedByUserId = NormalizeUserId(updatedByUserId, nameof(updatedByUserId));
++        AcceptedUtc = EntityTimestampNormalizer.NormalizeUtc(acceptedUtc ?? DateTime.UtcNow, nameof(acceptedUtc));
++        UpdatedUtc = AcceptedUtc.Value;
++        Status = ReconciliationSuggestionStatuses.Accepted;
++    }
++
++    public void Reject(Guid updatedByUserId, DateTime? rejectedUtc = null)
++    {
++        EnsureActionableTransition(nameof(Reject));
++        UpdatedByUserId = NormalizeUserId(updatedByUserId, nameof(updatedByUserId));
++        RejectedUtc = EntityTimestampNormalizer.NormalizeUtc(rejectedUtc ?? DateTime.UtcNow, nameof(rejectedUtc));
++        UpdatedUtc = RejectedUtc.Value;
++        Status = ReconciliationSuggestionStatuses.Rejected;
++    }
++
++    public void Supersede(Guid updatedByUserId, DateTime? supersededUtc = null)
++    {
++        EnsureActionableTransition(nameof(Supersede));
++        UpdatedByUserId = NormalizeUserId(updatedByUserId, nameof(updatedByUserId));
++        SupersededUtc = EntityTimestampNormalizer.NormalizeUtc(supersededUtc ?? DateTime.UtcNow, nameof(supersededUtc));
++        UpdatedUtc = SupersededUtc.Value;
++        Status = ReconciliationSuggestionStatuses.Superseded;
++    }
++
++    private void EnsureActionableTransition(string operation)
++    {
++        if (!ReconciliationSuggestionStatuses.IsActionable(Status))
++        {
++            throw new InvalidOperationException($"Cannot {operation.ToLowerInvariant()} suggestion in status '{Status}'.");
++        }
++    }
++
++    private static Guid NormalizeUserId(Guid value, string name) =>
++        value == Guid.Empty
++            ? throw new ArgumentException($"{name} is required.", name)
++            : value;
++
++    private static string NormalizeRecordType(string value, string name)
++    {
++        var normalized = ReconciliationRecordTypes.Normalize(value);
++        if (!ReconciliationRecordTypes.IsSupported(normalized))
++        {
++            throw new ArgumentOutOfRangeException(name, value, "Unsupported reconciliation record type.");
++        }
++
++        return normalized.Length <= RecordTypeMaxLength
++            ? normalized
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {RecordTypeMaxLength} characters or fewer.");
++    }
++
++    private static string NormalizeMatchType(string value, string name)
++    {
++        var normalized = ReconciliationMatchTypes.Normalize(value);
++        if (!ReconciliationMatchTypes.IsSupported(normalized))
++        {
++            throw new ArgumentOutOfRangeException(name, value, "Unsupported reconciliation match type.");
++        }
++
++        return normalized.Length <= MatchTypeMaxLength
++            ? normalized
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {MatchTypeMaxLength} characters or fewer.");
++    }
++
++    private static decimal NormalizeConfidenceScore(decimal value, string name)
++    {
++        var normalized = decimal.Round(value, 4, MidpointRounding.AwayFromZero);
++        if (normalized < 0m || normalized > 1m)
++        {
++            throw new ArgumentOutOfRangeException(name, "ConfidenceScore must be between 0 and 1.");
++        }
++
++        return normalized;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class ReconciliationResultRecord : ICompanyOwnedEntity
++{
++    private const int RecordTypeMaxLength = 32;
++    private const int MatchTypeMaxLength = 32;
++
++    private ReconciliationResultRecord()
++    {
++    }
++
++    public ReconciliationResultRecord(
++        Guid id,
++        Guid companyId,
++        Guid acceptedSuggestionId,
++        string sourceRecordType,
++        Guid sourceRecordId,
++        string targetRecordType,
++        Guid targetRecordId,
++        string matchType,
++        decimal confidenceScore,
++        IDictionary<string, JsonNode?>? ruleBreakdown,
++        Guid createdByUserId,
++        DateTime? createdUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (acceptedSuggestionId == Guid.Empty)
++        {
++            throw new ArgumentException("AcceptedSuggestionId is required.", nameof(acceptedSuggestionId));
++        }
++
++        if (sourceRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceRecordId is required.", nameof(sourceRecordId));
++        }
++
++        if (targetRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("TargetRecordId is required.", nameof(targetRecordId));
++        }
++
++        if (createdByUserId == Guid.Empty)
++        {
++            throw new ArgumentException("CreatedByUserId is required.", nameof(createdByUserId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        AcceptedSuggestionId = acceptedSuggestionId;
++        SourceRecordType = NormalizeRecordType(sourceRecordType, nameof(sourceRecordType));
++        SourceRecordId = sourceRecordId;
++        TargetRecordType = NormalizeRecordType(targetRecordType, nameof(targetRecordType));
++        TargetRecordId = targetRecordId;
++        MatchType = NormalizeMatchType(matchType, nameof(matchType));
++        ConfidenceScore = NormalizeConfidenceScore(confidenceScore, nameof(confidenceScore));
++        RuleBreakdown = CloneNodes(ruleBreakdown);
++        CreatedByUserId = createdByUserId;
++        UpdatedByUserId = createdByUserId;
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid AcceptedSuggestionId { get; private set; }
++    public string SourceRecordType { get; private set; } = null!;
++    public Guid SourceRecordId { get; private set; }
++    public string TargetRecordType { get; private set; } = null!;
++    public Guid TargetRecordId { get; private set; }
++    public string MatchType { get; private set; } = null!;
++    public decimal ConfidenceScore { get; private set; }
++    public Dictionary<string, JsonNode?> RuleBreakdown { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Guid CreatedByUserId { get; private set; }
++    public Guid UpdatedByUserId { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User CreatedByUser { get; private set; } = null!;
++    public User UpdatedByUser { get; private set; } = null!;
++    public ReconciliationSuggestionRecord AcceptedSuggestion { get; private set; } = null!;
++
++    private static string NormalizeRecordType(string value, string name)
++    {
++        var normalized = ReconciliationRecordTypes.Normalize(value);
++        if (!ReconciliationRecordTypes.IsSupported(normalized))
++        {
++            throw new ArgumentOutOfRangeException(name, value, "Unsupported reconciliation record type.");
++        }
++
++        return normalized.Length <= RecordTypeMaxLength
++            ? normalized
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {RecordTypeMaxLength} characters or fewer.");
++    }
++
++    private static string NormalizeMatchType(string value, string name)
++    {
++        var normalized = ReconciliationMatchTypes.Normalize(value);
++        if (!ReconciliationMatchTypes.IsSupported(normalized))
++        {
++            throw new ArgumentOutOfRangeException(name, value, "Unsupported reconciliation match type.");
++        }
++
++        return normalized.Length <= MatchTypeMaxLength
++            ? normalized
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {MatchTypeMaxLength} characters or fewer.");
++    }
++
++    private static decimal NormalizeConfidenceScore(decimal value, string name)
++    {
++        var normalized = decimal.Round(value, 4, MidpointRounding.AwayFromZero);
++        if (normalized < 0m || normalized > 1m)
++        {
++            throw new ArgumentOutOfRangeException(name, "ConfidenceScore must be between 0 and 1.");
++        }
++
++        return normalized;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Domain/Enums/ReconciliationValues.cs b/src/VirtualCompany.Domain/Enums/ReconciliationValues.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/ReconciliationValues.cs
+@@ -0,0 +1,104 @@
++namespace VirtualCompany.Domain.Enums;
++
++public static class ReconciliationRecordTypes
++{
++    public const string Payment = "payment";
++    public const string BankTransaction = "bank_transaction";
++    public const string Invoice = "invoice";
++    public const string Bill = "bill";
++
++    private static readonly string[] AllowedTypeValues =
++    [
++        Payment,
++        BankTransaction,
++        Invoice,
++        Bill
++    ];
++
++    private static readonly HashSet<string> AllowedTypeSet = new(AllowedTypeValues, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues => AllowedTypeValues;
++
++    public static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    public static bool IsSupported(string? value) =>
++        !string.IsNullOrWhiteSpace(value) &&
++        AllowedTypeSet.Contains(Normalize(value));
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ({string.Join(", ", AllowedValues.Select(value => $"'{value}'"))})";
++}
++
++public static class ReconciliationMatchTypes
++{
++    public const string Exact = "exact";
++    public const string Near = "near";
++    public const string RuleBased = "rule_based";
++    public const string Manual = "manual";
++
++    private static readonly string[] AllowedTypeValues =
++    [
++        Exact,
++        Near,
++        RuleBased,
++        Manual
++    ];
++
++    private static readonly HashSet<string> AllowedTypeSet = new(AllowedTypeValues, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues => AllowedTypeValues;
++
++    public static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    public static bool IsSupported(string? value) =>
++        !string.IsNullOrWhiteSpace(value) &&
++        AllowedTypeSet.Contains(Normalize(value));
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ({string.Join(", ", AllowedValues.Select(value => $"'{value}'"))})";
++}
++
++public static class ReconciliationSuggestionStatuses
++{
++    public const string Open = "open";
++    public const string Accepted = "accepted";
++    public const string Rejected = "rejected";
++    public const string Superseded = "superseded";
++
++    private static readonly string[] AllowedStatusValues =
++    [
++        Open,
++        Accepted,
++        Rejected,
++        Superseded
++    ];
++
++    private static readonly HashSet<string> AllowedStatusSet = new(AllowedStatusValues, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues => AllowedStatusValues;
++
++    public static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    public static bool IsSupported(string? value) =>
++        !string.IsNullOrWhiteSpace(value) &&
++        AllowedStatusSet.Contains(Normalize(value));
++
++    public static bool IsActionable(string? value) =>
++        string.Equals(Normalize(value ?? string.Empty), Open, StringComparison.Ordinal);
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ({string.Join(", ", AllowedValues.Select(value => $"'{value}'"))})";
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -406,6 +406,8 @@ public static class DependencyInjection
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<IReconciliationScoringSettingsProvider, CompanyReconciliationScoringSettingsProvider>();
+         services.AddScoped<IReconciliationScoringService, CompanyReconciliationScoringService>();
++        services.AddScoped<IReconciliationSuggestionReadService, CompanyReconciliationSuggestionService>();
++        services.AddScoped<IReconciliationSuggestionCommandService, CompanyReconciliationSuggestionService>();
+         services.AddScoped<ExecutionExceptionService>();
+         services.AddScoped<ICompanySimulationService, CompanySimulationService>();
+         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationSuggestionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationSuggestionService.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationSuggestionService.cs
+@@ -0,0 +1,328 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyReconciliationSuggestionService :
++    IReconciliationSuggestionReadService,
++    IReconciliationSuggestionCommandService
++{
++    private const int DefaultLimit = 100;
++    private const int MaxLimit = 500;
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
++
++    public CompanyReconciliationSuggestionService(VirtualCompanyDbContext dbContext)
++        : this(dbContext, null)
++    {
++    }
++
++    public CompanyReconciliationSuggestionService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor? companyContextAccessor)
++    {
++        _dbContext = dbContext;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public async Task<ReconciliationSuggestionRecordDto> CreateSuggestionAsync(
++        CreateReconciliationSuggestionCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        await ValidateActorAsync(command.ActorUserId, cancellationToken);
++
++        var normalizedSourceType = NormalizeRecordType(command.SourceRecordType, nameof(command.SourceRecordType));
++        var normalizedTargetType = NormalizeRecordType(command.TargetRecordType, nameof(command.TargetRecordType));
++        ValidateSupportedPair(normalizedSourceType, normalizedTargetType);
++
++        await EnsureRecordExistsAsync(command.CompanyId, normalizedSourceType, command.SourceRecordId, nameof(command.SourceRecordId), cancellationToken);
++        await EnsureRecordExistsAsync(command.CompanyId, normalizedTargetType, command.TargetRecordId, nameof(command.TargetRecordId), cancellationToken);
++
++        var suggestion = new ReconciliationSuggestionRecord(
++            Guid.NewGuid(),
++            command.CompanyId,
++            normalizedSourceType,
++            command.SourceRecordId,
++            normalizedTargetType,
++            command.TargetRecordId,
++            command.MatchType,
++            command.ConfidenceScore,
++            command.RuleBreakdown,
++            command.ActorUserId);
++
++        _dbContext.ReconciliationSuggestionRecords.Add(suggestion);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapSuggestion(suggestion);
++    }
++
++    public async Task<IReadOnlyList<ReconciliationSuggestionRecordDto>> GetOpenSuggestionsAsync(
++        GetOpenReconciliationSuggestionsQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++
++        var normalizedSourceType = NormalizeOptionalRecordType(query.SourceRecordType);
++        var normalizedTargetType = NormalizeOptionalRecordType(query.TargetRecordType);
++        var limit = NormalizeLimit(query.Limit);
++
++        var rows = _dbContext.ReconciliationSuggestionRecords
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.Status == ReconciliationSuggestionStatuses.Open);
++
++        if (normalizedSourceType is not null)
++        {
++            rows = rows.Where(x => x.SourceRecordType == normalizedSourceType);
++        }
++
++        if (query.SourceRecordId.HasValue && query.SourceRecordId.Value != Guid.Empty)
++        {
++            rows = rows.Where(x => x.SourceRecordId == query.SourceRecordId.Value);
++        }
++
++        if (normalizedTargetType is not null)
++        {
++            rows = rows.Where(x => x.TargetRecordType == normalizedTargetType);
++        }
++
++        if (query.TargetRecordId.HasValue && query.TargetRecordId.Value != Guid.Empty)
++        {
++            rows = rows.Where(x => x.TargetRecordId == query.TargetRecordId.Value);
++        }
++
++        var suggestions = await rows
++            .OrderByDescending(x => x.ConfidenceScore)
++            .ThenByDescending(x => x.CreatedUtc)
++            .ThenBy(x => x.Id)
++            .Take(limit)
++            .ToListAsync(cancellationToken);
++
++        return suggestions.Select(MapSuggestion).ToList();
++    }
++
++    public Task<AcceptedReconciliationSuggestionDto> AcceptSuggestionAsync(
++        AcceptReconciliationSuggestionCommand command,
++        CancellationToken cancellationToken) =>
++        ExecuteInTransactionAsync(async () =>
++        {
++            EnsureTenant(command.CompanyId);
++            await ValidateActorAsync(command.ActorUserId, cancellationToken);
++
++            var suggestion = await _dbContext.ReconciliationSuggestionRecords
++                .IgnoreQueryFilters()
++                .SingleOrDefaultAsync(
++                    x => x.CompanyId == command.CompanyId && x.Id == command.SuggestionId,
++                    cancellationToken);
++
++            if (suggestion is null)
++            {
++                throw new KeyNotFoundException("Reconciliation suggestion was not found.");
++            }
++
++            if (!ReconciliationSuggestionStatuses.IsActionable(suggestion.Status))
++            {
++                throw new InvalidOperationException($"Suggestion '{suggestion.Id}' is not actionable.");
++            }
++
++            var now = DateTime.UtcNow;
++            var result = new ReconciliationResultRecord(
++                Guid.NewGuid(),
++                command.CompanyId,
++                suggestion.Id,
++                suggestion.SourceRecordType,
++                suggestion.SourceRecordId,
++                suggestion.TargetRecordType,
++                suggestion.TargetRecordId,
++                suggestion.MatchType,
++                suggestion.ConfidenceScore,
++                suggestion.RuleBreakdown,
++                command.ActorUserId,
++                now);
++
++            _dbContext.ReconciliationResultRecords.Add(result);
++            suggestion.Accept(command.ActorUserId, now);
++
++            // Narrow supersede scope to the same exact pair, including inverse ordering, to avoid blocking future partial-allocation flows.
++            var competingSuggestions = await _dbContext.ReconciliationSuggestionRecords
++                .IgnoreQueryFilters()
++                .Where(x =>
++                    x.CompanyId == command.CompanyId &&
++                    x.Id != suggestion.Id &&
++                    x.Status == ReconciliationSuggestionStatuses.Open)
++                .ToListAsync(cancellationToken);
++
++            var supersededCount = 0;
++            foreach (var competingSuggestion in competingSuggestions.Where(x => ReferencesSamePair(x, suggestion)))
++            {
++                competingSuggestion.Supersede(command.ActorUserId, now);
++                supersededCount++;
++            }
++
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return new AcceptedReconciliationSuggestionDto(
++                MapSuggestion(suggestion),
++                MapResult(result),
++                supersededCount);
++        }, cancellationToken);
++
++    public Task<ReconciliationSuggestionRecordDto> RejectSuggestionAsync(
++        RejectReconciliationSuggestionCommand command,
++        CancellationToken cancellationToken) =>
++        ExecuteInTransactionAsync(async () =>
++        {
++            EnsureTenant(command.CompanyId);
++            await ValidateActorAsync(command.ActorUserId, cancellationToken);
++
++            var suggestion = await _dbContext.ReconciliationSuggestionRecords
++                .IgnoreQueryFilters()
++                .SingleOrDefaultAsync(
++                    x => x.CompanyId == command.CompanyId && x.Id == command.SuggestionId,
++                    cancellationToken);
++
++            if (suggestion is null)
++            {
++                throw new KeyNotFoundException("Reconciliation suggestion was not found.");
++            }
++
++            suggestion.Reject(command.ActorUserId, DateTime.UtcNow);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return MapSuggestion(suggestion);
++        }, cancellationToken);
++
++    private void EnsureTenant(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++
++        if (_companyContextAccessor?.CompanyId is Guid currentCompanyId && currentCompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException("Reconciliation suggestion operations are scoped to the active company context.");
++        }
++    }
++
++    private async Task ValidateActorAsync(Guid userId, CancellationToken cancellationToken)
++    {
++        if (userId == Guid.Empty)
++        {
++            throw new ArgumentException("Actor user id is required.", nameof(userId));
++        }
++
++        var exists = await _dbContext.Users
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AnyAsync(x => x.Id == userId, cancellationToken);
++
++        if (!exists)
++        {
++            throw new KeyNotFoundException($"User '{userId}' was not found.");
++        }
++    }
++
++    private async Task EnsureRecordExistsAsync(
++        Guid companyId,
++        string recordType,
++        Guid recordId,
++        string fieldName,
++        CancellationToken cancellationToken)
++    {
++        if (recordId == Guid.Empty)
++        {
++            throw new ArgumentException($"{fieldName} is required.", fieldName);
++        }
++
++        var exists = recordType switch
++        {
++            var type when type == ReconciliationRecordTypes.Payment => await _dbContext.Payments.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.Id == recordId, cancellationToken),
++            var type when type == ReconciliationRecordTypes.BankTransaction => await _dbContext.BankTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.Id == recordId, cancellationToken),
++            var type when type == ReconciliationRecordTypes.Invoice => await _dbContext.FinanceInvoices.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.Id == recordId, cancellationToken),
++            var type when type == ReconciliationRecordTypes.Bill => await _dbContext.FinanceBills.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.Id == recordId, cancellationToken),
++            _ => false
++        };
++
++        if (!exists)
++        {
++            throw new KeyNotFoundException($"Record '{recordId}' was not found for reconciliation type '{recordType}'.");
++        }
++    }
++
++    private static void ValidateSupportedPair(string sourceRecordType, string targetRecordType)
++    {
++        var supported =
++            (sourceRecordType == ReconciliationRecordTypes.Payment && targetRecordType == ReconciliationRecordTypes.BankTransaction) ||
++            (sourceRecordType == ReconciliationRecordTypes.BankTransaction && targetRecordType == ReconciliationRecordTypes.Payment) ||
++            (sourceRecordType == ReconciliationRecordTypes.Invoice && targetRecordType == ReconciliationRecordTypes.Payment) ||
++            (sourceRecordType == ReconciliationRecordTypes.Payment && targetRecordType == ReconciliationRecordTypes.Invoice) ||
++            (sourceRecordType == ReconciliationRecordTypes.Bill && targetRecordType == ReconciliationRecordTypes.Payment) ||
++            (sourceRecordType == ReconciliationRecordTypes.Payment && targetRecordType == ReconciliationRecordTypes.Bill);
++
++        if (!supported)
++        {
++            throw new ArgumentException($"Unsupported reconciliation pair '{sourceRecordType}' -> '{targetRecordType}'.");
++        }
++    }
++
++    private static bool ReferencesSamePair(ReconciliationSuggestionRecord left, ReconciliationSuggestionRecord right) =>
++        (left.SourceRecordType == right.SourceRecordType &&
++         left.SourceRecordId == right.SourceRecordId &&
++         left.TargetRecordType == right.TargetRecordType &&
++         left.TargetRecordId == right.TargetRecordId) ||
++        (left.SourceRecordType == right.TargetRecordType &&
++         left.SourceRecordId == right.TargetRecordId &&
++         left.TargetRecordType == right.SourceRecordType &&
++         left.TargetRecordId == right.SourceRecordId);
++
++    private static int NormalizeLimit(int limit) =>
++        limit <= 0
++            ? DefaultLimit
++            : Math.Min(limit, MaxLimit);
++
++    private static string NormalizeRecordType(string value, string name)
++    {
++        var normalized = ReconciliationRecordTypes.Normalize(value);
++        if (!ReconciliationRecordTypes.IsSupported(normalized))
++        {
++            throw new ArgumentOutOfRangeException(name, value, "Unsupported reconciliation record type.");
++        }
++
++        return normalized;
++    }
++
++    private static string? NormalizeOptionalRecordType(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        return NormalizeRecordType(value, nameof(value));
++    }
++
++    private static ReconciliationSuggestionRecordDto MapSuggestion(ReconciliationSuggestionRecord suggestion) =>
++        new(
++            suggestion.Id,
++            suggestion.CompanyId,
++            suggestion.SourceRecordType,
++            suggestion.SourceRecordId,
++            suggestion.TargetRecordType,
++            suggestion.TargetRecordId,
++            suggestion.MatchType,
++            suggestion.ConfidenceScore,
++            CloneNodes(suggestion.RuleBreakdown),
++            suggestion.Status,
++            suggestion.CreatedUtc,
++            suggestion.UpdatedUtc,
++            suggestion.CreatedByUserId,
++            suggestion.UpdatedByUserId,
++            suggestion.AcceptedUtc,
++            suggestion.RejectedUtc,
++            suggestion.SupersededUtc);
++
++    private static ReconciliationResultRecordDto MapResult(ReconciliationResultRecord result) =>
++        new(
++            result.Id,
++            result.CompanyId,
++            result.AcceptedSuggestionId,
++            result.SourceRecordType,
++            result.SourceRecordId,
++            result.TargetRecordType,
++            result.TargetRecordId,
++            result.MatchType,
++            result.ConfidenceScore,
++            CloneNodes(result.RuleBreakdown),
++            result.CreatedUtc,
++            result.UpdatedUtc,
++            result.CreatedByUserId,
++            result.UpdatedByUserId);
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> nodes) =>
++        nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private async Task<TResult> ExecuteInTransactionAsync<TResult>(
++        Func<Task<TResult>> action,
++        CancellationToken cancellationToken)
++    {
++        if (!_dbContext.Database.IsRelational())
++        {
++            return await action();
++        }
++
++        var strategy = _dbContext.Database.CreateExecutionStrategy();
++        return await strategy.ExecuteAsync(async () =>
++        {
++            await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
++            var result = await action();
++            await transaction.CommitAsync(cancellationToken);
++            return result;
++        });
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421103000_AddReconciliationSuggestionPersistence.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421103000_AddReconciliationSuggestionPersistence.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421103000_AddReconciliationSuggestionPersistence.cs
+@@ -0,0 +1,227 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++using VirtualCompany.Domain.Enums;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddReconciliationSuggestionPersistence : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++        var jsonDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
++        var decimalType = isPostgres ? "numeric(5,4)" : "decimal(5,4)";
++        var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++
++        migrationBuilder.CreateTable(
++            name: "finance_reconciliation_suggestions",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                source_record_type = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                source_record_id = table.Column<Guid>(type: guidType, nullable: false),
++                target_record_type = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                target_record_id = table.Column<Guid>(type: guidType, nullable: false),
++                match_type = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                confidence_score = table.Column<decimal>(type: decimalType, nullable: false),
++                rule_breakdown_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                status = table.Column<string>(type: string32Type, maxLength: 32, nullable: false, defaultValue: ReconciliationSuggestionStatuses.Open),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                created_by_user_id = table.Column<Guid>(type: guidType, nullable: false),
++                updated_by_user_id = table.Column<Guid>(type: guidType, nullable: false),
++                accepted_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                rejected_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                superseded_at = table.Column<DateTime>(type: dateTimeType, nullable: true)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_finance_reconciliation_suggestions", x => x.id);
++                table.CheckConstraint("CK_finance_reconciliation_suggestions_source_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("source_record_type"));
++                table.CheckConstraint("CK_finance_reconciliation_suggestions_target_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("target_record_type"));
++                table.CheckConstraint("CK_finance_reconciliation_suggestions_match_type", ReconciliationMatchTypes.BuildCheckConstraintSql("match_type"));
++                table.CheckConstraint("CK_finance_reconciliation_suggestions_status", ReconciliationSuggestionStatuses.BuildCheckConstraintSql("status"));
++                table.CheckConstraint("CK_finance_reconciliation_suggestions_confidence_score", "confidence_score >= 0 AND confidence_score <= 1");
++                table.ForeignKey(
++                    name: "FK_finance_reconciliation_suggestions_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_finance_reconciliation_suggestions_users_created_by_user_id",
++                    column: x => x.created_by_user_id,
++                    principalTable: "users",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_finance_reconciliation_suggestions_users_updated_by_user_id",
++                    column: x => x.updated_by_user_id,
++                    principalTable: "users",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "finance_reconciliation_results",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                accepted_suggestion_id = table.Column<Guid>(type: guidType, nullable: false),
++                source_record_type = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                source_record_id = table.Column<Guid>(type: guidType, nullable: false),
++                target_record_type = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                target_record_id = table.Column<Guid>(type: guidType, nullable: false),
++                match_type = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                confidence_score = table.Column<decimal>(type: decimalType, nullable: false),
++                rule_breakdown_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                created_by_user_id = table.Column<Guid>(type: guidType, nullable: false),
++                updated_by_user_id = table.Column<Guid>(type: guidType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_finance_reconciliation_results", x => x.id);
++                table.CheckConstraint("CK_finance_reconciliation_results_source_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("source_record_type"));
++                table.CheckConstraint("CK_finance_reconciliation_results_target_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("target_record_type"));
++                table.CheckConstraint("CK_finance_reconciliation_results_match_type", ReconciliationMatchTypes.BuildCheckConstraintSql("match_type"));
++                table.CheckConstraint("CK_finance_reconciliation_results_confidence_score", "confidence_score >= 0 AND confidence_score <= 1");
++                table.ForeignKey(
++                    name: "FK_finance_reconciliation_results_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_finance_reconciliation_results_finance_reconciliation_suggestions_accepted_suggestion_id",
++                    column: x => x.accepted_suggestion_id,
++                    principalTable: "finance_reconciliation_suggestions",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_finance_reconciliation_results_users_created_by_user_id",
++                    column: x => x.created_by_user_id,
++                    principalTable: "users",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_finance_reconciliation_results_users_updated_by_user_id",
++                    column: x => x.updated_by_user_id,
++                    principalTable: "users",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_finance_reconciliation_suggestions_company_id_status_created_at",
++            table: "finance_reconciliation_suggestions",
++            columns: new[] { "company_id", "status", "created_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_finance_reconciliation_suggestions_company_id_source_record_type_source_record_id_status",
++            table: "finance_reconciliation_suggestions",
++            columns: new[] { "company_id", "source_record_type", "source_record_id", "status" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_finance_reconciliation_suggestions_company_id_target_record_type_target_record_id_status",
++            table: "finance_reconciliation_suggestions",
++            columns: new[] { "company_id", "target_record_type", "target_record_id", "status" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_finance_reconciliation_suggestions_company_id_source_record_type_source_record_id_target_record_type_target_record_id",
++            table: "finance_reconciliation_suggestions",
++            columns: new[] { "company_id", "source_record_type", "source_record_id", "target_record_type", "target_record_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_finance_reconciliation_suggestions_created_by_user_id",
++            table: "finance_reconciliation_suggestions",
++            column: "created_by_user_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_finance_reconciliation_suggestions_updated_by_user_id",
++            table: "finance_reconciliation_suggestions",
++            column: "updated_by_user_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_finance_reconciliation_results_company_id_accepted_suggestion_id",
++            table: "finance_reconciliation_results",
++            columns: new[] { "company_id", "accepted_suggestion_id" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_finance_reconciliation_results_company_id_source_record_type_source_record_id",
++            table: "finance_reconciliation_results",
++            columns: new[] { "company_id", "source_record_type", "source_record_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_finance_reconciliation_results_company_id_target_record_type_target_record_id",
++            table: "finance_reconciliation_results",
++            columns: new[] { "company_id", "target_record_type", "target_record_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_finance_reconciliation_results_accepted_suggestion_id",
++            table: "finance_reconciliation_results",
++            column: "accepted_suggestion_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_finance_reconciliation_results_created_by_user_id",
++            table: "finance_reconciliation_results",
++            column: "created_by_user_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_finance_reconciliation_results_updated_by_user_id",
++            table: "finance_reconciliation_results",
++            column: "updated_by_user_id");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(
++            name: "finance_reconciliation_results");
++
++        migrationBuilder.DropTable(
++            name: "finance_reconciliation_suggestions");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/ReconciliationPersistenceEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/ReconciliationPersistenceEntityConfiguration.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/ReconciliationPersistenceEntityConfiguration.cs
+@@ -0,0 +1,99 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class ReconciliationSuggestionRecordEntityConfiguration : IEntityTypeConfiguration<ReconciliationSuggestionRecord>
++{
++    public void Configure(EntityTypeBuilder<ReconciliationSuggestionRecord> builder)
++    {
++        builder.ToTable("finance_reconciliation_suggestions");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SourceRecordType).HasColumnName("source_record_type").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.SourceRecordId).HasColumnName("source_record_id").IsRequired();
++        builder.Property(x => x.TargetRecordType).HasColumnName("target_record_type").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.TargetRecordId).HasColumnName("target_record_id").IsRequired();
++        builder.Property(x => x.MatchType).HasColumnName("match_type").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.ConfidenceScore).HasColumnName("confidence_score").HasColumnType("decimal(5,4)").IsRequired();
++        builder.Property(x => x.RuleBreakdown)
++            .HasColumnName("rule_breakdown_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).HasDefaultValue(ReconciliationSuggestionStatuses.Open).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
++        builder.Property(x => x.UpdatedByUserId).HasColumnName("updated_by_user_id").IsRequired();
++        builder.Property(x => x.AcceptedUtc).HasColumnName("accepted_at");
++        builder.Property(x => x.RejectedUtc).HasColumnName("rejected_at");
++        builder.Property(x => x.SupersededUtc).HasColumnName("superseded_at");
++
++        builder.HasCheckConstraint("CK_finance_reconciliation_suggestions_source_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("source_record_type"));
++        builder.HasCheckConstraint("CK_finance_reconciliation_suggestions_target_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("target_record_type"));
++        builder.HasCheckConstraint("CK_finance_reconciliation_suggestions_match_type", ReconciliationMatchTypes.BuildCheckConstraintSql("match_type"));
++        builder.HasCheckConstraint("CK_finance_reconciliation_suggestions_status", ReconciliationSuggestionStatuses.BuildCheckConstraintSql("status"));
++        builder.HasCheckConstraint("CK_finance_reconciliation_suggestions_confidence_score", "confidence_score >= 0 AND confidence_score <= 1");
++
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.SourceRecordType, x.SourceRecordId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.TargetRecordType, x.TargetRecordId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.SourceRecordType, x.SourceRecordId, x.TargetRecordType, x.TargetRecordId });
++        builder.HasIndex(x => x.CreatedByUserId);
++        builder.HasIndex(x => x.UpdatedByUserId);
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.CreatedByUser).WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.UpdatedByUser).WithMany().HasForeignKey(x => x.UpdatedByUserId).OnDelete(DeleteBehavior.Restrict);
++        builder.HasMany(x => x.AcceptedResults).WithOne(x => x.AcceptedSuggestion).HasForeignKey(x => x.AcceptedSuggestionId).OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class ReconciliationResultRecordEntityConfiguration : IEntityTypeConfiguration<ReconciliationResultRecord>
++{
++    public void Configure(EntityTypeBuilder<ReconciliationResultRecord> builder)
++    {
++        builder.ToTable("finance_reconciliation_results");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.AcceptedSuggestionId).HasColumnName("accepted_suggestion_id").IsRequired();
++        builder.Property(x => x.SourceRecordType).HasColumnName("source_record_type").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.SourceRecordId).HasColumnName("source_record_id").IsRequired();
++        builder.Property(x => x.TargetRecordType).HasColumnName("target_record_type").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.TargetRecordId).HasColumnName("target_record_id").IsRequired();
++        builder.Property(x => x.MatchType).HasColumnName("match_type").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.ConfidenceScore).HasColumnName("confidence_score").HasColumnType("decimal(5,4)").IsRequired();
++        builder.Property(x => x.RuleBreakdown)
++            .HasColumnName("rule_breakdown_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
++        builder.Property(x => x.UpdatedByUserId).HasColumnName("updated_by_user_id").IsRequired();
++
++        builder.HasCheckConstraint("CK_finance_reconciliation_results_source_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("source_record_type"));
++        builder.HasCheckConstraint("CK_finance_reconciliation_results_target_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("target_record_type"));
++        builder.HasCheckConstraint("CK_finance_reconciliation_results_match_type", ReconciliationMatchTypes.BuildCheckConstraintSql("match_type"));
++        builder.HasCheckConstraint("CK_finance_reconciliation_results_confidence_score", "confidence_score >= 0 AND confidence_score <= 1");
++
++        builder.HasIndex(x => new { x.CompanyId, x.AcceptedSuggestionId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.SourceRecordType, x.SourceRecordId });
++        builder.HasIndex(x => new { x.CompanyId, x.TargetRecordType, x.TargetRecordId });
++        builder.HasIndex(x => x.CreatedByUserId);
++        builder.HasIndex(x => x.UpdatedByUserId);
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.CreatedByUser).WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.UpdatedByUser).WithMany().HasForeignKey(x => x.UpdatedByUserId).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.AcceptedSuggestion).WithMany(x => x.AcceptedResults).HasForeignKey(x => x.AcceptedSuggestionId).OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -87,6 +87,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<BankTransaction> BankTransactions => Set<BankTransaction>();
+     public DbSet<BankTransactionPaymentLink> BankTransactionPaymentLinks => Set<BankTransactionPaymentLink>();
+     public DbSet<BankTransactionCashLedgerLink> BankTransactionCashLedgerLinks => Set<BankTransactionCashLedgerLink>();
++    public DbSet<ReconciliationSuggestionRecord> ReconciliationSuggestionRecords => Set<ReconciliationSuggestionRecord>();
++    public DbSet<ReconciliationResultRecord> ReconciliationResultRecords => Set<ReconciliationResultRecord>();
+     public DbSet<PaymentAllocation> PaymentAllocations => Set<PaymentAllocation>();
+     public DbSet<FinanceTransaction> FinanceTransactions => Set<FinanceTransaction>();
+     public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();
+@@ -285,6 +287,12 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<PaymentAllocation>()
+             .HasQueryFilter(allocation =>
+                 CurrentCompanyId.HasValue && allocation.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ReconciliationSuggestionRecord>()
++            .HasQueryFilter(suggestion =>
++                CurrentCompanyId.HasValue && suggestion.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ReconciliationResultRecord>()
++            .HasQueryFilter(result =>
++                CurrentCompanyId.HasValue && result.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<FinanceTransaction>()
+             .HasQueryFilter(transaction =>
+                 CurrentCompanyId.HasValue && transaction.CompanyId == CurrentCompanyId.Value);
+diff --git a/tests/VirtualCompany.Api.Tests/ReconciliationPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/ReconciliationPersistenceTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ReconciliationPersistenceTests.cs
+@@ -0,0 +1,431 @@
++using System.Text.Json.Nodes;
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ReconciliationPersistenceTests
++{
++    [Fact]
++    public async Task Create_and_query_open_suggestions_supports_payment_to_bank_invoice_to_payment_and_bill_to_payment()
++    {
++        var companyId = Guid.NewGuid();
++        var creatorUserId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        await SeedUsersAsync(dbContext, (creatorUserId, "creator@reconciliation.example", "Creator"));
++        var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++
++        var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
++        await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, ReconciliationRecordTypes.BankTransaction, seed.BankTransactionId, creatorUserId),
++            CancellationToken.None);
++        await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.Invoice, seed.InvoiceId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, creatorUserId),
++            CancellationToken.None);
++        await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.Bill, seed.BillId, ReconciliationRecordTypes.Payment, seed.OutgoingPaymentId, creatorUserId),
++            CancellationToken.None);
++
++        var openSuggestions = await service.GetOpenSuggestionsAsync(
++            new GetOpenReconciliationSuggestionsQuery(companyId, Limit: 10),
++            CancellationToken.None);
++
++        Assert.Equal(3, openSuggestions.Count);
++        Assert.Contains(openSuggestions, x => x.SourceRecordType == ReconciliationRecordTypes.Payment && x.TargetRecordType == ReconciliationRecordTypes.BankTransaction && x.Status == ReconciliationSuggestionStatuses.Open);
++        Assert.Contains(openSuggestions, x => x.SourceRecordType == ReconciliationRecordTypes.Invoice && x.TargetRecordType == ReconciliationRecordTypes.Payment && x.Status == ReconciliationSuggestionStatuses.Open);
++        Assert.Contains(openSuggestions, x => x.SourceRecordType == ReconciliationRecordTypes.Bill && x.TargetRecordType == ReconciliationRecordTypes.Payment && x.Status == ReconciliationSuggestionStatuses.Open);
++    }
++
++    [Fact]
++    public async Task Accept_payment_to_bank_suggestion_creates_result_and_supersedes_competing_suggestions()
++    {
++        var companyId = Guid.NewGuid();
++        var creatorUserId = Guid.NewGuid();
++        var approverUserId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        await SeedUsersAsync(
++            dbContext,
++            (creatorUserId, "creator@payment-bank.example", "Creator"),
++            (approverUserId, "approver@payment-bank.example", "Approver"));
++        var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++
++        var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
++        var first = await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, ReconciliationRecordTypes.BankTransaction, seed.BankTransactionId, creatorUserId, ReconciliationMatchTypes.RuleBased, 0.98m),
++            CancellationToken.None);
++        await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.BankTransaction, seed.BankTransactionId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, creatorUserId, ReconciliationMatchTypes.Near, 0.86m),
++            CancellationToken.None);
++
++        var accepted = await service.AcceptSuggestionAsync(
++            new AcceptReconciliationSuggestionCommand(companyId, first.Id, approverUserId),
++            CancellationToken.None);
++
++        Assert.Equal(first.Id, accepted.Suggestion.Id);
++        Assert.Equal(ReconciliationSuggestionStatuses.Accepted, accepted.Suggestion.Status);
++        Assert.Equal(1, accepted.SupersededSuggestionCount);
++        Assert.Equal(first.Id, accepted.Result.AcceptedSuggestionId);
++        Assert.Equal(ReconciliationRecordTypes.Payment, accepted.Result.SourceRecordType);
++        Assert.Equal(ReconciliationRecordTypes.BankTransaction, accepted.Result.TargetRecordType);
++
++        var persistedSuggestions = await dbContext.ReconciliationSuggestionRecords
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync();
++        var acceptedSuggestion = Assert.Single(persistedSuggestions.Where(x => x.Id == first.Id));
++        var supersededSuggestion = Assert.Single(persistedSuggestions.Where(x => x.Id != first.Id));
++        var result = await dbContext.ReconciliationResultRecords
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId);
++
++        Assert.Equal(ReconciliationSuggestionStatuses.Accepted, acceptedSuggestion.Status);
++        Assert.Equal(approverUserId, acceptedSuggestion.UpdatedByUserId);
++        Assert.NotNull(acceptedSuggestion.AcceptedUtc);
++        Assert.Equal(ReconciliationSuggestionStatuses.Superseded, supersededSuggestion.Status);
++        Assert.Equal(approverUserId, supersededSuggestion.UpdatedByUserId);
++        Assert.NotNull(supersededSuggestion.SupersededUtc);
++        Assert.Equal(first.Id, result.AcceptedSuggestionId);
++
++        var remainingOpen = await service.GetOpenSuggestionsAsync(
++            new GetOpenReconciliationSuggestionsQuery(companyId, Limit: 10),
++            CancellationToken.None);
++        Assert.Empty(remainingOpen);
++    }
++
++    [Fact]
++    public async Task Reject_invoice_to_payment_suggestion_marks_rejected_and_excludes_from_open_queries()
++    {
++        var companyId = Guid.NewGuid();
++        var creatorUserId = Guid.NewGuid();
++        var reviewerUserId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        await SeedUsersAsync(
++            dbContext,
++            (creatorUserId, "creator@invoice-payment.example", "Creator"),
++            (reviewerUserId, "reviewer@invoice-payment.example", "Reviewer"));
++        var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++
++        var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
++        var created = await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.Invoice, seed.InvoiceId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, creatorUserId),
++            CancellationToken.None);
++
++        var rejected = await service.RejectSuggestionAsync(
++            new RejectReconciliationSuggestionCommand(companyId, created.Id, reviewerUserId),
++            CancellationToken.None);
++
++        Assert.Equal(ReconciliationSuggestionStatuses.Rejected, rejected.Status);
++        Assert.Equal(reviewerUserId, rejected.UpdatedByUserId);
++        Assert.NotNull(rejected.RejectedUtc);
++
++        var persisted = await dbContext.ReconciliationSuggestionRecords
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.Id == created.Id);
++        Assert.Equal(ReconciliationSuggestionStatuses.Rejected, persisted.Status);
++        Assert.Equal(creatorUserId, persisted.CreatedByUserId);
++        Assert.Equal(reviewerUserId, persisted.UpdatedByUserId);
++
++        var remainingOpen = await service.GetOpenSuggestionsAsync(
++            new GetOpenReconciliationSuggestionsQuery(companyId, Limit: 10),
++            CancellationToken.None);
++        Assert.Empty(remainingOpen);
++    }
++
++    [Fact]
++    public async Task Accept_bill_to_payment_suggestion_creates_result_and_removes_it_from_default_open_queries()
++    {
++        var companyId = Guid.NewGuid();
++        var creatorUserId = Guid.NewGuid();
++        var approverUserId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        await SeedUsersAsync(
++            dbContext,
++            (creatorUserId, "creator@bill-payment.example", "Creator"),
++            (approverUserId, "approver@bill-payment.example", "Approver"));
++        var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++
++        var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
++        var created = await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.Bill, seed.BillId, ReconciliationRecordTypes.Payment, seed.OutgoingPaymentId, creatorUserId, ReconciliationMatchTypes.Exact, 1.00m),
++            CancellationToken.None);
++
++        var accepted = await service.AcceptSuggestionAsync(
++            new AcceptReconciliationSuggestionCommand(companyId, created.Id, approverUserId),
++            CancellationToken.None);
++
++        Assert.Equal(created.Id, accepted.Result.AcceptedSuggestionId);
++        Assert.Equal(ReconciliationRecordTypes.Bill, accepted.Result.SourceRecordType);
++        Assert.Equal(ReconciliationRecordTypes.Payment, accepted.Result.TargetRecordType);
++        Assert.Equal(ReconciliationSuggestionStatuses.Accepted, accepted.Suggestion.Status);
++
++        Assert.Empty(await service.GetOpenSuggestionsAsync(
++            new GetOpenReconciliationSuggestionsQuery(companyId, Limit: 10),
++            CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task Tenant_scoping_prevents_cross_tenant_leakage()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var creatorAUserId = Guid.NewGuid();
++        var creatorBUserId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++
++        await using (var seedContext = CreateContext(connection))
++        {
++            await seedContext.Database.EnsureCreatedAsync();
++            await SeedUsersAsync(
++                seedContext,
++                (creatorAUserId, "creator-a@tenant.example", "Creator A"),
++                (creatorBUserId, "creator-b@tenant.example", "Creator B"));
++            var seedA = await SeedCompanyFinanceScenarioAsync(seedContext, companyAId);
++            var seedB = await SeedCompanyFinanceScenarioAsync(seedContext, companyBId);
++
++            var seedService = new CompanyReconciliationSuggestionService(seedContext);
++            await seedService.CreateSuggestionAsync(
++                CreateCommand(companyAId, ReconciliationRecordTypes.Payment, seedA.IncomingPaymentId, ReconciliationRecordTypes.BankTransaction, seedA.BankTransactionId, creatorAUserId),
++                CancellationToken.None);
++            await seedService.CreateSuggestionAsync(
++                CreateCommand(companyBId, ReconciliationRecordTypes.Payment, seedB.IncomingPaymentId, ReconciliationRecordTypes.BankTransaction, seedB.BankTransactionId, creatorBUserId),
++                CancellationToken.None);
++        }
++
++        var accessor = new TestCompanyContextAccessor(companyAId);
++        await using var scopedContext = CreateContext(connection, accessor);
++        var scopedService = new CompanyReconciliationSuggestionService(scopedContext, accessor);
++
++        var filteredRows = await scopedContext.ReconciliationSuggestionRecords
++            .AsNoTracking()
++            .ToListAsync();
++        var visibleSuggestion = Assert.Single(filteredRows);
++        Assert.Equal(companyAId, visibleSuggestion.CompanyId);
++
++        var visibleOpenSuggestions = await scopedService.GetOpenSuggestionsAsync(
++            new GetOpenReconciliationSuggestionsQuery(companyAId, Limit: 10),
++            CancellationToken.None);
++        var openSuggestion = Assert.Single(visibleOpenSuggestions);
++        Assert.Equal(companyAId, openSuggestion.CompanyId);
++
++        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
++            scopedService.GetOpenSuggestionsAsync(
++                new GetOpenReconciliationSuggestionsQuery(companyBId, Limit: 10),
++                CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task Audit_metadata_is_persisted_and_updated_for_create_reject_and_accept_transitions()
++    {
++        var companyId = Guid.NewGuid();
++        var creatorUserId = Guid.NewGuid();
++        var reviewerUserId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        await SeedUsersAsync(
++            dbContext,
++            (creatorUserId, "creator@audit.example", "Creator"),
++            (reviewerUserId, "reviewer@audit.example", "Reviewer"));
++        var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++
++        var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
++        var rejectedCandidate = await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.Invoice, seed.InvoiceId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, creatorUserId, ReconciliationMatchTypes.RuleBased, 0.72m),
++            CancellationToken.None);
++        var acceptedCandidate = await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, ReconciliationRecordTypes.BankTransaction, seed.BankTransactionId, creatorUserId, ReconciliationMatchTypes.Exact, 1.00m),
++            CancellationToken.None);
++
++        await service.RejectSuggestionAsync(
++            new RejectReconciliationSuggestionCommand(companyId, rejectedCandidate.Id, reviewerUserId),
++            CancellationToken.None);
++        var accepted = await service.AcceptSuggestionAsync(
++            new AcceptReconciliationSuggestionCommand(companyId, acceptedCandidate.Id, reviewerUserId),
++            CancellationToken.None);
++
++        var rejected = await dbContext.ReconciliationSuggestionRecords
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == rejectedCandidate.Id);
++        var acceptedSuggestion = await dbContext.ReconciliationSuggestionRecords
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == acceptedCandidate.Id);
++        var result = await dbContext.ReconciliationResultRecords
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.AcceptedSuggestionId == acceptedCandidate.Id);
++
++        Assert.Equal(creatorUserId, rejected.CreatedByUserId);
++        Assert.Equal(reviewerUserId, rejected.UpdatedByUserId);
++        Assert.True(rejected.UpdatedUtc >= rejected.CreatedUtc);
++        Assert.NotNull(rejected.RejectedUtc);
++
++        Assert.Equal(creatorUserId, acceptedSuggestion.CreatedByUserId);
++        Assert.Equal(reviewerUserId, acceptedSuggestion.UpdatedByUserId);
++        Assert.True(acceptedSuggestion.UpdatedUtc >= acceptedSuggestion.CreatedUtc);
++        Assert.NotNull(acceptedSuggestion.AcceptedUtc);
++
++        Assert.Equal(reviewerUserId, result.CreatedByUserId);
++        Assert.Equal(reviewerUserId, result.UpdatedByUserId);
++        Assert.True(result.UpdatedUtc >= result.CreatedUtc);
++        Assert.Equal(accepted.Result.Id, result.Id);
++    }
++
++    private static CreateReconciliationSuggestionCommand CreateCommand(
++        Guid companyId,
++        string sourceRecordType,
++        Guid sourceRecordId,
++        string targetRecordType,
++        Guid targetRecordId,
++        Guid actorUserId,
++        string matchType = ReconciliationMatchTypes.RuleBased,
++        decimal confidenceScore = 0.91m) =>
++        new(
++            companyId,
++            sourceRecordType,
++            sourceRecordId,
++            targetRecordType,
++            targetRecordId,
++            matchType,
++            confidenceScore,
++            BuildRuleBreakdown(confidenceScore),
++            actorUserId);
++
++    private static Dictionary<string, JsonNode?> BuildRuleBreakdown(decimal confidenceScore) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["amount_exact"] = new JsonObject
++            {
++                ["matched"] = JsonValue.Create(true),
++                ["score"] = JsonValue.Create(confidenceScore)
++            },
++            ["reference_similarity"] = new JsonObject
++            {
++                ["matched"] = JsonValue.Create(true),
++                ["score"] = JsonValue.Create(confidenceScore)
++            }
++        };
++
++    private static async Task SeedUsersAsync(VirtualCompanyDbContext dbContext, params (Guid Id, string Email, string DisplayName)[] users)
++    {
++        foreach (var user in users)
++        {
++            dbContext.Users.Add(new User(user.Id, user.Email, user.DisplayName, "dev-header", $"sub-{user.Id:N}"));
++        }
++
++        await dbContext.SaveChangesAsync();
++    }
++
++    private static async Task<CompanyFinanceSeed> SeedCompanyFinanceScenarioAsync(VirtualCompanyDbContext dbContext, Guid companyId)
++    {
++        var cashAccountId = Guid.NewGuid();
++        var bankAccountId = Guid.NewGuid();
++        var counterpartyId = Guid.NewGuid();
++        var bankTransactionId = Guid.NewGuid();
++        var invoiceId = Guid.NewGuid();
++        var billId = Guid.NewGuid();
++        var incomingPaymentId = Guid.NewGuid();
++        var outgoingPaymentId = Guid.NewGuid();
++
++        dbContext.Companies.Add(new Company(companyId, $"Reconciliation Company {companyId:N}"));
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            cashAccountId,
++            companyId,
++            "1000",
++            "Operating Cash",
++            "asset",
++            "USD",
++            0m,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.CompanyBankAccounts.Add(new CompanyBankAccount(
++            bankAccountId,
++            companyId,
++            cashAccountId,
++            "Operating Account",
++            "Northwind Bank",
++            "**** 0101",
++            "USD",
++            "operating",
++            true,
++            true,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.FinanceCounterparties.Add(new FinanceCounterparty(
++            counterpartyId,
++            companyId,
++            "Contoso",
++            "customer",
++            "finance@contoso.example"));
++        dbContext.BankTransactions.Add(new BankTransaction(
++            bankTransactionId,
++            companyId,
++            bankAccountId,
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            250m,
++            "USD",
++            "INV-REC-001",
++            "Contoso"));
++        dbContext.FinanceInvoices.Add(new FinanceInvoice(
++            invoiceId,
++            companyId,
++            counterpartyId,
++            "INV-REC-001",
++            new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),
++            250m,
++            "USD",
++            "open"));
++        dbContext.FinanceBills.Add(new FinanceBill(
++            billId,
++            companyId,
++            counterpartyId,
++            "BILL-REC-001",
++            new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            180m,
++            "USD",
++            "open"));
++        dbContext.Payments.AddRange(
++            new Payment(
++                incomingPaymentId,
++                companyId,
++                PaymentTypes.Incoming,
++                250m,
++                "USD",
++                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                "bank_transfer",
++                "completed",
++                "INV-REC-001"),
++            new Payment(
++                outgoingPaymentId,
++                companyId,
++                PaymentTypes.Outgoing,
++                180m,
++                "USD",
++                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                "ach",
++                "completed",
++                "BILL-REC-001"));
++
++        await dbContext.SaveChangesAsync();
++        return new CompanyFinanceSeed(bankTransactionId, invoiceId, billId, incomingPaymentId, outgoingPaymentId);
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(
++        SqliteConnection connection,
++        ICompanyContextAccessor? accessor = null) =>
++        new(
++            new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++                .UseSqlite(connection)
++                .Options,
++            accessor);
++
++    private sealed record CompanyFinanceSeed(
++        Guid BankTransactionId,
++        Guid InvoiceId,
++        Guid BillId,
++        Guid IncomingPaymentId,
++        Guid OutgoingPaymentId);
++
++    private sealed class TestCompanyContextAccessor : ICompanyContextAccessor
++    {
++        public TestCompanyContextAccessor(Guid companyId)
++        {
++            CompanyId = companyId;
++        }
++
++        public Guid? CompanyId { get; private set; }
++        public Guid? UserId { get; private set; }
++        public bool IsResolved => Membership is not null;
++        public ResolvedCompanyMembershipContext? Membership { get; private set; }
++
++        public void SetCompanyId(Guid? companyId)
++        {
++            CompanyId = companyId;
++            Membership = null;
++            UserId = null;
++        }
++
++        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext)
++        {
++            Membership = companyContext;
++            CompanyId = companyContext?.CompanyId;
++            UserId = companyContext?.UserId;
++        }
++    }
++}
+END_OF_PATCH

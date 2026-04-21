@@ -149,6 +149,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
                     ActorId: null),
                 cancellationToken);
 
+            var preserveExistingFinanceDataset = await ShouldPreserveExistingFinanceDatasetAsync(execution.CompanyId, cancellationToken);
             var result = await _backgroundJobExecutor.ExecuteAsync(
                 new BackgroundJobExecutionContext(
                     "finance-seed",
@@ -163,7 +164,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
                         execution.CompanyId,
                         ResolveSeedValue(execution.CompanyId),
                         SeedAnchorUtc: null,
-                        ReplaceExisting: true,
+                        ReplaceExisting: !preserveExistingFinanceDataset,
                         InjectAnomalies: false),
                     innerCancellationToken),
                 retryDelay,
@@ -523,6 +524,23 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
             BackgroundJobFailureClassification.Configuration => BackgroundExecutionFailureCategory.Configuration,
             _ => BackgroundExecutionFailureCategory.TransientInfrastructure
         };
+
+    private async Task<bool> ShouldPreserveExistingFinanceDatasetAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        var hasAccounts = await _dbContext.FinanceAccounts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+        var hasCounterparties = await _dbContext.FinanceCounterparties.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+        var hasTransactions = await _dbContext.FinanceTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+        var hasBalances = await _dbContext.FinanceBalances.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+        var hasPolicy = await _dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+        if (!(hasAccounts && hasCounterparties && hasTransactions && hasBalances && hasPolicy))
+        {
+            return false;
+        }
+
+        var hasBankAccounts = await _dbContext.CompanyBankAccounts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+        var hasBankTransactions = await _dbContext.BankTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+        return !hasBankAccounts || !hasBankTransactions;
+    }
 }
 
 public sealed class FinanceSeedBackgroundService : BackgroundService

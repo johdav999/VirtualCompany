@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-25.3.2",
+  "promptPath": ".ai-design/prompts/TASK-25.3.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T17:13:37.248Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T17-13-37-248Z_TASK-25.3.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T17-13-37-248Z_TASK-25.3.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T17:14:57.490Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "(acceptedProblem.Errors[nameof(RejectReconciliationSuggestionCommand.SuggestionId)]));\n+        Assert.Equal(\n+            $\"Suggestion '{seed.RejectedSuggestionId}' cannot be rejected because it is already rejected.\",\n+            Assert.Single(rejectedProblem.Errors[nameof(RejectReconciliationSuggestionCommand.SuggestionId)]));\n+    }\n+\n+    [Fact]\n     public async Task Accept_endpoint_does_not_expose_suggestions_from_other_companies()\n     {\n         var seed = await SeedAsync();\n         using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, \"Owner\");\n@@ -226,6 +261,25 @@ public sealed class ReconciliationSuggestionApiIntegrationTests : IClassFixture<\n \n         Assert.Equal(ReconciliationSuggestionStatuses.Open, status);\n     }\n \n     [Fact]\n+    public async Task Reject_endpoint_does_not_expose_suggestions_from_other_companies()\n+    {\n+        var seed = await SeedAsync();\n+        using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, \"Owner\");\n+\n+        var response = await client.PostAsync(\n+            $\"/internal/companies/{seed.CompanyId:D}/finance/reconciliation-suggestions/{seed.OtherCompanySuggestionId:D}/reject\",\n+            null);\n+\n+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);\n+        var status = await _factory.ExecuteDbContextAsync(dbContext =>\n+            dbContext.ReconciliationSuggestionRecords\n+                .IgnoreQueryFilters()\n+                .Where(x => x.CompanyId == seed.OtherCompanyId && x.Id == seed.OtherCompanySuggestionId)\n+                .Select(x => x.Status)\n+                .SingleAsync());\n+\n+        Assert.Equal(ReconciliationSuggestionStatuses.Open, status);\n+    }\n+\n+    [Fact]\n     public async Task List_endpoint_returns_validation_problem_for_invalid_status_filter()\n     {\n         var seed = await SeedAsync();\n         using var client = CreateAuthenticatedClient(seed.ApproverSubject, seed.ApproverEmail, \"Finance Approver\");\nEND_OF_PATCH\n",
+  "stderrTail": "rors[nameof(RejectReconciliationSuggestionCommand.SuggestionId)]));\n+        Assert.Equal(\n+            $\"Suggestion '{seed.RejectedSuggestionId}' cannot be rejected because it is already rejected.\",\n+            Assert.Single(rejectedProblem.Errors[nameof(RejectReconciliationSuggestionCommand.SuggestionId)]));\n+    }\n+\n+    [Fact]\n     public async Task Accept_endpoint_does_not_expose_suggestions_from_other_companies()\n     {\n         var seed = await SeedAsync();\n         using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, \"Owner\");\n@@ -226,6 +261,25 @@ public sealed class ReconciliationSuggestionApiIntegrationTests : IClassFixture<\n \n         Assert.Equal(ReconciliationSuggestionStatuses.Open, status);\n     }\n \n     [Fact]\n+    public async Task Reject_endpoint_does_not_expose_suggestions_from_other_companies()\n+    {\n+        var seed = await SeedAsync();\n+        using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, \"Owner\");\n+\n+        var response = await client.PostAsync(\n+            $\"/internal/companies/{seed.CompanyId:D}/finance/reconciliation-suggestions/{seed.OtherCompanySuggestionId:D}/reject\",\n+            null);\n+\n+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);\n+        var status = await _factory.ExecuteDbContextAsync(dbContext =>\n+            dbContext.ReconciliationSuggestionRecords\n+                .IgnoreQueryFilters()\n+                .Where(x => x.CompanyId == seed.OtherCompanyId && x.Id == seed.OtherCompanySuggestionId)\n+                .Select(x => x.Status)\n+                .SingleAsync());\n+\n+        Assert.Equal(ReconciliationSuggestionStatuses.Open, status);\n+    }\n+\n+    [Fact]\n     public async Task List_endpoint_returns_validation_problem_for_invalid_status_filter()\n     {\n         var seed = await SeedAsync();\n         using var client = CreateAuthenticatedClient(seed.ApproverSubject, seed.ApproverEmail, \"Finance Approver\");\nEND_OF_PATCH\ntokens used\n83,034\n",
+  "verbosityMode": "verbose"
+}

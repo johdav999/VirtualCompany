@@ -63,7 +63,10 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",
                 [$"{FinanceSeedWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{KnowledgeEmbeddingOptions.SectionName}:Dimensions"] = "256",
+                [$"{ReportingPeriodRegenerationWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:Enabled"] = "true",
+                [$"{FinanceInsightsSnapshotWorkerOptions.SectionName}:Enabled"] = "false",
+                ["DatabaseInitialization:ApplyMigrationsOnStartup"] = "true",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KeyVersion"] = "tests-v1",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KnowledgeTtlSeconds"] = "300",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:MemoryTtlSeconds"] = "300",
@@ -272,6 +275,14 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                         ["amount"] = JsonValue.Create(1234.56m),
                         ["currency"] = JsonValue.Create("USD"),
                         ["accounts"] = new JsonArray()
+                    }
+                },
+                "resolve_finance_agent_query" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["result"] = new JsonObject
+                    {
+                        ["intent"] = JsonValue.Create(FinanceAgentQueryIntents.WhatShouldIPayThisWeek),
+                        ["summary"] = JsonValue.Create("Selected 0 payable item(s) for the current company week.")
                     }
                 },
                 "list_transactions" or "list_uncategorized_transactions" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)

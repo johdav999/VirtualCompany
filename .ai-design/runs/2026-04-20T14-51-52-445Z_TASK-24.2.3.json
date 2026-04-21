@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-24.2.3",
+  "promptPath": ".ai-design/prompts/TASK-24.2.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T14:51:52.445Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T14-51-52-445Z_TASK-24.2.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T14-51-52-445Z_TASK-24.2.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T15:03:20.640Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ment.PaymentType == \"incoming\");\n+        Assert.Contains(payments, payment => payment.PaymentType == \"outgoing\");\n     }\n \n     [Fact]\ndiff --git a/tests/VirtualCompany.Api.Tests/PaymentDomainModelTests.cs b/tests/VirtualCompany.Api.Tests/PaymentDomainModelTests.cs\n--- /dev/null\n+++ b/tests/VirtualCompany.Api.Tests/PaymentDomainModelTests.cs\n@@ -0,0 +1,50 @@\n+using VirtualCompany.Domain.Entities;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class PaymentDomainModelTests\n+{\n+    [Fact]\n+    public void Payment_constructor_normalizes_supported_values()\n+    {\n+        var payment = new Payment(\n+            Guid.Empty,\n+            Guid.NewGuid(),\n+            \"Incoming\",\n+            2450.25m,\n+            \"usd\",\n+            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),\n+            \"bank-transfer\",\n+            \"Completed\",\n+            \"ACME-001\");\n+\n+        Assert.Equal(\"incoming\", payment.PaymentType);\n+        Assert.Equal(\"USD\", payment.Currency);\n+        Assert.Equal(\"bank_transfer\", payment.Method);\n+        Assert.Equal(\"completed\", payment.Status);\n+    }\n+\n+    [Fact]\n+    public void Payment_constructor_rejects_non_positive_amount()\n+    {\n+        Assert.Throws<ArgumentOutOfRangeException>(() => new Payment(\n+            Guid.Empty,\n+            Guid.NewGuid(),\n+            \"incoming\",\n+            0m,\n+            \"USD\",\n+            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),\n+            \"bank_transfer\",\n+            \"completed\",\n+            \"ACME-002\"));\n+    }\n+\n+    [Fact]\n+    public void Payment_constructor_rejects_invalid_payment_type()\n+    {\n+        Assert.Throws<ArgumentOutOfRangeException>(() => new Payment(\n+            Guid.Empty,\n+            Guid.NewGuid(),\n+            \"sideways\",\n+            12m,\n+            \"USD\",\n+            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),\n+            \"bank_transfer\",\n+            \"completed\",\n+            \"ACME-003\"));\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "\"incoming\");\n+        Assert.Contains(payments, payment => payment.PaymentType == \"outgoing\");\n     }\n \n     [Fact]\ndiff --git a/tests/VirtualCompany.Api.Tests/PaymentDomainModelTests.cs b/tests/VirtualCompany.Api.Tests/PaymentDomainModelTests.cs\n--- /dev/null\n+++ b/tests/VirtualCompany.Api.Tests/PaymentDomainModelTests.cs\n@@ -0,0 +1,50 @@\n+using VirtualCompany.Domain.Entities;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class PaymentDomainModelTests\n+{\n+    [Fact]\n+    public void Payment_constructor_normalizes_supported_values()\n+    {\n+        var payment = new Payment(\n+            Guid.Empty,\n+            Guid.NewGuid(),\n+            \"Incoming\",\n+            2450.25m,\n+            \"usd\",\n+            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),\n+            \"bank-transfer\",\n+            \"Completed\",\n+            \"ACME-001\");\n+\n+        Assert.Equal(\"incoming\", payment.PaymentType);\n+        Assert.Equal(\"USD\", payment.Currency);\n+        Assert.Equal(\"bank_transfer\", payment.Method);\n+        Assert.Equal(\"completed\", payment.Status);\n+    }\n+\n+    [Fact]\n+    public void Payment_constructor_rejects_non_positive_amount()\n+    {\n+        Assert.Throws<ArgumentOutOfRangeException>(() => new Payment(\n+            Guid.Empty,\n+            Guid.NewGuid(),\n+            \"incoming\",\n+            0m,\n+            \"USD\",\n+            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),\n+            \"bank_transfer\",\n+            \"completed\",\n+            \"ACME-002\"));\n+    }\n+\n+    [Fact]\n+    public void Payment_constructor_rejects_invalid_payment_type()\n+    {\n+        Assert.Throws<ArgumentOutOfRangeException>(() => new Payment(\n+            Guid.Empty,\n+            Guid.NewGuid(),\n+            \"sideways\",\n+            12m,\n+            \"USD\",\n+            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),\n+            \"bank_transfer\",\n+            \"completed\",\n+            \"ACME-003\"));\n+    }\n+}\nEND_OF_PATCH\ntokens used\n169,090\n",
+  "verbosityMode": "verbose"
+}

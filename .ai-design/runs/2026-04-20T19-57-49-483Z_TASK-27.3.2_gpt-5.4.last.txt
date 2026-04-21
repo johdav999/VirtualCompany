@@ -1,0 +1,407 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -1085,6 +1085,8 @@ public sealed record FinanceVarianceRowDto(
+     Guid FinanceAccountId,
+     string AccountCode,
+     string AccountName,
++    string CategoryKey,
++    string CategoryName,
+     Guid? CostCenterId,
+     string? CostCenterCode,
+     string? CostCenterName,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Variance.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Variance.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Variance.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Variance.cs
+@@ -1,3 +1,4 @@
++using System.Globalization;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+@@ -68,6 +69,7 @@ public sealed partial class CompanyFinanceReadService
+             .GroupBy(x => new VarianceGroupingKey(
+                 NormalizePlanningPeriod(x.PostedAtUtc),
+                 x.FinanceAccountId,
++                x.CategoryKey,
+                 includesCostCenters ? x.CostCenterId : null))
+             .ToDictionary(
+                 group => group.Key,
+@@ -78,11 +80,13 @@ public sealed partial class CompanyFinanceReadService
+                     ResolveVarianceCurrency(group.Select(x => x.Currency))));
+ 
+         var comparisonGroups = comparisonRows
+-            .GroupBy(x => new VarianceGroupingKey(x.PeriodStartUtc, x.FinanceAccountId, x.CostCenterId))
++            .GroupBy(x => new VarianceGroupingKey(x.PeriodStartUtc, x.FinanceAccountId, x.CategoryKey, x.CostCenterId))
+             .Select(group => new AggregatedComparisonRow(
+                 group.Key,
+                 group.First().AccountCode,
+                 group.First().AccountName,
++                group.First().CategoryKey,
++                group.First().CategoryName,
+                 group.First().CostCenterId,
+                 Math.Round(group.Sum(x => x.Amount), 2, MidpointRounding.AwayFromZero),
+                 ResolveVarianceCurrency(group.Select(x => x.Currency))))
+@@ -103,6 +107,8 @@ public sealed partial class CompanyFinanceReadService
+                     group.Key.FinanceAccountId,
+                     group.AccountCode,
+                     group.AccountName,
++                    group.CategoryKey,
++                    group.CategoryName,
+                     includesCostCenters ? group.CostCenterId : null,
+                     null,
+                     null,
+@@ -169,6 +175,8 @@ public sealed partial class CompanyFinanceReadService
+                     x.FinanceAccountId,
+                     x.FinanceAccount.Code,
+                     x.FinanceAccount.Name,
++                    NormalizeVarianceCategory(x.FinanceAccount.AccountType),
++                    FormatVarianceCategoryName(x.FinanceAccount.AccountType),
+                     includesCostCenters ? x.CostCenterId : null,
+                     x.Amount,
+                     x.Currency))
+@@ -201,6 +209,8 @@ public sealed partial class CompanyFinanceReadService
+                 x.FinanceAccountId,
+                 x.FinanceAccount.Code,
+                 x.FinanceAccount.Name,
++                NormalizeVarianceCategory(x.FinanceAccount.AccountType),
++                FormatVarianceCategoryName(x.FinanceAccount.AccountType),
+                 includesCostCenters ? x.CostCenterId : null,
+                 x.Amount,
+                 x.Currency))
+@@ -226,6 +236,20 @@ public sealed partial class CompanyFinanceReadService
+     // Variance percentage is always calculated as (actual - comparison) / comparison * 100.
+     private static decimal? CalculateVariancePercentage(decimal varianceAmount, decimal comparisonAmount) =>
+         comparisonAmount == 0m
+@@ -233,6 +257,21 @@ public sealed partial class CompanyFinanceReadService
+             : Math.Round(varianceAmount / comparisonAmount * 100m, 2, MidpointRounding.AwayFromZero);
+ 
++    private static string NormalizeVarianceCategory(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return "uncategorized";
++        }
++
++        return value.Trim().Replace(' ', '_').ToLowerInvariant();
++    }
++
++    private static string FormatVarianceCategoryName(string? value)
++    {
++        var normalized = NormalizeVarianceCategory(value).Replace('_', ' ');
++        return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(normalized);
++    }
++
+     private static string ResolveVarianceCurrency(IEnumerable<string?> currencies)
+     {
+         var normalized = currencies
+@@ -246,10 +285,10 @@ public sealed partial class CompanyFinanceReadService
+         };
+     }
+ 
+-    private sealed record VarianceGroupingKey(DateTime PeriodStartUtc, Guid FinanceAccountId, Guid? CostCenterId);
+-    private sealed record PlanningComparisonRow(DateTime PeriodStartUtc, Guid FinanceAccountId, string AccountCode, string AccountName, Guid? CostCenterId, decimal Amount, string Currency);
+-    private sealed record ActualLedgerRow(DateTime PostedAtUtc, Guid FinanceAccountId, Guid? CostCenterId, decimal Amount, string Currency);
++    private sealed record VarianceGroupingKey(DateTime PeriodStartUtc, Guid FinanceAccountId, string CategoryKey, Guid? CostCenterId);
++    private sealed record PlanningComparisonRow(DateTime PeriodStartUtc, Guid FinanceAccountId, string AccountCode, string AccountName, string CategoryKey, string CategoryName, Guid? CostCenterId, decimal Amount, string Currency);
++    private sealed record ActualLedgerRow(DateTime PostedAtUtc, Guid FinanceAccountId, string CategoryKey, Guid? CostCenterId, decimal Amount, string Currency);
+     private sealed record AggregatedActualRow(decimal Amount, string Currency);
+-    private sealed record AggregatedComparisonRow(VarianceGroupingKey Key, string AccountCode, string AccountName, Guid? CostCenterId, decimal Amount, string Currency);
++    private sealed record AggregatedComparisonRow(VarianceGroupingKey Key, string AccountCode, string AccountName, string CategoryKey, string CategoryName, Guid? CostCenterId, decimal Amount, string Currency);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceVarianceIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceVarianceIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceVarianceIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceVarianceIntegrationTests.cs
+@@ -38,6 +38,8 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+         var payrollOps = Assert.Single(payload.Rows.Where(x => x.AccountCode == "5000" && x.CostCenterId == seed.OperationsCostCenterId));
+         Assert.Equal(900m, payrollOps.ActualAmount);
+         Assert.Equal(1000m, payrollOps.ComparisonAmount);
++        Assert.Equal("expense", payrollOps.CategoryKey);
++        Assert.Equal("Expense", payrollOps.CategoryName);
+         Assert.Equal(-100m, payrollOps.VarianceAmount);
+         Assert.Equal(-10m, payrollOps.VariancePercentage);
+ 
+@@ -49,6 +51,8 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+         var software = Assert.Single(payload.Rows.Where(x => x.AccountCode == "5100" && x.CostCenterId is null));
+         Assert.Equal(300m, software.ActualAmount);
+         Assert.Equal(250m, software.ComparisonAmount);
++        Assert.Equal("expense", software.CategoryKey);
++        Assert.Equal("Expense", software.CategoryName);
+         Assert.Equal(50m, software.VarianceAmount);
+         Assert.Equal(20m, software.VariancePercentage);
+     }
+@@ -73,6 +77,8 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+         var payrollOps = Assert.Single(payload.Rows.Where(x => x.AccountCode == "5000" && x.CostCenterId == seed.OperationsCostCenterId));
+         Assert.Equal(900m, payrollOps.ActualAmount);
+         Assert.Equal(750m, payrollOps.ComparisonAmount);
++        Assert.Equal("expense", payrollOps.CategoryKey);
++        Assert.Equal("Expense", payrollOps.CategoryName);
+         Assert.Equal(150m, payrollOps.VarianceAmount);
+         Assert.Equal(20m, payrollOps.VariancePercentage);
+ 
+@@ -91,6 +97,45 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+         Assert.Equal(-25m, software.VariancePercentage);
+     }
+ 
++    [Fact]
++    public async Task Variance_endpoint_aggregates_without_cost_center_splits_when_cost_centers_are_disabled_for_the_company()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.DisabledCostCenterCompanyId}/finance/variance?periodStartUtc=2026-04-01T00:00:00Z&comparisonType=budget&version=baseline");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<FinanceVarianceResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.DisabledCostCenterCompanyId, payload!.CompanyId);
++        Assert.False(payload.IncludesCostCenters);
++        Assert.Equal(2, payload.Rows.Count);
++        Assert.All(payload.Rows, row => Assert.Null(row.CostCenterId));
++
++        var payroll = Assert.Single(payload.Rows.Where(x => x.AccountCode == "5000"));
++        Assert.Equal("expense", payroll.CategoryKey);
++        Assert.Equal("Expense", payroll.CategoryName);
++        Assert.Equal(1000m, payroll.ActualAmount);
++        Assert.Equal(1100m, payroll.ComparisonAmount);
++        Assert.Equal(-100m, payroll.VarianceAmount);
++        Assert.Equal(-9.09m, payroll.VariancePercentage);
++
++        var software = Assert.Single(payload.Rows.Where(x => x.AccountCode == "5100"));
++        Assert.Equal(200m, software.ActualAmount);
++        Assert.Equal(250m, software.ComparisonAmount);
++        Assert.Equal(-50m, software.VarianceAmount);
++        Assert.Equal(-20m, software.VariancePercentage);
++    }
++
++    [Fact]
++    public async Task Variance_endpoint_enforces_company_membership()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.OutsiderSubject, seed.OutsiderEmail, seed.OutsiderDisplayName);
++
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/variance?periodStartUtc=2026-04-01T00:00:00Z&comparisonType=budget&version=baseline");
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
+     [Fact]
+     public async Task Variance_endpoint_returns_empty_rows_when_budget_slice_has_no_comparison_data()
+     {
+@@ -131,12 +176,19 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+         var companyId = Guid.NewGuid();
+         var otherCompanyId = Guid.NewGuid();
++        var disabledCostCenterCompanyId = Guid.NewGuid();
+ 
+         var payrollAccountId = Guid.NewGuid();
+         var softwareAccountId = Guid.NewGuid();
+         var clearingAccountId = Guid.NewGuid();
+         var otherPayrollAccountId = Guid.NewGuid();
+         var otherClearingAccountId = Guid.NewGuid();
++        var disabledPayrollAccountId = Guid.NewGuid();
++        var disabledSoftwareAccountId = Guid.NewGuid();
++        var disabledClearingAccountId = Guid.NewGuid();
+         var operationsCostCenterId = Guid.NewGuid();
+         var salesCostCenterId = Guid.NewGuid();
+         var fiscalPeriodId = Guid.NewGuid();
+         var otherFiscalPeriodId = Guid.NewGuid();
++        var disabledFiscalPeriodId = Guid.NewGuid();
++        var outsiderUserId = Guid.NewGuid();
++        var outsiderSubject = $"variance-outsider-{Guid.NewGuid():N}";
++        var outsiderEmail = $"{outsiderSubject}@example.com";
++        const string outsiderDisplayName = "Variance Outsider";
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+-            dbContext.Users.Add(new User(ownerUserId, email, displayName, "dev-header", subject));
++            dbContext.Users.AddRange(
++                new User(ownerUserId, email, displayName, "dev-header", subject),
++                new User(outsiderUserId, outsiderEmail, outsiderDisplayName, "dev-header", outsiderSubject));
+ 
+             var company = new Company(companyId, "Variance Company");
+             company.UpdateBrandingAndSettings(
+@@ -156,8 +208,22 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+                 });
+             otherCompany.SetFinanceSeedStatus(FinanceSeedingState.Seeded, April2026, April2026);
+ 
+-            dbContext.Companies.AddRange(company, otherCompany);
+-            dbContext.CompanyMemberships.Add(new CompanyMembership(
++            var disabledCostCenterCompany = new Company(disabledCostCenterCompanyId, "Variance Company Without Cost Centers");
++            disabledCostCenterCompany.UpdateBrandingAndSettings(
++                null,
++                new CompanySettings
++                {
++                    FeatureFlags = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["cost_centers"] = false
++                    }
++                });
++            disabledCostCenterCompany.SetFinanceSeedStatus(FinanceSeedingState.Seeded, April2026, April2026);
++
++            dbContext.Companies.AddRange(company, otherCompany, disabledCostCenterCompany);
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(
++                    Guid.NewGuid(),
++                    companyId,
++                    ownerUserId,
++                    CompanyMembershipRole.Owner,
++                    CompanyMembershipStatus.Active),
++                new CompanyMembership(
++                    Guid.NewGuid(),
++                    disabledCostCenterCompanyId,
++                    ownerUserId,
++                    CompanyMembershipRole.Owner,
++                    CompanyMembershipStatus.Active));
++
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
+                 Guid.NewGuid(),
+-                companyId,
+-                ownerUserId,
+-                CompanyMembershipRole.Owner,
+-                CompanyMembershipStatus.Active));
++                otherCompanyId,
++                outsiderUserId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
+ 
+             dbContext.FinanceAccounts.AddRange(
+                 new FinanceAccount(
+@@ -192,6 +258,27 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+                     "liability",
+                     "USD",
+                     0m,
++                    new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++                new FinanceAccount(
++                    disabledPayrollAccountId,
++                    disabledCostCenterCompanyId,
++                    "5000",
++                    "Payroll",
++                    "expense",
++                    "USD",
++                    0m,
++                    new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++                new FinanceAccount(
++                    disabledSoftwareAccountId,
++                    disabledCostCenterCompanyId,
++                    "5100",
++                    "Software",
++                    "expense",
++                    "USD",
++                    0m,
++                    new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++                new FinanceAccount(
++                    disabledClearingAccountId,
++                    disabledCostCenterCompanyId,
++                    "2100",
++                    "Accrued Expenses",
++                    "liability",
++                    "USD",
++                    0m,
+                     new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+ 
+             dbContext.FiscalPeriods.AddRange(
+@@ -205,7 +292,13 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+                     otherCompanyId,
+                     "2026-04",
+                     April2026,
+-                    April2026.AddMonths(1)));
++                    April2026.AddMonths(1)),
++                new FiscalPeriod(
++                    disabledFiscalPeriodId,
++                    disabledCostCenterCompanyId,
++                    "2026-04",
++                    April2026,
++                    April2026.AddMonths(1)));
+ 
+             dbContext.Budgets.AddRange(
+                 new Budget(Guid.NewGuid(), companyId, payrollAccountId, April2026, "baseline", 1000m, "USD", operationsCostCenterId),
+@@ -213,7 +306,10 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+                 new Budget(Guid.NewGuid(), companyId, softwareAccountId, April2026, "baseline", 250m, "USD"),
+                 new Budget(Guid.NewGuid(), otherCompanyId, otherPayrollAccountId, April2026, "baseline", 700m, "USD", operationsCostCenterId));
+ 
+-            dbContext.Forecasts.AddRange(
++            dbContext.Budgets.AddRange(
++                new Budget(Guid.NewGuid(), disabledCostCenterCompanyId, disabledPayrollAccountId, April2026, "baseline", 450m, "USD", operationsCostCenterId),
++                new Budget(Guid.NewGuid(), disabledCostCenterCompanyId, disabledPayrollAccountId, April2026, "baseline", 650m, "USD", salesCostCenterId),
++                new Budget(Guid.NewGuid(), disabledCostCenterCompanyId, disabledSoftwareAccountId, April2026, "baseline", 250m, "USD"));
++           dbContext.Forecasts.AddRange(
+                 new Forecast(Guid.NewGuid(), companyId, payrollAccountId, April2026, "baseline", 750m, "USD", operationsCostCenterId),
+                 new Forecast(Guid.NewGuid(), companyId, payrollAccountId, April2026, "baseline", 1000m, "USD", salesCostCenterId),
+                 new Forecast(Guid.NewGuid(), companyId, softwareAccountId, April2026, "baseline", 400m, "USD"),
+@@ -244,6 +340,26 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+                 700m,
+                 operationsCostCenterId);
+ 
++            AddPostedActualEntry(
++                dbContext,
++                disabledCostCenterCompanyId,
++                disabledFiscalPeriodId,
++                "LE-APR-101",
++                new DateTime(2026, 4, 6, 0, 0, 0, DateTimeKind.Utc),
++                disabledPayrollAccountId,
++                disabledClearingAccountId,
++                400m,
++                operationsCostCenterId);
++            AddPostedActualEntry(
++                dbContext,
++                disabledCostCenterCompanyId,
++                disabledFiscalPeriodId,
++                "LE-APR-102",
++                new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc),
++                disabledPayrollAccountId,
++                disabledClearingAccountId,
++                600m,
++                salesCostCenterId);
++            AddPostedActualEntry(
++                dbContext,
++                disabledCostCenterCompanyId,
++                disabledFiscalPeriodId,
++                "LE-APR-103",
++                new DateTime(2026, 4, 22, 0, 0, 0, DateTimeKind.Utc),
++                disabledSoftwareAccountId,
++                disabledClearingAccountId,
++                200m,
++                null);
++
+             return Task.CompletedTask;
+         });
+ 
+@@ -252,7 +368,11 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+             subject,
+             email,
+             displayName,
++            disabledCostCenterCompanyId,
+             operationsCostCenterId,
+-            salesCostCenterId);
++            salesCostCenterId,
++            outsiderSubject,
++            outsiderEmail,
++            outsiderDisplayName);
+     }
+@@ -303,8 +423,12 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+         Guid CompanyId,
+         string Subject,
+         string Email,
+         string DisplayName,
++        Guid DisabledCostCenterCompanyId,
+         Guid OperationsCostCenterId,
+-        Guid SalesCostCenterId);
++        Guid SalesCostCenterId,
++        string OutsiderSubject,
++        string OutsiderEmail,
++        string OutsiderDisplayName);
+ 
+     private sealed class FinanceVarianceResponse
+     {
+@@ -326,6 +450,8 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+         public Guid FinanceAccountId { get; set; }
+         public string AccountCode { get; set; } = string.Empty;
+         public string AccountName { get; set; } = string.Empty;
++        public string CategoryKey { get; set; } = string.Empty;
++        public string CategoryName { get; set; } = string.Empty;
+         public Guid? CostCenterId { get; set; }
+         public string? CostCenterCode { get; set; }
+         public string? CostCenterName { get; set; }
+@@ -336,3 +462,4 @@ public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebAppli
+         public string Currency { get; set; } = string.Empty;
+     }
+ }
++END_OF_PATCH

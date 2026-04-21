@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-25.1.2",
+  "promptPath": ".ai-design/prompts/TASK-25.1.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T16:23:59.728Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T16-23-59-728Z_TASK-25.1.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T16-23-59-728Z_TASK-25.1.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T16:33:07.192Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": ",\n+                \"USD\",\n+                Utc(2026, 4, 20),\n+                \"INV-700\",\n+                \"Vendor A\",\n+                [candidate]),\n+            CancellationToken.None);\n+\n+        Assert.True(firstResult.Suggestions[0].ConfidenceScore > secondResult.Suggestions[0].ConfidenceScore);\n+        Assert.True(Rule(firstResult.Suggestions[0], ReconciliationRuleNames.ReferenceSimilarity).Matched);\n+        Assert.True(Rule(secondResult.Suggestions[0], ReconciliationRuleNames.ReferenceSimilarity).Matched);\n+    }\n+\n     [Fact]\n     public async Task Results_are_ranked_descending_and_deterministic_for_ties()\n     {\n@@ -295,22 +342,28 @@ public sealed class ReconciliationScoringServiceTests\n     public async Task Suggestions_include_rule_breakdown_and_normalized_scores()\n     {\n         var companyId = Guid.NewGuid();\n         var service = CreateService(ReconciliationScoringSettings.Default, companyId);\n \n@@ -313,4 +366,10 @@ public sealed class ReconciliationScoringServiceTests\n \n         var suggestion = Assert.Single(result.Suggestions);\n         Assert.InRange(suggestion.ConfidenceScore, 0m, 1m);\n-        Assert.Equal(4, suggestion.RuleDetails.Count);\n+        Assert.Equal(5, suggestion.RuleDetails.Count);\n         Assert.All(suggestion.RuleDetails, detail => Assert.InRange(detail.Score, 0m, 1m));\n+        Assert.All(suggestion.RuleDetails, detail => Assert.InRange(detail.AwardedScore, 0m, 1m));\n+        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.AmountExact);\n+        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.AmountNear);\n+        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.DateProximity);\n+        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.ReferenceSimilarity);\n+        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.CounterpartySimilarity);\n     }\nEND_OF_PATCH\n",
+  "stderrTail": "USD\",\n+                Utc(2026, 4, 20),\n+                \"INV-700\",\n+                \"Vendor A\",\n+                [candidate]),\n+            CancellationToken.None);\n+\n+        Assert.True(firstResult.Suggestions[0].ConfidenceScore > secondResult.Suggestions[0].ConfidenceScore);\n+        Assert.True(Rule(firstResult.Suggestions[0], ReconciliationRuleNames.ReferenceSimilarity).Matched);\n+        Assert.True(Rule(secondResult.Suggestions[0], ReconciliationRuleNames.ReferenceSimilarity).Matched);\n+    }\n+\n     [Fact]\n     public async Task Results_are_ranked_descending_and_deterministic_for_ties()\n     {\n@@ -295,22 +342,28 @@ public sealed class ReconciliationScoringServiceTests\n     public async Task Suggestions_include_rule_breakdown_and_normalized_scores()\n     {\n         var companyId = Guid.NewGuid();\n         var service = CreateService(ReconciliationScoringSettings.Default, companyId);\n \n@@ -313,4 +366,10 @@ public sealed class ReconciliationScoringServiceTests\n \n         var suggestion = Assert.Single(result.Suggestions);\n         Assert.InRange(suggestion.ConfidenceScore, 0m, 1m);\n-        Assert.Equal(4, suggestion.RuleDetails.Count);\n+        Assert.Equal(5, suggestion.RuleDetails.Count);\n         Assert.All(suggestion.RuleDetails, detail => Assert.InRange(detail.Score, 0m, 1m));\n+        Assert.All(suggestion.RuleDetails, detail => Assert.InRange(detail.AwardedScore, 0m, 1m));\n+        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.AmountExact);\n+        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.AmountNear);\n+        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.DateProximity);\n+        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.ReferenceSimilarity);\n+        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.CounterpartySimilarity);\n     }\nEND_OF_PATCH\ntokens used\n114,810\n",
+  "verbosityMode": "verbose"
+}

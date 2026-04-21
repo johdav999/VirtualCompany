@@ -1,0 +1,380 @@
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+index 8a8a8a8..9b9b9b9 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+@@ -136,7 +136,7 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
+         Email = NormalizeOptional(email, nameof(email), 256);
+         PaymentTerms = NormalizeOptionalOrDefault(paymentTerms, nameof(paymentTerms), 64, ResolveDefaultPaymentTerms(CounterpartyType));
+         TaxId = NormalizeOptional(taxId, nameof(taxId), 64);
+-        CreditLimit = creditLimit ?? 0m;
++        CreditLimit = NormalizeCreditLimit(creditLimit, nameof(creditLimit));
+         PreferredPaymentMethod = NormalizeOptionalOrDefault(preferredPaymentMethod, nameof(preferredPaymentMethod), 64, DefaultPreferredPaymentMethod);
+         DefaultAccountMapping = NormalizeOptionalOrDefault(defaultAccountMapping, nameof(defaultAccountMapping), 64, ResolveDefaultAccountMapping(CounterpartyType));
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
+@@ -175,7 +175,7 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
+         Email = NormalizeOptional(email, nameof(email), 256);
+         PaymentTerms = NormalizeOptionalOrDefault(paymentTerms, nameof(paymentTerms), 64, ResolveDefaultPaymentTerms(CounterpartyType));
+         TaxId = NormalizeOptional(taxId, nameof(taxId), 64);
+-        CreditLimit = creditLimit ?? 0m;
++        CreditLimit = NormalizeCreditLimit(creditLimit, nameof(creditLimit));
+         PreferredPaymentMethod = NormalizeOptionalOrDefault(preferredPaymentMethod, nameof(preferredPaymentMethod), 64, DefaultPreferredPaymentMethod);
+         DefaultAccountMapping = NormalizeOptionalOrDefault(defaultAccountMapping, nameof(defaultAccountMapping), 64, ResolveDefaultAccountMapping(CounterpartyType));
+         UpdatedUtc = DateTime.UtcNow;
+@@ -203,6 +203,16 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
+         return trimmed;
+     }
+ 
++    private static decimal NormalizeCreditLimit(decimal? value, string name)
++    {
++        var normalized = value ?? 0m;
++        if (normalized < 0m)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} cannot be negative.");
++        }
++
++        return normalized;
++    }
++
+     private static string? NormalizeOptional(string? value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+index 1a1a1a1..2b2b2b2 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -136,6 +136,7 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFin
+         CancellationToken cancellationToken)
+     {
+         EnsureTenant(command.CompanyId);
++        ValidateCounterparty(command.Counterparty);
+ 
+         var normalizedType = NormalizeCounterpartyType(command.CounterpartyType);
+         var counterparty = new FinanceCounterparty(
+@@ -159,6 +160,7 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFin
+     {
+         EnsureTenant(command.CompanyId);
+ 
++        ValidateCounterparty(command.Counterparty);
+         var normalizedType = NormalizeCounterpartyType(command.CounterpartyType);
+         var counterparty = await _dbContext.FinanceCounterparties
+             .IgnoreQueryFilters()
+@@ -334,6 +336,51 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFin
+             throw new KeyNotFoundException($"Finance {requestedType} was not found.");
+         }
+     }
++
++    private static void ValidateCounterparty(FinanceCounterpartyUpsertDto counterparty)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++
++        AddRequired(errors, nameof(FinanceCounterpartyUpsertDto.Name), counterparty.Name);
++        AddMaxLength(errors, nameof(FinanceCounterpartyUpsertDto.Name), counterparty.Name, 200);
++        AddMaxLength(errors, nameof(FinanceCounterpartyUpsertDto.Email), counterparty.Email, 256);
++        AddMaxLength(errors, nameof(FinanceCounterpartyUpsertDto.PaymentTerms), counterparty.PaymentTerms, 64);
++        AddMaxLength(errors, nameof(FinanceCounterpartyUpsertDto.TaxId), counterparty.TaxId, 64);
++        AddMaxLength(errors, nameof(FinanceCounterpartyUpsertDto.PreferredPaymentMethod), counterparty.PreferredPaymentMethod, 64);
++        AddMaxLength(errors, nameof(FinanceCounterpartyUpsertDto.DefaultAccountMapping), counterparty.DefaultAccountMapping, 64);
++
++        if (counterparty.CreditLimit is decimal creditLimit && creditLimit < 0m)
++        {
++            errors[nameof(FinanceCounterpartyUpsertDto.CreditLimit)] = ["Credit limit cannot be negative."];
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new FinanceValidationException(errors);
++        }
++    }
++
++    private static void AddRequired(IDictionary<string, string[]> errors, string field, string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            errors[field] = [$"{field} is required."];
++        }
++    }
++
++    private static void AddMaxLength(IDictionary<string, string[]> errors, string field, string? value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return;
++        }
++
++        if (value.Trim().Length > maxLength)
++        {
++            errors[field] = [$"{field} must be {maxLength} characters or fewer."];
++        }
++    }
+ 
+     private static FinanceValidationException CreateValidationException(string field, string message) =>
+         new(
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs b/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
+index 3c3c3c3..4d4d4d4 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
+@@ -191,42 +191,77 @@ internal sealed class DeterministicFinanceSeedDatasetGenerator : IDeterministic
+         new(
+             StableId(companyId, 0, "counterparty:alpine-studio"),
+             companyId,
+             "Alpine Studio",
+             "customer",
+-            "ap@alpine.example"),
++            "ap@alpine.example",
++            paymentTerms: "Net30",
++            taxId: null,
++            creditLimit: 25000m,
++            preferredPaymentMethod: "bank_transfer",
++            defaultAccountMapping: "1100"),
+         new(
+             StableId(companyId, 0, "counterparty:bluebird-retail"),
+             companyId,
+             "Bluebird Retail",
+             "customer",
+-            "finance@bluebird.example"),
++            "finance@bluebird.example",
++            paymentTerms: "Net45",
++            taxId: null,
++            creditLimit: 15000m,
++            preferredPaymentMethod: "bank_transfer",
++            defaultAccountMapping: "1100"),
+         new(
+             StableId(companyId, 0, "counterparty:contoso-cloud"),
+             companyId,
+             "Contoso Cloud",
+             "supplier",
+-            "billing@contoso.example"),
++            "billing@contoso.example",
++            paymentTerms: "Net30",
++            taxId: null,
++            creditLimit: 0m,
++            preferredPaymentMethod: "bank_transfer",
++            defaultAccountMapping: "2000"),
+         new(
+             StableId(companyId, 0, "counterparty:fabrikam-office"),
+             companyId,
+             "Fabrikam Office",
+             "supplier",
+-            "ar@fabrikam.example"),
++            "ar@fabrikam.example",
++            paymentTerms: "Net15",
++            taxId: null,
++            creditLimit: 0m,
++            preferredPaymentMethod: "bank_transfer",
++            defaultAccountMapping: "2000"),
+         new(
+             StableId(companyId, 0, "counterparty:tailspin-telecom"),
+             companyId,
+             "Tailspin Telecom",
+             "supplier",
+-            "billing@tailspin.example"),
++            "billing@tailspin.example",
++            paymentTerms: "Net30",
++            taxId: null,
++            creditLimit: 0m,
++            preferredPaymentMethod: "bank_transfer",
++            defaultAccountMapping: "2000"),
+         new(
+             StableId(companyId, 0, "counterparty:northwind-insurance"),
+             companyId,
+             "Northwind Insurance",
+             "supplier",
+-            "accounts@northwind.example"),
++            "accounts@northwind.example",
++            paymentTerms: "Net30",
++            taxId: null,
++            creditLimit: 0m,
++            preferredPaymentMethod: "bank_transfer",
++            defaultAccountMapping: "2000"),
+         new(
+             StableId(companyId, 0, "counterparty:wide-world-rentals"),
+             companyId,
+             "Wide World Rentals",
+             "supplier",
+-            "rent@wideworld.example")
++            "rent@wideworld.example",
++            paymentTerms: "Net30",
++            taxId: null,
++            creditLimit: 0m,
++            preferredPaymentMethod: "bank_transfer",
++            defaultAccountMapping: "2000")
+     ];
+ 
+     private static IReadOnlyList<CompanyKnowledgeDocument> CreateDocuments(Guid companyId) =>
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420120000_AddFinanceCounterpartyMasterData.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420120000_AddFinanceCounterpartyMasterData.cs
+index 5e5e5e5..6f6f6f6 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420120000_AddFinanceCounterpartyMasterData.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420120000_AddFinanceCounterpartyMasterData.cs
+@@ -8,18 +8,6 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+     {
+         protected override void Up(MigrationBuilder migrationBuilder)
+         {
+             var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
+-            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
+-            var decimalType = isPostgres ? "numeric(18,2)" : "decimal(18,2)";
+-
+-            migrationBuilder.AddColumn<string>(name: "payment_terms", table: "finance_counterparties", type: string64Type, maxLength: 64, nullable: true);
+-            migrationBuilder.AddColumn<string>(name: "tax_id", table: "finance_counterparties", type: string64Type, maxLength: 64, nullable: true);
+-            migrationBuilder.AddColumn<decimal>(name: "credit_limit", table: "finance_counterparties", type: decimalType, nullable: true);
+-            migrationBuilder.AddColumn<string>(name: "preferred_payment_method", table: "finance_counterparties", type: string64Type, maxLength: 64, nullable: true);
+-            migrationBuilder.AddColumn<string>(name: "default_account_mapping", table: "finance_counterparties", type: string64Type, maxLength: 64, nullable: true);
+ 
+             if (isPostgres)
+             {
++                migrationBuilder.Sql(
++                    """
++                    ALTER TABLE finance_counterparties ADD COLUMN IF NOT EXISTS payment_terms character varying(64) NULL;
++                    ALTER TABLE finance_counterparties ADD COLUMN IF NOT EXISTS tax_id character varying(64) NULL;
++                    ALTER TABLE finance_counterparties ADD COLUMN IF NOT EXISTS credit_limit numeric(18,2) NULL;
++                    ALTER TABLE finance_counterparties ADD COLUMN IF NOT EXISTS preferred_payment_method character varying(64) NULL;
++                    ALTER TABLE finance_counterparties ADD COLUMN IF NOT EXISTS default_account_mapping character varying(64) NULL;
++                    """);
++
+                 migrationBuilder.Sql(
+                     """
+                     UPDATE finance_counterparties
+@@ -43,6 +31,31 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+             }
+             else
+             {
++                migrationBuilder.Sql(
++                    """
++                    IF COL_LENGTH('finance_counterparties', 'payment_terms') IS NULL
++                    BEGIN
++                        ALTER TABLE [finance_counterparties] ADD [payment_terms] nvarchar(64) NULL;
++                    END
++                    IF COL_LENGTH('finance_counterparties', 'tax_id') IS NULL
++                    BEGIN
++                        ALTER TABLE [finance_counterparties] ADD [tax_id] nvarchar(64) NULL;
++                    END
++                    IF COL_LENGTH('finance_counterparties', 'credit_limit') IS NULL
++                    BEGIN
++                        ALTER TABLE [finance_counterparties] ADD [credit_limit] decimal(18,2) NULL;
++                    END
++                    IF COL_LENGTH('finance_counterparties', 'preferred_payment_method') IS NULL
++                    BEGIN
++                        ALTER TABLE [finance_counterparties] ADD [preferred_payment_method] nvarchar(64) NULL;
++                    END
++                    IF COL_LENGTH('finance_counterparties', 'default_account_mapping') IS NULL
++                    BEGIN
++                        ALTER TABLE [finance_counterparties] ADD [default_account_mapping] nvarchar(64) NULL;
++                    END
++                    """);
++
+                 migrationBuilder.Sql(
+                     """
+                     UPDATE [finance_counterparties]
+@@ -93,6 +106,13 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+             }
+             else
+             {
++                migrationBuilder.Sql(
++                    """
++                    IF COL_LENGTH('finance_counterparties', 'payment_terms') IS NOT NULL ALTER TABLE [finance_counterparties] DROP COLUMN [payment_terms];
++                    IF COL_LENGTH('finance_counterparties', 'tax_id') IS NOT NULL ALTER TABLE [finance_counterparties] DROP COLUMN [tax_id];
++                    IF COL_LENGTH('finance_counterparties', 'credit_limit') IS NOT NULL ALTER TABLE [finance_counterparties] DROP COLUMN [credit_limit];
++                    IF COL_LENGTH('finance_counterparties', 'preferred_payment_method') IS NOT NULL ALTER TABLE [finance_counterparties] DROP COLUMN [preferred_payment_method];
++                    IF COL_LENGTH('finance_counterparties', 'default_account_mapping') IS NOT NULL ALTER TABLE [finance_counterparties] DROP COLUMN [default_account_mapping];
++                    """);
+                 migrationBuilder.Sql(
+                     """
+                     IF EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_email' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
+@@ -121,11 +141,13 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     END
+                     """);
+             }
+-
+-            migrationBuilder.DropColumn(name: "payment_terms", table: "finance_counterparties");
+-            migrationBuilder.DropColumn(name: "tax_id", table: "finance_counterparties");
+-            migrationBuilder.DropColumn(name: "credit_limit", table: "finance_counterparties");
+-            migrationBuilder.DropColumn(name: "preferred_payment_method", table: "finance_counterparties");
+-            migrationBuilder.DropColumn(name: "default_account_mapping", table: "finance_counterparties");
++            if (isPostgres)
++            {
++                migrationBuilder.Sql("""ALTER TABLE finance_counterparties DROP COLUMN IF EXISTS payment_terms;""");
++                migrationBuilder.Sql("""ALTER TABLE finance_counterparties DROP COLUMN IF EXISTS tax_id;""");
++                migrationBuilder.Sql("""ALTER TABLE finance_counterparties DROP COLUMN IF EXISTS credit_limit;""");
++                migrationBuilder.Sql("""ALTER TABLE finance_counterparties DROP COLUMN IF EXISTS preferred_payment_method;""");
++                migrationBuilder.Sql("""ALTER TABLE finance_counterparties DROP COLUMN IF EXISTS default_account_mapping;""");
++            }
+         }
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
+index 7a7a7a7..8b8b8b8 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceCommandServiceTests.cs
+@@ -86,6 +86,35 @@ public sealed class FinanceCommandServiceTests
+         Assert.True(exception.Errors.ContainsKey("Category"));
+         Assert.Equal("customer_payment", await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());
+     }
++
++    [Fact]
++    public async Task Create_counterparty_rejects_negative_credit_limit_with_field_error()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        dbContext.Companies.Add(new Company(companyId, "Counterparty Validation Company"));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++        var exception = await Assert.ThrowsAsync<FinanceValidationException>(() =>
++            service.CreateCounterpartyAsync(
++                new CreateFinanceCounterpartyCommand(
++                    companyId,
++                    "customer",
++                    new FinanceCounterpartyUpsertDto(
++                        "Fourth Coffee",
++                        "finance@fourthcoffee.example",
++                        "Net30",
++                        null,
++                        -1m,
++                        "bank_transfer",
++                        "1100")),
++                CancellationToken.None));
++
++        Assert.True(exception.Errors.ContainsKey("CreditLimit"));
++        Assert.Equal(0, await dbContext.FinanceCounterparties.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
++    }
+ 
+     [Fact]
+     public async Task Finance_writes_reject_records_from_another_tenant()
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs
+index 9c9c9c9..adadada 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs
+@@ -79,6 +79,29 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Te
+             await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());
+     }
+ 
++    [Fact]
++    public async Task Internal_finance_counterparty_create_returns_validation_problem_for_negative_credit_limit()
++    {
++        var seed = await SeedFinanceWriteCompanyAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/customers",
++            new
++            {
++                Name = "Invalid Credit Customer",
++                Email = "finance@invalid-credit.example",
++                PaymentTerms = "Net30",
++                CreditLimit = -5m,
++                PreferredPaymentMethod = "bank_transfer",
++                DefaultAccountMapping = "1100"
++            });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.NotNull(payload);
++        Assert.True(payload!.Errors.ContainsKey("CreditLimit"));
++    }
++
+     [Fact]
+     public async Task Internal_finance_invoice_pending_approval_update_runs_review_workflow_and_exposes_updated_detail_state()
+     {
+END_OF_PATCH

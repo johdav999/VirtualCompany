@@ -1,0 +1,315 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
+index 69135b2..f26796b 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
+@@ -107,19 +107,17 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+             throw new ArgumentException("Bank transaction id is required.", nameof(query));
+         }
+ 
+-        var row = await _dbContext.BankTransactions
++        var transaction = await _dbContext.BankTransactions
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.BankTransactionId)
+-            .Select(x => new
+-            {
+-                Transaction = x,
+-                CashLedgerEntryId = x.CashLedgerLinks
+-                    .OrderByDescending(link => link.CreatedUtc)
+-                    .Select(link => (Guid?)link.LedgerEntryId)
+-                    .FirstOrDefault()
+-            })
++            .Include(x => x.BankAccount)
++            .ThenInclude(x => x.FinanceAccount)
++            .Include(x => x.CashLedgerLinks)
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == query.CompanyId && x.Id == query.BankTransactionId,
++                cancellationToken);
++
++        if (transaction is null)
++        {
+             .SingleOrDefaultAsync(cancellationToken);
+-
+-        if (row is null)
+-        {
+             return null;
+         }
+ 
+@@ -144,22 +142,25 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+             .ToListAsync(cancellationToken);
+ 
+         return new BankTransactionDetailDto(
+-            row.Transaction.Id,
+-            row.Transaction.CompanyId,
+-            row.Transaction.BankAccountId,
+-            row.Transaction.BankAccount.DisplayName,
+-            row.Transaction.BankAccount.BankName,
+-            row.Transaction.BankAccount.MaskedAccountNumber,
+-            row.Transaction.BookingDate,
+-            row.Transaction.ValueDate,
+-            row.Transaction.Amount,
+-            row.Transaction.Currency,
+-            row.Transaction.ReferenceText,
+-            row.Transaction.Counterparty,
+-            row.Transaction.Status,
+-            row.Transaction.ReconciledAmount,
+-            row.Transaction.ExternalReference,
+-            row.CashLedgerEntryId,
++            transaction.Id,
++            transaction.CompanyId,
++            transaction.BankAccountId,
++            transaction.BankAccount.DisplayName,
++            transaction.BankAccount.BankName,
++            transaction.BankAccount.MaskedAccountNumber,
++            transaction.BookingDate,
++            transaction.ValueDate,
++            transaction.Amount,
++            transaction.Currency,
++            transaction.ReferenceText,
++            transaction.Counterparty,
++            transaction.Status,
++            transaction.ReconciledAmount,
++            transaction.ExternalReference,
++            transaction.CashLedgerLinks
++                .OrderByDescending(link => link.CreatedUtc)
++                .Select(link => (Guid?)link.LedgerEntryId)
++                .FirstOrDefault(),
+             linkedPayments,
+-            MapBankAccount(row.Transaction.BankAccount));
++            MapBankAccount(transaction.BankAccount));
+     }
+ 
+     public Task<BankTransactionDetailDto> ReconcileAsync(
+@@ -226,6 +227,11 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+ 
+             foreach (var match in command.Payments)
+             {
++                if (match.PaymentId == Guid.Empty)
++                {
++                    throw CreateValidationException(nameof(match.PaymentId), "Payment id is required.");
++                }
++
+                 if (!payments.TryGetValue(match.PaymentId, out var payment))
+                 {
+                     throw new KeyNotFoundException("One or more finance payments were not found.");
+@@ -236,6 +242,16 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+                 {
+                     throw CreateValidationException(nameof(match.AllocatedAmount), "Allocated amount must be greater than zero.");
+                 }
++
++                if (normalizedAllocatedAmount > payment.Amount)
++                {
++                    throw CreateValidationException(nameof(match.AllocatedAmount), "Allocated amount cannot exceed the payment amount.");
++                }
++
++                if (!string.Equals(payment.Status, PaymentStatuses.Completed, StringComparison.OrdinalIgnoreCase))
++                {
++                    throw CreateValidationException(nameof(match.PaymentId), "Only completed payments can be linked during bank reconciliation.");
++                }
+ 
+                 if (!string.Equals(payment.Currency, transaction.Currency, StringComparison.OrdinalIgnoreCase))
+                 {
+@@ -273,11 +289,15 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+ 
+             transaction.ApplyReconciliation(existingTotal + newTotal, DateTime.UtcNow);
+ 
++            var idempotencyKey = BuildIdempotencyKey(command.CompanyId, transaction.Id);
+             var existingLedgerLink = await _dbContext.BankTransactionCashLedgerLinks
+                 .IgnoreQueryFilters()
+-                .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.BankTransactionId == transaction.Id, cancellationToken);
++                .SingleOrDefaultAsync(
++                    x => x.CompanyId == command.CompanyId &&
++                         (x.BankTransactionId == transaction.Id || x.IdempotencyKey == idempotencyKey),
++                    cancellationToken);
+ 
++            // Ledger posting is created on the first successful reconciliation and reused on retries or later partial-to-full updates.
+             if (transaction.ReconciledAmount > 0m && existingLedgerLink is null)
+             {
+                 var fiscalPeriod = await EnsureFiscalPeriodAsync(command.CompanyId, transaction.BookingDate, cancellationToken);
+@@ -301,7 +321,7 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+                     Guid.NewGuid(),
+                     command.CompanyId,
+                     transaction.Id,
+-                    ledgerEntry.Id,
+-                    BuildIdempotencyKey(command.CompanyId, transaction.Id),
++                    ledgerEntry.Id,
++                    idempotencyKey,
+                     transaction.BookingDate));
+             }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/BankTransactionEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/BankTransactionEntityConfiguration.cs
+index 3d722d5..da65c1a 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/BankTransactionEntityConfiguration.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/BankTransactionEntityConfiguration.cs
+@@ -62,6 +62,7 @@ internal sealed class BankTransactionEntityConfiguration : IEntityTypeConfigurat
+ 
+         builder.HasIndex(x => x.CompanyId);
+         builder.HasIndex(x => new { x.CompanyId, x.BankAccountId, x.BookingDate });
++        builder.HasIndex(x => new { x.CompanyId, x.BookingDate });
+         builder.HasIndex(x => new { x.CompanyId, x.Status, x.BookingDate });
+         builder.HasIndex(x => new { x.CompanyId, x.Amount });
+         builder.HasIndex(x => new { x.CompanyId, x.ExternalReference }).IsUnique().HasFilter("\"external_reference\" IS NOT NULL");
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421090000_AddBankTransactionsAndMappings.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421090000_AddBankTransactionsAndMappings.cs
+index 4f19550..8837ecb 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421090000_AddBankTransactionsAndMappings.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421090000_AddBankTransactionsAndMappings.cs
+@@ -173,6 +173,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+             migrationBuilder.CreateIndex(name: "IX_bank_transactions_company_id", table: "bank_transactions", column: "company_id");
+             migrationBuilder.CreateIndex(name: "IX_bank_transactions_company_id_bank_account_id_booking_date", table: "bank_transactions", columns: new[] { "company_id", "bank_account_id", "booking_date" });
+             migrationBuilder.CreateIndex(name: "IX_bank_transactions_company_id_status_booking_date", table: "bank_transactions", columns: new[] { "company_id", "status", "booking_date" });
++            migrationBuilder.CreateIndex(name: "IX_bank_transactions_company_id_booking_date", table: "bank_transactions", columns: new[] { "company_id", "booking_date" });
+             migrationBuilder.CreateIndex(name: "IX_bank_transactions_company_id_amount", table: "bank_transactions", columns: new[] { "company_id", "amount" });
+             migrationBuilder.CreateIndex(name: "IX_bank_transactions_company_id_external_reference", table: "bank_transactions", columns: new[] { "company_id", "external_reference" }, unique: true, filter: isPostgres ? "\"external_reference\" IS NOT NULL" : "[external_reference] IS NOT NULL");
+             migrationBuilder.CreateIndex(name: "IX_bank_transactions_bank_account_id", table: "bank_transactions", column: "bank_account_id");
+diff --git a/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs
+index 5990c7f..2fbf1ba 100644
+--- a/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs
+@@ -34,6 +34,7 @@ public sealed class BankTransactionPersistenceTests
+         var bankTransactionIndexes = await ReadIndexesAsync(connection, "bank_transactions");
+         Assert.Contains("IX_bank_transactions_company_id_bank_account_id_booking_date", bankTransactionIndexes);
+         Assert.Contains("IX_bank_transactions_company_id_status_booking_date", bankTransactionIndexes);
++        Assert.Contains("IX_bank_transactions_company_id_booking_date", bankTransactionIndexes);
+         Assert.Contains("IX_bank_transactions_company_id_amount", bankTransactionIndexes);
+ 
+         var cashLedgerIndexes = await ReadIndexesAsync(connection, "bank_transaction_cash_ledger_links");
+diff --git a/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs
+index 6795447..de93444 100644
+--- a/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs
+@@ -40,9 +40,11 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+         var detail = await detailResponse.Content.ReadFromJsonAsync<BankTransactionDetailResponse>();
+         Assert.NotNull(detail);
+         Assert.Equal(items[0].Id, detail!.Id);
++        Assert.NotNull(detail.BankAccount);
+         Assert.Equal(items[0].Status, detail.Status);
+         Assert.Equal(seed.BankAccountId, detail.BankAccountId);
+-
++        Assert.False(string.IsNullOrWhiteSpace(detail.BankAccount!.DisplayName));
++        
+         var crossTenantDetail = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.OtherCompanyTransactionId}");
+         Assert.Equal(HttpStatusCode.NotFound, crossTenantDetail.StatusCode);
+     }
+@@ -123,6 +125,37 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+         Assert.Equal(1, counts.ledgerEntries);
+     }
+ 
++    [Fact]
++    public async Task Reconcile_endpoint_rejects_pending_and_overallocated_payments()
++    {
++        var seed = await SeedReconciliationScenarioAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var pendingResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reconcile",
++            new ReconcileBankTransactionRequest(
++            [
++                new ReconcileBankTransactionPaymentRequest(seed.PendingPaymentId, 25m)
++            ]));
++
++        Assert.Equal(HttpStatusCode.BadRequest, pendingResponse.StatusCode);
++        var pendingProblem = await pendingResponse.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(pendingProblem);
++        Assert.Contains("PaymentId", pendingProblem!.Errors.Keys);
++
++        var overallocatedResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reconcile",
++            new ReconcileBankTransactionRequest(
++            [
++                new ReconcileBankTransactionPaymentRequest(seed.FirstPaymentId, 125m)
++            ]));
++
++        Assert.Equal(HttpStatusCode.BadRequest, overallocatedResponse.StatusCode);
++        var overallocatedProblem = await overallocatedResponse.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(overallocatedProblem);
++        Assert.Contains("AllocatedAmount", overallocatedProblem!.Errors.Keys);
++    }
++
+     private async Task<BankTransactionListSeed> SeedFinanceBankTransactionsAsync()
+     {
+         var ownerUserId = Guid.NewGuid();
+@@ -159,6 +192,7 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+         var bankTransactionId = Guid.Empty;
+         var firstPaymentId = Guid.Empty;
+         var secondPaymentId = Guid.Empty;
++        var pendingPaymentId = Guid.Empty;
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+@@ -192,7 +226,16 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+                 "USD",
+                 new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
+                 "bank_transfer",
+-                "completed",
++                PaymentStatuses.Completed,
++                "INV-002");
++            var pendingPayment = new Payment(
++                Guid.NewGuid(),
++                companyId,
++                PaymentTypes.Incoming,
++                60m,
++                "USD",
++                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                "bank_transfer",
++                PaymentStatuses.Pending,
+                 "INV-002");
+-            dbContext.Payments.AddRange(firstPayment, secondPayment);
++            dbContext.Payments.AddRange(firstPayment, secondPayment, pendingPayment);
+ 
+             var bankTransaction = new BankTransaction(
+                 Guid.NewGuid(),
+@@ -209,10 +252,11 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+             bankTransactionId = bankTransaction.Id;
+             firstPaymentId = firstPayment.Id;
+             secondPaymentId = secondPayment.Id;
++            pendingPaymentId = pendingPayment.Id;
+             return Task.CompletedTask;
+         });
+ 
+-        return new BankTransactionReconcileSeed(companyId, subject, email, displayName, bankTransactionId, firstPaymentId, secondPaymentId);
++        return new BankTransactionReconcileSeed(companyId, subject, email, displayName, bankTransactionId, firstPaymentId, secondPaymentId, pendingPaymentId);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+@@ -234,7 +278,8 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+         string Email,
+         string DisplayName,
+         Guid BankTransactionId,
+-        Guid FirstPaymentId,
+-        Guid SecondPaymentId);
++        Guid FirstPaymentId,
++        Guid SecondPaymentId,
++        Guid PendingPaymentId);
+ 
+     private sealed class BankTransactionResponse
+     {
+@@ -249,6 +294,7 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+         public decimal ReconciledAmount { get; set; }
+         public Guid? CashLedgerEntryId { get; set; }
+         public List<BankTransactionPaymentLinkResponse> LinkedPayments { get; set; } = [];
++        public CompanyBankAccountResponse? BankAccount { get; set; }
+     }
+ 
+     private sealed class BankTransactionPaymentLinkResponse
+@@ -258,16 +304,14 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+         public decimal AllocatedAmount { get; set; }
+     }
+ 
+-    private sealed class ReconcileBankTransactionRequest
++    private sealed class CompanyBankAccountResponse
+     {
+-        public List<ReconcileBankTransactionPaymentRequest> Payments { get; set; } = [];
++        public string DisplayName { get; set; } = string.Empty;
+     }
+ 
+-    private sealed class ReconcileBankTransactionPaymentRequest
+-    {
+-        public Guid PaymentId { get; set; }
+-        public decimal AllocatedAmount { get; set; }
+-    }
++    private sealed record ReconcileBankTransactionRequest(
++        List<ReconcileBankTransactionPaymentRequest> Payments);
++
++    private sealed record ReconcileBankTransactionPaymentRequest(Guid PaymentId, decimal AllocatedAmount);
+ }
+ END_OF_PATCH

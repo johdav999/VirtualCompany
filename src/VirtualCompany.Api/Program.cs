@@ -63,9 +63,9 @@ builder.Services.AddCompanyAuthorization(builder.Environment);
 builder.Services.AddVirtualCompanyRateLimiting(builder.Configuration);
 
 var app = builder.Build();
-var applyMigrationsOnStartup =
-    app.Environment.IsDevelopment() ||
-    app.Configuration.GetValue<bool>("DatabaseInitialization:ApplyMigrationsOnStartup");
+var applyMigrationsOnStartup = app.Configuration.GetValue<bool>("DatabaseInitialization:ApplyMigrationsOnStartup");
+
+var failFastOnPendingMigrations = !applyMigrationsOnStartup && StartupMigrationValidation.ShouldFailFastOnPendingMigrations(app.Environment);
 
 if (app.Environment.IsDevelopment())
 {
@@ -89,13 +89,16 @@ using (var scope = app.Services.CreateScope())
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("DatabaseInitialization");
     var templateSeeder = scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>();
     var workflowDefinitionSeeder = scope.ServiceProvider.GetRequiredService<CompanyWorkflowDefinitionSeeder>();
+    var planningBaselineService = scope.ServiceProvider.GetRequiredService<IPlanningBaselineService>();
     await InitializeDatabaseAsync(
         app,
         dbContext,
         logger,
         templateSeeder,
         workflowDefinitionSeeder,
+        planningBaselineService,
         applyMigrationsOnStartup,
+        failFastOnPendingMigrations,
         builder.Configuration.GetValue<bool?>("SimulationStartup:StopRunningSessionsOnStartup") ?? true);
 }
 
@@ -1223,11 +1226,54 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
                 [name] nvarchar(200) NOT NULL,
                 [counterparty_type] nvarchar(64) NOT NULL,
                 [email] nvarchar(256) NULL,
+                [payment_terms] nvarchar(64) NULL,
+                [tax_id] nvarchar(64) NULL,
+                [credit_limit] decimal(18,2) NULL,
+                [preferred_payment_method] nvarchar(64) NULL,
+                [default_account_mapping] nvarchar(64) NULL,
                 [created_at] datetime2 NOT NULL,
                 [updated_at] datetime2 NOT NULL,
                 CONSTRAINT [AK_finance_counterparties_company_id_id] UNIQUE ([company_id], [id]),
                 CONSTRAINT [FK_finance_counterparties_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
             );
+            """);
+    }
+    else
+    {
+        if (!await SqlServerColumnExistsAsync(connection, "finance_counterparties", "payment_terms"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_counterparties] ADD [payment_terms] nvarchar(64) NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_counterparties", "tax_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_counterparties] ADD [tax_id] nvarchar(64) NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_counterparties", "credit_limit"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_counterparties] ADD [credit_limit] decimal(18,2) NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_counterparties", "preferred_payment_method"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_counterparties] ADD [preferred_payment_method] nvarchar(64) NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_counterparties", "default_account_mapping"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_counterparties] ADD [default_account_mapping] nvarchar(64) NULL;");
+        }
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE [finance_counterparties]
+            SET
+                [payment_terms] = COALESCE(NULLIF([payment_terms], N''), N'Net30'),
+                [credit_limit] = COALESCE([credit_limit], 0),
+                [preferred_payment_method] = COALESCE(NULLIF([preferred_payment_method], N''), N'bank_transfer'),
+                [default_account_mapping] = COALESCE(NULLIF([default_account_mapping], N''), CASE WHEN LOWER([counterparty_type]) = N'customer' THEN N'1100' ELSE N'2000' END)
+            WHERE [payment_terms] IS NULL OR [payment_terms] = N'' OR [credit_limit] IS NULL OR [preferred_payment_method] IS NULL OR [preferred_payment_method] = N'' OR [default_account_mapping] IS NULL OR [default_account_mapping] = N'';
             """);
     }
 
@@ -1438,6 +1484,14 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_name' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
         BEGIN
             CREATE INDEX [IX_finance_counterparties_company_id_name] ON [finance_counterparties] ([company_id], [name]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_counterparty_type_name' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
+        BEGIN
+            CREATE INDEX [IX_finance_counterparties_company_id_counterparty_type_name] ON [finance_counterparties] ([company_id], [counterparty_type], [name]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_email' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
+        BEGIN
+            CREATE INDEX [IX_finance_counterparties_company_id_email] ON [finance_counterparties] ([company_id], [email]);
         END
         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_invoices_company_id_invoice_number' AND [object_id] = OBJECT_ID(N'[finance_invoices]'))
         BEGIN
@@ -1842,7 +1896,9 @@ static async Task InitializeDatabaseAsync(
     ILogger logger,
     CompanySetupTemplateSeeder templateSeeder,
     CompanyWorkflowDefinitionSeeder workflowDefinitionSeeder,
+    IPlanningBaselineService planningBaselineService,
     bool applyMigrationsOnStartup,
+    bool failFastOnPendingMigrations,
     bool stopRunningSimulationSessionsOnStartup)
 {
     if (dbContext.Database.IsRelational())
@@ -1860,18 +1916,10 @@ static async Task InitializeDatabaseAsync(
             await EnsureSqlServerAuditEventSchemaAsync(dbContext);
             await EnsureSqlServerBriefingSchemaAsync(dbContext);
         }
-        else
+        else if (failFastOnPendingMigrations)
         {
             var pendingMigrations = await dbContext.Database.GetPendingMigrationsAsync(app.Lifetime.ApplicationStopping);
-            if (pendingMigrations.Any())
-            {
-                var pendingList = string.Join(", ", pendingMigrations);
-                logger.LogCritical(
-                    "Database schema is not up to date. Pending migrations: {PendingMigrations}. Enable DatabaseInitialization:ApplyMigrationsOnStartup or run 'dotnet ef database update' before starting the API.",
-                    pendingList);
-                throw new InvalidOperationException(
-                    $"Database schema is not up to date. Pending migrations: {pendingList}. Enable DatabaseInitialization:ApplyMigrationsOnStartup or run 'dotnet ef database update' before starting the API.");
-            }
+            StartupMigrationValidation.EnsureNoPendingMigrations(pendingMigrations, logger, app.Environment.EnvironmentName);
         }
     }
     else if (app.Environment.IsDevelopment())
@@ -1886,6 +1934,7 @@ static async Task InitializeDatabaseAsync(
 
     await templateSeeder.SeedAsync();
     await workflowDefinitionSeeder.SeedAsync();
+    await planningBaselineService.BackfillAllCompaniesAsync(app.Lifetime.ApplicationStopping);
 }
 
 static async Task StopRunningSimulationSessionsAsync(

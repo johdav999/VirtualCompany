@@ -14,3 +14,6 @@ These files are the previous PostgreSQL/Npgsql migration source files preserved 
 - The active migration strategy from this point is a fresh SQL Server baseline migration generated from the current model.
 
 The archived files retain their original filenames with a `.txt` suffix so they are preserved in the repository without being compiled as active migration classes.
+
+TASK-26.4.2 did not add PostgreSQL summary/projection migrations to this archive.
+The supported finance agent cash queries stayed on the live-query path after seeded multi-company performance validation, so no aggregate backfill schema was required.

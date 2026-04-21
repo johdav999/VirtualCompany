@@ -1,0 +1,404 @@
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -1222,13 +1222,52 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
+                 [company_id] uniqueidentifier NOT NULL,
+                 [name] nvarchar(200) NOT NULL,
+                 [counterparty_type] nvarchar(64) NOT NULL,
+                 [email] nvarchar(256) NULL,
++                [payment_terms] nvarchar(64) NULL,
++                [tax_id] nvarchar(64) NULL,
++                [credit_limit] decimal(18,2) NULL,
++                [preferred_payment_method] nvarchar(64) NULL,
++                [default_account_mapping] nvarchar(64) NULL,
+                 [created_at] datetime2 NOT NULL,
+                 [updated_at] datetime2 NOT NULL,
+                 CONSTRAINT [AK_finance_counterparties_company_id_id] UNIQUE ([company_id], [id]),
+                 CONSTRAINT [FK_finance_counterparties_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+             );
+             """);
+     }
++    else
++    {
++        if (!await SqlServerColumnExistsAsync(connection, "finance_counterparties", "payment_terms"))
++        {
++            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_counterparties] ADD [payment_terms] nvarchar(64) NULL;");
++        }
++
++        if (!await SqlServerColumnExistsAsync(connection, "finance_counterparties", "tax_id"))
++        {
++            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_counterparties] ADD [tax_id] nvarchar(64) NULL;");
++        }
++
++        if (!await SqlServerColumnExistsAsync(connection, "finance_counterparties", "credit_limit"))
++        {
++            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_counterparties] ADD [credit_limit] decimal(18,2) NULL;");
++        }
++
++        if (!await SqlServerColumnExistsAsync(connection, "finance_counterparties", "preferred_payment_method"))
++        {
++            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_counterparties] ADD [preferred_payment_method] nvarchar(64) NULL;");
++        }
++
++        if (!await SqlServerColumnExistsAsync(connection, "finance_counterparties", "default_account_mapping"))
++        {
++            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_counterparties] ADD [default_account_mapping] nvarchar(64) NULL;");
++        }
++
++        await dbContext.Database.ExecuteSqlRawAsync(
++            """
++            UPDATE [finance_counterparties]
++            SET
++                [payment_terms] = COALESCE(NULLIF([payment_terms], N''), N'Net30'),
++                [credit_limit] = COALESCE([credit_limit], 0),
++                [preferred_payment_method] = COALESCE(NULLIF([preferred_payment_method], N''), N'bank_transfer'),
++                [default_account_mapping] = COALESCE(NULLIF([default_account_mapping], N''), CASE WHEN LOWER([counterparty_type]) = N'customer' THEN N'1100' ELSE N'2000' END)
++            WHERE [payment_terms] IS NULL OR [payment_terms] = N'' OR [credit_limit] IS NULL OR [preferred_payment_method] IS NULL OR [preferred_payment_method] = N'' OR [default_account_mapping] IS NULL OR [default_account_mapping] = N'';
++            """);
++    }
+ 
+     if (!await SqlServerTableExistsAsync(connection, "finance_policy_configurations"))
+     {
+         await dbContext.Database.ExecuteSqlRawAsync(
+@@ -1438,6 +1477,14 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
+         BEGIN
+             CREATE INDEX [IX_finance_counterparties_company_id_name] ON [finance_counterparties] ([company_id], [name]);
+         END
++        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_counterparty_type_name' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
++        BEGIN
++            CREATE INDEX [IX_finance_counterparties_company_id_counterparty_type_name] ON [finance_counterparties] ([company_id], [counterparty_type], [name]);
++        END
++        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_email' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
++        BEGIN
++            CREATE INDEX [IX_finance_counterparties_company_id_email] ON [finance_counterparties] ([company_id], [email]);
++        END
+         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_invoices_company_id_invoice_number' AND [object_id] = OBJECT_ID(N'[finance_invoices]'))
+         BEGIN
+             CREATE UNIQUE INDEX [IX_finance_invoices_company_id_invoice_number] ON [finance_invoices] ([company_id], [invoice_number]);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+@@ -28,11 +28,11 @@ public static class FinanceSeedData
+ 
+         var counterparties = new[]
+         {
+-            new FinanceCounterparty(StableId(companyId, "counterparty:northwind-analytics"), companyId, "Northwind Analytics", "customer", "ap@northwind.example"),
+-            new FinanceCounterparty(StableId(companyId, "counterparty:contoso-supplies"), companyId, "Contoso Supplies", "vendor", "billing@contoso.example"),
+-            new FinanceCounterparty(StableId(companyId, "counterparty:fabrikam-cloud"), companyId, "Fabrikam Cloud", "vendor", "finance@fabrikam.example"),
+-            new FinanceCounterparty(StableId(companyId, "counterparty:adventure-works"), companyId, "Adventure Works", "customer", "payables@adventure.example"),
+-            new FinanceCounterparty(StableId(companyId, "counterparty:tailspin-logistics"), companyId, "Tailspin Logistics", "vendor", "ar@tailspin.example")
++            new FinanceCounterparty(StableId(companyId, "counterparty:northwind-analytics"), companyId, "Northwind Analytics", "customer", "ap@northwind.example", "Net30", null, 0m, "bank_transfer", "1100"),
++            new FinanceCounterparty(StableId(companyId, "counterparty:contoso-supplies"), companyId, "Contoso Supplies", "vendor", "billing@contoso.example", "Net30", null, 0m, "bank_transfer", "2000"),
++            new FinanceCounterparty(StableId(companyId, "counterparty:fabrikam-cloud"), companyId, "Fabrikam Cloud", "vendor", "finance@fabrikam.example", "Net30", null, 0m, "bank_transfer", "2000"),
++            new FinanceCounterparty(StableId(companyId, "counterparty:adventure-works"), companyId, "Adventure Works", "customer", "payables@adventure.example", "Net30", null, 0m, "bank_transfer", "1100"),
++            new FinanceCounterparty(StableId(companyId, "counterparty:tailspin-logistics"), companyId, "Tailspin Logistics", "vendor", "ar@tailspin.example", "Net30", null, 0m, "bank_transfer", "2000")
+         };
+ 
+         var documents = Enumerable.Range(1, 5)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420120000_AddFinanceCounterpartyMasterData.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420120000_AddFinanceCounterpartyMasterData.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420120000_AddFinanceCounterpartyMasterData.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420120000_AddFinanceCounterpartyMasterData.cs
+@@ -7,60 +7,112 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+ {
+     public partial class AddFinanceCounterpartyMasterData : Migration
+     {
+         protected override void Up(MigrationBuilder migrationBuilder)
+         {
+-            migrationBuilder.AddColumn<string>(name: "payment_terms", table: "finance_counterparties", type: "nvarchar(64)", maxLength: 64, nullable: true);
+-            migrationBuilder.AddColumn<string>(name: "tax_id", table: "finance_counterparties", type: "nvarchar(64)", maxLength: 64, nullable: true);
+-            migrationBuilder.AddColumn<decimal>(name: "credit_limit", table: "finance_counterparties", type: "decimal(18,2)", nullable: true);
+-            migrationBuilder.AddColumn<string>(name: "preferred_payment_method", table: "finance_counterparties", type: "nvarchar(64)", maxLength: 64, nullable: true);
+-            migrationBuilder.AddColumn<string>(name: "default_account_mapping", table: "finance_counterparties", type: "nvarchar(64)", maxLength: 64, nullable: true);
+-
+-            migrationBuilder.Sql(
+-                """
+-                UPDATE finance_counterparties
+-                SET
+-                    payment_terms = COALESCE(NULLIF(payment_terms, ''), 'Net30'),
+-                    credit_limit = COALESCE(credit_limit, 0),
+-                    preferred_payment_method = COALESCE(NULLIF(preferred_payment_method, ''), 'bank_transfer'),
+-                    default_account_mapping = COALESCE(
+-                        NULLIF(default_account_mapping, ''),
+-                        CASE
+-                            WHEN LOWER(counterparty_type) = 'customer' THEN '1100'
+-                            ELSE '2000'
+-                        END)
+-                WHERE payment_terms IS NULL
+-                    OR credit_limit IS NULL
+-                    OR preferred_payment_method IS NULL
+-                    OR default_account_mapping IS NULL;
+-                """);
+-
+-            migrationBuilder.Sql(
+-                """
+-                IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_counterparty_type_name' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
+-                BEGIN
+-                    CREATE INDEX [IX_finance_counterparties_company_id_counterparty_type_name]
+-                    ON [finance_counterparties] ([company_id], [counterparty_type], [name]);
+-                END
+-                """);
+-
+-            migrationBuilder.Sql(
+-                """
+-                IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_email' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
+-                BEGIN
+-                    CREATE INDEX [IX_finance_counterparties_company_id_email]
+-                    ON [finance_counterparties] ([company_id], [email]);
+-                END
+-                """);
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var decimalType = isPostgres ? "numeric(18,2)" : "decimal(18,2)";
++
++            migrationBuilder.AddColumn<string>(name: "payment_terms", table: "finance_counterparties", type: string64Type, maxLength: 64, nullable: true);
++            migrationBuilder.AddColumn<string>(name: "tax_id", table: "finance_counterparties", type: string64Type, maxLength: 64, nullable: true);
++            migrationBuilder.AddColumn<decimal>(name: "credit_limit", table: "finance_counterparties", type: decimalType, nullable: true);
++            migrationBuilder.AddColumn<string>(name: "preferred_payment_method", table: "finance_counterparties", type: string64Type, maxLength: 64, nullable: true);
++            migrationBuilder.AddColumn<string>(name: "default_account_mapping", table: "finance_counterparties", type: string64Type, maxLength: 64, nullable: true);
++
++            if (isPostgres)
++            {
++                migrationBuilder.Sql(
++                    """
++                    UPDATE finance_counterparties
++                    SET
++                        payment_terms = COALESCE(NULLIF(payment_terms, ''), 'Net30'),
++                        credit_limit = COALESCE(credit_limit, 0),
++                        preferred_payment_method = COALESCE(NULLIF(preferred_payment_method, ''), 'bank_transfer'),
++                        default_account_mapping = COALESCE(NULLIF(default_account_mapping, ''), CASE WHEN LOWER(counterparty_type) = 'customer' THEN '1100' ELSE '2000' END)
++                    WHERE payment_terms IS NULL
++                        OR payment_terms = ''
++                        OR credit_limit IS NULL
++                        OR preferred_payment_method IS NULL
++                        OR preferred_payment_method = ''
++                        OR default_account_mapping IS NULL
++                        OR default_account_mapping = '';
++                    """);
++
++                migrationBuilder.Sql("""CREATE INDEX IF NOT EXISTS "IX_finance_counterparties_company_id_name" ON finance_counterparties (company_id, name);""");
++                migrationBuilder.Sql("""CREATE INDEX IF NOT EXISTS "IX_finance_counterparties_company_id_counterparty_type_name" ON finance_counterparties (company_id, counterparty_type, name);""");
++                migrationBuilder.Sql("""CREATE INDEX IF NOT EXISTS "IX_finance_counterparties_company_id_email" ON finance_counterparties (company_id, email);""");
++            }
++            else
++            {
++                migrationBuilder.Sql(
++                    """
++                    UPDATE [finance_counterparties]
++                    SET
++                        [payment_terms] = COALESCE(NULLIF([payment_terms], N''), N'Net30'),
++                        [credit_limit] = COALESCE([credit_limit], 0),
++                        [preferred_payment_method] = COALESCE(NULLIF([preferred_payment_method], N''), N'bank_transfer'),
++                        [default_account_mapping] = COALESCE(NULLIF([default_account_mapping], N''), CASE WHEN LOWER([counterparty_type]) = N'customer' THEN N'1100' ELSE N'2000' END)
++                    WHERE [payment_terms] IS NULL
++                        OR [payment_terms] = N''
++                        OR [credit_limit] IS NULL
++                        OR [preferred_payment_method] IS NULL
++                        OR [preferred_payment_method] = N''
++                        OR [default_account_mapping] IS NULL
++                        OR [default_account_mapping] = N'';
++                    """);
++
++                migrationBuilder.Sql(
++                    """
++                    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_name' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
++                    BEGIN
++                        CREATE INDEX [IX_finance_counterparties_company_id_name]
++                        ON [finance_counterparties] ([company_id], [name]);
++                    END
++                    """);
++
++                migrationBuilder.Sql(
++                    """
++                    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_counterparty_type_name' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
++                    BEGIN
++                        CREATE INDEX [IX_finance_counterparties_company_id_counterparty_type_name]
++                        ON [finance_counterparties] ([company_id], [counterparty_type], [name]);
++                    END
++                    """);
++
++                migrationBuilder.Sql(
++                    """
++                    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_email' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
++                    BEGIN
++                        CREATE INDEX [IX_finance_counterparties_company_id_email]
++                        ON [finance_counterparties] ([company_id], [email]);
++                    END
++                    """);
++            }
+         }
+ 
+         protected override void Down(MigrationBuilder migrationBuilder)
+         {
+-            migrationBuilder.Sql(
+-                """
+-                IF EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_counterparty_type_name' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
+-                BEGIN
+-                    DROP INDEX [IX_finance_counterparties_company_id_counterparty_type_name] ON [finance_counterparties];
+-                END
+-                """);
+-
+-            migrationBuilder.Sql(
+-                """
+-                IF EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_email' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
+-                BEGIN
+-                    DROP INDEX [IX_finance_counterparties_company_id_email] ON [finance_counterparties];
+-                END
+-                """);
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++
++            if (isPostgres)
++            {
++                migrationBuilder.Sql("""DROP INDEX IF EXISTS "IX_finance_counterparties_company_id_email";""");
++                migrationBuilder.Sql("""DROP INDEX IF EXISTS "IX_finance_counterparties_company_id_counterparty_type_name";""");
++                migrationBuilder.Sql("""DROP INDEX IF EXISTS "IX_finance_counterparties_company_id_name";""");
++            }
++            else
++            {
++                migrationBuilder.Sql(
++                    """
++                    IF EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_email' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
++                    BEGIN
++                        DROP INDEX [IX_finance_counterparties_company_id_email] ON [finance_counterparties];
++                    END
++                    """);
++
++                migrationBuilder.Sql(
++                    """
++                    IF EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_counterparty_type_name' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
++                    BEGIN
++                        DROP INDEX [IX_finance_counterparties_company_id_counterparty_type_name] ON [finance_counterparties];
++                    END
++                    """);
++
++                migrationBuilder.Sql(
++                    """
++                    IF EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_counterparties_company_id_name' AND [object_id] = OBJECT_ID(N'[finance_counterparties]'))
++                    BEGIN
++                        DROP INDEX [IX_finance_counterparties_company_id_name] ON [finance_counterparties];
++                    END
++                    """);
++            }
+ 
+             migrationBuilder.DropColumn(name: "payment_terms", table: "finance_counterparties");
+             migrationBuilder.DropColumn(name: "tax_id", table: "finance_counterparties");
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePolicyAndMutationIntegrationTests.cs
+@@ -204,15 +204,31 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Tes
+ 
+         var customer = await createCustomer.Content.ReadFromJsonAsync<CounterpartyResponse>();
+         var supplier = await createSupplier.Content.ReadFromJsonAsync<CounterpartyResponse>();
+         Assert.NotNull(customer);
+         Assert.NotNull(supplier);
++        Assert.Equal("Net45", customer!.PaymentTerms);
++        Assert.Equal("SE556677-8899", customer.TaxId);
++        Assert.Equal(25000m, customer.CreditLimit);
++        Assert.Equal("bank_transfer", customer.PreferredPaymentMethod);
++        Assert.Equal("1100", customer.DefaultAccountMapping);
++        Assert.Equal("Net15", supplier!.PaymentTerms);
++        Assert.Equal("SE998877-6655", supplier.TaxId);
++        Assert.Equal(0m, supplier.CreditLimit);
++        Assert.Equal("bank_transfer", supplier.PreferredPaymentMethod);
++        Assert.Equal("2000", supplier.DefaultAccountMapping);
+ 
+         var updateSupplier = await client.PutAsJsonAsync(
+             $"/internal/companies/{seed.CompanyId}/finance/suppliers/{supplier!.Id}",
+             new
+             {
+                 supplier.Name,
+                 supplier.Email,
+                 PaymentTerms = "Net30",
+-                TaxId = supplier.TaxId,
++                TaxId = "SE998877-6655",
+                 CreditLimit = 5000m,
+                 PreferredPaymentMethod = "bank_transfer",
+                 DefaultAccountMapping = "2100"
+             });
+         Assert.Equal(HttpStatusCode.OK, updateSupplier.StatusCode);
+ 
+         var customers = await client.GetFromJsonAsync<List<CounterpartyResponse>>($"/internal/companies/{seed.CompanyId}/finance/customers?limit=50");
+         var suppliers = await client.GetFromJsonAsync<List<CounterpartyResponse>>($"/internal/companies/{seed.CompanyId}/finance/suppliers?limit=50");
++        var customerDetail = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/customers/{customer.Id}");
+         var supplierDetail = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/suppliers/{supplier.Id}");
+ 
+-        Assert.Contains(customers!, x => x.Id == customer!.Id && x.PaymentTerms == "Net45" && x.CreditLimit == 25000m);
+-        Assert.Contains(suppliers!, x => x.Id == supplier.Id);
++        Assert.Contains(customers!, x =>
++            x.Id == customer.Id &&
++            x.PaymentTerms == "Net45" &&
++            x.TaxId == "SE556677-8899" &&
++            x.CreditLimit == 25000m &&
++            x.PreferredPaymentMethod == "bank_transfer" &&
++            x.DefaultAccountMapping == "1100");
++        Assert.Contains(suppliers!, x =>
++            x.Id == supplier.Id &&
++            x.PaymentTerms == "Net30" &&
++            x.TaxId == "SE998877-6655" &&
++            x.CreditLimit == 5000m &&
++            x.PreferredPaymentMethod == "bank_transfer" &&
++            x.DefaultAccountMapping == "2100");
++        Assert.Equal("Net45", customerDetail!.PaymentTerms);
++        Assert.Equal("SE556677-8899", customerDetail.TaxId);
++        Assert.Equal(25000m, customerDetail.CreditLimit);
++        Assert.Equal("bank_transfer", customerDetail.PreferredPaymentMethod);
++        Assert.Equal("1100", customerDetail.DefaultAccountMapping);
+         Assert.Equal("Net30", supplierDetail!.PaymentTerms);
++        Assert.Equal("SE998877-6655", supplierDetail.TaxId);
+         Assert.Equal(5000m, supplierDetail.CreditLimit);
++        Assert.Equal("bank_transfer", supplierDetail.PreferredPaymentMethod);
+         Assert.Equal("2100", supplierDetail.DefaultAccountMapping);
+     }
+ 
+     [Fact]
+     public async Task Internal_finance_write_endpoints_reject_employee_invoice_and_transaction_mutations()
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceReadEndpointsIntegrationTests.cs
+@@ -109,12 +109,24 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         {
+             Assert.Equal("customer", x.CounterpartyType);
+             Assert.False(string.IsNullOrWhiteSpace(x.PaymentTerms));
++            Assert.NotNull(x.CreditLimit);
+             Assert.False(string.IsNullOrWhiteSpace(x.PreferredPaymentMethod));
++            Assert.False(string.IsNullOrWhiteSpace(x.DefaultAccountMapping));
+         });
+ 
+         var suppliersResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/suppliers?limit=10");
+         Assert.Equal(HttpStatusCode.OK, suppliersResponse.StatusCode);
+         var suppliers = await suppliersResponse.Content.ReadFromJsonAsync<List<CounterpartyResponse>>();
+         Assert.NotNull(suppliers);
+         Assert.NotEmpty(suppliers!);
++        Assert.All(suppliers, x =>
++        {
++            Assert.Equal("supplier", x.CounterpartyType);
++            Assert.False(string.IsNullOrWhiteSpace(x.PaymentTerms));
++            Assert.NotNull(x.CreditLimit);
++            Assert.False(string.IsNullOrWhiteSpace(x.PreferredPaymentMethod));
++            Assert.False(string.IsNullOrWhiteSpace(x.DefaultAccountMapping));
++        });
+ 
+         var linkedDocuments = transactions.Select(x => x.LinkedDocument)
+             .Concat(invoices.Select(x => x.LinkedDocument))
+@@ -173,11 +185,19 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
+         var invoiceCounterparty = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/customers/{firstInvoice.CounterpartyId}");
+         Assert.NotNull(invoiceCounterparty);
+         Assert.Equal(firstInvoice.CounterpartyId, invoiceCounterparty!.Id);
+         Assert.Equal(firstInvoice.CounterpartyName, invoiceCounterparty.Name);
++        Assert.False(string.IsNullOrWhiteSpace(invoiceCounterparty.PaymentTerms));
++        Assert.NotNull(invoiceCounterparty.CreditLimit);
++        Assert.False(string.IsNullOrWhiteSpace(invoiceCounterparty.PreferredPaymentMethod));
++        Assert.False(string.IsNullOrWhiteSpace(invoiceCounterparty.DefaultAccountMapping));
+ 
+         var firstBill = bills.First();
+         var billCounterparty = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/suppliers/{firstBill.CounterpartyId}");
+         Assert.NotNull(billCounterparty);
+         Assert.Equal(firstBill.CounterpartyId, billCounterparty!.Id);
+         Assert.Equal(firstBill.CounterpartyName, billCounterparty.Name);
++        Assert.False(string.IsNullOrWhiteSpace(billCounterparty.PaymentTerms));
++        Assert.NotNull(billCounterparty.CreditLimit);
++        Assert.False(string.IsNullOrWhiteSpace(billCounterparty.PreferredPaymentMethod));
++        Assert.False(string.IsNullOrWhiteSpace(billCounterparty.DefaultAccountMapping));
+     }
+ 
+     [Fact]
+END_OF_PATCH

@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-26.1.2",
+  "promptPath": ".ai-design/prompts/TASK-26.1.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T17:26:58.532Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T17-26-58-532Z_TASK-26.1.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T17-26-58-532Z_TASK-26.1.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T17:32:22.275Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "anyId == companyId && x.SourceType == FinanceCashPostingSourceTypes.PaymentAllocation && x.SourceId == \"allocation-replay-001\"));\n         Assert.Equal(\n             1,\n             await dbContext.LedgerEntries\n@@ -167,7 +182,7 @@ public sealed class CashSettlementPostingServiceTests\n     }\n \n     [Fact]\n-    public async Task Ensure_created_maps_traceability_columns_and_unique_source_index()\n+    public async Task Ensure_created_maps_traceability_columns_unique_source_index_and_source_mapping_table()\n     {\n         await using var connection = await OpenConnectionAsync();\n         await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(Guid.NewGuid()));\n@@ -175,12 +190,20 @@ public sealed class CashSettlementPostingServiceTests\n \n         var columns = await ReadColumnsAsync(connection, \"ledger_entries\");\n         var indexes = await ReadIndexesAsync(connection, \"ledger_entries\");\n+        var sourceMappingColumns = await ReadColumnsAsync(connection, \"ledger_entry_source_mappings\");\n+        var sourceMappingIndexes = await ReadIndexesAsync(connection, \"ledger_entry_source_mappings\");\n \n         Assert.Contains(\"source_type\", columns);\n         Assert.Contains(\"source_id\", columns);\n         Assert.Contains(\"posted_at\", columns);\n         Assert.Contains(\"IX_ledger_entries_company_id_source_type_source_id\", indexes);\n+        Assert.Contains(\"ledger_entry_id\", sourceMappingColumns);\n+        Assert.Contains(\"source_type\", sourceMappingColumns);\n+        Assert.Contains(\"source_id\", sourceMappingColumns);\n+        Assert.Contains(\"posted_at\", sourceMappingColumns);\n+        Assert.Contains(\"IX_ledger_entry_source_mappings_company_id_ledger_entry_id\", sourceMappingIndexes);\n+        Assert.Contains(\"IX_ledger_entry_source_mappings_company_id_source_type_source_id\", sourceMappingIndexes);\n     }\n+\n \n     private static async Task<PostingSeed> SeedPostingScenarioAsync(VirtualCompanyDbContext dbContext, Guid companyId)\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "& x.SourceType == FinanceCashPostingSourceTypes.PaymentAllocation && x.SourceId == \"allocation-replay-001\"));\n         Assert.Equal(\n             1,\n             await dbContext.LedgerEntries\n@@ -167,7 +182,7 @@ public sealed class CashSettlementPostingServiceTests\n     }\n \n     [Fact]\n-    public async Task Ensure_created_maps_traceability_columns_and_unique_source_index()\n+    public async Task Ensure_created_maps_traceability_columns_unique_source_index_and_source_mapping_table()\n     {\n         await using var connection = await OpenConnectionAsync();\n         await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(Guid.NewGuid()));\n@@ -175,12 +190,20 @@ public sealed class CashSettlementPostingServiceTests\n \n         var columns = await ReadColumnsAsync(connection, \"ledger_entries\");\n         var indexes = await ReadIndexesAsync(connection, \"ledger_entries\");\n+        var sourceMappingColumns = await ReadColumnsAsync(connection, \"ledger_entry_source_mappings\");\n+        var sourceMappingIndexes = await ReadIndexesAsync(connection, \"ledger_entry_source_mappings\");\n \n         Assert.Contains(\"source_type\", columns);\n         Assert.Contains(\"source_id\", columns);\n         Assert.Contains(\"posted_at\", columns);\n         Assert.Contains(\"IX_ledger_entries_company_id_source_type_source_id\", indexes);\n+        Assert.Contains(\"ledger_entry_id\", sourceMappingColumns);\n+        Assert.Contains(\"source_type\", sourceMappingColumns);\n+        Assert.Contains(\"source_id\", sourceMappingColumns);\n+        Assert.Contains(\"posted_at\", sourceMappingColumns);\n+        Assert.Contains(\"IX_ledger_entry_source_mappings_company_id_ledger_entry_id\", sourceMappingIndexes);\n+        Assert.Contains(\"IX_ledger_entry_source_mappings_company_id_source_type_source_id\", sourceMappingIndexes);\n     }\n+\n \n     private static async Task<PostingSeed> SeedPostingScenarioAsync(VirtualCompanyDbContext dbContext, Guid companyId)\n     {\nEND_OF_PATCH\ntokens used\n118,775\n",
+  "verbosityMode": "verbose"
+}

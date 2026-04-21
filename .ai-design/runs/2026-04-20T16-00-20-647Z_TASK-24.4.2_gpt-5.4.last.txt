@@ -1,0 +1,940 @@
+diff --git a/src/VirtualCompany.Domain/Enums/FinanceSeedBackfillEnums.cs b/src/VirtualCompany.Domain/Enums/FinanceSeedBackfillEnums.cs
+index 664eb9c..048d781 100644
+--- a/src/VirtualCompany.Domain/Enums/FinanceSeedBackfillEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/FinanceSeedBackfillEnums.cs
+@@ -78,6 +78,7 @@ public static class FinanceSeedBackfillEligibilityReasons
+ {
+     public const string NotSeeded = "not_seeded";
+     public const string PartialSeedResume = "partial_seed_resume";
++    public const string BankingUpgrade = "banking_upgrade";
+     public const string OrphanedPartialSeed = "orphaned_partial_seed";
+ }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/BankTransactionSeedData.cs b/src/VirtualCompany.Infrastructure/Persistence/BankTransactionSeedData.cs
+index d1a9fe2..b45d3ce 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/BankTransactionSeedData.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/BankTransactionSeedData.cs
+@@ -1,3 +1,4 @@
++using Microsoft.EntityFrameworkCore;
+ using System.Security.Cryptography;
+ using System.Text;
+ using VirtualCompany.Domain.Entities;
+@@ -17,59 +18,88 @@ internal static class BankTransactionSeedData
+         var normalizedAnchorUtc = anchorUtc.Kind == DateTimeKind.Utc
+             ? anchorUtc
+             : anchorUtc.ToUniversalTime();
+-
+-        if (dbContext.CompanyBankAccounts.Local.Any(x => x.CompanyId == companyId) ||
+-            dbContext.BankTransactions.Local.Any(x => x.CompanyId == companyId))
++        if (HasAnyBankTransactions(dbContext, companyId))
+         {
+             return;
+         }
+ 
+-        var accounts = dbContext.FinanceAccounts.Local
+-            .Where(x => x.CompanyId == companyId)
++        var accounts = LoadFinanceAccounts(dbContext, companyId)
+             .OrderBy(x => x.Code)
+             .ToList();
+         if (accounts.Count == 0)
+         {
+             return;
+         }
+ 
+-        var operatingFinanceAccount = accounts.FirstOrDefault(x => x.Code == "1000") ?? accounts[0];
+-        var reserveFinanceAccount = operatingFinanceAccount;
+-
+-        var operatingBankAccount = new CompanyBankAccount(
+-            StableId(companyId, "company-bank-account:operating"),
+-            companyId,
+-            operatingFinanceAccount.Id,
+-            "Operating Account",
+-            "Northwind Bank",
+-            "**** 7781",
+-            operatingFinanceAccount.Currency,
+-            "operating",
+-            true,
+-            true,
+-            normalizedAnchorUtc.AddDays(-120),
+-            normalizedAnchorUtc.AddDays(-120));
+-
+-        var reserveBankAccount = new CompanyBankAccount(
+-            StableId(companyId, "company-bank-account:reserve"),
+-            companyId,
+-            reserveFinanceAccount.Id,
+-            "Reserve Account",
+-            "Northwind Bank",
+-            "**** 1198",
+-            reserveFinanceAccount.Currency,
+-            "reserve",
+-            false,
+-            true,
+-            normalizedAnchorUtc.AddDays(-120),
+-            normalizedAnchorUtc.AddDays(-120));
+-
+-        dbContext.CompanyBankAccounts.AddRange(operatingBankAccount, reserveBankAccount);
+-
+-        var invoicesByReference = dbContext.FinanceInvoices.Local
+-            .Where(x => x.CompanyId == companyId)
++        var bankAccounts = LoadBankAccounts(dbContext, companyId);
++        var operatingFinanceAccount = accounts.FirstOrDefault(x => x.Code == "1000") ?? accounts[0];
++        var reserveFinanceAccount = accounts
++            .FirstOrDefault(x =>
++                x.Id != operatingFinanceAccount.Id &&
++                string.Equals(x.AccountType, "asset", StringComparison.OrdinalIgnoreCase))
++            ?? operatingFinanceAccount;
++
++        CompanyBankAccount operatingBankAccount;
++        CompanyBankAccount reserveBankAccount;
++
++        if (bankAccounts.Count > 0)
++        {
++            operatingBankAccount = bankAccounts
++                .OrderByDescending(x => x.IsPrimary)
++                .ThenByDescending(x => x.IsActive)
++                .ThenBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase)
++                .First();
++            reserveBankAccount = bankAccounts
++                .Where(x => x.Id != operatingBankAccount.Id)
++                .OrderByDescending(x => x.IsActive)
++                .ThenBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase)
++                .FirstOrDefault()
++                ?? operatingBankAccount;
++        }
++        else
++        {
++            operatingBankAccount = new CompanyBankAccount(
++                StableId(companyId, "company-bank-account:operating"),
++                companyId,
++                operatingFinanceAccount.Id,
++                "Operating Account",
++                "Northwind Bank",
++                "**** 7781",
++                operatingFinanceAccount.Currency,
++                "operating",
++                true,
++                true,
++                normalizedAnchorUtc.AddDays(-120),
++                normalizedAnchorUtc.AddDays(-120));
++
++            reserveBankAccount = new CompanyBankAccount(
++                StableId(companyId, "company-bank-account:reserve"),
++                companyId,
++                reserveFinanceAccount.Id,
++                "Reserve Account",
++                "Northwind Bank",
++                "**** 1198",
++                reserveFinanceAccount.Currency,
++                "reserve",
++                false,
++                true,
++                normalizedAnchorUtc.AddDays(-120),
++                normalizedAnchorUtc.AddDays(-120));
++
++            dbContext.CompanyBankAccounts.AddRange(operatingBankAccount, reserveBankAccount);
++            bankAccounts.Add(operatingBankAccount);
++            if (reserveBankAccount.Id != operatingBankAccount.Id)
++            {
++                bankAccounts.Add(reserveBankAccount);
++            }
++        }
++
++        var invoicesByReference = LoadInvoices(dbContext, companyId)
+             .ToDictionary(x => x.InvoiceNumber, x => x, StringComparer.OrdinalIgnoreCase);
+-        var billsByReference = dbContext.FinanceBills.Local
+-            .Where(x => x.CompanyId == companyId)
++        var billsByReference = LoadBills(dbContext, companyId)
+             .ToDictionary(x => x.BillNumber, x => x, StringComparer.OrdinalIgnoreCase);
+-        var payments = dbContext.Payments.Local
+-            .Where(x => x.CompanyId == companyId)
++        var payments = LoadPayments(dbContext, companyId)
+             .OrderBy(x => x.PaymentDate)
+             .ThenBy(x => x.CounterpartyReference, StringComparer.OrdinalIgnoreCase)
+             .ToList();
+@@ -82,13 +112,17 @@ internal static class BankTransactionSeedData
+                 ? payment.Amount
+                 : -payment.Amount;
+             var counterparty = ResolveCounterparty(payment, invoicesByReference, billsByReference);
++            var transactionBankAccount = bankAccounts
++                .FirstOrDefault(x => string.Equals(x.Currency, payment.Currency, StringComparison.OrdinalIgnoreCase))
++                ?? operatingBankAccount;
+             var reconciledAmount = string.Equals(payment.Status, "completed", StringComparison.OrdinalIgnoreCase)
+                 ? payment.Amount
+                 : 0m;
+ 
+             var transaction = new BankTransaction(
+                 StableId(companyId, $"bank-transaction:payment:{payment.Id:N}"),
+                 companyId,
+-                operatingBankAccount.Id,
++                transactionBankAccount.Id,
+                 payment.PaymentDate,
+                 payment.PaymentDate,
+                 amount,
+@@ -102,10 +136,14 @@ internal static class BankTransactionSeedData
+ 
+             if (reconciledAmount > 0m)
+             {
++                if (!dbContext.BankTransactionPaymentLinks.Local.Any(x => x.CompanyId == companyId && x.BankTransactionId == transaction.Id && x.PaymentId == payment.Id) &&
++                    !dbContext.BankTransactionPaymentLinks.IgnoreQueryFilters().Any(x => x.CompanyId == companyId && x.BankTransactionId == transaction.Id && x.PaymentId == payment.Id))
++                {
+                 dbContext.BankTransactionPaymentLinks.Add(new BankTransactionPaymentLink(
+                     StableId(companyId, $"bank-transaction-link:{payment.Id:N}"),
+                     companyId,
+                     transaction.Id,
+-                    payment.Id,
++                        payment.Id,
+                     payment.Amount,
+                     payment.Currency,
+                     payment.PaymentDate));
++                }
+             }
+         }
+ 
+@@ -116,54 +154,154 @@ internal static class BankTransactionSeedData
+                 normalizedAnchorUtc.AddDays(-8),
+                 -8420.00m,
+                 "Payroll April",
++                operatingBankAccount.Currency,
+                 "Nordic Payroll Services",
+                 "bank-manual:payroll"),
+             CreateManual(
+                 companyId,
+                 operatingBankAccount.Id,
+-                normalizedAnchorUtc.AddDays(-6),
++                normalizedAnchorUtc.AddDays(-6),
+                 -399.00m,
+                 "SaaS subscription",
++                operatingBankAccount.Currency,
+                 "Fabrikam Cloud",
+                 "bank-manual:subscription"),
+             CreateManual(
+                 companyId,
+                 operatingBankAccount.Id,
+                 normalizedAnchorUtc.AddDays(-4),
+                 -24.00m,
+                 "Monthly bank fee",
++                operatingBankAccount.Currency,
+                 "Northwind Bank",
+-                "bank-manual:bank-fee"),
+-            CreateManual(
+-                companyId,
+-                operatingBankAccount.Id,
+-                normalizedAnchorUtc.AddDays(-3),
+-                -2500.00m,
+-                "Transfer to reserve",
+-                "Reserve Account",
+-                "bank-manual:transfer-out"),
+-            CreateManual(
+-                companyId,
+-                reserveBankAccount.Id,
+-                normalizedAnchorUtc.AddDays(-3),
+-                2500.00m,
+-                "Transfer from operating",
+-                "Operating Account",
+-                "bank-manual:transfer-in"),
++                "bank-manual:bank-fee")
++        }.ToList();
++
++        if (reserveBankAccount.Id != operatingBankAccount.Id)
++        {
++            manualTransactions.Add(
++                CreateManual(
++                    companyId,
++                    operatingBankAccount.Id,
++                    normalizedAnchorUtc.AddDays(-3),
++                    -2500.00m,
++                    "Transfer to reserve",
++                    operatingBankAccount.Currency,
++                    "Reserve Account",
++                    "bank-manual:transfer-out"));
++            manualTransactions.Add(
++                CreateManual(
++                    companyId,
++                    reserveBankAccount.Id,
++                    normalizedAnchorUtc.AddDays(-3),
++                    2500.00m,
++                    "Transfer from operating",
++                    reserveBankAccount.Currency,
++                    "Operating Account",
++                    "bank-manual:transfer-in"));
++        }
++
++        manualTransactions.Add(
+             CreateManual(
+                 companyId,
+                 reserveBankAccount.Id,
+                 normalizedAnchorUtc.AddDays(-2),
+                 210.25m,
+                 "Software refund",
++                reserveBankAccount.Currency,
+                 "Fabrikam Cloud",
+-                "bank-manual:refund")
+-        };
++                "bank-manual:refund"));
+ 
+         dbContext.BankTransactions.AddRange(manualTransactions);
+     }
+ 
++    private static bool HasAnyBankTransactions(VirtualCompanyDbContext dbContext, Guid companyId) =>
++        dbContext.BankTransactions.Local.Any(x => x.CompanyId == companyId) ||
++        dbContext.BankTransactions.IgnoreQueryFilters().Any(x => x.CompanyId == companyId);
++
++    private static List<FinanceAccount> LoadFinanceAccounts(VirtualCompanyDbContext dbContext, Guid companyId)
++    {
++        var local = dbContext.FinanceAccounts.Local
++            .Where(x => x.CompanyId == companyId)
++            .ToList();
++        var localIds = local.Select(x => x.Id).ToHashSet();
++        var persisted = dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .AsEnumerable()
++            .Where(x => localIds.Add(x.Id))
++            .ToList();
++
++        local.AddRange(persisted);
++        return local;
++    }
++
++    private static List<CompanyBankAccount> LoadBankAccounts(VirtualCompanyDbContext dbContext, Guid companyId)
++    {
++        var local = dbContext.CompanyBankAccounts.Local
++            .Where(x => x.CompanyId == companyId)
++            .ToList();
++        var localIds = local.Select(x => x.Id).ToHashSet();
++        var persisted = dbContext.CompanyBankAccounts
++            .IgnoreQueryFilters()
++            .Include(x => x.FinanceAccount)
++            .Where(x => x.CompanyId == companyId)
++            .AsEnumerable()
++            .Where(x => localIds.Add(x.Id))
++            .ToList();
++
++        local.AddRange(persisted);
++        return local;
++    }
++
++    private static List<FinanceInvoice> LoadInvoices(VirtualCompanyDbContext dbContext, Guid companyId)
++    {
++        var local = dbContext.FinanceInvoices.Local
++            .Where(x => x.CompanyId == companyId)
++            .ToList();
++        var localIds = local.Select(x => x.Id).ToHashSet();
++        var persisted = dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .Include(x => x.Counterparty)
++            .Where(x => x.CompanyId == companyId)
++            .AsEnumerable()
++            .Where(x => localIds.Add(x.Id))
++            .ToList();
++
++        local.AddRange(persisted);
++        return local;
++    }
++
++    private static List<FinanceBill> LoadBills(VirtualCompanyDbContext dbContext, Guid companyId)
++    {
++        var local = dbContext.FinanceBills.Local
++            .Where(x => x.CompanyId == companyId)
++            .ToList();
++        var localIds = local.Select(x => x.Id).ToHashSet();
++        var persisted = dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .Include(x => x.Counterparty)
++            .Where(x => x.CompanyId == companyId)
++            .AsEnumerable()
++            .Where(x => localIds.Add(x.Id))
++            .ToList();
++
++        local.AddRange(persisted);
++        return local;
++    }
++
++    private static List<Payment> LoadPayments(VirtualCompanyDbContext dbContext, Guid companyId)
++    {
++        var local = dbContext.Payments.Local
++            .Where(x => x.CompanyId == companyId)
++            .ToList();
++        var localIds = local.Select(x => x.Id).ToHashSet();
++        var persisted = dbContext.Payments
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .AsEnumerable()
++            .Where(x => localIds.Add(x.Id))
++            .ToList();
++
++        local.AddRange(persisted);
++        return local;
++    }
++
+     private static BankTransaction CreateManual(
+         Guid companyId,
+         Guid bankAccountId,
+         DateTime occurredUtc,
+         decimal amount,
+         string referenceText,
++        string currency,
+         string counterparty,
+         string externalReference) =>
+         new(
+@@ -172,7 +310,7 @@ internal static class BankTransactionSeedData
+             bankAccountId,
+             occurredUtc,
+             occurredUtc,
+-            amount,
+-            "USD",
++            amount,
++            currency,
+             referenceText,
+             counterparty,
+             externalReference,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs
+index d5e9d5c..00a5312 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBackgroundService.cs
+@@ -135,6 +135,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+                     ActorId: null),
+                 cancellationToken);
+ 
++            var preserveExistingFinanceDataset = await ShouldPreserveExistingFinanceDatasetAsync(execution.CompanyId, cancellationToken);
+             var result = await _backgroundJobExecutor.ExecuteAsync(
+                 new BackgroundJobExecutionContext(
+                     "finance-seed",
+@@ -151,7 +152,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+                     new FinanceSeedBootstrapCommand(
+                         execution.CompanyId,
+                         ResolveSeedValue(execution.CompanyId),
+-                        SeedAnchorUtc: null,
+-                        ReplaceExisting: true,
++                        SeedAnchorUtc: null,
++                        ReplaceExisting: !preserveExistingFinanceDataset,
+                         InjectAnomalies: false),
+                     innerCancellationToken),
+                 retryDelay,
+@@ -398,6 +399,26 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+     private static string ResolveTriggerSource(Company company) => FinanceSeedingMetadata.ReadTriggerSource(company) ?? FinanceEntrySources.FinanceEntry;
+ 
+     private static BackgroundExecutionFailureCategory MapFailureCategory(BackgroundJobFailureClassification? classification) =>
+         classification switch
+@@ -415,6 +436,26 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
+             BackgroundJobFailureClassification.Configuration => BackgroundExecutionFailureCategory.Configuration,
+             _ => BackgroundExecutionFailureCategory.TransientInfrastructure
+         };
++
++    private async Task<bool> ShouldPreserveExistingFinanceDatasetAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var hasAccounts = await _dbContext.FinanceAccounts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasCounterparties = await _dbContext.FinanceCounterparties.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasTransactions = await _dbContext.FinanceTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasBalances = await _dbContext.FinanceBalances.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasPolicy = await _dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        if (!(hasAccounts && hasCounterparties && hasTransactions && hasBalances && hasPolicy))
++        {
++            return false;
++        }
++
++        var hasBankAccounts = await _dbContext.CompanyBankAccounts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasBankTransactions = await _dbContext.BankTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        return !hasBankAccounts || !hasBankTransactions;
++    }
+ }
+ 
+ public sealed class FinanceSeedBackgroundService : BackgroundService
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+index cbc10d2..287bebe 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+@@ -41,10 +41,11 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapService
+         {
+             throw new KeyNotFoundException($"Company '{command.CompanyId}' was not found.");
+         }
++        var bootstrapState = await LoadBootstrapStateAsync(command.CompanyId, cancellationToken);
+ 
+-        if (!command.ReplaceExisting && await HasExistingFinanceSeedAsync(command.CompanyId, cancellationToken))
++        if (!command.ReplaceExisting && bootstrapState.HasExistingFinanceSeed && !bootstrapState.RequiresBankingBootstrap)
+         {
+-            return PreviewExistingSeed(command);
++            return PreviewExistingSeed(command);
+         }
+ 
+         if (_dbContext.Database.IsRelational())
+@@ -55,14 +56,14 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapService
+             return await executionStrategy.ExecuteAsync(async () =>
+             {
+                 await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+-                var result = await GenerateInternalAsync(command, cancellationToken);
++                var result = await GenerateInternalAsync(command, bootstrapState, cancellationToken);
+                 await transaction.CommitAsync(cancellationToken);
+                 return result;
+             });
+         }
+ 
+-        return await GenerateInternalAsync(command, cancellationToken);
++        return await GenerateInternalAsync(command, bootstrapState, cancellationToken);
+     }
+ 
+     private async Task<FinanceSeedBootstrapResultDto> GenerateInternalAsync(
+         FinanceSeedBootstrapCommand command,
++        FinanceSeedBootstrapState bootstrapState,
+         CancellationToken cancellationToken)
+     {
+         if (command.ReplaceExisting)
+@@ -70,6 +71,11 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapService
+             await RemoveExistingFinanceSeedAsync(command.CompanyId, cancellationToken);
+         }
+ 
++        if (!command.ReplaceExisting && bootstrapState.RequiresBankingBootstrap)
++        {
++            return await GenerateBankingOnlyAsync(command, cancellationToken);
++        }
++
+         var dataset = CreateDataset(command);
+ 
+         if (dataset.ValidationErrors.Count > 0)
+@@ -134,7 +140,91 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapService
+         _dbContext.ChangeTracker.Clear();
+         return result;
+     }
++
++    private async Task<FinanceSeedBootstrapResultDto> GenerateBankingOnlyAsync(
++        FinanceSeedBootstrapCommand command,
++        CancellationToken cancellationToken)
++    {
++        var anchorUtc = await ResolveBankingSeedAnchorUtcAsync(command.CompanyId, command.SeedAnchorUtc, cancellationToken);
++        BankTransactionSeedData.AddMockBankingData(_dbContext, command.CompanyId, anchorUtc);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        var allocationService = new FinancePaymentAllocationService(_dbContext);
++        await allocationService.BackfillAsync(new BackfillFinancePaymentAllocationsCommand(command.CompanyId, true), cancellationToken);
++
++        var company = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == command.CompanyId, cancellationToken);
++        FinanceSeedingMetadata.MarkSeeded(company, "finance_seed_bootstrap:v1", command.SeedValue);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return await BuildExistingResultAsync(command.CompanyId, command.SeedValue, anchorUtc, cancellationToken);
++    }
++
++    private async Task<FinanceSeedBootstrapState> LoadBootstrapStateAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var hasAccounts = await _dbContext.FinanceAccounts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasCounterparties = await _dbContext.FinanceCounterparties.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasTransactions = await _dbContext.FinanceTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasBalances = await _dbContext.FinanceBalances.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasPolicy = await _dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasBankAccounts = await _dbContext.CompanyBankAccounts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasBankTransactions = await _dbContext.BankTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasInvoices = await _dbContext.FinanceInvoices.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasBills = await _dbContext.FinanceBills.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasPayments = await _dbContext.Payments.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasMappings = await _dbContext.FinancialStatementMappings.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++        var hasAnomalies = await _dbContext.FinanceSeedAnomalies.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++
++        return new FinanceSeedBootstrapState(
++            hasAccounts || hasCounterparties || hasTransactions || hasBalances || hasPolicy || hasBankAccounts || hasBankTransactions || hasInvoices || hasBills || hasPayments || hasMappings || hasAnomalies,
++            hasAccounts && hasCounterparties && hasTransactions && hasBalances && hasPolicy,
++            hasBankAccounts,
++            hasBankTransactions);
++    }
++
++    private async Task<DateTime> ResolveBankingSeedAnchorUtcAsync(
++        Guid companyId,
++        DateTime? requestedAnchorUtc,
++        CancellationToken cancellationToken)
++    {
++        if (requestedAnchorUtc.HasValue)
++        {
++            return requestedAnchorUtc.Value.Kind == DateTimeKind.Utc
++                ? requestedAnchorUtc.Value
++                : requestedAnchorUtc.Value.ToUniversalTime();
++        }
++
++        var latestPaymentUtc = await _dbContext.Payments
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => (DateTime?)x.PaymentDate)
++            .MaxAsync(cancellationToken);
++        if (latestPaymentUtc.HasValue)
++        {
++            return latestPaymentUtc.Value;
++        }
++
++        var latestTransactionUtc = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => (DateTime?)x.TransactionUtc)
++            .MaxAsync(cancellationToken);
++        if (latestTransactionUtc.HasValue)
++        {
++            return latestTransactionUtc.Value;
++        }
++
++        var latestBalanceUtc = await _dbContext.FinanceBalances
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => (DateTime?)x.AsOfUtc)
++            .MaxAsync(cancellationToken);
++        if (latestBalanceUtc.HasValue)
++        {
++            return latestBalanceUtc.Value;
++        }
++
++        return DateTime.UtcNow;
++    }
+ 
+     private async Task<bool> HasExistingFinanceSeedAsync(Guid companyId, CancellationToken cancellationToken) =>
+         await _dbContext.FinanceAccounts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+@@ -148,6 +238,64 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapService
+         await _dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceSeedAnomalies.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+ 
++    private async Task<FinanceSeedBootstrapResultDto> BuildExistingResultAsync(
++        Guid companyId,
++        int seedValue,
++        DateTime anchorUtc,
++        CancellationToken cancellationToken)
++    {
++        var accountCount = await _dbContext.FinanceAccounts.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId, cancellationToken);
++        var counterpartyCount = await _dbContext.FinanceCounterparties.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId, cancellationToken);
++        var supplierCount = await _dbContext.FinanceCounterparties.IgnoreQueryFilters().CountAsync(
++            x => x.CompanyId == companyId &&
++                (x.CounterpartyType == "supplier" || x.CounterpartyType == "vendor"),
++            cancellationToken);
++        var categoryCount = await _dbContext.FinanceTransactions.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => x.TransactionType)
++            .Distinct()
++            .CountAsync(cancellationToken);
++        var invoiceCount = await _dbContext.FinanceInvoices.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId, cancellationToken);
++        var billCount = await _dbContext.FinanceBills.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId, cancellationToken);
++        var transactionCount = await _dbContext.FinanceTransactions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId, cancellationToken);
++        var balanceCount = await _dbContext.FinanceBalances.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId, cancellationToken);
++        var paymentCount = await _dbContext.Payments.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId, cancellationToken);
++        var documentCount = await _dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId, cancellationToken);
++        var policyConfigurationId = await _dbContext.FinancePolicyConfigurations.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.CreatedUtc)
++            .Select(x => (Guid?)x.Id)
++            .FirstOrDefaultAsync(cancellationToken)
++            ?? Guid.Empty;
++        var earliestWindowUtc = await _dbContext.FinanceTransactions.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => (DateTime?)x.TransactionUtc)
++            .MinAsync(cancellationToken);
++        var latestWindowUtc = await _dbContext.BankTransactions.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => (DateTime?)x.BookingDate)
++            .MaxAsync(cancellationToken);
++
++        return new FinanceSeedBootstrapResultDto(
++            companyId,
++            seedValue,
++            earliestWindowUtc ?? anchorUtc,
++            latestWindowUtc ?? anchorUtc,
++            accountCount,
++            counterpartyCount,
++            supplierCount,
++            categoryCount,
++            invoiceCount,
++            billCount,
++            0,
++            transactionCount,
++            balanceCount,
++            paymentCount,
++            documentCount,
++            policyConfigurationId,
++            [],
++            [],
++            []);
++    }
++
+     private async Task RemoveExistingFinanceSeedAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var transactions = await _dbContext.FinanceTransactions
+@@ -278,4 +426,11 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapService
+ 
+         return details;
+     }
++
++    private sealed record FinanceSeedBootstrapState(
++        bool HasExistingFinanceSeed,
++        bool HasCoreFinanceSeed,
++        bool HasBankAccounts,
++        bool HasBankTransactions)
++    {
++        public bool RequiresBankingBootstrap => HasCoreFinanceSeed && (!HasBankAccounts || !HasBankTransactions);
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceSeedBackfillCampaign.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceSeedBackfillCampaign.cs
+index 7886202..b619af2 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceSeedBackfillCampaign.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceSeedBackfillCampaign.cs
+@@ -189,7 +189,7 @@ public sealed class FinanceSeedBackfillExecutionScheduler : IFinanceSeedBackfill
+         }
+ 
+         var recordChecks = await LoadRecordChecksAsync(dbContext, request.CompanyId, cancellationToken);
+-        if (company.FinanceSeedStatus == FinanceSeedingState.Seeded || recordChecks.IsComplete)
++        if ((company.FinanceSeedStatus == FinanceSeedingState.Seeded || recordChecks.IsComplete) && recordChecks.IsBankingComplete)
+         {
+             return FinanceSeedBackfillScheduleResult.Skipped(
+                 request.CompanyId,
+@@ -255,12 +255,16 @@ public sealed class FinanceSeedBackfillExecutionScheduler : IFinanceSeedBackfill
+             var hasBalances = await dbContext.FinanceBalances.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+             var hasPolicy = await dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+             var hasInvoices = await dbContext.FinanceInvoices.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+-            var hasBills = await dbContext.FinanceBills.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++            var hasBills = await dbContext.FinanceBills.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++            var hasBankAccounts = await dbContext.CompanyBankAccounts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++            var hasBankTransactions = await dbContext.BankTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+ 
+             return new FinanceBackfillRecordChecks(
+                 hasAccounts,
+                 hasCounterparties,
+                 hasTransactions,
++                hasBankAccounts,
++                hasBankTransactions,
+                 hasBalances,
+                 hasPolicy,
+                 hasInvoices,
+@@ -272,6 +276,8 @@ public sealed class FinanceSeedBackfillExecutionScheduler : IFinanceSeedBackfill
+                 HasAccounts: false,
+                 HasCounterparties: false,
+                 HasTransactions: false,
++                HasBankAccounts: false,
++                HasBankTransactions: false,
+                 HasBalances: false,
+                 HasPolicyConfiguration: false,
+                 HasInvoices: false,
+@@ -615,6 +621,8 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
+         IReadOnlyList<Guid> counterparties;
+         IReadOnlyList<Guid> transactions;
+         IReadOnlyList<Guid> balances;
++        IReadOnlyList<Guid> bankAccounts;
++        IReadOnlyList<Guid> bankTransactions;
+         IReadOnlyList<Guid> policies;
+         IReadOnlyList<Guid> invoices;
+         IReadOnlyList<Guid> bills;
+@@ -624,6 +632,8 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
+             counterparties = await LoadCompanySetAsync(_dbContext.FinanceCounterparties, companyIds, cancellationToken);
+             transactions = await LoadCompanySetAsync(_dbContext.FinanceTransactions, companyIds, cancellationToken);
+             balances = await LoadCompanySetAsync(_dbContext.FinanceBalances, companyIds, cancellationToken);
++            bankAccounts = await LoadCompanySetAsync(_dbContext.CompanyBankAccounts, companyIds, cancellationToken);
++            bankTransactions = await LoadCompanySetAsync(_dbContext.BankTransactions, companyIds, cancellationToken);
+             policies = await LoadCompanySetAsync(_dbContext.FinancePolicyConfigurations, companyIds, cancellationToken);
+             invoices = await LoadCompanySetAsync(_dbContext.FinanceInvoices, companyIds, cancellationToken);
+             bills = await LoadCompanySetAsync(_dbContext.FinanceBills, companyIds, cancellationToken);
+@@ -633,6 +643,8 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
+             accounts = [];
+             counterparties = [];
+             transactions = [];
++            bankAccounts = [];
++            bankTransactions = [];
+             balances = [];
+             policies = [];
+             invoices = [];
+@@ -651,6 +663,8 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
+             new HashSet<Guid>(accounts),
+             new HashSet<Guid>(counterparties),
+             new HashSet<Guid>(transactions),
++            new HashSet<Guid>(bankAccounts),
++            new HashSet<Guid>(bankTransactions),
+             new HashSet<Guid>(balances),
+             new HashSet<Guid>(policies),
+             new HashSet<Guid>(invoices),
+@@ -673,7 +687,12 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
+             ? execution
+             : null;
+ 
+-        if (company.FinanceSeedStatus == FinanceSeedingState.Seeded || company.FinanceSeededUtc.HasValue || checks.IsComplete)
++        if (checks.IsComplete && !checks.IsBankingComplete)
++        {
++            return new FinanceBackfillEvaluation(true, FinanceSeedBackfillEligibilityReasons.BankingUpgrade, company.FinanceSeedStatus);
++        }
++
++        if (company.FinanceSeedStatus == FinanceSeedingState.Seeded || company.FinanceSeededUtc.HasValue || (checks.IsComplete && checks.IsBankingComplete))
+         {
+             return new FinanceBackfillEvaluation(false, FinanceSeedBackfillSkipReasons.AlreadySeeded, company.FinanceSeedStatus);
+         }
+@@ -890,18 +909,24 @@ internal sealed record FinanceBackfillPageState(
+     HashSet<Guid> CompaniesWithAccounts,
+     HashSet<Guid> CompaniesWithCounterparties,
+     HashSet<Guid> CompaniesWithTransactions,
++    HashSet<Guid> CompaniesWithBankAccounts,
++    HashSet<Guid> CompaniesWithBankTransactions,
+     HashSet<Guid> CompaniesWithBalances,
+     HashSet<Guid> CompaniesWithPolicyConfigurations,
+     HashSet<Guid> CompaniesWithInvoices,
+     HashSet<Guid> CompaniesWithBills,
+     IReadOnlyDictionary<Guid, BackgroundExecution> LatestExecutions)
+ {
+     public FinanceBackfillRecordChecks BuildChecks(Guid companyId) =>
+         new(
+             CompaniesWithAccounts.Contains(companyId),
+             CompaniesWithCounterparties.Contains(companyId),
+             CompaniesWithTransactions.Contains(companyId),
++            CompaniesWithBankAccounts.Contains(companyId),
++            CompaniesWithBankTransactions.Contains(companyId),
+             CompaniesWithBalances.Contains(companyId),
+             CompaniesWithPolicyConfigurations.Contains(companyId),
+             CompaniesWithInvoices.Contains(companyId),
+             CompaniesWithBills.Contains(companyId));
+ }
+ 
+ internal sealed record FinanceBackfillRecordChecks(
+     bool HasAccounts,
+     bool HasCounterparties,
+     bool HasTransactions,
++    bool HasBankAccounts,
++    bool HasBankTransactions,
+     bool HasBalances,
+     bool HasPolicyConfiguration,
+     bool HasInvoices,
+     bool HasBills)
+ {
+     public bool IsComplete => HasAccounts && HasCounterparties && HasTransactions && HasBalances && HasPolicyConfiguration;
++    public bool IsBankingComplete => HasBankAccounts && HasBankTransactions;
+ 
+     public bool HasAnyRecords =>
+         HasAccounts ||
+         HasCounterparties ||
+         HasTransactions ||
++        HasBankAccounts ||
++        HasBankTransactions ||
+         HasBalances ||
+         HasPolicyConfiguration ||
+         HasInvoices ||
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedBackfillOrchestratorTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedBackfillOrchestratorTests.cs
+index b7118dd..7c68988 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedBackfillOrchestratorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedBackfillOrchestratorTests.cs
+@@ -316,6 +316,86 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+         Assert.Equal(healthySnapshotAfterFirstRun, healthySnapshotAfterSecondRun);
+         Assert.True(recoveredSnapshot.AccountCount > 1);
+         Assert.True(recoveredSnapshot.TransactionCount > 0);
++        Assert.True(recoveredSnapshot.BankAccountCount > 0);
++        Assert.True(recoveredSnapshot.BankTransactionCount > 0);
+         Assert.Equal(1, await recoveryVerificationContext.BackgroundExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == healthyCompanyId));
+         Assert.Equal(2, await recoveryVerificationContext.BackgroundExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == partialCompanyId));
+     }
++
++    [Fact]
++    public async Task Backfill_upgrades_seeded_company_missing_bank_accounts_and_transactions_without_replacing_finance_data()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var services = CreateSchedulerServices(connection);
++
++        var companyId = Guid.NewGuid();
++        var financeAccountId = Guid.NewGuid();
++        var financeTransactionId = Guid.NewGuid();
++
++        await using (var setupScope = services.CreateAsyncScope())
++        {
++            var setupContext = setupScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            await setupContext.Database.EnsureCreatedAsync();
++
++            var company = new Company(companyId, "Banking Upgrade Company");
++            company.SetFinanceSeedStatus(
++                FinanceSeedingState.Seeded,
++                new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc));
++            setupContext.Companies.Add(company);
++
++            setupContext.FinanceAccounts.Add(new FinanceAccount(
++                financeAccountId,
++                companyId,
++                "1000",
++                "Operating Cash",
++                "asset",
++                "USD",
++                5000m,
++                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++            setupContext.FinanceCounterparties.Add(new FinanceCounterparty(
++                Guid.NewGuid(),
++                companyId,
++                "Northwind Analytics",
++                "customer",
++                "ap@northwind.example",
++                "Net30",
++                null,
++                0m,
++                "bank_transfer",
++                "1100"));
++            setupContext.FinanceTransactions.Add(new FinanceTransaction(
++                financeTransactionId,
++                companyId,
++                financeAccountId,
++                null,
++                null,
++                null,
++                new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc),
++                "customer_payment",
++                1500m,
++                "USD",
++                "Seeded finance transaction",
++                $"seeded-finance:{companyId:N}",
++                null));
++            setupContext.FinanceBalances.Add(new FinanceBalance(
++                Guid.NewGuid(),
++                companyId,
++                financeAccountId,
++                new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
++                6500m,
++                "USD"));
++            setupContext.FinancePolicyConfigurations.Add(new FinancePolicyConfiguration(
++                Guid.NewGuid(),
++                companyId,
++                "USD",
++                10000m,
++                5000m,
++                true,
++                -10000m,
++                10000m,
++                90,
++                30));
++            await setupContext.SaveChangesAsync();
++        }
++
++        await using (var orchestratorScope = services.CreateAsyncScope())
++        {
++            var orchestrator = orchestratorScope.ServiceProvider.GetRequiredService<IFinanceSeedBackfillOrchestrator>();
++            var run = await orchestrator.RunAsync(CancellationToken.None);
++            Assert.Equal(1, run.QueuedCount);
++            Assert.Equal(0, run.SkippedCount);
++        }
++
++        await using (var runnerContext = CreateContext(connection))
++        {
++            var runner = CreateRunner(runnerContext);
++            var handled = await runner.RunDueAsync(CancellationToken.None);
++            Assert.Equal(1, handled);
++        }
++
++        await using var verificationContext = CreateContext(connection);
++        Assert.Equal(1, await verificationContext.FinanceTransactions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
++        Assert.NotNull(await verificationContext.FinanceTransactions.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == financeTransactionId));
++        Assert.True(await verificationContext.CompanyBankAccounts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId));
++        Assert.True(await verificationContext.BankTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId));
++    }
+ 
+     [Fact]
+     public async Task Backfill_seeded_counterparties_include_finance_master_data_defaults()
+@@ -582,7 +662,9 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+             await dbContext.FinanceInvoices.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
+             await dbContext.FinanceBills.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
+             await dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
++            await dbContext.CompanyBankAccounts.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
++            await dbContext.BankTransactions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
+             await dbContext.FinanceSeedAnomalies.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
+             await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().CountAsync(x =>
+                 x.CompanyId == companyId &&
+@@ -701,6 +783,8 @@ public sealed class FinanceSeedBackfillOrchestratorTests
+         int InvoiceCount,
+         int BillCount,
+         int PolicyConfigurationCount,
++        int BankAccountCount,
++        int BankTransactionCount,
+         int AnomalyCount,
+         int SeedDocumentCount);
+ 
+END_OF_PATCH

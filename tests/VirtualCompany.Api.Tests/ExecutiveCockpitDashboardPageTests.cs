@@ -31,15 +31,15 @@ public sealed class ExecutiveCockpitDashboardPageTests
         cut.WaitForAssertion(() =>
         {
             Assert.Contains("USD 125,400.25", cut.Find("[data-testid='executive-cockpit-cash-position']").TextContent);
-            Assert.Contains("22 days", cut.Find("[data-testid='executive-cockpit-runway']").TextContent);
-
-            var runwayStatus = cut.Find("[data-testid='executive-cockpit-runway-status']");
-            Assert.Contains("Critical", runwayStatus.TextContent);
-            Assert.Contains("finance-risk-pill--critical", runwayStatus.ClassName);
+            Assert.Contains("USD 18,400.00", cut.Find("[data-testid='executive-cockpit-expected-incoming-cash']").TextContent);
+            Assert.Contains("USD 12,650.00", cut.Find("[data-testid='executive-cockpit-expected-outgoing-cash']").TextContent);
+            Assert.Contains("USD 7,200.00", cut.Find("[data-testid='executive-cockpit-overdue-receivables']").TextContent);
+            Assert.Contains("USD 24,300.00", cut.Find("[data-testid='executive-cockpit-upcoming-payables']").TextContent);
             Assert.DoesNotContain("Connect accounting", cut.Markup);
 
             Assert.Contains("Cash runway dropped below the critical threshold.", cut.Find("[data-testid='executive-cockpit-low-cash-alert']").TextContent);
             Assert.Contains("Average monthly burn is USD 18,500.00.", cut.Find("[data-testid='executive-cockpit-low-cash-alert']").TextContent);
+
             Assert.Equal(
                 DashboardRoutes.EnsureCompanyContext(FinanceRoutes.BuildAlertDetailPath(alertId, companyId), companyId, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)),
                 cut.Find("[data-testid='executive-cockpit-low-cash-alert-open-detail']").GetAttribute("href"));
@@ -68,7 +68,7 @@ public sealed class ExecutiveCockpitDashboardPageTests
     [InlineData("warning", "Warning", "65 days", "finance-risk-pill--warning", true)]
     [InlineData("critical", "Critical", "22 days", "finance-risk-pill--critical", true)]
     [InlineData("missing", "Missing", "Unavailable", "finance-risk-pill--missing", false)]
-    public void Executive_cockpit_finance_snapshot_applies_risk_styling_and_empty_state(
+    public void Executive_cockpit_finance_snapshot_renders_cash_metrics_or_empty_state(
         string runwayStatus,
         string runwayLabel,
         string runwayDisplay,
@@ -91,16 +91,59 @@ public sealed class ExecutiveCockpitDashboardPageTests
         {
             if (hasFinanceData)
             {
-                var statusPill = cut.Find("[data-testid='executive-cockpit-runway-status']");
-                Assert.Contains(runwayLabel, statusPill.TextContent);
-                Assert.Contains(expectedClass, statusPill.ClassName);
-                Assert.Contains(runwayDisplay, cut.Find("[data-testid='executive-cockpit-runway']").TextContent);
+                Assert.Contains("USD 125,400.25", cut.Find("[data-testid='executive-cockpit-cash-position']").TextContent);
+                Assert.Contains("USD 18,400.00", cut.Find("[data-testid='executive-cockpit-expected-incoming-cash']").TextContent);
+                Assert.Contains("USD 12,650.00", cut.Find("[data-testid='executive-cockpit-expected-outgoing-cash']").TextContent);
+                Assert.Contains("USD 24,300.00", cut.Find("[data-testid='executive-cockpit-upcoming-payables']").TextContent);
             }
             else
             {
                 Assert.NotNull(cut.Find("[data-testid='connect-accounting-cta']"));
             }
         });
+    }
+
+    [Fact]
+    public void Executive_cockpit_finance_snapshot_refreshes_widget_values_from_live_api_responses()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+        var dashboard = CreateDashboard(companyId, CreateFinanceSection(
+            companyId,
+            Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e"),
+            Guid.Parse("7edb1408-42d4-4a79-9aa2-3a2d2c84da3f"),
+            Guid.Parse("f749fce1-6277-4ca3-b4ee-fae9016f2cc8"),
+            "critical",
+            "Critical",
+            "22 days"));
+
+        var snapshotRequestCount = 0;
+        using var harness = CreateDashboardHarness(
+            companyId,
+            dashboard,
+            financeSnapshotFactory: () => snapshotRequestCount++ == 0
+                ? CreateFinanceSnapshot(companyId, "critical")
+                : new DashboardFinanceSnapshotViewModel
+                {
+                    CompanyId = companyId,
+                    CurrentCashBalance = 1150m,
+                    ExpectedIncomingCash = 1500m,
+                    ExpectedOutgoingCash = 725m,
+                    OverdueReceivables = 300m,
+                    UpcomingPayables = 350m,
+                    Currency = "USD",
+                    AsOfUtc = CashLastRefreshedUtc.AddMinutes(10),
+                    UpcomingWindowDays = 30,
+                    Cash = 1150m,
+                    BurnRate = 0m,
+                    RunwayDays = null,
+                    RiskLevel = "healthy",
+                    HasFinanceData = true
+                });
+        var cut = RenderDashboard(harness, companyId, dashboard.CompanyName);
+
+        cut.WaitForAssertion(() => Assert.Contains("USD 125,400.25", cut.Find("[data-testid='executive-cockpit-cash-position']").TextContent));
+        cut.FindAll("button").Single(button => button.TextContent.Trim() == "Refresh snapshot").Click();
+        cut.WaitForAssertion(() => { Assert.Equal(2, snapshotRequestCount); Assert.Contains("USD 1,150.00", cut.Find("[data-testid='executive-cockpit-cash-position']").TextContent); Assert.Contains("USD 1,500.00", cut.Find("[data-testid='executive-cockpit-expected-incoming-cash']").TextContent); Assert.Contains("USD 725.00", cut.Find("[data-testid='executive-cockpit-expected-outgoing-cash']").TextContent); Assert.Contains("USD 300.00", cut.Find("[data-testid='executive-cockpit-overdue-receivables']").TextContent); Assert.Contains("USD 350.00", cut.Find("[data-testid='executive-cockpit-upcoming-payables']").TextContent); });
     }
 
     [Fact]
@@ -264,7 +307,8 @@ public sealed class ExecutiveCockpitDashboardPageTests
     private static DashboardHarness CreateDashboardHarness(
         Guid companyId,
         ExecutiveCockpitDashboardViewModel dashboard,
-        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? financeHandler = null)
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? financeHandler = null,
+        Func<DashboardFinanceSnapshotViewModel>? financeSnapshotFactory = null)
     {
         var context = new TestContext();
         var financeRequests = new List<CapturedFinanceRequest>();
@@ -297,7 +341,7 @@ public sealed class ExecutiveCockpitDashboardPageTests
                     }),
                 var path when request.Method == HttpMethod.Get &&
                                path == "/api/dashboard/finance-snapshot" =>
-                    CreateJsonResponse(CreateFinanceSnapshot(companyId, dashboard.Finance?.Runway.Status ?? "critical")),
+                    CreateJsonResponse((financeSnapshotFactory ?? (() => CreateFinanceSnapshot(companyId, dashboard.Finance?.Runway.Status ?? "critical")))()),
                 var path when request.Method == HttpMethod.Get &&
                                path == $"/api/companies/{companyId:D}/executive-cockpit/widgets/business-signals" =>
                     CreateJsonResponse(new ExecutiveCockpitWidgetPayloadViewModel<List<BusinessSignalViewModel>>
@@ -375,23 +419,35 @@ public sealed class ExecutiveCockpitDashboardPageTests
             ? new DashboardFinanceSnapshotViewModel
             {
                 CompanyId = companyId,
+                CurrentCashBalance = 0m,
+                ExpectedIncomingCash = 0m,
+                ExpectedOutgoingCash = 0m,
+                OverdueReceivables = 0m,
+                UpcomingPayables = 0m,
+                Currency = "USD",
+                AsOfUtc = CashLastRefreshedUtc,
+                UpcomingWindowDays = 30,
                 Cash = 0m,
                 BurnRate = 0m,
-                RunwayDays = null,
-                RiskLevel = "missing",
                 HasFinanceData = false,
-                Currency = "USD",
-                AsOfUtc = CashLastRefreshedUtc
+                RunwayDays = null,
+                RiskLevel = "missing"
             }
             : new DashboardFinanceSnapshotViewModel
             {
                 CompanyId = companyId,
+                CurrentCashBalance = 125400.25m,
+                ExpectedIncomingCash = 18400m,
+                ExpectedOutgoingCash = 12650m,
+                OverdueReceivables = 7200m,
+                UpcomingPayables = 24300m,
+                Currency = "USD",
+                AsOfUtc = CashLastRefreshedUtc,
+                UpcomingWindowDays = 30,
                 Cash = 125400.25m,
                 BurnRate = 18500m / 30m,
                 RunwayDays = runwayStatus == "healthy" ? 180 : runwayStatus == "warning" ? 65 : 22,
                 RiskLevel = runwayStatus,
-                HasFinanceData = true,
-                Currency = "USD",
-                AsOfUtc = CashLastRefreshedUtc
+                HasFinanceData = true
             };
 }

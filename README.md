@@ -136,6 +136,15 @@ For staging validation, inspect `executive_cockpit_endpoint_latency_ms`,
 `executive_cockpit_widget_render_ms` while repeatedly loading the cockpit and refreshing individual widgets.
 Cached dashboard and widget requests should remain below the 2.5 second p95 target.
 
+### Finance agent cash query validation
+
+The finance tool boundary also supports deterministic tenant-scoped cash analytics through
+`resolve_finance_agent_query` for `what should i pay this week`, `which customers are overdue`,
+and `why is cash down this month`.
+
+These resolver paths are validated against seeded multi-company datasets with a local integration-test
+threshold of 2 seconds per supported query, and currently remain live-computed without summary tables or rebuild jobs.
+
 
 1. Route value `companyId`
 2. Header `X-Company-Id` when a route value is not present

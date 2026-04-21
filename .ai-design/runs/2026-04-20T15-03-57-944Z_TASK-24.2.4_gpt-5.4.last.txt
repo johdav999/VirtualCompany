@@ -1,0 +1,281 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+@@ -42,9 +42,9 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+             throw new KeyNotFoundException($"Company '{command.CompanyId}' was not found.");
+         }
+ 
+         if (!command.ReplaceExisting && await HasExistingFinanceSeedAsync(command.CompanyId, cancellationToken))
+         {
+-            throw new InvalidOperationException("Finance seed data already exists for this company. Use replaceExisting to regenerate it.");
++            return PreviewExistingSeed(command);
+         }
+ 
+         if (_dbContext.Database.IsRelational())
+         {
+             var executionStrategy = _dbContext.Database.CreateExecutionStrategy();
+@@ -62,27 +62,31 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+ 
+     private async Task<FinanceSeedBootstrapResultDto> GenerateInternalAsync(
+         FinanceSeedBootstrapCommand command,
+         CancellationToken cancellationToken)
+     {
+-        var allowNonSimulationTransactions = _transactionCreationOptions.AllowNonSimulationTransactionCreation;
+-        var anomalyOptions = allowNonSimulationTransactions
+-            ? new FinanceAnomalyInjectionOptions(command.InjectAnomalies, command.AnomalyScenarioProfile ?? "baseline")
+-            : FinanceAnomalyInjectionOptions.Disabled;
+-
+         if (command.ReplaceExisting)
+         {
+             await RemoveExistingFinanceSeedAsync(command.CompanyId, cancellationToken);
+         }
+ 
+-        var dataset = command.SeedAnchorUtc.HasValue
++        var dataset = CreateDataset(command);
++
++        if (dataset.ValidationErrors.Count > 0)
++        {
++            _dbContext.ChangeTracker.Clear();
++            var summary = string.Join("; ", dataset.ValidationErrors.Select(x => $"{x.Code}: {x.Message}"));
++            throw new PermanentBackgroundJobException($"Finance seed dataset validation failed: {summary}");
++        }
++
++        var company = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == command.CompanyId, cancellationToken);
++
++        FinanceSeedingMetadata.MarkSeeded(company, "finance_seed_bootstrap:v1", command.SeedValue);
++
++        EnqueueSeedPlatformEvents(command.CompanyId, dataset);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return Map(dataset);
++    }
++
++    private FinanceSeedDataset CreateDataset(FinanceSeedBootstrapCommand command)
++    {
++        var allowNonSimulationTransactions = _transactionCreationOptions.AllowNonSimulationTransactionCreation;
++        var anomalyOptions = allowNonSimulationTransactions
++            ? new FinanceAnomalyInjectionOptions(command.InjectAnomalies, command.AnomalyScenarioProfile ?? "baseline")
++            : FinanceAnomalyInjectionOptions.Disabled;
++
++        return command.SeedAnchorUtc.HasValue
+             ? DeterministicFinanceSeedDatasetGenerator.Generate(
+                 _dbContext,
+                 command.CompanyId,
+                 command.SeedValue,
+                 command.SeedAnchorUtc.Value,
+@@ -92,24 +96,15 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+                 _dbContext,
+                 command.CompanyId,
+                 command.SeedValue,
+                 anomalyOptions,
+                 allowNonSimulationTransactions);
++    }
+ 
+-        if (dataset.ValidationErrors.Count > 0)
+-        {
+-            _dbContext.ChangeTracker.Clear();
+-            var summary = string.Join("; ", dataset.ValidationErrors.Select(x => $"{x.Code}: {x.Message}"));
+-            throw new PermanentBackgroundJobException($"Finance seed dataset validation failed: {summary}");
+-        }
+-
+-        var company = await _dbContext.Companies
+-            .IgnoreQueryFilters()
+-            .SingleAsync(x => x.Id == command.CompanyId, cancellationToken);
+-
+-        FinanceSeedingMetadata.MarkSeeded(company, "finance_seed_bootstrap:v1", command.SeedValue);
+-
+-        EnqueueSeedPlatformEvents(command.CompanyId, dataset);
+-        await _dbContext.SaveChangesAsync(cancellationToken);
+-        return Map(dataset);
++    private FinanceSeedBootstrapResultDto PreviewExistingSeed(FinanceSeedBootstrapCommand command)
++    {
++        _dbContext.ChangeTracker.Clear();
++        var result = Map(CreateDataset(command));
++        _dbContext.ChangeTracker.Clear();
++        return result;
+     }
+ 
+     private async Task<bool> HasExistingFinanceSeedAsync(Guid companyId, CancellationToken cancellationToken) =>
+         await _dbContext.FinanceAccounts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceCounterparties.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+@@ -117,9 +112,8 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+         await _dbContext.FinanceInvoices.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceBills.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.Payments.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceBalances.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+-        await _dbContext.Payments.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinancialStatementMappings.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceSeedAnomalies.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+ 
+@@ -147,13 +141,9 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+         var policies = await _dbContext.FinancePolicyConfigurations
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+             .ToListAsync(cancellationToken);
+-        var payments = await _dbContext.Payments
+-            .IgnoreQueryFilters()
+-            .Where(x => x.CompanyId == companyId)
+-            .ToListAsync(cancellationToken);
+         var counterparties = await _dbContext.FinanceCounterparties
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+             .ToListAsync(cancellationToken);
+         var anomalies = await _dbContext.FinanceSeedAnomalies
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs b/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
+@@ -71,9 +71,8 @@ public static class DeterministicFinanceSeedDatasetGenerator
+             seedValue,
+             anomalyOptions ?? FinanceAnomalyInjectionOptions.Disabled,
+             accounts,
+             counterparties,
+             documents,
+-        var payments = CreatePayments(companyId, invoices, bills, windowEndUtc);
+             invoices,
+             transactions,
+             windowEndUtc);
+         var payments = CreatePayments(companyId, invoices, bills, windowEndUtc);
+@@ -90,9 +89,8 @@ public static class DeterministicFinanceSeedDatasetGenerator
+         dbContext.FinanceCounterparties.AddRange(counterparties);
+         dbContext.Payments.AddRange(payments);
+         dbContext.CompanyKnowledgeDocuments.AddRange(documents);
+         FinancialStatementMappingSeedDefaults.Apply(dbContext, companyId, accounts);
+         dbContext.FinanceInvoices.AddRange(invoices);
+         dbContext.FinanceBills.AddRange(bills);
+-        dbContext.Payments.AddRange(payments);
+         if (includeTransactions)
+         {
+             dbContext.FinanceTransactions.AddRange(transactions);
+         }
+@@ -554,42 +552,6 @@ public static class DeterministicFinanceSeedDatasetGenerator
+                 "completed",
+                 bill.BillNumber)))
+             .OrderBy(x => x.PaymentDate)
+-            .ToArray();
+-
+-    private static IReadOnlyList<Payment> CreatePayments(
+-        Guid companyId,
+-        IReadOnlyList<FinanceInvoice> invoices,
+-        IReadOnlyList<FinanceBill> bills,
+-        DateTime windowEndUtc) =>
+-        invoices
+-            .Select(invoice =>
+-            {
+-                var paymentDate = invoice.IssuedUtc.AddDays(12);
+-                if (paymentDate > windowEndUtc)
+-                {
+-                    paymentDate = windowEndUtc;
+-                }
+-
+-                return new Payment(
+-                    StableId(companyId, 0, $"payment:invoice:{invoice.InvoiceNumber}"),
+-                    companyId,
+-                    PaymentTypes.Incoming,
+-                    invoice.Amount,
+-                    invoice.Currency,
+-                    paymentDate,
+-                    "bank_transfer",
+-                    "completed",
+-                    invoice.InvoiceNumber);
+-            })
+-            .Concat(bills.Select(bill => new Payment(
+-                StableId(companyId, 0, $"payment:bill:{bill.BillNumber}"),
+-                companyId,
+-                PaymentTypes.Outgoing,
+-                bill.Amount,
+-                bill.Currency,
+-                bill.ReceivedUtc.AddDays(9) > windowEndUtc ? windowEndUtc : bill.ReceivedUtc.AddDays(9),
+-                "ach",
+-                "completed",
+-                bill.BillNumber)))
+             .OrderBy(x => x.PaymentDate)
+             .ToArray();
+ 
+     private static IReadOnlyList<FinanceSeedAnomaly> CreateAnomalies(
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+@@ -160,9 +160,8 @@ public static class FinanceSeedData
+         dbContext.CompanyKnowledgeDocuments.AddRange(documents);
+         dbContext.FinanceInvoices.AddRange(invoices);
+         FinancialStatementMappingSeedDefaults.Apply(dbContext, companyId, accounts);
+         dbContext.FinanceBills.AddRange(bills);
+         dbContext.Payments.AddRange(payments);
+-        dbContext.Payments.AddRange(payments);
+         dbContext.FinanceTransactions.AddRange(transactions);
+         dbContext.FinanceBalances.AddRange(balances);
+         dbContext.FinancePolicyConfigurations.Add(policy);
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
+@@ -44,13 +44,8 @@ public sealed class FinanceSeedDatasetGeneratorTests
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId)
+             .ToArrayAsync();
+ 
+-        var payments = await dbContext.Payments
+-            .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId)
+-            .ToArrayAsync();
+-
+         Assert.All(transactions, transaction =>
+         {
+             Assert.InRange(transaction.TransactionUtc, dataset.WindowStartUtc, dataset.WindowEndUtc);
+             Assert.Contains(transaction.Id, dataset.TransactionIds);
+diff --git a/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs
+@@ -142,26 +142,37 @@ public sealed class FinancialStatementMappingPersistenceTests
+ 
+         Assert.True(firstResult.PaymentCount > 0);
+         Assert.Equal(
+             [
+                 "1000|balance_sheet|balance_sheet_assets|current_asset|True",
+@@ -176,17 +187,29 @@ public sealed class FinancialStatementMappingPersistenceTests
+                 "6100|profit_and_loss|profit_and_loss_operating_expenses|operating_expense|True"
+             ],
+             firstPass);
+         Assert.Equal(firstResult.PaymentCount, firstPaymentIds.Length);
+ 
+-        var secondResult = await service.GenerateAsync(
++        var reusedResult = await service.GenerateAsync(
++            new FinanceSeedBootstrapCommand(companyId, 42, ReplaceExisting: false),
++            CancellationToken.None);
++
++        var reusedPass = await ReadSeededMappingsAsync(dbContext, companyId);
++        var reusedPaymentIds = await ReadSeededPaymentIdsAsync(dbContext, companyId);
++
++        Assert.Equal(firstPass, reusedPass);
++        Assert.Equal(firstResult.PaymentCount, reusedResult.PaymentCount);
++        Assert.Equal(firstPaymentIds, reusedPaymentIds);
++        Assert.Equal(reusedPass.Length, reusedPass.Distinct(StringComparer.Ordinal).Count());
++        Assert.Equal(reusedPaymentIds.Length, reusedPaymentIds.Distinct().Count());
++
++        var regeneratedResult = await service.GenerateAsync(
+             new FinanceSeedBootstrapCommand(companyId, 42, ReplaceExisting: true),
+             CancellationToken.None);
+ 
+-        var secondPass = await ReadSeededMappingsAsync(dbContext, companyId);
+-        var secondPaymentIds = await ReadSeededPaymentIdsAsync(dbContext, companyId);
++        var regeneratedPass = await ReadSeededMappingsAsync(dbContext, companyId);
++        var regeneratedPaymentIds = await ReadSeededPaymentIdsAsync(dbContext, companyId);
+ 
+-        Assert.Equal(firstPass, secondPass);
+-        Assert.Equal(firstResult.PaymentCount, secondResult.PaymentCount);
+-        Assert.Equal(firstPaymentIds, secondPaymentIds);
+-        Assert.Equal(secondPass.Length, secondPass.Distinct(StringComparer.Ordinal).Count());
+-        Assert.Equal(secondPaymentIds.Length, secondPaymentIds.Distinct().Count());
++        Assert.Equal(firstPass, regeneratedPass);
++        Assert.Equal(firstResult.PaymentCount, regeneratedResult.PaymentCount);
++        Assert.Equal(firstPaymentIds, regeneratedPaymentIds);
++        Assert.Equal(regeneratedPass.Length, regeneratedPass.Distinct(StringComparer.Ordinal).Count());
++        Assert.Equal(regeneratedPaymentIds.Length, regeneratedPaymentIds.Distinct().Count());
+     }
+ 
+     private static async Task<string[]> ReadSeededMappingsAsync(VirtualCompanyDbContext dbContext, Guid companyId) =>
+         await dbContext.FinancialStatementMappings
+END_OF_PATCH

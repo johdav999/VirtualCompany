@@ -1,0 +1,557 @@
+diff --git a/src/VirtualCompany.Application/Finance/ReconciliationContracts.cs b/src/VirtualCompany.Application/Finance/ReconciliationContracts.cs
+index 4df7601..d9715ab 100644
+--- a/src/VirtualCompany.Application/Finance/ReconciliationContracts.cs
++++ b/src/VirtualCompany.Application/Finance/ReconciliationContracts.cs
+@@ -61,6 +61,7 @@ public interface IReconciliationScoringSettingsProvider
+ {
+     Task<ReconciliationScoringSettings> GetSettingsAsync(
+         Guid companyId,
++        CancellationToken cancellationToken);
++}
++
+ public sealed record CreateReconciliationSuggestionCommand(
+     Guid CompanyId,
+     string SourceRecordType,
+@@ -161,4 +162,3 @@ public interface IReconciliationSuggestionCommandService
+     Task<ReconciliationSuggestionRecordDto> RejectSuggestionAsync(
+         RejectReconciliationSuggestionCommand command,
+         CancellationToken cancellationToken);
+-}
+-}
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
+index 0d5b6bf..c4d8718 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
+@@ -165,8 +165,14 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+     public Task<BankTransactionDetailDto> ReconcileAsync(
+         ReconcileBankTransactionCommand command,
+         CancellationToken cancellationToken) =>
+-        ExecuteInTransactionAsync(async () =>
+-        {
++        ExecuteInTransactionAsync(
++            () => ReconcileWithinAmbientTransactionAsync(command, cancellationToken),
++            cancellationToken);
++
++    internal Task<BankTransactionDetailDto> ReconcileWithinAmbientTransactionAsync(
++        ReconcileBankTransactionCommand command,
++        CancellationToken cancellationToken) =>
++        ReconcileCoreAsync(command, cancellationToken);
++
++    private async Task<BankTransactionDetailDto> ReconcileCoreAsync(
++        ReconcileBankTransactionCommand command,
++        CancellationToken cancellationToken)
++    {
+             EnsureTenant(command.CompanyId);
+ 
+             if (command.BankTransactionId == Guid.Empty)
+@@ -348,7 +354,7 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+                 cancellationToken))!;
+-        }, cancellationToken);
++    }
+ 
+     private async Task<BankTransactionDetailDto?> TryLoadDuplicateReconciliationResultAsync(
+         ReconcileBankTransactionCommand command,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationSuggestionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationSuggestionService.cs
+index 4ebf2a0..3ea8d37 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationSuggestionService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationSuggestionService.cs
+@@ -16,6 +16,8 @@ public sealed class CompanyReconciliationSuggestionService :
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyContextAccessor? _companyContextAccessor;
++    private readonly CompanyBankTransactionService _bankTransactionService;
++    private readonly FinancePaymentAllocationService _paymentAllocationService;
+ 
+     public CompanyReconciliationSuggestionService(VirtualCompanyDbContext dbContext)
+         : this(dbContext, null)
+@@ -29,6 +31,8 @@ public sealed class CompanyReconciliationSuggestionService(
+     {
+         _dbContext = dbContext;
+         _companyContextAccessor = companyContextAccessor;
++        _bankTransactionService = new CompanyBankTransactionService(dbContext, companyContextAccessor);
++        _paymentAllocationService = new FinancePaymentAllocationService(dbContext);
+     }
+ 
+     public async Task<ReconciliationSuggestionRecordDto> CreateSuggestionAsync(
+@@ -133,6 +137,7 @@ public sealed class CompanyReconciliationSuggestionService(
+                 throw new InvalidOperationException($"Suggestion '{suggestion.Id}' is not actionable.");
+             }
+ 
++            await ApplyAcceptedOutcomeAsync(suggestion, cancellationToken);
+             var now = DateTime.UtcNow;
+             var result = new ReconciliationResultRecord(
+                 Guid.NewGuid(),
+@@ -198,6 +203,122 @@ public sealed class CompanyReconciliationSuggestionService(
+             return MapSuggestion(suggestion);
+         }, cancellationToken);
+ 
++    private async Task ApplyAcceptedOutcomeAsync(
++        ReconciliationSuggestionRecord suggestion,
++        CancellationToken cancellationToken)
++    {
++        if (IsPaymentBankPair(suggestion.SourceRecordType, suggestion.TargetRecordType))
++        {
++            await ApplyPaymentBankAcceptanceAsync(suggestion, cancellationToken);
++            return;
++        }
++
++        if (IsInvoicePaymentPair(suggestion.SourceRecordType, suggestion.TargetRecordType))
++        {
++            await ApplyPaymentAllocationAcceptanceAsync(suggestion, isInvoice: true, cancellationToken);
++            return;
++        }
++
++        if (IsBillPaymentPair(suggestion.SourceRecordType, suggestion.TargetRecordType))
++        {
++            await ApplyPaymentAllocationAcceptanceAsync(suggestion, isInvoice: false, cancellationToken);
++            return;
++        }
++
++        throw new InvalidOperationException(
++            $"Unsupported accepted reconciliation pair '{suggestion.SourceRecordType}' -> '{suggestion.TargetRecordType}'.");
++    }
++
++    private async Task ApplyPaymentBankAcceptanceAsync(
++        ReconciliationSuggestionRecord suggestion,
++        CancellationToken cancellationToken)
++    {
++        var paymentId = suggestion.SourceRecordType == ReconciliationRecordTypes.Payment
++            ? suggestion.SourceRecordId
++            : suggestion.TargetRecordId;
++        var bankTransactionId = suggestion.SourceRecordType == ReconciliationRecordTypes.BankTransaction
++            ? suggestion.SourceRecordId
++            : suggestion.TargetRecordId;
++
++        var existingLink = await _dbContext.BankTransactionPaymentLinks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == suggestion.CompanyId &&
++                     x.BankTransactionId == bankTransactionId &&
++                     x.PaymentId == paymentId,
++                cancellationToken);
++
++        if (existingLink is not null)
++        {
++            await _bankTransactionService.ReconcileWithinAmbientTransactionAsync(
++                new ReconcileBankTransactionCommand(
++                    suggestion.CompanyId,
++                    bankTransactionId,
++                    [new BankTransactionPaymentMatchDto(paymentId, existingLink.AllocatedAmount)]),
++                cancellationToken);
++            return;
++        }
++
++        var transaction = await LoadBankTransactionAsync(suggestion.CompanyId, bankTransactionId, cancellationToken);
++        var payment = await LoadPaymentAsync(suggestion.CompanyId, paymentId, cancellationToken);
++        var remainingOnTransaction = NormalizeMoney(Math.Max(0m, transaction.AbsoluteAmount - transaction.ReconciledAmount));
++        var allocatedAmount = NormalizeMoney(Math.Min(payment.Amount, remainingOnTransaction));
++
++        if (allocatedAmount <= 0m)
++        {
++            throw new InvalidOperationException("The selected bank transaction no longer has an open amount available for reconciliation.");
++        }
++
++        await _bankTransactionService.ReconcileWithinAmbientTransactionAsync(
++            new ReconcileBankTransactionCommand(
++                suggestion.CompanyId,
++                bankTransactionId,
++                [new BankTransactionPaymentMatchDto(paymentId, allocatedAmount)]),
++            cancellationToken);
++    }
++
++    private async Task ApplyPaymentAllocationAcceptanceAsync(
++        ReconciliationSuggestionRecord suggestion,
++        bool isInvoice,
++        CancellationToken cancellationToken)
++    {
++        var paymentId = suggestion.SourceRecordType == ReconciliationRecordTypes.Payment
++            ? suggestion.SourceRecordId
++            : suggestion.TargetRecordId;
++        var documentId = suggestion.SourceRecordType == ReconciliationRecordTypes.Payment
++            ? suggestion.TargetRecordId
++            : suggestion.SourceRecordId;
++
++        var existingAllocation = await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == suggestion.CompanyId &&
++                x.PaymentId == paymentId &&
++                (isInvoice ? x.InvoiceId == documentId : x.BillId == documentId))
++            .OrderBy(x => x.CreatedUtc)
++            .ThenBy(x => x.Id)
++            .FirstOrDefaultAsync(cancellationToken);
++
++        if (existingAllocation is not null)
++        {
++            return;
++        }
++
++        var payment = await LoadPaymentAsync(suggestion.CompanyId, paymentId, cancellationToken);
++        var remainingOnPayment = NormalizeMoney(Math.Max(
++            0m,
++            payment.Amount - await GetAllocatedToPaymentAsync(suggestion.CompanyId, paymentId, cancellationToken)));
++
++        decimal remainingOnDocument;
++        if (isInvoice)
++        {
++            var invoice = await LoadInvoiceAsync(suggestion.CompanyId, documentId, cancellationToken);
++            remainingOnDocument = NormalizeMoney(Math.Max(
++                0m,
++                invoice.Amount - await GetAllocatedToInvoiceAsync(suggestion.CompanyId, documentId, cancellationToken)));
++        }
++        else
++        {
++            var bill = await LoadBillAsync(suggestion.CompanyId, documentId, cancellationToken);
++            remainingOnDocument = NormalizeMoney(Math.Max(
++                0m,
++                bill.Amount - await GetAllocatedToBillAsync(suggestion.CompanyId, documentId, cancellationToken)));
++        }
++
++        var allocatedAmount = NormalizeMoney(Math.Min(remainingOnPayment, remainingOnDocument));
++        if (allocatedAmount <= 0m)
++        {
++            throw new InvalidOperationException("The selected payment or document no longer has an open amount available for reconciliation.");
++        }
++
++        await _paymentAllocationService.CreateWithinAmbientTransactionAsync(
++            new CreateFinancePaymentAllocationCommand(
++                suggestion.CompanyId,
++                new CreateFinancePaymentAllocationDto(
++                    paymentId,
++                    isInvoice ? documentId : null,
++                    isInvoice ? null : documentId,
++                    allocatedAmount,
++                    payment.Currency)),
++            cancellationToken);
++    }
++
+     private void EnsureTenant(Guid companyId)
+     {
+         if (companyId == Guid.Empty)
+@@ -273,6 +394,79 @@ public sealed class CompanyReconciliationSuggestionService(
+         (left.SourceRecordType == right.TargetRecordType &&
+          left.SourceRecordId == right.TargetRecordId &&
+          left.TargetRecordType == right.SourceRecordType &&
+          left.TargetRecordId == right.SourceRecordId);
++
++    private async Task<Payment> LoadPaymentAsync(
++        Guid companyId,
++        Guid paymentId,
++        CancellationToken cancellationToken)
++    {
++        var payment = await _dbContext.Payments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == paymentId, cancellationToken);
++
++        return payment ?? throw new KeyNotFoundException("Finance payment was not found.");
++    }
++
++    private async Task<BankTransaction> LoadBankTransactionAsync(
++        Guid companyId,
++        Guid bankTransactionId,
++        CancellationToken cancellationToken)
++    {
++        var transaction = await _dbContext.BankTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == bankTransactionId, cancellationToken);
++
++        return transaction ?? throw new KeyNotFoundException("Bank transaction was not found.");
++    }
++
++    private async Task<FinanceInvoice> LoadInvoiceAsync(
++        Guid companyId,
++        Guid invoiceId,
++        CancellationToken cancellationToken)
++    {
++        var invoice = await _dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == invoiceId, cancellationToken);
++
++        return invoice ?? throw new KeyNotFoundException("Finance invoice was not found.");
++    }
++
++    private async Task<FinanceBill> LoadBillAsync(
++        Guid companyId,
++        Guid billId,
++        CancellationToken cancellationToken)
++    {
++        var bill = await _dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == billId, cancellationToken);
++
++        return bill ?? throw new KeyNotFoundException("Finance bill was not found.");
++    }
++
++    private async Task<decimal> GetAllocatedToPaymentAsync(Guid companyId, Guid paymentId, CancellationToken cancellationToken) =>
++        await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.PaymentId == paymentId)
++            .SumAsync(x => (decimal?)x.AllocatedAmount, cancellationToken) ?? 0m;
++
++    private async Task<decimal> GetAllocatedToInvoiceAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken) =>
++        await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.InvoiceId == invoiceId)
++            .SumAsync(x => (decimal?)x.AllocatedAmount, cancellationToken) ?? 0m;
++
++    private async Task<decimal> GetAllocatedToBillAsync(Guid companyId, Guid billId, CancellationToken cancellationToken) =>
++        await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.BillId == billId)
++            .SumAsync(x => (decimal?)x.AllocatedAmount, cancellationToken) ?? 0m;
++
++    private static decimal NormalizeMoney(decimal value) =>
++        decimal.Round(value, 2, MidpointRounding.AwayFromZero);
++
++    private static bool IsPaymentBankPair(string sourceRecordType, string targetRecordType) =>
++        (sourceRecordType == ReconciliationRecordTypes.Payment && targetRecordType == ReconciliationRecordTypes.BankTransaction) ||
++        (sourceRecordType == ReconciliationRecordTypes.BankTransaction && targetRecordType == ReconciliationRecordTypes.Payment);
++
++    private static bool IsInvoicePaymentPair(string sourceRecordType, string targetRecordType) =>
++        (sourceRecordType == ReconciliationRecordTypes.Invoice && targetRecordType == ReconciliationRecordTypes.Payment) ||
++        (sourceRecordType == ReconciliationRecordTypes.Payment && targetRecordType == ReconciliationRecordTypes.Invoice);
++
++    private static bool IsBillPaymentPair(string sourceRecordType, string targetRecordType) =>
++        (sourceRecordType == ReconciliationRecordTypes.Bill && targetRecordType == ReconciliationRecordTypes.Payment) ||
++        (sourceRecordType == ReconciliationRecordTypes.Payment && targetRecordType == ReconciliationRecordTypes.Bill);
+ 
+     private static int NormalizeLimit(int limit) =>
+         limit <= 0
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinancePaymentAllocationService.cs b/src/VirtualCompany.Infrastructure/Finance/FinancePaymentAllocationService.cs
+index 5004f84..5d81287 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FinancePaymentAllocationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinancePaymentAllocationService.cs
+@@ -17,8 +17,13 @@ internal sealed class FinancePaymentAllocationService
+     public Task<FinancePaymentAllocationDto> CreateAsync(
+         CreateFinancePaymentAllocationCommand command,
+         CancellationToken cancellationToken) =>
+-        ExecuteInTransactionAsync(async () =>
+-        {
++        ExecuteInTransactionAsync(
++            () => CreateWithinAmbientTransactionAsync(command, cancellationToken),
++            cancellationToken);
++
++    internal async Task<FinancePaymentAllocationDto> CreateWithinAmbientTransactionAsync(
++        CreateFinancePaymentAllocationCommand command,
++        CancellationToken cancellationToken)
++    {
+             ValidateAllocationDto(command.Allocation.PaymentId, command.Allocation.InvoiceId, command.Allocation.BillId, command.Allocation.AllocatedAmount, command.Allocation.Currency);
+ 
+             var payment = await LoadPaymentAsync(command.CompanyId, command.Allocation.PaymentId, cancellationToken);
+@@ -38,7 +43,7 @@ internal sealed class FinancePaymentAllocationService
+ 
+             return Map(allocation);
+-        }, cancellationToken);
++    }
+ 
+     public Task<FinancePaymentAllocationDto> UpdateAsync(
+         UpdateFinancePaymentAllocationCommand command,
+diff --git a/tests/VirtualCompany.Api.Tests/ReconciliationPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/ReconciliationPersistenceTests.cs
+index a767aa9..bb56866 100644
+--- a/tests/VirtualCompany.Api.Tests/ReconciliationPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ReconciliationPersistenceTests.cs
+@@ -6,6 +6,7 @@ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Finance;
+ using VirtualCompany.Infrastructure.Persistence;
+ using Xunit;
+ 
+@@ -35,11 +36,32 @@ public sealed class ReconciliationPersistenceTests
+             new GetOpenReconciliationSuggestionsQuery(companyId, Limit: 10),
+             CancellationToken.None);
+ 
++        var paymentToBank = Assert.Single(openSuggestions.Where(x =>
++            x.SourceRecordType == ReconciliationRecordTypes.Payment &&
++            x.TargetRecordType == ReconciliationRecordTypes.BankTransaction));
++        var invoiceToPayment = Assert.Single(openSuggestions.Where(x =>
++            x.SourceRecordType == ReconciliationRecordTypes.Invoice &&
++            x.TargetRecordType == ReconciliationRecordTypes.Payment));
++        var billToPayment = Assert.Single(openSuggestions.Where(x =>
++            x.SourceRecordType == ReconciliationRecordTypes.Bill &&
++            x.TargetRecordType == ReconciliationRecordTypes.Payment));
++
+         Assert.Equal(3, openSuggestions.Count);
+-        Assert.Contains(openSuggestions, x => x.SourceRecordType == ReconciliationRecordTypes.Payment && x.TargetRecordType == ReconciliationRecordTypes.BankTransaction && x.Status == ReconciliationSuggestionStatuses.Open);
+-        Assert.Contains(openSuggestions, x => x.SourceRecordType == ReconciliationRecordTypes.Invoice && x.TargetRecordType == ReconciliationRecordTypes.Payment && x.Status == ReconciliationSuggestionStatuses.Open);
+-        Assert.Contains(openSuggestions, x => x.SourceRecordType == ReconciliationRecordTypes.Bill && x.TargetRecordType == ReconciliationRecordTypes.Payment && x.Status == ReconciliationSuggestionStatuses.Open);
++        Assert.Equal(ReconciliationSuggestionStatuses.Open, paymentToBank.Status);
++        Assert.Equal(ReconciliationSuggestionStatuses.Open, invoiceToPayment.Status);
++        Assert.Equal(ReconciliationSuggestionStatuses.Open, billToPayment.Status);
++        Assert.Equal(creatorUserId, paymentToBank.CreatedByUserId);
++        Assert.Equal(creatorUserId, paymentToBank.UpdatedByUserId);
++        Assert.NotEmpty(paymentToBank.RuleBreakdown);
++        Assert.Equal(companyId, invoiceToPayment.CompanyId);
++        Assert.NotEmpty(invoiceToPayment.RuleBreakdown);
++        Assert.Equal(companyId, billToPayment.CompanyId);
++        Assert.NotEmpty(billToPayment.RuleBreakdown);
+     }
+ 
+     [Fact]
+     public async Task Accept_payment_to_bank_suggestion_creates_result_and_supersedes_competing_suggestions()
+@@ -93,6 +115,19 @@ public sealed class ReconciliationPersistenceTests
+         var result = await dbContext.ReconciliationResultRecords
+             .IgnoreQueryFilters()
+             .SingleAsync(x => x.CompanyId == companyId);
++        var paymentLink = await dbContext.BankTransactionPaymentLinks
++            .IgnoreQueryFilters()
++            .SingleAsync(x =>
++                x.CompanyId == companyId &&
++                x.BankTransactionId == seed.BankTransactionId &&
++                x.PaymentId == seed.IncomingPaymentId);
++        var bankTransaction = await dbContext.BankTransactions
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.Id == seed.BankTransactionId);
+ 
+         Assert.Equal(ReconciliationSuggestionStatuses.Accepted, acceptedSuggestion.Status);
+         Assert.Equal(approverUserId, acceptedSuggestion.UpdatedByUserId);
+@@ -102,6 +137,10 @@ public sealed class ReconciliationPersistenceTests
+         Assert.Equal(approverUserId, supersededSuggestion.UpdatedByUserId);
+         Assert.NotNull(supersededSuggestion.SupersededUtc);
+         Assert.Equal(first.Id, result.AcceptedSuggestionId);
++        Assert.Equal(250m, paymentLink.AllocatedAmount);
++        Assert.Equal("USD", paymentLink.Currency);
++        Assert.Equal(250m, bankTransaction.ReconciledAmount);
++        Assert.Equal(BankTransactionReconciliationStatuses.Reconciled, bankTransaction.Status);
+ 
+         var remainingOpen = await service.GetOpenSuggestionsAsync(
+             new GetOpenReconciliationSuggestionsQuery(companyId, Limit: 10),
+@@ -109,6 +148,71 @@ public sealed class ReconciliationPersistenceTests
+         Assert.Empty(remainingOpen);
+     }
+ 
++    [Fact]
++    public async Task Accept_invoice_to_payment_suggestion_creates_result_allocation_and_supersedes_competing_suggestions()
++    {
++        var companyId = Guid.NewGuid();
++        var creatorUserId = Guid.NewGuid();
++        var approverUserId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        await SeedUsersAsync(
++            dbContext,
++            (creatorUserId, "creator@invoice-accept.example", "Creator"),
++            (approverUserId, "approver@invoice-accept.example", "Approver"));
++        var seed = await SeedCompanyFinanceScenarioAsync(dbContext, companyId);
++
++        var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
++        var first = await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.Invoice, seed.InvoiceId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, creatorUserId, ReconciliationMatchTypes.RuleBased, 0.97m),
++            CancellationToken.None);
++        await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.Payment, seed.IncomingPaymentId, ReconciliationRecordTypes.Invoice, seed.InvoiceId, creatorUserId, ReconciliationMatchTypes.Near, 0.83m),
++            CancellationToken.None);
++
++        var accepted = await service.AcceptSuggestionAsync(
++            new AcceptReconciliationSuggestionCommand(companyId, first.Id, approverUserId),
++            CancellationToken.None);
++
++        var allocation = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .SingleAsync(x =>
++                x.CompanyId == companyId &&
++                x.PaymentId == seed.IncomingPaymentId &&
++                x.InvoiceId == seed.InvoiceId);
++        var invoice = await dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.Id == seed.InvoiceId);
++        var persistedSuggestions = await dbContext.ReconciliationSuggestionRecords
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync();
++        var result = await dbContext.ReconciliationResultRecords
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.AcceptedSuggestionId == first.Id);
++
++        Assert.Equal(ReconciliationSuggestionStatuses.Accepted, accepted.Suggestion.Status);
++        Assert.Equal(1, accepted.SupersededSuggestionCount);
++        Assert.Equal(first.Id, accepted.Result.AcceptedSuggestionId);
++        Assert.Equal(ReconciliationRecordTypes.Invoice, result.SourceRecordType);
++        Assert.Equal(ReconciliationRecordTypes.Payment, result.TargetRecordType);
++        Assert.Equal(250m, allocation.AllocatedAmount);
++        Assert.Equal("USD", allocation.Currency);
++        Assert.Equal(FinanceSettlementStatuses.Paid, invoice.SettlementStatus);
++
++        var acceptedSuggestion = Assert.Single(persistedSuggestions.Where(x => x.Id == first.Id));
++        var supersededSuggestion = Assert.Single(persistedSuggestions.Where(x => x.Id != first.Id));
++        Assert.Equal(ReconciliationSuggestionStatuses.Accepted, acceptedSuggestion.Status);
++        Assert.Equal(ReconciliationSuggestionStatuses.Superseded, supersededSuggestion.Status);
++        Assert.NotNull(supersededSuggestion.SupersededUtc);
++
++        Assert.Empty(await service.GetOpenSuggestionsAsync(
++            new GetOpenReconciliationSuggestionsQuery(companyId, Limit: 10),
++            CancellationToken.None));
++    }
++
+     [Fact]
+     public async Task Reject_invoice_to_payment_suggestion_marks_rejected_and_excludes_from_open_queries()
+     {
+@@ -154,7 +258,7 @@ public sealed class ReconciliationPersistenceTests
+     }
+ 
+     [Fact]
+-    public async Task Accept_bill_to_payment_suggestion_creates_result_and_removes_it_from_default_open_queries()
++    public async Task Accept_bill_to_payment_suggestion_creates_result_allocation_and_supersedes_competing_suggestions()
+     {
+         var companyId = Guid.NewGuid();
+         var creatorUserId = Guid.NewGuid();
+@@ -171,18 +275,44 @@ public sealed class ReconciliationPersistenceTests
+ 
+         var service = new CompanyReconciliationSuggestionService(dbContext, accessor);
+         var created = await service.CreateSuggestionAsync(
+-            CreateCommand(companyId, ReconciliationRecordTypes.Bill, seed.BillId, ReconciliationRecordTypes.Payment, seed.OutgoingPaymentId, creatorUserId, ReconciliationMatchTypes.Exact, 1.00m),
++            CreateCommand(companyId, ReconciliationRecordTypes.Bill, seed.BillId, ReconciliationRecordTypes.Payment, seed.OutgoingPaymentId, creatorUserId, ReconciliationMatchTypes.Exact, 1.00m),
++            CancellationToken.None);
++        await service.CreateSuggestionAsync(
++            CreateCommand(companyId, ReconciliationRecordTypes.Payment, seed.OutgoingPaymentId, ReconciliationRecordTypes.Bill, seed.BillId, creatorUserId, ReconciliationMatchTypes.Near, 0.82m),
+             CancellationToken.None);
+ 
+         var accepted = await service.AcceptSuggestionAsync(
+             new AcceptReconciliationSuggestionCommand(companyId, created.Id, approverUserId),
+             CancellationToken.None);
+ 
++        var allocation = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .SingleAsync(x =>
++                x.CompanyId == companyId &&
++                x.PaymentId == seed.OutgoingPaymentId &&
++                x.BillId == seed.BillId);
++        var bill = await dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.Id == seed.BillId);
++        var suggestions = await dbContext.ReconciliationSuggestionRecords
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync();
++
+         Assert.Equal(created.Id, accepted.Result.AcceptedSuggestionId);
+         Assert.Equal(ReconciliationRecordTypes.Bill, accepted.Result.SourceRecordType);
+         Assert.Equal(ReconciliationRecordTypes.Payment, accepted.Result.TargetRecordType);
+         Assert.Equal(ReconciliationSuggestionStatuses.Accepted, accepted.Suggestion.Status);
++        Assert.Equal(1, accepted.SupersededSuggestionCount);
++        Assert.Equal(180m, allocation.AllocatedAmount);
++        Assert.Equal("USD", allocation.Currency);
++        Assert.Equal(FinanceSettlementStatuses.Paid, bill.SettlementStatus);
++
++        var acceptedSuggestion = Assert.Single(suggestions.Where(x => x.Id == created.Id));
++        var supersededSuggestion = Assert.Single(suggestions.Where(x => x.Id != created.Id));
++        Assert.Equal(ReconciliationSuggestionStatuses.Accepted, acceptedSuggestion.Status);
++        Assert.Equal(ReconciliationSuggestionStatuses.Superseded, supersededSuggestion.Status);
++        Assert.NotNull(supersededSuggestion.SupersededUtc);
+ 
+         Assert.Empty(await service.GetOpenSuggestionsAsync(
+             new GetOpenReconciliationSuggestionsQuery(companyId, Limit: 10),
+ END_OF_PATCH

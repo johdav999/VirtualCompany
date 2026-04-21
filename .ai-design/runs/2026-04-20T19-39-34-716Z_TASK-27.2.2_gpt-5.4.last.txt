@@ -1,0 +1,259 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 4f8cb6d..7f04fd9 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -342,7 +342,6 @@ public sealed record GetFinanceForecastsQuery(
+     DateTime PeriodEndUtc,
+     Guid? FinanceAccountId = null,
+     string? Version = null);
+-    int TargetTransactionIndex);
+ 
+ public interface IFinanceGenerationPolicy
+ {
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePlanningEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePlanningEndpointsIntegrationTests.cs
+index 8368a83..530feec 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancePlanningEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePlanningEndpointsIntegrationTests.cs
+@@ -80,20 +80,65 @@ public sealed class FinancePlanningEndpointsIntegrationTests : IClassFixture<Tes
+         Assert.Equal(925m, updated.Amount);
+     }
+ 
++    [Fact]
++    public async Task Budget_create_endpoint_rejects_cross_tenant_account_reference()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var createResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/budgets",
++            new
++            {
++                FinanceAccountId = seed.OtherCompanyAccountId,
++                PeriodStartUtc = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
++                Version = "working",
++                Amount = 875m,
++                Currency = "USD"
++            });
++
++        Assert.Equal(HttpStatusCode.BadRequest, createResponse.StatusCode);
++    }
++
++    [Fact]
++    public async Task Budget_endpoints_enforce_company_membership_and_hide_cross_tenant_rows()
++    {
++        var seed = await SeedAsync();
++
++        using var outsiderClient = CreateAuthenticatedClient(seed.OutsiderSubject, seed.OutsiderEmail, seed.OutsiderDisplayName);
++        var forbiddenResponse = await outsiderClient.GetAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/budgets?periodStartUtc=2026-04-01T00:00:00Z&periodEndUtc=2026-05-01T00:00:00Z");
++        Assert.Equal(HttpStatusCode.Forbidden, forbiddenResponse.StatusCode);
++
++        using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var crossTenantUpdate = await ownerClient.PutAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/budgets/{seed.OtherCompanyBudgetId}",
++            new
++            {
++                FinanceAccountId = seed.ExpenseAccountId,
++                PeriodStartUtc = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
++                Version = "working",
++                Amount = 925m,
++                Currency = "USD"
++            });
++
++        Assert.Equal(HttpStatusCode.NotFound, crossTenantUpdate.StatusCode);
++    }
++
+     private async Task<PlanningEndpointSeed> SeedAsync()
+     {
+         var userId = Guid.NewGuid();
++        var outsiderUserId = Guid.NewGuid();
+         var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
+         var subject = $"planning-{Guid.NewGuid():N}";
+         var email = $"{subject}@example.com";
+         const string displayName = "Planning Owner";
++        var outsiderSubject = $"planning-outsider-{Guid.NewGuid():N}";
++        var outsiderEmail = $"{outsiderSubject}@example.com";
++        const string outsiderDisplayName = "Planning Outsider";
+         var revenueAccountId = Guid.NewGuid();
+         var expenseAccountId = Guid.NewGuid();
++        var otherCompanyAccountId = Guid.NewGuid();
++        var otherCompanyBudgetId = Guid.NewGuid();
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+-            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++            dbContext.Users.AddRange(
++                new User(userId, email, displayName, "dev-header", subject),
++                new User(outsiderUserId, outsiderEmail, outsiderDisplayName, "dev-header", outsiderSubject));
+ 
+             var company = new Company(companyId, "Planning Company");
+             company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
+-            dbContext.Companies.Add(company);
++            var otherCompany = new Company(otherCompanyId, "Other Planning Company");
++            otherCompany.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++            dbContext.Companies.AddRange(company, otherCompany);
+             dbContext.CompanyMemberships.Add(new CompanyMembership(
+                 Guid.NewGuid(),
+                 companyId,
+@@ -112,7 +157,15 @@ public sealed class FinancePlanningEndpointsIntegrationTests : IClassFixture<Tes
+                     "5000",
+                     "Payroll",
+                     "expense",
++                    "USD",
++                    0m,
++                    new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++                new FinanceAccount(
++                    otherCompanyAccountId,
++                    otherCompanyId,
++                    "4000",
++                    "External Sales",
++                    "revenue",
+                     "USD",
+                     0m,
+                     new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+@@ -120,7 +173,8 @@ public sealed class FinancePlanningEndpointsIntegrationTests : IClassFixture<Tes
+             dbContext.Budgets.AddRange(
+                 new Budget(Guid.NewGuid(), companyId, revenueAccountId, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), "baseline", 5000m, "USD"),
+                 new Budget(Guid.NewGuid(), companyId, expenseAccountId, new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc), "baseline", 1800m, "USD"),
+-                new Budget(Guid.NewGuid(), companyId, expenseAccountId, new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc), "working", 1900m, "USD"));
++                new Budget(Guid.NewGuid(), companyId, expenseAccountId, new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc), "working", 1900m, "USD"),
++                new Budget(otherCompanyBudgetId, otherCompanyId, otherCompanyAccountId, new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc), "baseline", 6400m, "USD"));
+ 
+             dbContext.Forecasts.AddRange(
+                 new Forecast(Guid.NewGuid(), companyId, revenueAccountId, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), "baseline", 5100m, "USD"),
+@@ -132,12 +186,20 @@ public sealed class FinancePlanningEndpointsIntegrationTests : IClassFixture<Tes
+             return Task.CompletedTask;
+         });
+ 
+-        return new PlanningEndpointSeed(companyId, subject, email, displayName, revenueAccountId, expenseAccountId);
++        return new PlanningEndpointSeed(
++            companyId,
++            subject,
++            email,
++            displayName,
++            outsiderSubject,
++            outsiderEmail,
++            outsiderDisplayName,
++            revenueAccountId,
++            expenseAccountId,
++            otherCompanyAccountId,
++            otherCompanyBudgetId);
+     }
+ 
+-    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+-    {
+-        var client = _factory.CreateClient();
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName) {        var client = _factory.CreateClient();
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
+@@ -148,8 +210,13 @@ public sealed class FinancePlanningEndpointsIntegrationTests : IClassFixture<Tes
+         Guid CompanyId,
+         string Subject,
+         string Email,
++        string DisplayName,
++        string OutsiderSubject,
++        string OutsiderEmail,
++        string OutsiderDisplayName,
++        Guid RevenueAccountId,
++        Guid ExpenseAccountId,
++        Guid OtherCompanyAccountId,
++        Guid OtherCompanyBudgetId);
+-        string DisplayName,
+-        Guid RevenueAccountId,
+-        Guid ExpenseAccountId);
+ 
+     private sealed class BudgetResponse
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePlanningPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/FinancePlanningPersistenceTests.cs
+index 19db7ca..4a70a76 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancePlanningPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePlanningPersistenceTests.cs
+@@ -41,6 +41,33 @@ public sealed class FinancePlanningPersistenceTests
+         await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());
+     }
+ 
++    [Fact]
++    public async Task Forecast_configuration_rejects_duplicate_null_cost_center_entries()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        var accountId = Guid.NewGuid();
++
++        dbContext.Companies.Add(new Company(companyId, "Planning Co"));
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            accountId,
++            companyId,
++            "4000",
++            "Sales",
++            "revenue",
++            "USD",
++            0m,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        await dbContext.SaveChangesAsync();
++
++        var periodStartUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
++        dbContext.Forecasts.Add(new Forecast(Guid.NewGuid(), companyId, accountId, periodStartUtc, "baseline", 100m, "USD"));
++        await dbContext.SaveChangesAsync();
++
++        dbContext.Forecasts.Add(new Forecast(Guid.NewGuid(), companyId, accountId, periodStartUtc, "baseline", 200m, "USD"));
++        await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());
++    }
++
+     [Fact]
+     public async Task Budget_configuration_allows_same_period_when_version_differs()
+     {
+@@ -65,6 +92,47 @@ public sealed class FinancePlanningPersistenceTests
+         await dbContext.SaveChangesAsync();
+ 
+         Assert.Equal(2, await dbContext.Budgets.CountAsync());
++    }
++
++    [Fact]
++    public async Task Planning_baseline_service_backfills_missing_rows_for_existing_company()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        var firstAccountId = Guid.NewGuid();
++        var secondAccountId = Guid.NewGuid();
++        var horizonStartUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
++
++        var company = new Company(companyId, "Planning Co");
++        company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++        dbContext.Companies.Add(company);
++        dbContext.FinanceAccounts.AddRange(
++            new FinanceAccount(firstAccountId, companyId, "1000", "Cash", "asset", "USD", 0m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FinanceAccount(secondAccountId, companyId, "4000", "Sales", "revenue", "USD", 0m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.FiscalPeriods.Add(new FiscalPeriod(
++            Guid.NewGuid(),
++            companyId,
++            "2026-04",
++            horizonStartUtc,
++            new DateTime(2026, 4, 30, 23, 59, 59, DateTimeKind.Utc)));
++        dbContext.Budgets.Add(new Budget(Guid.NewGuid(), companyId, firstAccountId, horizonStartUtc, FinancePlanningVersions.Baseline, 100m, "USD"));
++        dbContext.Forecasts.Add(new Forecast(Guid.NewGuid(), companyId, firstAccountId, horizonStartUtc, FinancePlanningVersions.Baseline, 120m, "USD"));
++        await dbContext.SaveChangesAsync();
++
++        var service = new PlanningBaselineService(dbContext);
++        var inserted = await service.EnsureBaselineAsync(companyId, CancellationToken.None);
++
++        Assert.Equal(46, inserted);
++        Assert.Equal(24, await dbContext.Budgets.CountAsync());
++        Assert.Equal(24, await dbContext.Forecasts.CountAsync());
++        Assert.Equal(
++            12,
++            await dbContext.Budgets.CountAsync(x =>
++                x.CompanyId == companyId &&
++                x.FinanceAccountId == firstAccountId));
++        Assert.Equal(
++            12,
++            await dbContext.Forecasts.CountAsync(x =>
++                x.CompanyId == companyId &&
++                x.FinanceAccountId == firstAccountId));
+     }
+ 
+     [Fact]
+END_OF_PATCH

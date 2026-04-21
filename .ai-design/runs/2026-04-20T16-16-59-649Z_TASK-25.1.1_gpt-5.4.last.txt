@@ -1,0 +1,1115 @@
+diff --git a/src/VirtualCompany.Application/Finance/ReconciliationContracts.cs b/src/VirtualCompany.Application/Finance/ReconciliationContracts.cs
+new file mode 100644
+index 0000000..f0d9e9b
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/ReconciliationContracts.cs
+@@ -0,0 +1,73 @@
++using VirtualCompany.Domain.Finance;
++
++namespace VirtualCompany.Application.Finance;
++
++public static class ReconciliationSourceTypes
++{
++    public const string BankTransaction = "bank_transaction";
++    public const string Invoice = "invoice";
++    public const string Bill = "bill";
++}
++
++public sealed record ReconciliationPaymentCandidate(
++    Guid PaymentId,
++    decimal Amount,
++    string Currency,
++    DateTime PaymentDate,
++    string CounterpartyReference,
++    string? CounterpartyName = null);
++
++public sealed record ScoreBankTransactionPaymentCandidatesQuery(
++    Guid CompanyId,
++    Guid BankTransactionId,
++    decimal Amount,
++    string Currency,
++    DateTime BookingDate,
++    string ReferenceText,
++    string Counterparty,
++    IReadOnlyList<ReconciliationPaymentCandidate> Candidates);
++
++public sealed record ScoreInvoicePaymentCandidatesQuery(
++    Guid CompanyId,
++    Guid InvoiceId,
++    decimal Amount,
++    string Currency,
++    DateTime DueUtc,
++    string InvoiceNumber,
++    string CounterpartyName,
++    IReadOnlyList<ReconciliationPaymentCandidate> Candidates);
++
++public sealed record ScoreBillPaymentCandidatesQuery(
++    Guid CompanyId,
++    Guid BillId,
++    decimal Amount,
++    string Currency,
++    DateTime DueUtc,
++    string BillNumber,
++    string CounterpartyName,
++    IReadOnlyList<ReconciliationPaymentCandidate> Candidates);
++
++public sealed record ReconciliationSuggestionsResult(
++    Guid CompanyId,
++    string SourceType,
++    Guid SourceRecordId,
++    ReconciliationScoringSettings Settings,
++    IReadOnlyList<ReconciliationSuggestion> Suggestions);
++
++public interface IReconciliationScoringService
++{
++    Task<ReconciliationSuggestionsResult> ScoreBankTransactionCandidatesAsync(
++        ScoreBankTransactionPaymentCandidatesQuery query,
++        CancellationToken cancellationToken);
++
++    Task<ReconciliationSuggestionsResult> ScoreInvoiceCandidatesAsync(
++        ScoreInvoicePaymentCandidatesQuery query,
++        CancellationToken cancellationToken);
++
++    Task<ReconciliationSuggestionsResult> ScoreBillCandidatesAsync(
++        ScoreBillPaymentCandidatesQuery query,
++        CancellationToken cancellationToken);
++}
++
++public interface IReconciliationScoringSettingsProvider
++{
++    Task<ReconciliationScoringSettings> GetSettingsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Domain/Finance/ReconciliationScoring.cs b/src/VirtualCompany.Domain/Finance/ReconciliationScoring.cs
+new file mode 100644
+index 0000000..129e8f2
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Finance/ReconciliationScoring.cs
+@@ -0,0 +1,362 @@
++using System.Globalization;
++using System.Text;
++
++namespace VirtualCompany.Domain.Finance;
++
++public static class ReconciliationRuleNames
++{
++    public const string Amount = "amount";
++    public const string Date = "date";
++    public const string Reference = "reference";
++    public const string Counterparty = "counterparty";
++}
++
++public sealed record ReconciliationScoringSettings
++{
++    public static ReconciliationScoringSettings Default { get; } = new(5m, 7);
++
++    public ReconciliationScoringSettings(decimal nearAmountTolerance, int dateProximityWindowDays)
++    {
++        NearAmountTolerance = decimal.Round(Math.Max(0m, nearAmountTolerance), 2, MidpointRounding.AwayFromZero);
++        DateProximityWindowDays = Math.Max(0, dateProximityWindowDays);
++    }
++
++    public decimal NearAmountTolerance { get; }
++    public int DateProximityWindowDays { get; }
++}
++
++public sealed record ReconciliationComparableRecord(
++    Guid RecordId,
++    decimal Amount,
++    string Currency,
++    DateTime Date,
++    string? Reference,
++    string? Counterparty);
++
++public sealed record ReconciliationRuleDetail(
++    string RuleName,
++    decimal Score,
++    decimal Weight,
++    bool Matched,
++    string Explanation,
++    string? SourceValue = null,
++    string? CandidateValue = null);
++
++public sealed record ReconciliationSuggestion(
++    Guid CandidatePaymentId,
++    decimal CandidateAmount,
++    string CandidateCurrency,
++    DateTime CandidateDate,
++    string? CandidateReference,
++    string? CandidateCounterparty,
++    decimal ConfidenceScore,
++    int Rank,
++    IReadOnlyList<ReconciliationRuleDetail> RuleDetails,
++    string Explanation);
++
++public static class ReconciliationScoringEngine
++{
++    private const decimal AmountWeight = 0.40m;
++    private const decimal DateWeight = 0.20m;
++    private const decimal ReferenceWeight = 0.25m;
++    private const decimal CounterpartyWeight = 0.15m;
++
++    public static IReadOnlyList<ReconciliationSuggestion> ScoreCandidates(
++        ReconciliationComparableRecord source,
++        IEnumerable<ReconciliationComparableRecord> candidates,
++        ReconciliationScoringSettings settings)
++    {
++        ArgumentNullException.ThrowIfNull(candidates);
++        ArgumentNullException.ThrowIfNull(settings);
++
++        var scored = candidates
++            .Select(candidate => BuildSuggestion(source, candidate, settings))
++            .OrderByDescending(x => x.ConfidenceScore)
++            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.Amount))
++            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.Date))
++            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.Reference))
++            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.Counterparty))
++            .ThenBy(x => x.CandidatePaymentId)
++            .ToList();
++
++        for (var index = 0; index < scored.Count; index++)
++        {
++            scored[index] = scored[index] with { Rank = index + 1 };
++        }
++
++        return scored;
++    }
++
++    private static ReconciliationSuggestion BuildSuggestion(
++        ReconciliationComparableRecord source,
++        ReconciliationComparableRecord candidate,
++        ReconciliationScoringSettings settings)
++    {
++        var amountDetail = ScoreAmount(source, candidate, settings);
++        var dateDetail = ScoreDate(source, candidate, settings);
++        var referenceDetail = ScoreTextRule(
++            ReconciliationRuleNames.Reference,
++            source.Reference,
++            candidate.Reference,
++            ReferenceWeight,
++            "Reference");
++        var counterpartyDetail = ScoreTextRule(
++            ReconciliationRuleNames.Counterparty,
++            source.Counterparty,
++            candidate.Counterparty,
++            CounterpartyWeight,
++            "Counterparty");
++
++        var details = new[]
++        {
++            amountDetail,
++            dateDetail,
++            referenceDetail,
++            counterpartyDetail
++        };
++
++        var confidenceScore = RoundScore(details.Sum(x => x.Score * x.Weight));
++        var explanation = string.Join(
++            "; ",
++            details
++                .Where(x => x.Matched)
++                .Select(x => x.Explanation));
++
++        return new ReconciliationSuggestion(
++            candidate.RecordId,
++            decimal.Round(candidate.Amount, 2, MidpointRounding.AwayFromZero),
++            NormalizeCurrency(candidate.Currency),
++            NormalizeUtc(candidate.Date),
++            candidate.Reference?.Trim(),
++            candidate.Counterparty?.Trim(),
++            confidenceScore,
++            0,
++            details,
++            string.IsNullOrWhiteSpace(explanation) ? "No reconciliation rules matched." : explanation);
++    }
++
++    private static ReconciliationRuleDetail ScoreAmount(
++        ReconciliationComparableRecord source,
++        ReconciliationComparableRecord candidate,
++        ReconciliationScoringSettings settings)
++    {
++        var sourceCurrency = NormalizeCurrency(source.Currency);
++        var candidateCurrency = NormalizeCurrency(candidate.Currency);
++        var sourceAmount = decimal.Round(Math.Abs(source.Amount), 2, MidpointRounding.AwayFromZero);
++        var candidateAmount = decimal.Round(Math.Abs(candidate.Amount), 2, MidpointRounding.AwayFromZero);
++
++        if (!string.Equals(sourceCurrency, candidateCurrency, StringComparison.OrdinalIgnoreCase))
++        {
++            return new ReconciliationRuleDetail(
++                ReconciliationRuleNames.Amount,
++                0m,
++                AmountWeight,
++                false,
++                $"Currency mismatch ({sourceCurrency} vs {candidateCurrency}).",
++                FormatAmount(sourceAmount, sourceCurrency),
++                FormatAmount(candidateAmount, candidateCurrency));
++        }
++
++        var difference = decimal.Round(Math.Abs(sourceAmount - candidateAmount), 2, MidpointRounding.AwayFromZero);
++        if (difference == 0m)
++        {
++            return new ReconciliationRuleDetail(
++                ReconciliationRuleNames.Amount,
++                1m,
++                AmountWeight,
++                true,
++                "Amount exact match.",
++                FormatAmount(sourceAmount, sourceCurrency),
++                FormatAmount(candidateAmount, candidateCurrency));
++        }
++
++        if (settings.NearAmountTolerance > 0m && difference <= settings.NearAmountTolerance)
++        {
++            var ratio = 1m - (difference / settings.NearAmountTolerance);
++            var score = 0.70m + (0.20m * Math.Clamp(ratio, 0m, 1m));
++            return new ReconciliationRuleDetail(
++                ReconciliationRuleNames.Amount,
++                RoundScore(score),
++                AmountWeight,
++                true,
++                $"Amount within tenant tolerance of {settings.NearAmountTolerance.ToString("0.00", CultureInfo.InvariantCulture)}.",
++                FormatAmount(sourceAmount, sourceCurrency),
++                FormatAmount(candidateAmount, candidateCurrency));
++        }
++
++        return new ReconciliationRuleDetail(
++            ReconciliationRuleNames.Amount,
++            0m,
++            AmountWeight,
++            false,
++            difference > 0m
++                ? $"Amount difference {difference.ToString("0.00", CultureInfo.InvariantCulture)} exceeds tenant tolerance of {settings.NearAmountTolerance.ToString("0.00", CultureInfo.InvariantCulture)}."
++                : "Amount did not match.",
++            FormatAmount(sourceAmount, sourceCurrency),
++            FormatAmount(candidateAmount, candidateCurrency));
++    }
++
++    private static ReconciliationRuleDetail ScoreDate(
++        ReconciliationComparableRecord source,
++        ReconciliationComparableRecord candidate,
++        ReconciliationScoringSettings settings)
++    {
++        var sourceDate = NormalizeUtc(source.Date).Date;
++        var candidateDate = NormalizeUtc(candidate.Date).Date;
++        var differenceDays = Math.Abs((sourceDate - candidateDate).Days);
++
++        if (differenceDays == 0)
++        {
++            return new ReconciliationRuleDetail(
++                ReconciliationRuleNames.Date,
++                1m,
++                DateWeight,
++                true,
++                "Date exact match.",
++                sourceDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
++                candidateDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
++        }
++
++        if (differenceDays <= settings.DateProximityWindowDays && settings.DateProximityWindowDays > 0)
++        {
++            var score = 1m - (differenceDays / (decimal)(settings.DateProximityWindowDays + 1));
++            return new ReconciliationRuleDetail(
++                ReconciliationRuleNames.Date,
++                RoundScore(score),
++                DateWeight,
++                true,
++                $"Date difference {differenceDays} day(s) within window {settings.DateProximityWindowDays}.",
++                sourceDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
++                candidateDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
++        }
++
++        return new ReconciliationRuleDetail(
++            ReconciliationRuleNames.Date,
++            0m,
++            DateWeight,
++            false,
++            settings.DateProximityWindowDays == 0
++                ? "Date did not exactly match."
++                : $"Date difference {differenceDays} day(s) is outside window {settings.DateProximityWindowDays}.",
++            sourceDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
++            candidateDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
++    }
++
++    private static ReconciliationRuleDetail ScoreTextRule(
++        string ruleName,
++        string? sourceValue,
++        string? candidateValue,
++        decimal weight,
++        string label)
++    {
++        var sourceNormalized = NormalizeText(sourceValue);
++        var candidateNormalized = NormalizeText(candidateValue);
++
++        if (string.IsNullOrWhiteSpace(sourceNormalized) || string.IsNullOrWhiteSpace(candidateNormalized))
++        {
++            return new ReconciliationRuleDetail(
++                ruleName,
++                0m,
++                weight,
++                false,
++                $"{label} missing for comparison.",
++                sourceValue?.Trim(),
++                candidateValue?.Trim());
++        }
++
++        if (string.Equals(sourceNormalized, candidateNormalized, StringComparison.Ordinal))
++        {
++            return new ReconciliationRuleDetail(
++                ruleName,
++                1m,
++                weight,
++                true,
++                $"{label} normalized exact match.",
++                sourceValue?.Trim(),
++                candidateValue?.Trim());
++        }
++
++        if (sourceNormalized.Contains(candidateNormalized, StringComparison.Ordinal) ||
++            candidateNormalized.Contains(sourceNormalized, StringComparison.Ordinal))
++        {
++            return new ReconciliationRuleDetail(
++                ruleName,
++                0.85m,
++                weight,
++                true,
++                $"{label} contains match after normalization.",
++                sourceValue?.Trim(),
++                candidateValue?.Trim());
++        }
++
++        var sourceTokens = Tokenize(sourceNormalized);
++        var candidateTokens = Tokenize(candidateNormalized);
++        var commonTokens = sourceTokens.Intersect(candidateTokens, StringComparer.Ordinal).ToArray();
++        if (commonTokens.Length > 0)
++        {
++            var overlap = commonTokens.Length / (decimal)Math.Max(sourceTokens.Length, candidateTokens.Length);
++            var score = Math.Max(0.35m, overlap * 0.75m);
++            return new ReconciliationRuleDetail(
++                ruleName,
++                RoundScore(score),
++                weight,
++                true,
++                $"{label} token overlap matched on {string.Join(", ", commonTokens)}.",
++                sourceValue?.Trim(),
++                candidateValue?.Trim());
++        }
++
++        return new ReconciliationRuleDetail(
++            ruleName,
++            0m,
++            weight,
++            false,
++            $"{label} did not match after normalization.",
++            sourceValue?.Trim(),
++            candidateValue?.Trim());
++    }
++
++    private static decimal GetRuleScore(
++        IReadOnlyList<ReconciliationRuleDetail> details,
++        string ruleName) =>
++        details.First(x => string.Equals(x.RuleName, ruleName, StringComparison.Ordinal)).Score;
++
++    private static string NormalizeCurrency(string currency) =>
++        string.IsNullOrWhiteSpace(currency)
++            ? string.Empty
++            : currency.Trim().ToUpperInvariant();
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc
++            ? value
++            : value.ToUniversalTime();
++
++    private static string NormalizeText(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return string.Empty;
++        }
++
++        var builder = new StringBuilder(value.Length);
++        var previousWasSpace = false;
++        foreach (var character in value.Trim().ToUpperInvariant())
++        {
++            if (char.IsLetterOrDigit(character))
++            {
++                builder.Append(character);
++                previousWasSpace = false;
++                continue;
++            }
++
++            if (previousWasSpace)
++            {
++                continue;
++            }
++
++            builder.Append(' ');
++            previousWasSpace = true;
++        }
++
++        return builder.ToString().Trim();
++    }
++
++    private static string[] Tokenize(string normalized) =>
++        normalized
++            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
++            .Distinct(StringComparer.Ordinal)
++            .ToArray();
++
++    private static string FormatAmount(decimal amount, string currency) =>
++        string.IsNullOrWhiteSpace(currency)
++            ? amount.ToString("0.00", CultureInfo.InvariantCulture)
++            : $"{amount.ToString("0.00", CultureInfo.InvariantCulture)} {currency}";
++
++    private static decimal RoundScore(decimal score) =>
++        decimal.Round(Math.Clamp(score, 0m, 1m), 2, MidpointRounding.AwayFromZero);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 24f57be..1eeb2fb 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -404,6 +404,8 @@ public static class DependencyInjection
+         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
+         services.AddScoped<IFinancePaymentReadService, CompanyFinanceReadService>();
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
++        services.AddScoped<IReconciliationScoringSettingsProvider, CompanyReconciliationScoringSettingsProvider>();
++        services.AddScoped<IReconciliationScoringService, CompanyReconciliationScoringService>();
+         services.AddScoped<ExecutionExceptionService>();
+         services.AddScoped<ICompanySimulationService, CompanySimulationService>();
+         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationScoringService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationScoringService.cs
+new file mode 100644
+index 0000000..2c1d874
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationScoringService.cs
+@@ -0,0 +1,246 @@
++using System.Globalization;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyReconciliationScoringService : IReconciliationScoringService
++{
++    private readonly IReconciliationScoringSettingsProvider _settingsProvider;
++
++    public CompanyReconciliationScoringService(IReconciliationScoringSettingsProvider settingsProvider)
++    {
++        _settingsProvider = settingsProvider;
++    }
++
++    public async Task<ReconciliationSuggestionsResult> ScoreBankTransactionCandidatesAsync(
++        ScoreBankTransactionPaymentCandidatesQuery query,
++        CancellationToken cancellationToken)
++    {
++        ValidateCompany(query.CompanyId);
++        ValidateRecord(query.BankTransactionId, nameof(query.BankTransactionId));
++
++        var settings = await _settingsProvider.GetSettingsAsync(query.CompanyId, cancellationToken);
++        var source = new ReconciliationComparableRecord(
++            query.BankTransactionId,
++            query.Amount,
++            query.Currency,
++            query.BookingDate,
++            query.ReferenceText,
++            query.Counterparty);
++
++        return new ReconciliationSuggestionsResult(
++            query.CompanyId,
++            ReconciliationSourceTypes.BankTransaction,
++            query.BankTransactionId,
++            settings,
++            ReconciliationScoringEngine.ScoreCandidates(source, MapCandidates(query.Candidates), settings));
++    }
++
++    public async Task<ReconciliationSuggestionsResult> ScoreInvoiceCandidatesAsync(
++        ScoreInvoicePaymentCandidatesQuery query,
++        CancellationToken cancellationToken)
++    {
++        ValidateCompany(query.CompanyId);
++        ValidateRecord(query.InvoiceId, nameof(query.InvoiceId));
++
++        var settings = await _settingsProvider.GetSettingsAsync(query.CompanyId, cancellationToken);
++        var source = new ReconciliationComparableRecord(
++            query.InvoiceId,
++            query.Amount,
++            query.Currency,
++            query.DueUtc,
++            query.InvoiceNumber,
++            query.CounterpartyName);
++
++        return new ReconciliationSuggestionsResult(
++            query.CompanyId,
++            ReconciliationSourceTypes.Invoice,
++            query.InvoiceId,
++            settings,
++            ReconciliationScoringEngine.ScoreCandidates(source, MapCandidates(query.Candidates), settings));
++    }
++
++    public async Task<ReconciliationSuggestionsResult> ScoreBillCandidatesAsync(
++        ScoreBillPaymentCandidatesQuery query,
++        CancellationToken cancellationToken)
++    {
++        ValidateCompany(query.CompanyId);
++        ValidateRecord(query.BillId, nameof(query.BillId));
++
++        var settings = await _settingsProvider.GetSettingsAsync(query.CompanyId, cancellationToken);
++        var source = new ReconciliationComparableRecord(
++            query.BillId,
++            query.Amount,
++            query.Currency,
++            query.DueUtc,
++            query.BillNumber,
++            query.CounterpartyName);
++
++        return new ReconciliationSuggestionsResult(
++            query.CompanyId,
++            ReconciliationSourceTypes.Bill,
++            query.BillId,
++            settings,
++            ReconciliationScoringEngine.ScoreCandidates(source, MapCandidates(query.Candidates), settings));
++    }
++
++    private static IReadOnlyList<ReconciliationComparableRecord> MapCandidates(
++        IReadOnlyList<ReconciliationPaymentCandidate> candidates)
++    {
++        if (candidates is null)
++        {
++            return [];
++        }
++
++        return candidates
++            .Select(candidate =>
++            {
++                ValidateRecord(candidate.PaymentId, nameof(candidate.PaymentId));
++                return new ReconciliationComparableRecord(
++                    candidate.PaymentId,
++                    candidate.Amount,
++                    candidate.Currency,
++                    candidate.PaymentDate,
++                    candidate.CounterpartyReference,
++                    candidate.CounterpartyName);
++            })
++            .ToList();
++    }
++
++    private static void ValidateCompany(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++    }
++
++    private static void ValidateRecord(Guid recordId, string name)
++    {
++        if (recordId == Guid.Empty)
++        {
++            throw new ArgumentException("Record id is required.", name);
++        }
++    }
++}
++
++public sealed class CompanyReconciliationScoringSettingsProvider : IReconciliationScoringSettingsProvider
++{
++    private const string ExtensionKey = "reconciliationScoring";
++    private const string AmountToleranceKey = "nearAmountTolerance";
++    private const string DateWindowKey = "dateProximityWindowDays";
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
++
++    public CompanyReconciliationScoringSettingsProvider(VirtualCompanyDbContext dbContext)
++        : this(dbContext, null)
++    {
++    }
++
++    public CompanyReconciliationScoringSettingsProvider(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor? companyContextAccessor)
++    {
++        _dbContext = dbContext;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public async Task<ReconciliationScoringSettings> GetSettingsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++
++        EnsureTenant(companyId);
++
++        var company = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.Id == companyId, cancellationToken);
++
++        if (company is null)
++        {
++            throw new KeyNotFoundException($"Company '{companyId}' was not found.");
++        }
++
++        if (!company.Settings.Extensions.TryGetValue(ExtensionKey, out var node) || node is not JsonObject values)
++        {
++            return ReconciliationScoringSettings.Default;
++        }
++
++        var tolerance = ReadDecimal(values, AmountToleranceKey) ?? ReconciliationScoringSettings.Default.NearAmountTolerance;
++        var dateWindow = ReadInt(values, DateWindowKey) ?? ReconciliationScoringSettings.Default.DateProximityWindowDays;
++        return new ReconciliationScoringSettings(tolerance, dateWindow);
++    }
++
++    private void EnsureTenant(Guid companyId)
++    {
++        if (_companyContextAccessor?.CompanyId is Guid scopedCompanyId && scopedCompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException("Reconciliation scoring settings can only be resolved for the active company context.");
++        }
++    }
++
++    private static decimal? ReadDecimal(JsonObject values, string key)
++    {
++        if (!values.TryGetPropertyValue(key, out var node) || node is null)
++        {
++            return null;
++        }
++
++        if (node is JsonValue jsonValue)
++        {
++            if (jsonValue.TryGetValue<decimal>(out var decimalValue))
++            {
++                return decimalValue;
++            }
++
++            if (jsonValue.TryGetValue<double>(out var doubleValue))
++            {
++                return (decimal)doubleValue;
++            }
++
++            if (jsonValue.TryGetValue<string>(out var stringValue) &&
++                decimal.TryParse(stringValue, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed))
++            {
++                return parsed;
++            }
++        }
++
++        return decimal.TryParse(node.ToString(), NumberStyles.Number, CultureInfo.InvariantCulture, out var fallback)
++            ? fallback
++            : null;
++    }
++
++    private static int? ReadInt(JsonObject values, string key)
++    {
++        if (!values.TryGetPropertyValue(key, out var node) || node is null)
++        {
++            return null;
++        }
++
++        if (node is JsonValue jsonValue)
++        {
++            if (jsonValue.TryGetValue<int>(out var intValue))
++            {
++                return intValue;
++            }
++
++            if (jsonValue.TryGetValue<string>(out var stringValue) &&
++                int.TryParse(stringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
++            {
++                return parsed;
++            }
++        }
++
++        return int.TryParse(node.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var fallback)
++            ? fallback
++            : null;
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ReconciliationScoringServiceTests.cs b/tests/VirtualCompany.Api.Tests/ReconciliationScoringServiceTests.cs
+new file mode 100644
+index 0000000..0fdbb0d
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ReconciliationScoringServiceTests.cs
+@@ -0,0 +1,405 @@
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Finance;
++using VirtualCompany.Infrastructure.Finance;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ReconciliationScoringServiceTests
++{
++    [Fact]
++    public async Task Exact_match_scores_near_one_and_ranks_first()
++    {
++        var companyId = Guid.NewGuid();
++        var service = CreateService(new ReconciliationScoringSettings(5m, 7m is int i ? i : 7), companyId);
++
++        var result = await service.ScoreBankTransactionCandidatesAsync(
++            new ScoreBankTransactionPaymentCandidatesQuery(
++                companyId,
++                Guid.NewGuid(),
++                1250m,
++                "USD",
++                Utc(2026, 4, 20),
++                "INV-1001",
++                "Acme AB",
++                [
++                    Candidate(1250m, Utc(2026, 4, 20), "INV-1001", "Acme AB"),
++                    Candidate(1247m, Utc(2026, 4, 19), "INV-1002", "Other Vendor")
++                ]),
++            CancellationToken.None);
++
++        var top = Assert.Single(result.Suggestions.Where(x => x.Rank == 1));
++        Assert.Equal(1.00m, top.ConfidenceScore);
++        Assert.Equal(1.00m, Rule(top, ReconciliationRuleNames.Amount).Score);
++        Assert.Equal(1.00m, Rule(top, ReconciliationRuleNames.Date).Score);
++        Assert.Equal(1.00m, Rule(top, ReconciliationRuleNames.Reference).Score);
++        Assert.Equal(1.00m, Rule(top, ReconciliationRuleNames.Counterparty).Score);
++    }
++
++    [Fact]
++    public async Task Near_amount_match_scores_lower_than_exact_and_above_zero()
++    {
++        var companyId = Guid.NewGuid();
++        var service = CreateService(new ReconciliationScoringSettings(5m, 7), companyId);
++
++        var result = await service.ScoreBankTransactionCandidatesAsync(
++            new ScoreBankTransactionPaymentCandidatesQuery(
++                companyId,
++                Guid.NewGuid(),
++                100m,
++                "USD",
++                Utc(2026, 4, 20),
++                "BTX-1",
++                "Northwind",
++                [
++                    Candidate(100m, Utc(2026, 4, 20), "BTX-1", "Northwind"),
++                    Candidate(97m, Utc(2026, 4, 20), "BTX-1", "Northwind")
++                ]),
++            CancellationToken.None);
++
++        Assert.Equal(2, result.Suggestions.Count);
++        var exact = result.Suggestions[0];
++        var near = result.Suggestions[1];
++
++        Assert.Equal(1.00m, exact.ConfidenceScore);
++        Assert.InRange(near.ConfidenceScore, 0.01m, 0.99m);
++        Assert.True(near.ConfidenceScore < exact.ConfidenceScore);
++        Assert.True(Rule(near, ReconciliationRuleNames.Amount).Matched);
++        Assert.True(Rule(near, ReconciliationRuleNames.Amount).Score < 1.00m);
++    }
++
++    [Fact]
++    public async Task Date_only_match_returns_date_contribution_only()
++    {
++        var companyId = Guid.NewGuid();
++        var service = CreateService(new ReconciliationScoringSettings(0m, 7), companyId);
++
++        var result = await service.ScoreBankTransactionCandidatesAsync(
++            new ScoreBankTransactionPaymentCandidatesQuery(
++                companyId,
++                Guid.NewGuid(),
++                200m,
++                "USD",
++                Utc(2026, 4, 20),
++                "BTX-2",
++                "Acme AB",
++                [Candidate(250m, Utc(2026, 4, 20), "OTHER-REF", "Other Counterparty")]),
++            CancellationToken.None);
++
++        var suggestion = Assert.Single(result.Suggestions);
++        Assert.Equal(0.20m, suggestion.ConfidenceScore);
++        Assert.Equal(1.00m, Rule(suggestion, ReconciliationRuleNames.Date).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Amount).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Reference).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Counterparty).Score);
++    }
++
++    [Fact]
++    public async Task Reference_only_match_returns_reference_contribution_only()
++    {
++        var companyId = Guid.NewGuid();
++        var service = CreateService(ReconciliationScoringSettings.Default, companyId);
++
++        var result = await service.ScoreInvoiceCandidatesAsync(
++            new ScoreInvoicePaymentCandidatesQuery(
++                companyId,
++                Guid.NewGuid(),
++                300m,
++                "USD",
++                Utc(2026, 4, 20),
++                "INV-2040",
++                "Vendor A",
++                [Candidate(450m, Utc(2026, 5, 10), "INV 2040", "Different Vendor")]),
++            CancellationToken.None);
++
++        var suggestion = Assert.Single(result.Suggestions);
++        Assert.Equal(0.25m, suggestion.ConfidenceScore);
++        Assert.Equal(1.00m, Rule(suggestion, ReconciliationRuleNames.Reference).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Amount).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Date).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Counterparty).Score);
++    }
++
++    [Fact]
++    public async Task Counterparty_only_match_returns_counterparty_contribution_only()
++    {
++        var companyId = Guid.NewGuid();
++        var service = CreateService(ReconciliationScoringSettings.Default, companyId);
++
++        var result = await service.ScoreBillCandidatesAsync(
++            new ScoreBillPaymentCandidatesQuery(
++                companyId,
++                Guid.NewGuid(),
++                900m,
++                "USD",
++                Utc(2026, 4, 20),
++                "BILL-99",
++                "Contoso Logistics",
++                [Candidate(850m, Utc(2026, 5, 15), "UNRELATED", "contoso logistics")]),
++            CancellationToken.None);
++
++        var suggestion = Assert.Single(result.Suggestions);
++        Assert.Equal(0.15m, suggestion.ConfidenceScore);
++        Assert.Equal(1.00m, Rule(suggestion, ReconciliationRuleNames.Counterparty).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Amount).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Date).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Reference).Score);
++    }
++
++    [Fact]
++    public async Task No_match_returns_zero_score()
++    {
++        var companyId = Guid.NewGuid();
++        var service = CreateService(ReconciliationScoringSettings.Default, companyId);
++
++        var result = await service.ScoreBankTransactionCandidatesAsync(
++            new ScoreBankTransactionPaymentCandidatesQuery(
++                companyId,
++                Guid.NewGuid(),
++                100m,
++                "USD",
++                Utc(2026, 4, 20),
++                "REF-1",
++                "Alpha",
++                [Candidate(999m, Utc(2026, 6, 1), "NOPE", "Beta")]),
++            CancellationToken.None);
++
++        var suggestion = Assert.Single(result.Suggestions);
++        Assert.Equal(0m, suggestion.ConfidenceScore);
++        Assert.All(suggestion.RuleDetails, detail => Assert.False(detail.Matched));
++    }
++
++    [Fact]
++    public async Task Amount_outside_tolerance_gets_no_amount_score()
++    {
++        var companyId = Guid.NewGuid();
++        var service = CreateService(new ReconciliationScoringSettings(2m, 7), companyId);
++
++        var result = await service.ScoreBankTransactionCandidatesAsync(
++            new ScoreBankTransactionPaymentCandidatesQuery(
++                companyId,
++                Guid.NewGuid(),
++                100m,
++                "USD",
++                Utc(2026, 4, 20),
++                "REF-2",
++                "Gamma",
++                [Candidate(103m, Utc(2026, 4, 20), "REF-2", "Gamma")]),
++            CancellationToken.None);
++
++        var suggestion = Assert.Single(result.Suggestions);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Amount).Score);
++        Assert.False(Rule(suggestion, ReconciliationRuleNames.Amount).Matched);
++    }
++
++    [Fact]
++    public async Task Date_outside_window_gets_no_date_score()
++    {
++        var companyId = Guid.NewGuid();
++        var service = CreateService(new ReconciliationScoringSettings(5m, 3), companyId);
++
++        var result = await service.ScoreBankTransactionCandidatesAsync(
++            new ScoreBankTransactionPaymentCandidatesQuery(
++                companyId,
++                Guid.NewGuid(),
++                100m,
++                "USD",
++                Utc(2026, 4, 20),
++                "REF-3",
++                "Gamma",
++                [Candidate(100m, Utc(2026, 4, 25), "OTHER", "Other")]),
++            CancellationToken.None);
++
++        var suggestion = Assert.Single(result.Suggestions);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Date).Score);
++        Assert.False(Rule(suggestion, ReconciliationRuleNames.Date).Matched);
++    }
++
++    [Fact]
++    public async Task Tenant_specific_settings_change_scoring_and_use_requested_company()
++    {
++        var firstCompanyId = Guid.NewGuid();
++        var secondCompanyId = Guid.NewGuid();
++        var provider = new FakeReconciliationScoringSettingsProvider(
++            new Dictionary<Guid, ReconciliationScoringSettings>
++            {
++                [firstCompanyId] = new(5m, 2),
++                [secondCompanyId] = new(1m, 2)
++            });
++        var service = new CompanyReconciliationScoringService(provider);
++        var candidate = Candidate(103m, Utc(2026, 4, 20), "REF-4", "Vendor");
++
++        var firstResult = await service.ScoreBankTransactionCandidatesAsync(
++            new ScoreBankTransactionPaymentCandidatesQuery(
++                firstCompanyId,
++                Guid.NewGuid(),
++                100m,
++                "USD",
++                Utc(2026, 4, 20),
++                "REF-4",
++                "Vendor",
++                [candidate]),
++            CancellationToken.None);
++        var secondResult = await service.ScoreBankTransactionCandidatesAsync(
++            new ScoreBankTransactionPaymentCandidatesQuery(
++                secondCompanyId,
++                Guid.NewGuid(),
++                100m,
++                "USD",
++                Utc(2026, 4, 20),
++                "REF-4",
++                "Vendor",
++                [candidate]),
++            CancellationToken.None);
++
++        Assert.Equal(new[] { firstCompanyId, secondCompanyId }, provider.RequestedCompanyIds);
++        Assert.True(firstResult.Suggestions[0].ConfidenceScore > secondResult.Suggestions[0].ConfidenceScore);
++        Assert.True(Rule(firstResult.Suggestions[0], ReconciliationRuleNames.Amount).Matched);
++        Assert.False(Rule(secondResult.Suggestions[0], ReconciliationRuleNames.Amount).Matched);
++    }
++
++    [Fact]
++    public async Task Results_are_ranked_descending_and_deterministic_for_ties()
++    {
++        var companyId = Guid.NewGuid();
++        var firstPaymentId = Guid.Parse("00000000-0000-0000-0000-000000000001");
++        var secondPaymentId = Guid.Parse("00000000-0000-0000-0000-000000000002");
++        var service = CreateService(ReconciliationScoringSettings.Default, companyId);
++
++        var result = await service.ScoreBankTransactionCandidatesAsync(
++            new ScoreBankTransactionPaymentCandidatesQuery(
++                companyId,
++                Guid.NewGuid(),
++                100m,
++                "USD",
++                Utc(2026, 4, 20),
++                "BTX-9",
++                "Tie Vendor",
++                [
++                    Candidate(75m, Utc(2026, 5, 5), "OTHER", "Mismatch", firstPaymentId),
++                    Candidate(75m, Utc(2026, 5, 5), "OTHER", "Mismatch", secondPaymentId),
++                    Candidate(100m, Utc(2026, 4, 20), "BTX-9", "Tie Vendor")
++                ]),
++            CancellationToken.None);
++
++        Assert.Equal(3, result.Suggestions.Count);
++        Assert.Equal(1, result.Suggestions[0].Rank);
++        Assert.Equal(2, result.Suggestions[1].Rank);
++        Assert.Equal(3, result.Suggestions[2].Rank);
++        Assert.True(result.Suggestions[0].ConfidenceScore >= result.Suggestions[1].ConfidenceScore);
++        Assert.True(result.Suggestions[1].ConfidenceScore >= result.Suggestions[2].ConfidenceScore);
++        Assert.Equal(firstPaymentId, result.Suggestions[1].CandidatePaymentId);
++        Assert.Equal(secondPaymentId, result.Suggestions[2].CandidatePaymentId);
++    }
++
++    [Fact]
++    public async Task Suggestions_include_rule_breakdown_and_normalized_scores()
++    {
++        var companyId = Guid.NewGuid();
++        var service = CreateService(ReconciliationScoringSettings.Default, companyId);
++
++        var result = await service.ScoreInvoiceCandidatesAsync(
++            new ScoreInvoicePaymentCandidatesQuery(
++                companyId,
++                Guid.NewGuid(),
++                500m,
++                "USD",
++                Utc(2026, 4, 20),
++                "INV-500",
++                "Acme",
++                [Candidate(498m, Utc(2026, 4, 22), "INV 500", "Acme")]),
++            CancellationToken.None);
++
++        var suggestion = Assert.Single(result.Suggestions);
++        Assert.InRange(suggestion.ConfidenceScore, 0m, 1m);
++        Assert.Equal(4, suggestion.RuleDetails.Count);
++        Assert.All(suggestion.RuleDetails, detail => Assert.InRange(detail.Score, 0m, 1m));
++    }
++
++    private static CompanyReconciliationScoringService CreateService(
++        ReconciliationScoringSettings settings,
++        Guid companyId) =>
++        new(new FakeReconciliationScoringSettingsProvider(
++            new Dictionary<Guid, ReconciliationScoringSettings>
++            {
++                [companyId] = settings
++            }));
++
++    private static ReconciliationPaymentCandidate Candidate(
++        decimal amount,
++        DateTime paymentDate,
++        string reference,
++        string counterparty,
++        Guid? paymentId = null,
++        string currency = "USD") =>
++        new(
++            paymentId ?? Guid.NewGuid(),
++            amount,
++            currency,
++            paymentDate,
++            reference,
++            counterparty);
++
++    private static ReconciliationRuleDetail Rule(
++        ReconciliationSuggestion suggestion,
++        string ruleName) =>
++        Assert.Single(suggestion.RuleDetails.Where(x => x.RuleName == ruleName));
++
++    private static DateTime Utc(int year, int month, int day) =>
++        new(year, month, day, 0, 0, 0, DateTimeKind.Utc);
++
++    private sealed class FakeReconciliationScoringSettingsProvider : IReconciliationScoringSettingsProvider
++    {
++        private readonly IReadOnlyDictionary<Guid, ReconciliationScoringSettings> _settings;
++
++        public FakeReconciliationScoringSettingsProvider(
++            IReadOnlyDictionary<Guid, ReconciliationScoringSettings> settings)
++        {
++            _settings = settings;
++        }
++
++        public List<Guid> RequestedCompanyIds { get; } = [];
++
++        public Task<ReconciliationScoringSettings> GetSettingsAsync(
++            Guid companyId,
++            CancellationToken cancellationToken)
++        {
++            RequestedCompanyIds.Add(companyId);
++            return Task.FromResult(
++                _settings.TryGetValue(companyId, out var settings)
++                    ? settings
++                    : ReconciliationScoringSettings.Default);
++        }
++    }
++}
+END_OF_PATCH

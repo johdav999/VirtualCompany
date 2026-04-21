@@ -551,4 +551,3 @@ public sealed class FinancePageTests
             _handler(request, cancellationToken);
     }
 }
-END_OF_PATCH

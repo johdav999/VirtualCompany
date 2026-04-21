@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-23.3.3",
+  "promptPath": ".ai-design/prompts/TASK-23.3.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T13:37:57.283Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T13-37-57-283Z_TASK-23.3.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T13-37-57-283Z_TASK-23.3.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T13:42:10.546Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "rastructure/Finance/CompanyReportingPeriodCloseService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs\nindex 351d01a..354481f 100644\n--- a/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs\n+++ b/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs\n@@ -197,7 +197,8 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe\n                 true,\n                 execution.Id,\n                 0,\n+                execution.Status.ToStorageValue(),\n                 execution.UpdatedUtc,\n-                null,\n+                execution.CompletedUtc,\n                 actor.ActorType,\n                 actor.ActorId,\n                 MapLockState(period));\n@@ -215,6 +216,7 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe\n             false,\n             null,\n             snapshotCount,\n+            BackgroundExecutionStatus.Succeeded.ToStorageValue(),\n             completedAtUtc,\n             completedAtUtc,\n             actor.ActorType,\ndiff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs\nindex 0f1a0ec..76f58c1 100644\n--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs\n+++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs\n@@ -3039,6 +3039,7 @@ internal sealed class FiscalPeriodConfiguration : IEntityTypeConfiguration<Fisca\n         builder.Property(x => x.UpdatedUtc).HasColumnName(\"updated_at\").IsRequired();\n \n         builder.HasIndex(x => new { x.CompanyId, x.StartUtc, x.EndUtc });\n+        builder.HasIndex(x => new { x.CompanyId, x.IsClosed, x.IsReportingLocked });\n         builder.HasIndex(x => new { x.CompanyId, x.Name }).IsUnique();\n         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);\n     }\nEND_OF_PATCH\n",
+  "stderrTail": "CompanyReportingPeriodCloseService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs\nindex 351d01a..354481f 100644\n--- a/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs\n+++ b/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs\n@@ -197,7 +197,8 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe\n                 true,\n                 execution.Id,\n                 0,\n+                execution.Status.ToStorageValue(),\n                 execution.UpdatedUtc,\n-                null,\n+                execution.CompletedUtc,\n                 actor.ActorType,\n                 actor.ActorId,\n                 MapLockState(period));\n@@ -215,6 +216,7 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe\n             false,\n             null,\n             snapshotCount,\n+            BackgroundExecutionStatus.Succeeded.ToStorageValue(),\n             completedAtUtc,\n             completedAtUtc,\n             actor.ActorType,\ndiff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs\nindex 0f1a0ec..76f58c1 100644\n--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs\n+++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs\n@@ -3039,6 +3039,7 @@ internal sealed class FiscalPeriodConfiguration : IEntityTypeConfiguration<Fisca\n         builder.Property(x => x.UpdatedUtc).HasColumnName(\"updated_at\").IsRequired();\n \n         builder.HasIndex(x => new { x.CompanyId, x.StartUtc, x.EndUtc });\n+        builder.HasIndex(x => new { x.CompanyId, x.IsClosed, x.IsReportingLocked });\n         builder.HasIndex(x => new { x.CompanyId, x.Name }).IsUnique();\n         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);\n     }\nEND_OF_PATCH\ntokens used\n129,754\n",
+  "verbosityMode": "verbose"
+}

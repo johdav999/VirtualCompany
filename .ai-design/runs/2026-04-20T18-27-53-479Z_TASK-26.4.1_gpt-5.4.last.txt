@@ -1,0 +1,1487 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -116,6 +116,11 @@ public sealed record GetFinanceBillsQuery(
+ public sealed record GetFinanceBalancesQuery(
+     Guid CompanyId,
+     DateTime? AsOfUtc = null);
++
++public sealed record GetFinanceAgentQueryQuery(
++    Guid CompanyId,
++    string QueryText,
++    DateTime? AsOfUtc = null);
+ 
+ public sealed record UpdateFinanceInvoiceApprovalStatusCommand(
+     Guid CompanyId,
+@@ -679,6 +684,75 @@ public sealed record FinanceCashPositionDto(
+     public string SourceWorkflow => WorkflowOutput.SourceWorkflow;
+ }
+ 
++public static class FinanceAgentQueryIntents
++{
++    public const string WhatShouldIPayThisWeek = "what_should_i_pay_this_week";
++    public const string WhichCustomersAreOverdue = "which_customers_are_overdue";
++    public const string WhyIsCashDownThisMonth = "why_is_cash_down_this_month";
++}
++
++public static class FinanceAgentQueryRouting
++{
++    public const string WhatShouldIPayThisWeekPhrase = "what should i pay this week";
++    public const string WhichCustomersAreOverduePhrase = "which customers are overdue";
++    public const string WhyIsCashDownThisMonthPhrase = "why is cash down this month";
++
++    public static IReadOnlyList<string> SupportedPhrases { get; } =
++    [
++        WhatShouldIPayThisWeekPhrase,
++        WhichCustomersAreOverduePhrase,
++        WhyIsCashDownThisMonthPhrase
++    ];
++
++    public static string NormalizeQueryText(string? value) =>
++        string.Join(
++            ' ',
++            (value ?? string.Empty)
++                .Trim()
++                .Replace("?", string.Empty, StringComparison.Ordinal)
++                .ToLowerInvariant()
++                .Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries));
++
++    public static bool TryResolveIntent(string? queryText, out string intent)
++    {
++        intent = NormalizeQueryText(queryText) switch
++        {
++            WhatShouldIPayThisWeekPhrase => FinanceAgentQueryIntents.WhatShouldIPayThisWeek,
++            WhichCustomersAreOverduePhrase => FinanceAgentQueryIntents.WhichCustomersAreOverdue,
++            WhyIsCashDownThisMonthPhrase => FinanceAgentQueryIntents.WhyIsCashDownThisMonth,
++            _ => string.Empty
++        };
++
++        return !string.IsNullOrWhiteSpace(intent);
++    }
++}
++
++public sealed record FinanceAgentQueryPeriodDto(
++    DateTime AsOfUtc,
++    DateTime? WindowStartUtc,
++    DateTime? WindowEndUtc,
++    DateTime? ComparisonStartUtc,
++    DateTime? ComparisonEndUtc,
++    string TimeZoneId);
++
++public sealed record FinanceAgentMetricComponentDto(
++    string ComponentKey,
++    string Label,
++    decimal CurrentValue,
++    decimal? PreviousValue,
++    decimal Delta,
++    string Currency,
++    IReadOnlyList<Guid> SourceRecordIds);
++
++public sealed record FinanceAgentQueryItemDto(
++    Guid? RecordId,
++    string RecordType,
++    Guid? CounterpartyId,
++    string? CounterpartyName,
++    string? Reference,
++    DateTime? DueUtc,
++    decimal Amount,
++    string Currency,
++    string Reason,
++    int SortOrder,
++    int? DaysOverdue,
++    string? AgingBucket,
++    IReadOnlyList<Guid> SourceRecordIds,
++    IReadOnlyList<FinanceAgentMetricComponentDto> MetricComponents);
++
++public sealed record FinanceAgentQueryResultDto(
++    Guid CompanyId,
++    string Intent,
++    string QueryText,
++    string Summary,
++    string Currency,
++    DateTime AsOfUtc,
++    FinanceAgentQueryPeriodDto Period,
++    IReadOnlyList<FinanceAgentQueryItemDto> Items,
++    IReadOnlyList<FinanceAgentMetricComponentDto> MetricComponents,
++    IReadOnlyList<Guid> SourceRecordIds);
++
+ public sealed record FinanceTransactionDto(
+     Guid Id,
+     Guid AccountId,
+@@ -1212,6 +1286,8 @@ public interface IFinanceToolProvider
+     Task<IReadOnlyList<FinanceBillDto>> GetBillsAsync(GetFinanceBillsQuery query, CancellationToken cancellationToken);
+ 
+     Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(GetFinanceBalancesQuery query, CancellationToken cancellationToken);
++
++    Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(GetFinanceAgentQueryQuery query, CancellationToken cancellationToken);
+ 
+     Task<FinanceTransactionCategoryRecommendationDto> RecommendTransactionCategoryAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken);
+ 
+@@ -1348,6 +1424,9 @@ public interface IFinanceReadService
+     Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(
+         GetFinanceBalancesQuery query,
+         CancellationToken cancellationToken);
++
++    Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
++        GetFinanceAgentQueryQuery query,
++        CancellationToken cancellationToken);
+ }
+ 
+ public interface IFinancePolicyConfigurationService
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceToolProviders.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceToolProviders.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceToolProviders.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceToolProviders.cs
+@@ -53,6 +53,10 @@ public sealed class InternalFinanceToolProvider : IFinanceToolProvider
+     public Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(
+         GetFinanceBalancesQuery query,
+         CancellationToken cancellationToken) =>
++        _readService.GetBalancesAsync(query, cancellationToken);
++
++    public Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
++        GetFinanceAgentQueryQuery query,
++        CancellationToken cancellationToken) =>
+         _readService.GetBalancesAsync(query, cancellationToken);
+ 
+     public Task<FinanceTransactionCategoryRecommendationDto> RecommendTransactionCategoryAsync(
+@@ -109,6 +113,11 @@ public sealed class MockFinanceToolProvider : IFinanceToolProvider
+     private static readonly Guid CounterpartyId = Guid.Parse("30000000-0000-0000-0000-000000000001");
+     private static readonly Guid InvoiceId = Guid.Parse("40000000-0000-0000-0000-000000000001");
+     private static readonly Guid BillId = Guid.Parse("50000000-0000-0000-0000-000000000001");
++    private static readonly Guid AllocationId = Guid.Parse("60000000-0000-0000-0000-000000000001");
++    private static readonly Guid PriorTransactionId = Guid.Parse("70000000-0000-0000-0000-000000000001");
++    private static readonly Guid CurrentTransactionId = Guid.Parse("70000000-0000-0000-0000-000000000002");
++    private static readonly Guid PayrollTransactionId = Guid.Parse("70000000-0000-0000-0000-000000000003");
++    private static readonly Guid SoftwareTransactionId = Guid.Parse("70000000-0000-0000-0000-000000000004");
+ 
+     public Task<FinanceCashBalanceDto> GetCashBalanceAsync(
+         GetFinanceCashBalanceQuery query,
+@@ -274,6 +283,99 @@ public sealed class MockFinanceToolProvider : IFinanceToolProvider
+         return Task.FromResult(balances);
+     }
+ 
++    public Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
++        GetFinanceAgentQueryQuery query,
++        CancellationToken cancellationToken)
++    {
++        var asOfUtc = query.AsOfUtc ?? DefaultAsOfUtc;
++        if (!FinanceAgentQueryRouting.TryResolveIntent(query.QueryText, out var intent))
++        {
++            throw new ArgumentException(
++                $"Unsupported finance agent query '{query.QueryText}'. Supported queries: {string.Join(", ", FinanceAgentQueryRouting.SupportedPhrases)}.",
++                nameof(query));
++        }
++
++        return Task.FromResult(intent switch
++        {
++            var value when string.Equals(value, FinanceAgentQueryIntents.WhatShouldIPayThisWeek, StringComparison.Ordinal) =>
++                new FinanceAgentQueryResultDto(
++                    query.CompanyId,
++                    value,
++                    FinanceAgentQueryRouting.NormalizeQueryText(query.QueryText),
++                    "Selected 1 payable item for this company week.",
++                    "USD",
++                    asOfUtc,
++                    new FinanceAgentQueryPeriodDto(
++                        asOfUtc,
++                        new DateTime(2026, 4, 13, 0, 0, 0, DateTimeKind.Utc),
++                        new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                        null,
++                        null,
++                        "UTC"),
++                    [
++                        new FinanceAgentQueryItemDto(
++                            BillId,
++                            "bill",
++                            CounterpartyId,
++                            "Mock Vendor",
++                            "MOCK-BILL-001",
++                            new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
++                            250m,
++                            "USD",
++                            "Due within the current company week.",
++                            1,
++                            null,
++                            null,
++                            [BillId, AllocationId],
++                            [
++                                new FinanceAgentMetricComponentDto("original_amount", "Original amount", 250m, null, 250m, "USD", [BillId]),
++                                new FinanceAgentMetricComponentDto("scheduled_outgoing_this_week", "Scheduled outgoing this week", 125m, null, 125m, "USD", [AllocationId])
++                            ])
++                    ],
++                    [
++                        new FinanceAgentMetricComponentDto("recommended_payables_total", "Recommended payables total", 250m, null, 250m, "USD", [BillId]),
++                        new FinanceAgentMetricComponentDto("scheduled_outgoing_this_week", "Scheduled outgoing this week", 125m, null, 125m, "USD", [AllocationId])
++                    ],
++                    [AllocationId, BillId]),
++            var value when string.Equals(value, FinanceAgentQueryIntents.WhichCustomersAreOverdue, StringComparison.Ordinal) =>
++                new FinanceAgentQueryResultDto(
++                    query.CompanyId,
++                    value,
++                    FinanceAgentQueryRouting.NormalizeQueryText(query.QueryText),
++                    "Selected 1 overdue customer receivable.",
++                    "USD",
++                    asOfUtc,
++                    new FinanceAgentQueryPeriodDto(asOfUtc, null, asOfUtc, null, null, "UTC"),
++                    [
++                        new FinanceAgentQueryItemDto(
++                            InvoiceId,
++                            "invoice",
++                            CounterpartyId,
++                            "Mock Customer",
++                            "MOCK-INV-001",
++                            new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                            1500m,
++                            "USD",
++                            "31-60 days overdue.",
++                            1,
++                            15,
++                            "1-30",
++                            [InvoiceId],
++                            [new FinanceAgentMetricComponentDto("remaining_balance", "Remaining balance", 1500m, null, 1500m, "USD", [InvoiceId])])
++                    ],
++                    [new FinanceAgentMetricComponentDto("overdue_receivables_total", "Overdue receivables total", 1500m, null, 1500m, "USD", [InvoiceId])],
++                    [InvoiceId]),
++            _ =>
++                new FinanceAgentQueryResultDto(
++                    query.CompanyId,
++                    FinanceAgentQueryIntents.WhyIsCashDownThisMonth,
++                    FinanceAgentQueryRouting.NormalizeQueryText(query.QueryText),
++                    "Net cash movement is down by 1,100.00 USD month-to-date versus the same number of days in the prior month. Largest drivers: revenue (-800.00 USD) and payroll (-300.00 USD).",
++                    "USD",
++                    asOfUtc,
++                    new FinanceAgentQueryPeriodDto(asOfUtc, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), asOfUtc.AddTicks(1), new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 3, 16, 0, 0, 0, DateTimeKind.Utc), "UTC"),
++                    [new FinanceAgentQueryItemDto(null, "cash_movement_category", null, null, "revenue", null, -800m, "USD", "Cash inflows for revenue are down by 800.00 USD versus the prior comparable period.", 1, null, null, [PriorTransactionId, CurrentTransactionId], [new FinanceAgentMetricComponentDto("revenue", "Revenue", 1200m, 2000m, -800m, "USD", [PriorTransactionId, CurrentTransactionId])])],
++                    [
++                        new FinanceAgentMetricComponentDto("net_cash_movement", "Net cash movement", -250m, 850m, -1100m, "USD", [PriorTransactionId, CurrentTransactionId, PayrollTransactionId, SoftwareTransactionId]),
++                        new FinanceAgentMetricComponentDto("revenue", "Revenue", 1200m, 2000m, -800m, "USD", [PriorTransactionId, CurrentTransactionId]),
++                        new FinanceAgentMetricComponentDto("payroll", "Payroll", -900m, -600m, -300m, "USD", [PayrollTransactionId])
++                    ],
++                    [CurrentTransactionId, PayrollTransactionId, PriorTransactionId, SoftwareTransactionId])
++        });
++    }
++
+     public Task<FinanceTransactionCategoryRecommendationDto> RecommendTransactionCategoryAsync(
+         InternalToolExecutionRequest request,
+         CancellationToken cancellationToken)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs b/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/InternalCompanyToolContract.cs
+@@ -64,6 +64,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+                 "knowledge.search" => await ExecuteKnowledgeSearchAsync(request, cancellationToken),
+                 "get_cash_balance" => await ExecuteGetCashBalanceAsync(request, cancellationToken),
+                 "list_transactions" => await ExecuteListTransactionsAsync(request, cancellationToken),
++                "resolve_finance_agent_query" => await ExecuteResolveFinanceAgentQueryAsync(request, cancellationToken),
+                 "list_uncategorized_transactions" => await ExecuteListUncategorizedTransactionsAsync(request, cancellationToken),
+                 "list_invoices_awaiting_approval" => await ExecuteListInvoicesAwaitingApprovalAsync(request, cancellationToken),
+                 "get_profit_and_loss_summary" => await ExecuteGetProfitAndLossSummaryAsync(request, cancellationToken),
+@@ -329,6 +330,31 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
+             Metadata(request, "finance_tool_provider"));
+     }
+ 
++    private async Task<InternalToolExecutionResponse> ExecuteResolveFinanceAgentQueryAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure))
++        {
++            return actionFailure;
++        }
++
++        var queryText = ReadString(request.Payload, "queryText");
++        if (string.IsNullOrWhiteSpace(queryText))
++        {
++            return Failed("finance_agent_query_required", "A supported finance agent query is required.");
++        }
++
++        var result = await _financeToolProvider.ResolveAgentQueryAsync(
++            new GetFinanceAgentQueryQuery(request.CompanyId, queryText, ReadDateTime(request.Payload, "asOfUtc")),
++            cancellationToken);
++
++        return InternalToolExecutionResponse.Succeeded(
++            result.Summary,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["result"] = Serialize(result)
++            },
++            Metadata(request, "finance_tool_provider"));
++    }
++
+     private async Task<InternalToolExecutionResponse> ExecuteListTransactionsAsync(
+         InternalToolExecutionRequest request,
+         CancellationToken cancellationToken)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/StaticCompanyToolRegistry.cs
+@@ -48,6 +48,7 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+     [
+         FinanceDefinition("get_cash_balance", ToolActionType.Read, FinanceInputSchemas.AsOfDate(), FinanceOutputSchemas.WithDataProperty("cashBalance")),
+         FinanceDefinition("list_transactions", ToolActionType.Read, FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("transactions")),
++        FinanceDefinition("resolve_finance_agent_query", ToolActionType.Read, FinanceInputSchemas.AgentQuery(), FinanceOutputSchemas.WithDataProperty("result")),
+         FinanceDefinition("list_uncategorized_transactions", ToolActionType.Read, FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("transactions")),
+         FinanceDefinition("list_invoices_awaiting_approval", ToolActionType.Read, FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("invoices")),
+         FinanceDefinition("get_profit_and_loss_summary", ToolActionType.Read, FinanceInputSchemas.ProfitAndLoss(), FinanceOutputSchemas.WithDataProperty("profitAndLossSummary")),
+@@ -125,6 +126,20 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
+                 }
+                 """);
+ 
++        public static JsonObject AgentQuery() =>
++            ParseSchema(
++                """
++                {
++                  "type": "object",
++                  "additionalProperties": false,
++                  "required": [ "queryText" ],
++                  "properties": {
++                    "queryText": { "type": "string", "minLength": 1, "maxLength": 200 },
++                    "asOfUtc": { "type": "string", "format": "date-time" }
++                  }
++                }
++                """);
++
+         public static JsonObject ProfitAndLoss() =>
+             ParseSchema(
+                 """
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -1245,6 +1245,264 @@ public sealed class CompanyFinanceReadService : IFinanceReadService, IFinancePaymentReadService
+         var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? DateTime.UtcNow;
+         return await BuildAccountBalancesAsync(query.CompanyId, asOfUtc, cancellationToken);
+     }
++
++    public async Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
++        GetFinanceAgentQueryQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++
++        if (!FinanceAgentQueryRouting.TryResolveIntent(query.QueryText, out var intent))
++        {
++            throw new ArgumentException(
++                $"Unsupported finance agent query '{query.QueryText}'. Supported queries: {string.Join(", ", FinanceAgentQueryRouting.SupportedPhrases)}.",
++                nameof(query));
++        }
++
++        var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? DateTime.UtcNow;
++        var timeZone = await ResolveCompanyTimeZoneAsync(query.CompanyId, cancellationToken);
++
++        return intent switch
++        {
++            var value when string.Equals(value, FinanceAgentQueryIntents.WhatShouldIPayThisWeek, StringComparison.Ordinal) =>
++                await ResolveWhatShouldIPayThisWeekAsync(query.CompanyId, query.QueryText, asOfUtc, timeZone, cancellationToken),
++            var value when string.Equals(value, FinanceAgentQueryIntents.WhichCustomersAreOverdue, StringComparison.Ordinal) =>
++                await ResolveWhichCustomersAreOverdueAsync(query.CompanyId, query.QueryText, asOfUtc, timeZone, cancellationToken),
++            _ => await ResolveWhyIsCashDownThisMonthAsync(query.CompanyId, query.QueryText, asOfUtc, timeZone, cancellationToken)
++        };
++    }
++
++    private async Task<FinanceAgentQueryResultDto> ResolveWhatShouldIPayThisWeekAsync(
++        Guid companyId,
++        string queryText,
++        DateTime asOfUtc,
++        TimeZoneInfo timeZone,
++        CancellationToken cancellationToken)
++    {
++        var weekWindow = ResolveCurrentWeekWindow(asOfUtc, timeZone);
++        var completedAllocations = await LoadBillAllocationSummariesAsync(
++            companyId,
++            PaymentStatuses.Completed,
++            PaymentTypes.Outgoing,
++            null,
++            asOfUtc.AddTicks(1),
++            cancellationToken);
++        var scheduledAllocations = await LoadBillAllocationSummariesAsync(
++            companyId,
++            PaymentStatuses.Pending,
++            PaymentTypes.Outgoing,
++            weekWindow.WindowStartUtc,
++            weekWindow.WindowEndUtc,
++            cancellationToken);
++
++        var rows = await _dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => new AgentBillQueryRow(
++                x.Id,
++                x.CounterpartyId,
++                x.Counterparty.Name,
++                x.BillNumber,
++                x.DueUtc,
++                x.Amount,
++                x.Currency,
++                x.Status,
++                x.SettlementStatus))
++            .ToListAsync(cancellationToken);
++
++        var localAsOfDate = TimeZoneInfo.ConvertTimeFromUtc(asOfUtc, timeZone).Date;
++        var items = rows
++            .Where(x => IsIncludedPayable(x.Status, x.SettlementStatus))
++            .Select(row =>
++            {
++                var completed = completedAllocations.GetValueOrDefault(row.Id);
++                var scheduled = scheduledAllocations.GetValueOrDefault(row.Id);
++                var remaining = CalculateRemainingBalance(row.Amount, completed.Amount);
++                if (remaining <= 0m || row.DueUtc >= weekWindow.WindowEndUtc)
++                {
++                    return null;
++                }
++
++                var localDueDate = TimeZoneInfo.ConvertTimeFromUtc(row.DueUtc, timeZone).Date;
++                var daysOverdue = row.DueUtc < asOfUtc
++                    ? Math.Max(0, (localAsOfDate - localDueDate).Days)
++                    : (int?)null;
++                var sourceRecordIds = DistinctIds([row.Id, .. completed.SourceRecordIds, .. scheduled.SourceRecordIds]);
++                return new FinanceAgentQueryItemDto(
++                    row.Id,
++                    "bill",
++                    row.CounterpartyId,
++                    row.CounterpartyName,
++                    row.BillNumber,
++                    row.DueUtc,
++                    remaining,
++                    row.Currency,
++                    daysOverdue.HasValue
++                        ? $"Overdue by {daysOverdue.Value} day(s)."
++                        : "Due within the current company week.",
++                    0,
++                    daysOverdue,
++                    null,
++                    sourceRecordIds,
++                    [
++                        new FinanceAgentMetricComponentDto("original_amount", "Original amount", row.Amount, null, row.Amount, row.Currency, [row.Id]),
++                        new FinanceAgentMetricComponentDto("completed_outgoing_allocations", "Completed outgoing allocations", completed.Amount, null, completed.Amount, row.Currency, completed.SourceRecordIds),
++                        new FinanceAgentMetricComponentDto("remaining_balance", "Remaining balance", remaining, null, remaining, row.Currency, [row.Id, .. completed.SourceRecordIds]),
++                        new FinanceAgentMetricComponentDto("scheduled_outgoing_this_week", "Scheduled outgoing this week", scheduled.Amount, null, scheduled.Amount, row.Currency, scheduled.SourceRecordIds)
++                    ]);
++            })
++            .Where(x => x is not null)
++            .OrderBy(x => x!.DaysOverdue.HasValue ? 0 : 1)
++            .ThenBy(x => x!.DueUtc)
++            .ThenByDescending(x => x!.Amount)
++            .ThenBy(x => x!.RecordId)
++            .Select((item, index) => item! with { SortOrder = index + 1 })
++            .ToArray();
++
++        var currency = ResolveCurrency(items.Select(x => new FinanceAmountRow(x.Amount, x.Currency)));
++        var sourceRecordIds = DistinctIds(items.SelectMany(x => x.SourceRecordIds));
++        var totalAmount = items.Sum(x => x.Amount);
++        var overdueCount = items.Count(x => x.DaysOverdue.HasValue);
++
++        return new FinanceAgentQueryResultDto(
++            companyId,
++            FinanceAgentQueryIntents.WhatShouldIPayThisWeek,
++            FinanceAgentQueryRouting.NormalizeQueryText(queryText),
++            $"Selected {items.Length} payable item(s) totaling {totalAmount:0.00} {currency} for the current company week; {overdueCount} item(s) are already overdue.",
++            currency,
++            asOfUtc,
++            new FinanceAgentQueryPeriodDto(
++                asOfUtc,
++                weekWindow.WindowStartUtc,
++                weekWindow.WindowEndUtc,
++                null,
++                null,
++                timeZone.Id),
++            items,
++            [
++                new FinanceAgentMetricComponentDto("recommended_payables_total", "Recommended payables total", totalAmount, null, totalAmount, currency, sourceRecordIds),
++                new FinanceAgentMetricComponentDto("recommended_payables_count", "Recommended payables count", items.Length, null, items.Length, currency, sourceRecordIds),
++                new FinanceAgentMetricComponentDto("overdue_payables_count", "Overdue payables count", overdueCount, null, overdueCount, currency, DistinctIds(items.Where(x => x.DaysOverdue.HasValue).SelectMany(x => x.SourceRecordIds)))
++            ],
++            sourceRecordIds);
++    }
++
++    private async Task<FinanceAgentQueryResultDto> ResolveWhichCustomersAreOverdueAsync(
++        Guid companyId,
++        string queryText,
++        DateTime asOfUtc,
++        TimeZoneInfo timeZone,
++        CancellationToken cancellationToken)
++    {
++        var completedAllocations = await LoadInvoiceAllocationSummariesAsync(
++            companyId,
++            PaymentStatuses.Completed,
++            PaymentTypes.Incoming,
++            null,
++            asOfUtc.AddTicks(1),
++            cancellationToken);
++
++        var rows = await _dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => new AgentInvoiceQueryRow(
++                x.Id,
++                x.CounterpartyId,
++                x.Counterparty.Name,
++                x.InvoiceNumber,
++                x.DueUtc,
++                x.Amount,
++                x.Currency,
++                x.Status,
++                x.SettlementStatus))
++            .ToListAsync(cancellationToken);
++
++        var localAsOfDate = TimeZoneInfo.ConvertTimeFromUtc(asOfUtc, timeZone).Date;
++        var items = rows
++            .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus) && x.DueUtc < asOfUtc)
++            .Select(row =>
++            {
++                var completed = completedAllocations.GetValueOrDefault(row.Id);
++                var remaining = CalculateRemainingBalance(row.Amount, completed.Amount);
++                if (remaining <= 0m)
++                {
++                    return null;
++                }
++
++                var daysOverdue = Math.Max(0, (localAsOfDate - TimeZoneInfo.ConvertTimeFromUtc(row.DueUtc, timeZone).Date).Days);
++                var agingBucket = ResolveAgingBucket(daysOverdue);
++                var sourceRecordIds = DistinctIds([row.Id, .. completed.SourceRecordIds]);
++                return new FinanceAgentQueryItemDto(
++                    row.Id,
++                    "invoice",
++                    row.CounterpartyId,
++                    row.CounterpartyName,
++                    row.InvoiceNumber,
++                    row.DueUtc,
++                    remaining,
++                    row.Currency,
++                    $"{agingBucket} overdue.",
++                    0,
++                    daysOverdue,
++                    agingBucket,
++                    sourceRecordIds,
++                    [
++                        new FinanceAgentMetricComponentDto("original_amount", "Original amount", row.Amount, null, row.Amount, row.Currency, [row.Id]),
++                        new FinanceAgentMetricComponentDto("completed_incoming_allocations", "Completed incoming allocations", completed.Amount, null, completed.Amount, row.Currency, completed.SourceRecordIds),
++                        new FinanceAgentMetricComponentDto("remaining_balance", "Remaining balance", remaining, null, remaining, row.Currency, [row.Id, .. completed.SourceRecordIds])
++                    ]);
++            })
++            .Where(x => x is not null)
++            .OrderByDescending(x => x!.DaysOverdue)
++            .ThenByDescending(x => x!.Amount)
++            .ThenBy(x => x!.RecordId)
++            .Select((item, index) => item! with { SortOrder = index + 1 })
++            .ToArray();
++
++        var currency = ResolveCurrency(items.Select(x => new FinanceAmountRow(x.Amount, x.Currency)));
++        var sourceRecordIds = DistinctIds(items.SelectMany(x => x.SourceRecordIds));
++        var totalOutstanding = items.Sum(x => x.Amount);
++
++        return new FinanceAgentQueryResultDto(
++            companyId,
++            FinanceAgentQueryIntents.WhichCustomersAreOverdue,
++            FinanceAgentQueryRouting.NormalizeQueryText(queryText),
++            $"Selected {items.Length} overdue receivable item(s) totaling {totalOutstanding:0.00} {currency}.",
++            currency,
++            asOfUtc,
++            new FinanceAgentQueryPeriodDto(asOfUtc, null, asOfUtc, null, null, timeZone.Id),
++            items,
++            [
++                new FinanceAgentMetricComponentDto("overdue_receivables_total", "Overdue receivables total", totalOutstanding, null, totalOutstanding, currency, sourceRecordIds),
++                new FinanceAgentMetricComponentDto("overdue_receivables_count", "Overdue receivables count", items.Length, null, items.Length, currency, sourceRecordIds)
++            ],
++            sourceRecordIds);
++    }
++
++    private async Task<FinanceAgentQueryResultDto> ResolveWhyIsCashDownThisMonthAsync(
++        Guid companyId,
++        string queryText,
++        DateTime asOfUtc,
++        TimeZoneInfo timeZone,
++        CancellationToken cancellationToken)
++    {
++        var monthWindow = ResolveMonthToDateWindow(asOfUtc, timeZone);
++        var accounts = await _dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => new AccountRow(
++                x.Id,
++                x.Code,
++                x.Name,
++                x.AccountType,
++                x.OpeningBalance,
++                x.Currency))
++            .ToListAsync(cancellationToken);
++
++        var cashAccountIds = accounts
++            .Where(x => IsCashAccount(x.Name, x.Code) || string.Equals(x.AccountType, "asset", StringComparison.OrdinalIgnoreCase))
++            .Select(x => x.Id)
++            .ToArray();
++
++        var currentRows = await LoadCashMovementRowsAsync(companyId, cashAccountIds, monthWindow.WindowStartUtc, monthWindow.WindowEndUtc, cancellationToken);
++        var comparisonRows = await LoadCashMovementRowsAsync(companyId, cashAccountIds, monthWindow.ComparisonStartUtc!.Value, monthWindow.ComparisonEndUtc!.Value, cancellationToken);
++
++        var currency = ResolveCurrency(
++            currentRows.Select(x => new FinanceAmountRow(x.Amount, x.Currency))
++                .Concat(comparisonRows.Select(x => new FinanceAmountRow(x.Amount, x.Currency))));
++
++        var netCurrent = Math.Round(currentRows.Sum(x => x.Amount), 2, MidpointRounding.AwayFromZero);
++        var netPrevious = Math.Round(comparisonRows.Sum(x => x.Amount), 2, MidpointRounding.AwayFromZero);
++        var inflowsCurrent = Math.Round(currentRows.Where(x => x.Amount > 0m).Sum(x => x.Amount), 2, MidpointRounding.AwayFromZero);
++        var inflowsPrevious = Math.Round(comparisonRows.Where(x => x.Amount > 0m).Sum(x => x.Amount), 2, MidpointRounding.AwayFromZero);
++        var outflowsCurrent = Math.Round(-currentRows.Where(x => x.Amount < 0m).Sum(x => x.Amount), 2, MidpointRounding.AwayFromZero);
++        var outflowsPrevious = Math.Round(-comparisonRows.Where(x => x.Amount < 0m).Sum(x => x.Amount), 2, MidpointRounding.AwayFromZero);
++
++        var categoryComponents = BuildCashMovementCategoryComponents(currentRows, comparisonRows, currency)
++            .OrderBy(x => x.Delta)
++            .ThenBy(x => x.ComponentKey, StringComparer.OrdinalIgnoreCase)
++            .Take(5)
++            .ToArray();
++
++        var items = categoryComponents
++            .Where(x => x.Delta < 0m)
++            .Select((component, index) => new FinanceAgentQueryItemDto(
++                null,
++                "cash_movement_category",
++                null,
++                null,
++                component.ComponentKey,
++                null,
++                component.Delta,
++                component.Currency,
++                BuildCashMovementReason(component),
++                index + 1,
++                null,
++                null,
++                component.SourceRecordIds,
++                [component]))
++            .ToArray();
++
++        var headlineDrivers = categoryComponents
++            .Where(x => x.Delta < 0m)
++            .Take(2)
++            .Select(x => $"{x.Label} ({x.Delta:0.00} {x.Currency})")
++            .ToArray();
++        var netDelta = Math.Round(netCurrent - netPrevious, 2, MidpointRounding.AwayFromZero);
++        var summary = headlineDrivers.Length == 0
++            ? $"Net cash movement changed by {netDelta:0.00} {currency} month-to-date versus the same number of days in the prior month."
++            : $"Net cash movement is down by {Math.Abs(Math.Min(netDelta, 0m)):0.00} {currency} month-to-date versus the same number of days in the prior month. Largest drivers: {string.Join(" and ", headlineDrivers)}.";
++
++        var sourceRecordIds = DistinctIds(currentRows.Select(x => x.Id).Concat(comparisonRows.Select(x => x.Id)));
++        return new FinanceAgentQueryResultDto(
++            companyId,
++            FinanceAgentQueryIntents.WhyIsCashDownThisMonth,
++            FinanceAgentQueryRouting.NormalizeQueryText(queryText),
++            summary,
++            currency,
++            asOfUtc,
++            new FinanceAgentQueryPeriodDto(
++                asOfUtc,
++                monthWindow.WindowStartUtc,
++                monthWindow.WindowEndUtc,
++                monthWindow.ComparisonStartUtc,
++                monthWindow.ComparisonEndUtc,
++                timeZone.Id),
++            items,
++            [
++                new FinanceAgentMetricComponentDto("net_cash_movement", "Net cash movement", netCurrent, netPrevious, netDelta, currency, sourceRecordIds),
++                new FinanceAgentMetricComponentDto("cash_inflows", "Cash inflows", inflowsCurrent, inflowsPrevious, inflowsCurrent - inflowsPrevious, currency, DistinctIds(currentRows.Where(x => x.Amount > 0m).Select(x => x.Id).Concat(comparisonRows.Where(x => x.Amount > 0m).Select(x => x.Id)))),
++                new FinanceAgentMetricComponentDto("cash_outflows", "Cash outflows", -outflowsCurrent, -outflowsPrevious, outflowsPrevious - outflowsCurrent, currency, DistinctIds(currentRows.Where(x => x.Amount < 0m).Select(x => x.Id).Concat(comparisonRows.Where(x => x.Amount < 0m).Select(x => x.Id))))
++            ].Concat(categoryComponents).ToArray(),
++            sourceRecordIds);
++    }
+ 
+     private async Task EnsureFinanceInitializedAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+@@ -1658,6 +1916,132 @@ public sealed class CompanyFinanceReadService : IFinanceReadService, IFinancePaymentReadService
+         return "low";
+     }
+ 
++    private async Task<TimeZoneInfo> ResolveCompanyTimeZoneAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var timezone = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.Id == companyId)
++            .Select(x => x.Timezone)
++            .SingleOrDefaultAsync(cancellationToken);
++
++        return ResolveTimezone(timezone);
++    }
++
++    private async Task<Dictionary<Guid, AllocationSummary>> LoadInvoiceAllocationSummariesAsync(
++        Guid companyId,
++        string paymentStatus,
++        string paymentType,
++        DateTime? paymentDateFromUtc,
++        DateTime? paymentDateToExclusiveUtc,
++        CancellationToken cancellationToken)
++    {
++        var rows = _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.InvoiceId.HasValue &&
++                x.Payment.Status == paymentStatus &&
++                x.Payment.PaymentType == paymentType);
++
++        if (paymentDateFromUtc.HasValue)
++        {
++            rows = rows.Where(x => x.Payment.PaymentDate >= paymentDateFromUtc.Value);
++        }
++
++        if (paymentDateToExclusiveUtc.HasValue)
++        {
++            rows = rows.Where(x => x.Payment.PaymentDate < paymentDateToExclusiveUtc.Value);
++        }
++
++        return GroupAllocations(await rows
++            .Select(x => new DocumentAllocationRow(x.InvoiceId!.Value, x.Id, x.AllocatedAmount))
++            .ToListAsync(cancellationToken));
++    }
++
++    private async Task<Dictionary<Guid, AllocationSummary>> LoadBillAllocationSummariesAsync(
++        Guid companyId,
++        string paymentStatus,
++        string paymentType,
++        DateTime? paymentDateFromUtc,
++        DateTime? paymentDateToExclusiveUtc,
++        CancellationToken cancellationToken)
++    {
++        var rows = _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.BillId.HasValue &&
++                x.Payment.Status == paymentStatus &&
++                x.Payment.PaymentType == paymentType);
++
++        if (paymentDateFromUtc.HasValue)
++        {
++            rows = rows.Where(x => x.Payment.PaymentDate >= paymentDateFromUtc.Value);
++        }
++
++        if (paymentDateToExclusiveUtc.HasValue)
++        {
++            rows = rows.Where(x => x.Payment.PaymentDate < paymentDateToExclusiveUtc.Value);
++        }
++
++        return GroupAllocations(await rows
++            .Select(x => new DocumentAllocationRow(x.BillId!.Value, x.Id, x.AllocatedAmount))
++            .ToListAsync(cancellationToken));
++    }
++
++    private async Task<IReadOnlyList<CashMovementQueryRow>> LoadCashMovementRowsAsync(
++        Guid companyId,
++        IReadOnlyList<Guid> cashAccountIds,
++        DateTime startUtc,
++        DateTime endUtc,
++        CancellationToken cancellationToken)
++    {
++        if (cashAccountIds.Count == 0)
++        {
++            return [];
++        }
++
++        return await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                cashAccountIds.Contains(x.AccountId) &&
++                x.TransactionUtc >= startUtc &&
++                x.TransactionUtc < endUtc)
++            .Select(x => new CashMovementQueryRow(
++                x.Id,
++                NormalizeCategory(x.TransactionType),
++                x.Amount,
++                x.Currency,
++                x.Description))
++            .ToListAsync(cancellationToken);
++    }
++
++    private static IReadOnlyList<FinanceAgentMetricComponentDto> BuildCashMovementCategoryComponents(
++        IReadOnlyList<CashMovementQueryRow> currentRows,
++        IReadOnlyList<CashMovementQueryRow> comparisonRows,
++        string currency)
++    {
++        var current = currentRows
++            .GroupBy(x => x.Category, StringComparer.OrdinalIgnoreCase)
++            .ToDictionary(
++                group => group.Key,
++                group => new AllocationSummary(
++                    Math.Round(group.Sum(x => x.Amount), 2, MidpointRounding.AwayFromZero),
++                    DistinctIds(group.Select(x => x.Id))),
++                StringComparer.OrdinalIgnoreCase);
++        var comparison = comparisonRows
++            .GroupBy(x => x.Category, StringComparer.OrdinalIgnoreCase)
++            .ToDictionary(
++                group => group.Key,
++                group => new AllocationSummary(
++                    Math.Round(group.Sum(x => x.Amount), 2, MidpointRounding.AwayFromZero),
++                    DistinctIds(group.Select(x => x.Id))),
++                StringComparer.OrdinalIgnoreCase);
++
++        return current.Keys
++            .Concat(comparison.Keys)
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .Select(key =>
++            {
++                var currentValue = current.GetValueOrDefault(key).Amount;
++                var previousValue = comparison.GetValueOrDefault(key).Amount;
++                return new FinanceAgentMetricComponentDto(key, FormatCategoryLabel(key), currentValue, previousValue, currentValue - previousValue, currency, DistinctIds(current.GetValueOrDefault(key).SourceRecordIds.Concat(comparison.GetValueOrDefault(key).SourceRecordIds)));
++            })
++            .Where(x => x.Delta != 0m)
++            .ToArray();
++    }
++
+     private static string BuildCashPositionRationale(
+         FinanceCashBalanceDto cashBalance,
+         decimal averageMonthlyBurn,
+@@ -1676,6 +2060,76 @@ public sealed class CompanyFinanceReadService : IFinanceReadService, IFinancePaymentReadService
+         return $"Available cash is {cashBalance.Amount:0.##} {cashBalance.Currency}; average monthly burn is {averageMonthlyBurn:0.##} {cashBalance.Currency}; runway is {runwayText}. Warning runway threshold is {policy.CashRunwayWarningThresholdDays} day(s); critical runway threshold is {policy.CashRunwayCriticalThresholdDays} day(s). {thresholdText} Risk level is {riskLevel}.";
+     }
+ 
++    private static Dictionary<Guid, AllocationSummary> GroupAllocations(IReadOnlyList<DocumentAllocationRow> rows) =>
++        rows.GroupBy(x => x.DocumentId)
++            .ToDictionary(
++                group => group.Key,
++                group => new AllocationSummary(
++                    Math.Round(group.Sum(x => x.AllocatedAmount), 2, MidpointRounding.AwayFromZero),
++                    DistinctIds(group.Select(x => x.AllocationId))));
++
++    private static IReadOnlyList<Guid> DistinctIds(IEnumerable<Guid> ids) =>
++        ids.Where(x => x != Guid.Empty)
++            .Distinct()
++            .OrderBy(x => x)
++            .ToArray();
++
++    private static string ResolveAgingBucket(int daysOverdue) =>
++        daysOverdue switch
++        {
++            <= 30 => "1-30",
++            <= 60 => "31-60",
++            <= 90 => "61-90",
++            _ => "90+"
++        };
++
++    private static TimeZoneInfo ResolveTimezone(string? timezone)
++    {
++        if (string.IsNullOrWhiteSpace(timezone))
++        {
++            return TimeZoneInfo.Utc;
++        }
++
++        try
++        {
++            return TimeZoneInfo.FindSystemTimeZoneById(timezone.Trim());
++        }
++        catch (TimeZoneNotFoundException)
++        {
++            return TimeZoneInfo.Utc;
++        }
++        catch (InvalidTimeZoneException)
++        {
++            return TimeZoneInfo.Utc;
++        }
++    }
++
++    private static TimeWindowResolution ResolveCurrentWeekWindow(DateTime asOfUtc, TimeZoneInfo zone)
++    {
++        var localAsOf = TimeZoneInfo.ConvertTimeFromUtc(asOfUtc, zone);
++        var localDate = new DateTime(localAsOf.Year, localAsOf.Month, localAsOf.Day, 0, 0, 0, DateTimeKind.Unspecified);
++        var daysSinceMonday = ((int)localAsOf.DayOfWeek - (int)DayOfWeek.Monday + 7) % 7;
++        var localStart = localDate.AddDays(-daysSinceMonday);
++        var localEnd = localStart.AddDays(7);
++        return new TimeWindowResolution(
++            TimeZoneInfo.ConvertTimeToUtc(localStart, zone),
++            TimeZoneInfo.ConvertTimeToUtc(localEnd, zone),
++            null,
++            null);
++    }
++
++    private static TimeWindowResolution ResolveMonthToDateWindow(DateTime asOfUtc, TimeZoneInfo zone)
++    {
++        var localAsOf = TimeZoneInfo.ConvertTimeFromUtc(asOfUtc, zone);
++        var monthStartLocal = new DateTime(localAsOf.Year, localAsOf.Month, 1, 0, 0, 0, DateTimeKind.Unspecified);
++        var comparisonStartLocal = monthStartLocal.AddMonths(-1);
++        var elapsedDays = (localAsOf.Date - monthStartLocal.Date).Days + 1;
++        var comparisonEndLocal = comparisonStartLocal.AddDays(elapsedDays);
++
++        return new TimeWindowResolution(
++            TimeZoneInfo.ConvertTimeToUtc(monthStartLocal, zone),
++            asOfUtc.AddTicks(1),
++            TimeZoneInfo.ConvertTimeToUtc(comparisonStartLocal, zone),
++            TimeZoneInfo.ConvertTimeToUtc(comparisonEndLocal, zone));
++    }
++
++    private static string FormatCategoryLabel(string category) =>
++        string.IsNullOrWhiteSpace(category) ? "Uncategorized" : category.Replace("_", " ", StringComparison.Ordinal);
++
++    private static string BuildCashMovementReason(FinanceAgentMetricComponentDto component)
++    {
++        var previous = component.PreviousValue ?? 0m;
++        if (component.CurrentValue >= 0m && previous >= 0m)
++        {
++            return $"Cash inflows for {component.Label.ToLowerInvariant()} are down by {Math.Abs(component.Delta):0.00} {component.Currency} versus the prior comparable period.";
++        }
++
++        if (component.CurrentValue <= 0m && previous <= 0m)
++        {
++            return $"Cash outflows for {component.Label.ToLowerInvariant()} are up by {Math.Abs(component.Delta):0.00} {component.Currency} versus the prior comparable period.";
++        }
++
++        return $"Cash movement for {component.Label.ToLowerInvariant()} changed by {component.Delta:0.00} {component.Currency} versus the prior comparable period.";
++    }
++
+     private sealed record AlertRow(
+         Guid Id,
+         AlertStatus Status);
+@@ -1834,4 +2288,33 @@ public sealed class CompanyFinanceReadService : IFinanceReadService, IFinancePaymentReadService
+ 
+     private static bool MatchesCounterpartyType(string actual, string expected) =>
+         expected == "supplier"
+             ? string.Equals(actual, "supplier", StringComparison.OrdinalIgnoreCase) || string.Equals(actual, "vendor", StringComparison.OrdinalIgnoreCase)
+             : string.Equals(actual, "customer", StringComparison.OrdinalIgnoreCase);
++
++    private sealed record AllocationSummary(
++        decimal Amount,
++        IReadOnlyList<Guid> SourceRecordIds)
++    {
++        public static AllocationSummary Empty { get; } = new(0m, []);
++    }
++
++    private sealed record DocumentAllocationRow(
++        Guid DocumentId,
++        Guid AllocationId,
++        decimal AllocatedAmount);
++
++    private sealed record AgentBillQueryRow(
++        Guid Id,
++        Guid CounterpartyId,
++        string CounterpartyName,
++        string BillNumber,
++        DateTime DueUtc,
++        decimal Amount,
++        string Currency,
++        string Status,
++        string SettlementStatus);
++
++    private sealed record AgentInvoiceQueryRow(
++        Guid Id,
++        Guid CounterpartyId,
++        string CounterpartyName,
++        string InvoiceNumber,
++        DateTime DueUtc,
++        decimal Amount,
++        string Currency,
++        string Status,
++        string SettlementStatus);
++
++    private sealed record CashMovementQueryRow(
++        Guid Id,
++        string Category,
++        decimal Amount,
++        string Currency,
++        string Description);
++
++    private sealed record TimeWindowResolution(
++        DateTime WindowStartUtc,
++        DateTime WindowEndUtc,
++        DateTime? ComparisonStartUtc,
++        DateTime? ComparisonEndUtc);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+@@ -238,6 +238,13 @@ public sealed class NoOpCompanyToolExecutor : ICompanyToolExecutor
+                     ["accounts"] = new JsonArray()
+                 }
+             },
++            "resolve_finance_agent_query" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["result"] = new JsonObject
++                {
++                    ["intent"] = JsonValue.Create(FinanceAgentQueryIntents.WhatShouldIPayThisWeek),
++                    ["summary"] = JsonValue.Create("Selected 0 payable item(s) for the current company week.")
++                }
++            },
+             "list_transactions" or "list_uncategorized_transactions" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["transactions"] = new JsonArray()
+diff --git a/src/VirtualCompany.Infrastructure/Companies/LauraFinanceAgentSeedData.cs b/src/VirtualCompany.Infrastructure/Companies/LauraFinanceAgentSeedData.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/LauraFinanceAgentSeedData.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/LauraFinanceAgentSeedData.cs
+@@ -86,6 +86,7 @@ internal static class LauraFinanceAgentSeedData
+         {
+             ["allowed"] = new JsonArray(
+                 JsonValue.Create("get_cash_balance"),
++                JsonValue.Create("resolve_finance_agent_query"),
+                 JsonValue.Create("list_transactions"),
+                 JsonValue.Create("list_uncategorized_transactions"),
+                 JsonValue.Create("list_invoices_awaiting_approval"),
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -275,6 +275,13 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
+                         ["accounts"] = new JsonArray()
+                     }
+                 },
++                "resolve_finance_agent_query" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["result"] = new JsonObject
++                    {
++                        ["intent"] = JsonValue.Create(FinanceAgentQueryIntents.WhatShouldIPayThisWeek),
++                        ["summary"] = JsonValue.Create("Selected 0 payable item(s) for the current company week.")
++                    }
++                },
+                 "list_transactions" or "list_uncategorized_transactions" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                 {
+                     ["transactions"] = new JsonArray()
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceToolProviderBoundaryTests.cs b/tests/VirtualCompany.Api.Tests/FinanceToolProviderBoundaryTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceToolProviderBoundaryTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceToolProviderBoundaryTests.cs
+@@ -13,6 +13,7 @@ public sealed class FinanceToolProviderBoundaryTests
+     private static readonly IReadOnlyDictionary<string, string> RegisteredFinanceToolProviderOperations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+     {
+         ["get_cash_balance"] = nameof(IFinanceToolProvider.GetCashBalanceAsync),
++        ["resolve_finance_agent_query"] = nameof(IFinanceToolProvider.ResolveAgentQueryAsync),
+         ["list_transactions"] = nameof(IFinanceToolProvider.GetTransactionsAsync),
+         ["list_uncategorized_transactions"] = nameof(IFinanceToolProvider.GetTransactionsAsync),
+         ["list_invoices_awaiting_approval"] = nameof(IFinanceToolProvider.GetInvoicesAsync),
+@@ -118,6 +119,13 @@ public sealed class FinanceToolProviderBoundaryTests
+         Assert.True(cashBalance.Amount > 0);
+         Assert.False(string.IsNullOrWhiteSpace(cashBalance.Currency));
+         Assert.NotEmpty(cashBalance.Accounts);
++
++        var agentQueryResult = await provider.ResolveAgentQueryAsync(
++            new GetFinanceAgentQueryQuery(companyId, "what should i pay this week", new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc)),
++            CancellationToken.None);
++        Assert.Equal(companyId, agentQueryResult.CompanyId);
++        Assert.Equal(FinanceAgentQueryIntents.WhatShouldIPayThisWeek, agentQueryResult.Intent);
++        Assert.NotEmpty(agentQueryResult.Items);
+ 
+         var transactions = await provider.GetTransactionsAsync(
+             new GetFinanceTransactionsQuery(companyId, Limit: 25),
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs b/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceToolDefinitionManifestTests.cs
+@@ -11,6 +11,7 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+     private static readonly IReadOnlyDictionary<string, ToolActionType> FinanceTools = new Dictionary<string, ToolActionType>(StringComparer.OrdinalIgnoreCase)
+     [
+         ["get_cash_balance"] = ToolActionType.Read,
++        ["resolve_finance_agent_query"] = ToolActionType.Read,
+         ["list_transactions"] = ToolActionType.Read,
+         ["list_uncategorized_transactions"] = ToolActionType.Read,
+         ["list_invoices_awaiting_approval"] = ToolActionType.Read,
+@@ -119,6 +120,15 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+             }
+         ];
+ 
++        yield return
++        [
++            "resolve_finance_agent_query",
++            ToolActionType.Read,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["queryText"] = JsonValue.Create("what should i pay this week")
++            }
++        ];
++
+         yield return
+         [
+             "list_transactions",
+@@ -208,6 +218,15 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+             }
+         ];
+ 
++        yield return
++        [
++            "resolve_finance_agent_query",
++            ToolActionType.Read,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["queryText"] = JsonValue.Create(string.Empty)
++            }
++        ];
++
+         yield return
+         [
+             "list_transactions",
+@@ -333,6 +352,10 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
+                 {
+                     ["cashBalance"] = new JsonObject { ["amount"] = JsonValue.Create(123.45m), ["currency"] = JsonValue.Create("USD") }
+                 },
++                "resolve_finance_agent_query" => new(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["result"] = new JsonObject { ["intent"] = JsonValue.Create(FinanceAgentQueryIntents.WhatShouldIPayThisWeek), ["summary"] = JsonValue.Create("Selected 1 payable item.") }
++                },
+                 "list_transactions" or "list_uncategorized_transactions" => new(StringComparer.OrdinalIgnoreCase)
+                 {
+                     ["transactions"] = new JsonArray()
+diff --git a/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs b/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs
+--- a/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs
++++ b/tests/VirtualCompany.Api.Tests/InternalCompanyToolRegistryTests.cs
+@@ -29,6 +29,7 @@ public sealed class InternalCompanyToolRegistryTests : IClassFixture<TestWebAppl
+         Assert.Contains(tools, tool => tool.ToolName == "knowledge.search" && tool.Supports(ToolActionType.Read, "knowledge"));
+         Assert.Contains(tools, tool => tool.ToolName == "knowledge.search" && tool.Supports(ToolActionType.Recommend, "knowledge"));
+         Assert.Contains(tools, tool => tool.ToolName == "get_cash_balance" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
++        Assert.Contains(tools, tool => tool.ToolName == "resolve_finance_agent_query" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+         Assert.Contains(tools, tool => tool.ToolName == "list_transactions" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+         Assert.Contains(tools, tool => tool.ToolName == "list_uncategorized_transactions" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+         Assert.Contains(tools, tool => tool.ToolName == "list_invoices_awaiting_approval" && tool.Version == "1.0.0" && tool.Supports(ToolActionType.Read, "finance"));
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+@@ -189,6 +189,7 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+             new[]
+             {
+                 "get_cash_balance",
++                "resolve_finance_agent_query",
+                 "list_transactions",
+                 "list_uncategorized_transactions",
+                 "list_invoices_awaiting_approval",
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceToolExecutionFlowIntegrationTests.cs
+@@ -382,6 +382,13 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+             nameof(TrackingFinanceToolProvider.GetCashBalanceAsync)
+         ];
+ 
++        yield return
++        [
++            "resolve_finance_agent_query",
++            new { queryText = "what should i pay this week" },
++            "result",
++            nameof(TrackingFinanceToolProvider.ResolveAgentQueryAsync)
++        ];
++
+         yield return
+         [
+             "list_transactions",
+@@ -617,6 +624,19 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
+                 ]));
+         }
+ 
++        public Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
++            GetFinanceAgentQueryQuery query,
++            CancellationToken cancellationToken)
++        {
++            _callNames.Enqueue(nameof(ResolveAgentQueryAsync));
++            return Task.FromResult(new FinanceAgentQueryResultDto(
++                query.CompanyId,
++                FinanceAgentQueryIntents.WhatShouldIPayThisWeek,
++                FinanceAgentQueryRouting.NormalizeQueryText(query.QueryText),
++                "Selected 1 payable item.",
++                "USD",
++                query.AsOfUtc ?? new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc),
++                new FinanceAgentQueryPeriodDto(query.AsOfUtc ?? new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 13, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), null, null, "UTC"),
++                [new FinanceAgentQueryItemDto(Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"), "bill", Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"), "Tracked Vendor", "BILL-001", new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc), 250m, "USD", "Due within the current company week.", 1, null, null, [Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")], [new FinanceAgentMetricComponentDto("remaining_balance", "Remaining balance", 250m, null, 250m, "USD", [Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")])])], [new FinanceAgentMetricComponentDto("recommended_payables_total", "Recommended payables total", 250m, null, 250m, "USD", [Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")])], [Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")]));
++        }
++
+         public Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(
+             GetFinanceMonthlyProfitAndLossQuery query,
+             CancellationToken cancellationToken)
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceAgentQueryResolverTests.cs b/tests/VirtualCompany.Api.Tests/FinanceAgentQueryResolverTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceAgentQueryResolverTests.cs
+@@ -0,0 +1,302 @@
++using System.Diagnostics;
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceAgentQueryResolverTests
++{
++    [Fact]
++    public async Task Resolver_returns_weekly_payables_with_explainability_and_deterministic_order()
++    {
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var scenario = SeedScenario(dbContext);
++        await dbContext.SaveChangesAsync();
++
++        var accessor = new RequestCompanyContextAccessor();
++        accessor.SetCompanyId(scenario.CompanyId);
++        var service = new CompanyFinanceReadService(dbContext, accessor);
++
++        var result = await service.ResolveAgentQueryAsync(
++            new GetFinanceAgentQueryQuery(
++                scenario.CompanyId,
++                "what should i pay this week",
++                scenario.AsOfUtc),
++            CancellationToken.None);
++
++        Assert.Equal(FinanceAgentQueryIntents.WhatShouldIPayThisWeek, result.Intent);
++        Assert.Equal(new[] { scenario.OverdueBillId, scenario.DueThisWeekBillId }, result.Items.Select(x => x.RecordId));
++        Assert.All(result.Items, item => Assert.Contains(item.MetricComponents, component => component.ComponentKey == "remaining_balance"));
++        Assert.All(result.Items, item => Assert.Contains(item.SourceRecordIds, id => id == item.RecordId));
++    }
++
++    [Fact]
++    public async Task Resolver_returns_overdue_customers_only_for_active_company()
++    {
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var scenario = SeedScenario(dbContext);
++        await dbContext.SaveChangesAsync();
++
++        var accessor = new RequestCompanyContextAccessor();
++        accessor.SetCompanyId(scenario.CompanyId);
++        var service = new CompanyFinanceReadService(dbContext, accessor);
++
++        var result = await service.ResolveAgentQueryAsync(
++            new GetFinanceAgentQueryQuery(
++                scenario.CompanyId,
++                "which customers are overdue",
++                scenario.AsOfUtc),
++            CancellationToken.None);
++
++        Assert.Equal(FinanceAgentQueryIntents.WhichCustomersAreOverdue, result.Intent);
++        Assert.Equal(new[] { scenario.OlderOverdueInvoiceId, scenario.RecentOverdueInvoiceId }, result.Items.Select(x => x.RecordId));
++        Assert.DoesNotContain(result.SourceRecordIds, id => id == scenario.OtherCompanyInvoiceId);
++        Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.AgingBucket)));
++    }
++
++    [Fact]
++    public async Task Resolver_returns_cash_down_components_and_source_transaction_ids()
++    {
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var scenario = SeedScenario(dbContext);
++        await dbContext.SaveChangesAsync();
++
++        var accessor = new RequestCompanyContextAccessor();
++        accessor.SetCompanyId(scenario.CompanyId);
++        var service = new CompanyFinanceReadService(dbContext, accessor);
++
++        var result = await service.ResolveAgentQueryAsync(
++            new GetFinanceAgentQueryQuery(
++                scenario.CompanyId,
++                "why is cash down this month",
++                scenario.AsOfUtc),
++            CancellationToken.None);
++
++        Assert.Equal(FinanceAgentQueryIntents.WhyIsCashDownThisMonth, result.Intent);
++        Assert.Contains(result.MetricComponents, component => component.ComponentKey == "net_cash_movement" && component.Delta < 0m);
++        Assert.Contains(result.MetricComponents, component => component.ComponentKey == "revenue" && component.Delta < 0m);
++        Assert.Contains(result.MetricComponents, component => component.ComponentKey == "payroll" && component.Delta < 0m);
++        Assert.Contains(result.SourceRecordIds, id => id == scenario.CurrentRevenueTransactionId);
++        Assert.Contains(result.SourceRecordIds, id => id == scenario.PreviousRevenueTransactionId);
++    }
++
++    [Fact]
++    public async Task Resolver_enforces_active_company_context()
++    {
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var scenario = SeedScenario(dbContext);
++        await dbContext.SaveChangesAsync();
++
++        var accessor = new RequestCompanyContextAccessor();
++        accessor.SetCompanyId(Guid.NewGuid());
++        var service = new CompanyFinanceReadService(dbContext, accessor);
++
++        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => service.ResolveAgentQueryAsync(
++            new GetFinanceAgentQueryQuery(
++                scenario.CompanyId,
++                "what should i pay this week",
++                scenario.AsOfUtc),
++            CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task Resolver_handles_seeded_multi_company_dataset_within_local_threshold()
++    {
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var scenario = SeedScenario(dbContext, additionalCurrentMonthTransactionsPerCompany: 250);
++        await dbContext.SaveChangesAsync();
++
++        var accessor = new RequestCompanyContextAccessor();
++        accessor.SetCompanyId(scenario.CompanyId);
++        var service = new CompanyFinanceReadService(dbContext, accessor);
++
++        var stopwatch = Stopwatch.StartNew();
++        var result = await service.ResolveAgentQueryAsync(
++            new GetFinanceAgentQueryQuery(
++                scenario.CompanyId,
++                "why is cash down this month",
++                scenario.AsOfUtc),
++            CancellationToken.None);
++        stopwatch.Stop();
++
++        Assert.Equal(FinanceAgentQueryIntents.WhyIsCashDownThisMonth, result.Intent);
++        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2), $"Resolver completed in {stopwatch.Elapsed.TotalMilliseconds:0.0} ms.");
++        Assert.DoesNotContain(result.SourceRecordIds, id => id == scenario.OtherCompanyInvoiceId);
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options);
++
++    private static FinanceAgentScenario SeedScenario(VirtualCompanyDbContext dbContext, int additionalCurrentMonthTransactionsPerCompany = 0)
++    {
++        var companyId = Guid.Parse("11111111-1111-1111-1111-111111111111");
++        var otherCompanyId = Guid.Parse("22222222-2222-2222-2222-222222222222");
++        var asOfUtc = new DateTime(2026, 4, 15, 12, 0, 0, DateTimeKind.Utc);
++
++        var company = new Company(companyId, "Finance Agent Company");
++        company.UpdateWorkspaceProfile("Finance Agent Company", null, null, "UTC", "USD", null, null);
++        var otherCompany = new Company(otherCompanyId, "Other Finance Agent Company");
++        otherCompany.UpdateWorkspaceProfile("Other Finance Agent Company", null, null, "UTC", "USD", null, null);
++        dbContext.Companies.AddRange(company, otherCompany);
++
++        var cashAccountId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
++        var otherCashAccountId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
++        dbContext.FinanceAccounts.AddRange(
++            new FinanceAccount(cashAccountId, companyId, "1000", "Operating Cash", "asset", "USD", 10000m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FinanceAccount(otherCashAccountId, otherCompanyId, "1000", "Operating Cash", "asset", "USD", 9000m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++
++        var customerId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
++        var secondCustomerId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
++        var supplierId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
++        var otherCustomerId = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff");
++        var otherSupplierId = Guid.Parse("99999999-9999-9999-9999-999999999999");
++        dbContext.FinanceCounterparties.AddRange(
++            new FinanceCounterparty(customerId, companyId, "Northwind", "customer", "northwind@example.com"),
++            new FinanceCounterparty(secondCustomerId, companyId, "Fabrikam", "customer", "fabrikam@example.com"),
++            new FinanceCounterparty(supplierId, companyId, "Contoso Vendor", "supplier", "vendor@example.com"),
++            new FinanceCounterparty(otherCustomerId, otherCompanyId, "Other Customer", "customer", "other.customer@example.com"),
++            new FinanceCounterparty(otherSupplierId, otherCompanyId, "Other Supplier", "supplier", "other.supplier@example.com"));
++
++        var overdueBillId = Guid.Parse("10101010-1010-1010-1010-101010101010");
++        var dueThisWeekBillId = Guid.Parse("20202020-2020-2020-2020-202020202020");
++        dbContext.FinanceBills.AddRange(
++            new FinanceBill(overdueBillId, companyId, supplierId, "BILL-OVERDUE-001", asOfUtc.AddDays(-20), asOfUtc.AddDays(-2), 500m, "USD", "open", settlementStatus: "unpaid"),
++            new FinanceBill(dueThisWeekBillId, companyId, supplierId, "BILL-WEEK-001", asOfUtc.AddDays(-4), asOfUtc.AddDays(2), 300m, "USD", "open", settlementStatus: "unpaid"),
++            new FinanceBill(Guid.Parse("30303030-3030-3030-3030-303030303030"), otherCompanyId, otherSupplierId, "BILL-OTHER-001", asOfUtc.AddDays(-7), asOfUtc.AddDays(1), 999m, "USD", "open", settlementStatus: "unpaid"));
++
++        var olderOverdueInvoiceId = Guid.Parse("40404040-4040-4040-4040-404040404040");
++        var recentOverdueInvoiceId = Guid.Parse("50505050-5050-5050-5050-505050505050");
++        var otherCompanyInvoiceId = Guid.Parse("60606060-6060-6060-6060-606060606060");
++        dbContext.FinanceInvoices.AddRange(
++            new FinanceInvoice(olderOverdueInvoiceId, companyId, customerId, "INV-OLDER-001", asOfUtc.AddDays(-50), asOfUtc.AddDays(-35), 1000m, "USD", "open", settlementStatus: "unpaid"),
++            new FinanceInvoice(recentOverdueInvoiceId, companyId, secondCustomerId, "INV-RECENT-001", asOfUtc.AddDays(-20), asOfUtc.AddDays(-5), 400m, "USD", "open", settlementStatus: "unpaid"),
++            new FinanceInvoice(otherCompanyInvoiceId, otherCompanyId, otherCustomerId, "INV-OTHER-001", asOfUtc.AddDays(-15), asOfUtc.AddDays(-4), 777m, "USD", "open", settlementStatus: "unpaid"));
++
++        var completedOutgoingPaymentId = Guid.Parse("70707070-7070-7070-7070-707070707070");
++        var pendingOutgoingPaymentId = Guid.Parse("80808080-8080-8080-8080-808080808080");
++        var completedIncomingPaymentId = Guid.Parse("90909090-9090-9090-9090-909090909090");
++        dbContext.Payments.AddRange(
++            new Payment(completedOutgoingPaymentId, companyId, "outgoing", 100m, "USD", asOfUtc.AddDays(-1), "ach", "completed", "BILL-OVERDUE-001"),
++            new Payment(pendingOutgoingPaymentId, companyId, "outgoing", 150m, "USD", asOfUtc.AddDays(1), "ach", "pending", "BILL-WEEK-001"),
++            new Payment(completedIncomingPaymentId, companyId, "incoming", 200m, "USD", asOfUtc.AddDays(-10), "ach", "completed", "INV-OLDER-001"));
++        dbContext.PaymentAllocations.AddRange(
++            new PaymentAllocation(Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), companyId, completedOutgoingPaymentId, null, overdueBillId, 100m, "USD"),
++            new PaymentAllocation(Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff"), companyId, pendingOutgoingPaymentId, null, dueThisWeekBillId, 150m, "USD"),
++            new PaymentAllocation(Guid.Parse("cccccccc-dddd-eeee-ffff-000000000000"), companyId, completedIncomingPaymentId, olderOverdueInvoiceId, null, 200m, "USD"));
++
++        var previousRevenueTransactionId = Guid.Parse("12121212-1212-1212-1212-121212121212");
++        var currentRevenueTransactionId = Guid.Parse("13131313-1313-1313-1313-131313131313");
++        dbContext.FinanceTransactions.AddRange(
++            new FinanceTransaction(previousRevenueTransactionId, companyId, cashAccountId, customerId, olderOverdueInvoiceId, null, new DateTime(2026, 3, 5, 0, 0, 0, DateTimeKind.Utc), "revenue", 3000m, "USD", "Collections prior month", "TX-PREV-REV"),
++            new FinanceTransaction(Guid.Parse("14141414-1414-1414-1414-141414141414"), companyId, cashAccountId, supplierId, null, overdueBillId, new DateTime(2026, 3, 8, 0, 0, 0, DateTimeKind.Utc), "payroll", -1200m, "USD", "Payroll prior month", "TX-PREV-PAYROLL"),
++            new FinanceTransaction(Guid.Parse("15151515-1515-1515-1515-151515151515"), companyId, cashAccountId, supplierId, null, dueThisWeekBillId, new DateTime(2026, 3, 9, 0, 0, 0, DateTimeKind.Utc), "rent", -500m, "USD", "Rent prior month", "TX-PREV-RENT"),
++            new FinanceTransaction(currentRevenueTransactionId, companyId, cashAccountId, secondCustomerId, recentOverdueInvoiceId, null, new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc), "revenue", 1800m, "USD", "Collections current month", "TX-CURR-REV"),
++            new FinanceTransaction(Guid.Parse("16161616-1616-1616-1616-161616161616"), companyId, cashAccountId, supplierId, null, overdueBillId, new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc), "payroll", -1600m, "USD", "Payroll current month", "TX-CURR-PAYROLL"),
++            new FinanceTransaction(Guid.Parse("17171717-1717-1717-1717-171717171717"), companyId, cashAccountId, supplierId, null, dueThisWeekBillId, new DateTime(2026, 4, 9, 0, 0, 0, DateTimeKind.Utc), "rent", -500m, "USD", "Rent current month", "TX-CURR-RENT"),
++            new FinanceTransaction(Guid.Parse("18181818-1818-1818-1818-181818181818"), companyId, cashAccountId, supplierId, null, null, new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc), "software", -300m, "USD", "Software current month", "TX-CURR-SW"),
++            new FinanceTransaction(Guid.Parse("19191919-1919-1919-1919-191919191919"), otherCompanyId, otherCashAccountId, otherCustomerId, otherCompanyInvoiceId, null, new DateTime(2026, 4, 6, 0, 0, 0, DateTimeKind.Utc), "revenue", 700m, "USD", "Other company collections", "TX-OTHER-REV"));
++
++        for (var index = 0; index < additionalCurrentMonthTransactionsPerCompany; index++)
++        {
++            dbContext.FinanceTransactions.Add(
++                new FinanceTransaction(
++                    Guid.NewGuid(),
++                    companyId,
++                    cashAccountId,
++                    supplierId,
++                    null,
++                    null,
++                    new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc).AddMinutes(index),
++                    index % 2 == 0 ? "revenue" : "software",
++                    index % 2 == 0 ? 25m : -10m,
++                    "USD",
++                    $"Generated transaction {index}",
++                    $"GEN-A-{index:0000}"));
++            dbContext.FinanceTransactions.Add(
++                new FinanceTransaction(
++                    Guid.NewGuid(),
++                    otherCompanyId,
++                    otherCashAccountId,
++                    otherSupplierId,
++                    null,
++                    null,
++                    new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc).AddMinutes(index),
++                    index % 2 == 0 ? "revenue" : "software",
++                    index % 2 == 0 ? 25m : -10m,
++                    "USD",
++                    $"Other generated transaction {index}",
++                    $"GEN-B-{index:0000}"));
++        }
++
++        return new FinanceAgentScenario(
++            companyId,
++            otherCompanyId,
++            asOfUtc,
++            overdueBillId,
++            dueThisWeekBillId,
++            olderOverdueInvoiceId,
++            recentOverdueInvoiceId,
++            otherCompanyInvoiceId,
++            previousRevenueTransactionId,
++            currentRevenueTransactionId);
++    }
++
++    private sealed record FinanceAgentScenario(
++        Guid CompanyId,
++        Guid OtherCompanyId,
++        DateTime AsOfUtc,
++        Guid OverdueBillId,
++        Guid DueThisWeekBillId,
++        Guid OlderOverdueInvoiceId,
++        Guid RecentOverdueInvoiceId,
++        Guid OtherCompanyInvoiceId,
++        Guid PreviousRevenueTransactionId,
++        Guid CurrentRevenueTransactionId);
++}
+diff --git a/docs/finance-dashboard-cash-metrics.md b/docs/finance-dashboard-cash-metrics.md
+--- a/docs/finance-dashboard-cash-metrics.md
++++ b/docs/finance-dashboard-cash-metrics.md
+@@ -10,3 +10,14 @@ Remaining open balances are calculated as:
+ - clamped to zero so partially over-allocated seed data cannot produce negative balances
+ 
+ Pending scheduled allocations replace, rather than supplement, the unscheduled remainder in expected incoming and outgoing metrics so the forecast does not double count both the scheduled installment and the full document balance.
++
++## Finance agent query resolvers
++
++- `resolve_finance_agent_query` is a live-computed, tenant-scoped finance tool. It does not use pre-aggregated projection tables in the current implementation.
++- Supported deterministic phrases are `what should i pay this week`, `which customers are overdue`, and `why is cash down this month`.
++- Resolver routing is explicit and phrase-normalized. Unsupported phrasing fails instead of falling back to free-form interpretation.
++- `what should i pay this week` uses the company timezone from `companies.timezone`, falls back to `UTC`, and evaluates a Monday-start company week. It returns payable items with bill ids, related allocation ids, and calculation components for original amount, completed allocations, remaining balance, and scheduled payments in the week window.
++- `which customers are overdue` uses the company timezone from `companies.timezone`, falls back to `UTC`, and computes days overdue from the local company date. It returns invoice ids, customer ids, aging buckets, and remaining-balance components derived from completed incoming allocations.
++- `why is cash down this month` compares current month-to-date cash-account movements against the same number of elapsed company-local days in the prior month. It returns ranked metric components and transaction ids for the categories that moved cash the most.
++- Because these agent resolver metrics are live-computed from finance source tables, refresh behavior matches source-of-truth writes immediately after the underlying transaction, invoice, bill, payment, or allocation records are committed.
++- No projection backfill or rebuild job is required for these agent resolver queries in the current implementation.
+END_OF_PATCH

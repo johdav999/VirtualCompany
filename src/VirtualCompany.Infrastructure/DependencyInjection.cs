@@ -63,11 +63,7 @@ public static class DependencyInjection
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
 
         services.AddDbContext<VirtualCompanyDbContext>(options =>
-            options
-                .UseSqlServer(
-                    connectionString,
-                    sqlServerOptions => sqlServerOptions.EnableRetryOnFailure())
-                .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning)));
+            ConfigureDatabase(options, connectionString, configuration["Database:Provider"]));
 
         services.AddOptions<CompanyDocumentOptions>()
             .Bind(configuration.GetSection(CompanyDocumentOptions.SectionName));
@@ -123,6 +119,22 @@ public static class DependencyInjection
         services.AddOptions<FinanceSeedWorkerOptions>()
             .Bind(configuration.GetSection(FinanceSeedWorkerOptions.SectionName))
             .PostConfigure(options => options.BatchSize = Math.Max(1, options.BatchSize));
+        services.AddOptions<ReportingPeriodRegenerationWorkerOptions>()
+            .Bind(configuration.GetSection(ReportingPeriodRegenerationWorkerOptions.SectionName))
+            .PostConfigure(options => options.BatchSize = Math.Max(1, options.BatchSize))
+            .PostConfigure(options => options.PollIntervalMilliseconds = Math.Max(100, options.PollIntervalMilliseconds));
+        services.AddOptions<FinanceApprovalTaskBackfillWorkerOptions>()
+            .Bind(configuration.GetSection(FinanceApprovalTaskBackfillWorkerOptions.SectionName))
+            .PostConfigure(options => options.BatchSize = Math.Max(1, options.BatchSize))
+            .PostConfigure(options => options.BackfillBatchSize = Math.Max(1, options.BackfillBatchSize))
+            .PostConfigure(options => options.PollIntervalMilliseconds = Math.Max(100, options.PollIntervalMilliseconds));
+        services.AddOptions<FinanceInsightsSnapshotWorkerOptions>()
+            .Bind(configuration.GetSection(FinanceInsightsSnapshotWorkerOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.BatchSize = Math.Max(1, options.BatchSize);
+                options.PollIntervalMilliseconds = Math.Max(100, options.PollIntervalMilliseconds);
+            });
         services.AddOptions<FinanceInitializationOptions>()
             .Bind(configuration.GetSection(FinanceInitializationOptions.SectionName))
             .PostConfigure(options =>
@@ -244,7 +256,10 @@ public static class DependencyInjection
         services.AddHostedService<WorkflowProgressionBackgroundService>();
         services.AddHostedService<TriggerEvaluationBackgroundService>();
         services.AddHostedService<FinanceSeedBackfillBackgroundService>();
+        services.AddHostedService<ReportingPeriodRegenerationBackgroundService>();
+        services.AddHostedService<FinanceApprovalTaskBackfillBackgroundService>();
         services.AddHostedService<CompanySimulationProgressionBackgroundService>();
+        services.AddHostedService<FinanceInsightsSnapshotBackgroundService>();
         services.AddHostedService<FinanceSeedBackgroundService>();
 
         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
@@ -364,6 +379,12 @@ public static class DependencyInjection
         services.AddScoped<InternalFinanceToolProvider>();
         services.AddScoped<MockFinanceToolProvider>();
         services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
+        services.AddScoped<IFinancePaymentCommandService, CompanyFinanceCommandService>();
+        services.AddScoped<IFinanceCashSettlementPostingService, CompanyCashSettlementPostingService>();
+        services.AddScoped<IFinanceApprovalTaskService, CompanyFinanceApprovalTaskService>();
+        services.AddScoped<ICashPostingTraceabilityBackfillService, CompanyCashPostingTraceabilityBackfillService>();
+        services.AddScoped<IBankTransactionReadService, CompanyBankTransactionService>();
+        services.AddScoped<IBankTransactionCommandService, CompanyBankTransactionService>();
         services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
         services.AddScoped<ISignalEngine, CompanySignalEngine>();
@@ -371,11 +392,17 @@ public static class DependencyInjection
         services.AddScoped<IFinanceSeedBootstrapService, CompanyFinanceSeedBootstrapService>();
         services.AddSingleton<IFinanceSeedTelemetry, FinanceSeedTelemetry>();
         services.AddScoped<IDashboardFinanceSnapshotService, CompanyDashboardFinanceSnapshotService>();
+        services.AddScoped<IFinanceBootstrapRerunService, CompanyFinanceBootstrapRerunService>();
         services.AddScoped<IFinanceSeedingStateService, CompanyFinanceSeedingStateResolver>();
         services.AddScoped<IFinanceSeedBackfillOrchestrator, FinanceSeedBackfillOrchestrator>();
         services.AddScoped<IFinanceSeedBackfillQueryService, FinanceSeedBackfillQueryService>();
+        services.AddScoped<IPlanningBaselineService, PlanningBaselineService>();
         services.AddScoped<IFinanceEntryService, CompanyFinanceEntryService>();
         services.AddScoped<IFinanceSeedJobRunner, CompanyFinanceSeedJobRunner>();
+        services.AddScoped<IReportingPeriodCloseService, CompanyReportingPeriodCloseService>();
+        services.AddScoped<IReportingPeriodRegenerationJobRunner, ReportingPeriodRegenerationJobRunner>();
+        services.AddScoped<IFinanceApprovalTaskBackfillJobRunner, FinanceApprovalTaskBackfillJobRunner>();
+        services.AddScoped<IFinanceInsightsSnapshotJobRunner, FinanceInsightsSnapshotJobRunner>();
         services.AddSingleton<IFinanceSeedBackfillExecutionScheduler, FinanceSeedBackfillExecutionScheduler>();
         services.AddSingleton<IFinanceSeedBackfillDelayStrategy, SystemFinanceSeedBackfillDelayStrategy>();
         services.AddScoped<IFinanceSeedingStateResolver, CompanyFinanceSeedingStateResolver>();
@@ -392,7 +419,12 @@ public static class DependencyInjection
         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
+        services.AddScoped<IFinancePaymentReadService, CompanyFinanceReadService>();
         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+        services.AddScoped<IReconciliationScoringSettingsProvider, CompanyReconciliationScoringSettingsProvider>();
+        services.AddScoped<IReconciliationScoringService, CompanyReconciliationScoringService>();
+        services.AddScoped<IReconciliationSuggestionReadService, CompanyReconciliationSuggestionService>();
+        services.AddScoped<IReconciliationSuggestionCommandService, CompanyReconciliationSuggestionService>();
         services.AddScoped<ExecutionExceptionService>();
         services.AddScoped<ICompanySimulationService, CompanySimulationService>();
         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
@@ -447,4 +479,50 @@ public static class DependencyInjection
 
         return services;
     }
+
+    private static void ConfigureDatabase(
+        DbContextOptionsBuilder options,
+        string connectionString,
+        string? configuredProvider)
+    {
+        switch (ResolveDatabaseProvider(configuredProvider, connectionString))
+        {
+            case DatabaseProvider.PostgreSql:
+                options.UseNpgsql(
+                    connectionString,
+                    npgsqlOptions => npgsqlOptions.EnableRetryOnFailure());
+                break;
+            case DatabaseProvider.Sqlite:
+                options.UseSqlite(connectionString);
+                break;
+            default:
+                options.UseSqlServer(
+                    connectionString,
+                    sqlServerOptions => sqlServerOptions.EnableRetryOnFailure());
+                break;
+        }
+
+        options.ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
+    }
+
+    private static DatabaseProvider ResolveDatabaseProvider(string? configuredProvider, string connectionString)
+    {
+        var normalizedProvider = string.IsNullOrWhiteSpace(configuredProvider)
+            ? string.Empty
+            : configuredProvider.Trim().ToLowerInvariant();
+
+        return normalizedProvider switch
+        {
+            "postgres" or "postgresql" or "npgsql" => DatabaseProvider.PostgreSql,
+            "sqlite" => DatabaseProvider.Sqlite,
+            "sqlserver" or "mssql" => DatabaseProvider.SqlServer,
+            _ when connectionString.Contains("Host=", StringComparison.OrdinalIgnoreCase) ||
+                   connectionString.Contains("Username=", StringComparison.OrdinalIgnoreCase) => DatabaseProvider.PostgreSql,
+            _ when connectionString.Contains("Data Source=", StringComparison.OrdinalIgnoreCase) ||
+                   connectionString.Contains("Filename=", StringComparison.OrdinalIgnoreCase) => DatabaseProvider.Sqlite,
+            _ => DatabaseProvider.SqlServer
+        };
+    }
+
+    private enum DatabaseProvider { SqlServer, PostgreSql, Sqlite }
 }

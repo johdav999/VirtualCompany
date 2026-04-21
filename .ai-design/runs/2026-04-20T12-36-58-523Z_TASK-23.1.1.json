@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-23.1.1",
+  "promptPath": ".ai-design/prompts/TASK-23.1.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T12:36:58.523Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T12-36-58-523Z_TASK-23.1.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T12-36-58-523Z_TASK-23.1.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T12:42:45.419Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ndex 6666666..7777777 100644\n--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs\n+++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs\n@@ -73,6 +73,7 @@ public sealed class VirtualCompanyDbContext : DbContext\n     public DbSet<DashboardDepartmentConfig> DashboardDepartmentConfigs => Set<DashboardDepartmentConfig>();\n     public DbSet<DashboardWidgetConfig> DashboardWidgetConfigs => Set<DashboardWidgetConfig>();\n     public DbSet<FinanceAccount> FinanceAccounts => Set<FinanceAccount>();\n+    public DbSet<FinancialStatementMapping> FinancialStatementMappings => Set<FinancialStatementMapping>();\n     public DbSet<FinanceTransaction> FinanceTransactions => Set<FinanceTransaction>();\n     public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();\n     public DbSet<FinanceCounterparty> FinanceCounterparties => Set<FinanceCounterparty>();\n@@ -152,6 +153,7 @@ public sealed class VirtualCompanyDbContext : DbContext\n                 entry.Entity is DashboardWidgetConfig ||\n                 entry.Entity is Alert ||\n                 entry.Entity is FinanceAccount ||\n+                entry.Entity is FinancialStatementMapping ||\n                 entry.Entity is FinanceTransaction ||\n                 entry.Entity is FinanceInvoice ||\n                 entry.Entity is FinanceBill ||\n@@ -300,6 +302,9 @@ public sealed class VirtualCompanyDbContext : DbContext\n         modelBuilder.Entity<FinanceAccount>()\n             .HasQueryFilter(account =>\n                 CurrentCompanyId.HasValue && account.CompanyId == CurrentCompanyId.Value);\n+        modelBuilder.Entity<FinancialStatementMapping>()\n+            .HasQueryFilter(mapping =>\n+                CurrentCompanyId.HasValue && mapping.CompanyId == CurrentCompanyId.Value);\n         modelBuilder.Entity<FinanceTransaction>()\n             .HasQueryFilter(transaction =>\n                 CurrentCompanyId.HasValue && transaction.CompanyId == CurrentCompanyId.Value);\nEND_OF_PATCH\n",
+  "stderrTail": "7 100644\n--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs\n+++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs\n@@ -73,6 +73,7 @@ public sealed class VirtualCompanyDbContext : DbContext\n     public DbSet<DashboardDepartmentConfig> DashboardDepartmentConfigs => Set<DashboardDepartmentConfig>();\n     public DbSet<DashboardWidgetConfig> DashboardWidgetConfigs => Set<DashboardWidgetConfig>();\n     public DbSet<FinanceAccount> FinanceAccounts => Set<FinanceAccount>();\n+    public DbSet<FinancialStatementMapping> FinancialStatementMappings => Set<FinancialStatementMapping>();\n     public DbSet<FinanceTransaction> FinanceTransactions => Set<FinanceTransaction>();\n     public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();\n     public DbSet<FinanceCounterparty> FinanceCounterparties => Set<FinanceCounterparty>();\n@@ -152,6 +153,7 @@ public sealed class VirtualCompanyDbContext : DbContext\n                 entry.Entity is DashboardWidgetConfig ||\n                 entry.Entity is Alert ||\n                 entry.Entity is FinanceAccount ||\n+                entry.Entity is FinancialStatementMapping ||\n                 entry.Entity is FinanceTransaction ||\n                 entry.Entity is FinanceInvoice ||\n                 entry.Entity is FinanceBill ||\n@@ -300,6 +302,9 @@ public sealed class VirtualCompanyDbContext : DbContext\n         modelBuilder.Entity<FinanceAccount>()\n             .HasQueryFilter(account =>\n                 CurrentCompanyId.HasValue && account.CompanyId == CurrentCompanyId.Value);\n+        modelBuilder.Entity<FinancialStatementMapping>()\n+            .HasQueryFilter(mapping =>\n+                CurrentCompanyId.HasValue && mapping.CompanyId == CurrentCompanyId.Value);\n         modelBuilder.Entity<FinanceTransaction>()\n             .HasQueryFilter(transaction =>\n                 CurrentCompanyId.HasValue && transaction.CompanyId == CurrentCompanyId.Value);\nEND_OF_PATCH\ntokens used\n103,875\n",
+  "verbosityMode": "verbose"
+}

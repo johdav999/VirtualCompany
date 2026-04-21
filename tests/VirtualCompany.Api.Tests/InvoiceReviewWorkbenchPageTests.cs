@@ -649,4 +649,3 @@ public sealed class InvoiceReviewWorkbenchPageTests
             _handler(request, cancellationToken);
     }
 }
-END_OF_PATCH

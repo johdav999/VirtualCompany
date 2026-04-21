@@ -1,0 +1,616 @@
+diff --git a/src/VirtualCompany.Domain/Entities/FinancialStatementMapping.cs b/src/VirtualCompany.Domain/Entities/FinancialStatementMapping.cs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/FinancialStatementMapping.cs
+@@ -0,0 +1,109 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class FinancialStatementMapping : ICompanyOwnedEntity
++{
++    private FinancialStatementMapping()
++    {
++    }
++
++    public FinancialStatementMapping(
++        Guid id,
++        Guid companyId,
++        Guid financeAccountId,
++        FinancialStatementType statementType,
++        FinancialStatementReportSection reportSection,
++        FinancialStatementLineClassification lineClassification,
++        bool isActive = true,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (financeAccountId == Guid.Empty)
++        {
++            throw new ArgumentException("FinanceAccountId is required.", nameof(financeAccountId));
++        }
++
++        FinancialStatementTypeValues.EnsureSupported(statementType, nameof(statementType));
++        FinancialStatementReportSectionValues.EnsureSupported(reportSection, nameof(reportSection));
++        FinancialStatementLineClassificationValues.EnsureSupported(lineClassification, nameof(lineClassification));
++        FinancialStatementMappingCompatibility.EnsureCompatible(statementType, reportSection, lineClassification);
++
++        var normalizedCreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        var normalizedUpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? normalizedCreatedUtc, nameof(updatedUtc));
++        if (normalizedUpdatedUtc < normalizedCreatedUtc)
++        {
++            throw new ArgumentOutOfRangeException(nameof(updatedUtc), "UpdatedUtc cannot be earlier than CreatedUtc.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        FinanceAccountId = financeAccountId;
++        StatementType = statementType;
++        ReportSection = reportSection;
++        LineClassification = lineClassification;
++        IsActive = isActive;
++        CreatedUtc = normalizedCreatedUtc;
++        UpdatedUtc = normalizedUpdatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid FinanceAccountId { get; private set; }
++    public FinancialStatementType StatementType { get; private set; }
++    public FinancialStatementReportSection ReportSection { get; private set; }
++    public FinancialStatementLineClassification LineClassification { get; private set; }
++    public bool IsActive { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FinanceAccount FinanceAccount { get; private set; } = null!;
++
++    public void UpdateClassification(
++        FinancialStatementReportSection reportSection,
++        FinancialStatementLineClassification lineClassification,
++        DateTime? updatedUtc = null)
++    {
++        FinancialStatementReportSectionValues.EnsureSupported(reportSection, nameof(reportSection));
++        FinancialStatementLineClassificationValues.EnsureSupported(lineClassification, nameof(lineClassification));
++        FinancialStatementMappingCompatibility.EnsureCompatible(StatementType, reportSection, lineClassification);
++
++        ReportSection = reportSection;
++        LineClassification = lineClassification;
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
++    }
++
++    public void ReassignStatement(
++        FinancialStatementType statementType,
++        FinancialStatementReportSection reportSection,
++        FinancialStatementLineClassification lineClassification,
++        DateTime? updatedUtc = null)
++    {
++        FinancialStatementTypeValues.EnsureSupported(statementType, nameof(statementType));
++        FinancialStatementReportSectionValues.EnsureSupported(reportSection, nameof(reportSection));
++        FinancialStatementLineClassificationValues.EnsureSupported(lineClassification, nameof(lineClassification));
++        FinancialStatementMappingCompatibility.EnsureCompatible(statementType, reportSection, lineClassification);
++
++        StatementType = statementType;
++        ReportSection = reportSection;
++        LineClassification = lineClassification;
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
++    }
++
++    public void SetActive(bool isActive, DateTime? updatedUtc = null)
++    {
++        IsActive = isActive;
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
++    }
++
++    public void ReassignAccount(Guid financeAccountId, DateTime? updatedUtc = null)
++    {
++        if (financeAccountId == Guid.Empty)
++        {
++            throw new ArgumentException("FinanceAccountId is required.", nameof(financeAccountId));
++        }
++
++        FinanceAccountId = financeAccountId;
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Enums/FinancialStatementMappingEnums.cs b/src/VirtualCompany.Domain/Enums/FinancialStatementMappingEnums.cs
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/FinancialStatementMappingEnums.cs
+@@ -0,0 +1,313 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum FinancialStatementType
++{
++    BalanceSheet = 1,
++    ProfitAndLoss = 2,
++    CashFlow = 3
++}
++
++public enum FinancialStatementReportSection
++{
++    BalanceSheetAssets = 1,
++    BalanceSheetLiabilities = 2,
++    BalanceSheetEquity = 3,
++    ProfitAndLossRevenue = 4,
++    ProfitAndLossCostOfSales = 5,
++    ProfitAndLossOperatingExpenses = 6,
++    ProfitAndLossOtherIncomeExpense = 7,
++    ProfitAndLossTaxes = 8,
++    CashFlowOperatingActivities = 9,
++    CashFlowInvestingActivities = 10,
++    CashFlowFinancingActivities = 11,
++    CashFlowSupplementalDisclosures = 12
++}
++
++public enum FinancialStatementLineClassification
++{
++    CurrentAsset = 1,
++    NonCurrentAsset = 2,
++    CurrentLiability = 3,
++    NonCurrentLiability = 4,
++    Equity = 5,
++    Revenue = 6,
++    ContraRevenue = 7,
++    CostOfSales = 8,
++    OperatingExpense = 9,
++    NonOperatingIncome = 10,
++    NonOperatingExpense = 11,
++    IncomeTax = 12,
++    DepreciationAndAmortization = 13,
++    WorkingCapital = 14,
++    NonCashAdjustment = 15,
++    CashReceipt = 16,
++    CashDisbursement = 17,
++    InvestingCashInflow = 18,
++    InvestingCashOutflow = 19,
++    FinancingCashInflow = 20,
++    FinancingCashOutflow = 21,
++    SupplementalDisclosure = 22
++}
++
++public static class FinancialStatementTypeValues
++{
++    private static readonly IReadOnlyDictionary<FinancialStatementType, string> Values = new Dictionary<FinancialStatementType, string>
++    {
++        [FinancialStatementType.BalanceSheet] = "balance_sheet",
++        [FinancialStatementType.ProfitAndLoss] = "profit_and_loss",
++        [FinancialStatementType.CashFlow] = "cash_flow"
++    };
++
++    private static readonly IReadOnlyDictionary<string, FinancialStatementType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(static value => value).ToArray();
++
++    public static string ToStorageValue(this FinancialStatementType type) =>
++        Values.TryGetValue(type, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(type), type, "Unsupported financial statement type.");
++
++    public static bool TryParse(string? value, out FinancialStatementType type)
++    {
++        type = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        if (ReverseValues.TryGetValue(trimmed, out type))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(trimmed, ignoreCase: true, out type) && Values.ContainsKey(type);
++    }
++
++    public static FinancialStatementType Parse(string value) =>
++        TryParse(value, out var type)
++            ? type
++            : throw new ArgumentOutOfRangeException(nameof(value), value, $"Unsupported financial statement type. Allowed values: {string.Join(", ", AllowedValues)}.");
++
++    public static void EnsureSupported(FinancialStatementType type, string paramName) => _ = ToStorageValue(type);
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ({string.Join(", ", AllowedValues.Select(static value => $"'{value}'"))})";
++}
++
++public static class FinancialStatementReportSectionValues
++{
++    private static readonly IReadOnlyDictionary<FinancialStatementReportSection, string> Values = new Dictionary<FinancialStatementReportSection, string>
++    {
++        [FinancialStatementReportSection.BalanceSheetAssets] = "balance_sheet_assets",
++        [FinancialStatementReportSection.BalanceSheetLiabilities] = "balance_sheet_liabilities",
++        [FinancialStatementReportSection.BalanceSheetEquity] = "balance_sheet_equity",
++        [FinancialStatementReportSection.ProfitAndLossRevenue] = "profit_and_loss_revenue",
++        [FinancialStatementReportSection.ProfitAndLossCostOfSales] = "profit_and_loss_cost_of_sales",
++        [FinancialStatementReportSection.ProfitAndLossOperatingExpenses] = "profit_and_loss_operating_expenses",
++        [FinancialStatementReportSection.ProfitAndLossOtherIncomeExpense] = "profit_and_loss_other_income_expense",
++        [FinancialStatementReportSection.ProfitAndLossTaxes] = "profit_and_loss_taxes",
++        [FinancialStatementReportSection.CashFlowOperatingActivities] = "cash_flow_operating_activities",
++        [FinancialStatementReportSection.CashFlowInvestingActivities] = "cash_flow_investing_activities",
++        [FinancialStatementReportSection.CashFlowFinancingActivities] = "cash_flow_financing_activities",
++        [FinancialStatementReportSection.CashFlowSupplementalDisclosures] = "cash_flow_supplemental_disclosures"
++    };
++
++    private static readonly IReadOnlyDictionary<string, FinancialStatementReportSection> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(static value => value).ToArray();
++
++    public static string ToStorageValue(this FinancialStatementReportSection section) =>
++        Values.TryGetValue(section, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(section), section, "Unsupported financial statement report section.");
++
++    public static bool TryParse(string? value, out FinancialStatementReportSection section)
++    {
++        section = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        if (ReverseValues.TryGetValue(trimmed, out section))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(trimmed, ignoreCase: true, out section) && Values.ContainsKey(section);
++    }
++
++    public static FinancialStatementReportSection Parse(string value) =>
++        TryParse(value, out var section)
++            ? section
++            : throw new ArgumentOutOfRangeException(nameof(value), value, $"Unsupported financial statement report section. Allowed values: {string.Join(", ", AllowedValues)}.");
++
++    public static void EnsureSupported(FinancialStatementReportSection section, string paramName) => _ = ToStorageValue(section);
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ({string.Join(", ", AllowedValues.Select(static value => $"'{value}'"))})";
++}
++
++public static class FinancialStatementLineClassificationValues
++{
++    private static readonly IReadOnlyDictionary<FinancialStatementLineClassification, string> Values = new Dictionary<FinancialStatementLineClassification, string>
++    {
++        [FinancialStatementLineClassification.CurrentAsset] = "current_asset",
++        [FinancialStatementLineClassification.NonCurrentAsset] = "non_current_asset",
++        [FinancialStatementLineClassification.CurrentLiability] = "current_liability",
++        [FinancialStatementLineClassification.NonCurrentLiability] = "non_current_liability",
++        [FinancialStatementLineClassification.Equity] = "equity",
++        [FinancialStatementLineClassification.Revenue] = "revenue",
++        [FinancialStatementLineClassification.ContraRevenue] = "contra_revenue",
++        [FinancialStatementLineClassification.CostOfSales] = "cost_of_sales",
++        [FinancialStatementLineClassification.OperatingExpense] = "operating_expense",
++        [FinancialStatementLineClassification.NonOperatingIncome] = "non_operating_income",
++        [FinancialStatementLineClassification.NonOperatingExpense] = "non_operating_expense",
++        [FinancialStatementLineClassification.IncomeTax] = "income_tax",
++        [FinancialStatementLineClassification.DepreciationAndAmortization] = "depreciation_and_amortization",
++        [FinancialStatementLineClassification.WorkingCapital] = "working_capital",
++        [FinancialStatementLineClassification.NonCashAdjustment] = "non_cash_adjustment",
++        [FinancialStatementLineClassification.CashReceipt] = "cash_receipt",
++        [FinancialStatementLineClassification.CashDisbursement] = "cash_disbursement",
++        [FinancialStatementLineClassification.InvestingCashInflow] = "investing_cash_inflow",
++        [FinancialStatementLineClassification.InvestingCashOutflow] = "investing_cash_outflow",
++        [FinancialStatementLineClassification.FinancingCashInflow] = "financing_cash_inflow",
++        [FinancialStatementLineClassification.FinancingCashOutflow] = "financing_cash_outflow",
++        [FinancialStatementLineClassification.SupplementalDisclosure] = "supplemental_disclosure"
++    };
++
++    private static readonly IReadOnlyDictionary<string, FinancialStatementLineClassification> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(static value => value).ToArray();
++
++    public static string ToStorageValue(this FinancialStatementLineClassification classification) =>
++        Values.TryGetValue(classification, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(classification), classification, "Unsupported financial statement line classification.");
++
++    public static bool TryParse(string? value, out FinancialStatementLineClassification classification)
++    {
++        classification = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        if (ReverseValues.TryGetValue(trimmed, out classification))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(trimmed, ignoreCase: true, out classification) && Values.ContainsKey(classification);
++    }
++
++    public static FinancialStatementLineClassification Parse(string value) =>
++        TryParse(value, out var classification)
++            ? classification
++            : throw new ArgumentOutOfRangeException(nameof(value), value, $"Unsupported financial statement line classification. Allowed values: {string.Join(", ", AllowedValues)}.");
++
++    public static void EnsureSupported(FinancialStatementLineClassification classification, string paramName) => _ = ToStorageValue(classification);
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ({string.Join(", ", AllowedValues.Select(static value => $"'{value}'"))})";
++}
++
++public static class FinancialStatementMappingCompatibility
++{
++    public static bool IsCompatible(
++        FinancialStatementType statementType,
++        FinancialStatementReportSection reportSection,
++        FinancialStatementLineClassification lineClassification) =>
++        SupportsSection(statementType, reportSection) &&
++        SupportsLineClassification(statementType, lineClassification);
++
++    public static void EnsureCompatible(
++        FinancialStatementType statementType,
++        FinancialStatementReportSection reportSection,
++        FinancialStatementLineClassification lineClassification)
++    {
++        if (!SupportsSection(statementType, reportSection))
++        {
++            throw new ArgumentException(
++                $"Report section '{reportSection}' is not valid for statement type '{statementType}'.",
++                nameof(reportSection));
++        }
++
++        if (!SupportsLineClassification(statementType, lineClassification))
++        {
++            throw new ArgumentException(
++                $"Line classification '{lineClassification}' is not valid for statement type '{statementType}'.",
++                nameof(lineClassification));
++        }
++    }
++
++    private static bool SupportsSection(FinancialStatementType statementType, FinancialStatementReportSection reportSection) =>
++        statementType switch
++        {
++            FinancialStatementType.BalanceSheet => reportSection is
++                FinancialStatementReportSection.BalanceSheetAssets or
++                FinancialStatementReportSection.BalanceSheetLiabilities or
++                FinancialStatementReportSection.BalanceSheetEquity,
++            FinancialStatementType.ProfitAndLoss => reportSection is
++                FinancialStatementReportSection.ProfitAndLossRevenue or
++                FinancialStatementReportSection.ProfitAndLossCostOfSales or
++                FinancialStatementReportSection.ProfitAndLossOperatingExpenses or
++                FinancialStatementReportSection.ProfitAndLossOtherIncomeExpense or
++                FinancialStatementReportSection.ProfitAndLossTaxes,
++            FinancialStatementType.CashFlow => reportSection is
++                FinancialStatementReportSection.CashFlowOperatingActivities or
++                FinancialStatementReportSection.CashFlowInvestingActivities or
++                FinancialStatementReportSection.CashFlowFinancingActivities or
++                FinancialStatementReportSection.CashFlowSupplementalDisclosures,
++            _ => false
++        };
++
++    private static bool SupportsLineClassification(FinancialStatementType statementType, FinancialStatementLineClassification lineClassification) =>
++        statementType switch
++        {
++            FinancialStatementType.BalanceSheet => lineClassification is
++                FinancialStatementLineClassification.CurrentAsset or
++                FinancialStatementLineClassification.NonCurrentAsset or
++                FinancialStatementLineClassification.CurrentLiability or
++                FinancialStatementLineClassification.NonCurrentLiability or
++                FinancialStatementLineClassification.Equity,
++            FinancialStatementType.ProfitAndLoss => lineClassification is
++                FinancialStatementLineClassification.Revenue or
++                FinancialStatementLineClassification.ContraRevenue or
++                FinancialStatementLineClassification.CostOfSales or
++                FinancialStatementLineClassification.OperatingExpense or
++                FinancialStatementLineClassification.NonOperatingIncome or
++                FinancialStatementLineClassification.NonOperatingExpense or
++                FinancialStatementLineClassification.IncomeTax,
++            FinancialStatementType.CashFlow => lineClassification is
++                FinancialStatementLineClassification.DepreciationAndAmortization or
++                FinancialStatementLineClassification.WorkingCapital or
++                FinancialStatementLineClassification.NonCashAdjustment or
++                FinancialStatementLineClassification.CashReceipt or
++                FinancialStatementLineClassification.CashDisbursement or
++                FinancialStatementLineClassification.InvestingCashInflow or
++                FinancialStatementLineClassification.InvestingCashOutflow or
++                FinancialStatementLineClassification.FinancingCashInflow or
++                FinancialStatementLineClassification.FinancingCashOutflow or
++                FinancialStatementLineClassification.SupplementalDisclosure,
++            _ => false
++        };
++}
++
++public static class FinancialStatementMappingValidationErrorCodes
++{
++    public const string DuplicateActiveStatementMapping = "duplicate_active_statement_mapping";
++    public const string ConflictingStatementMapping = "conflicting_statement_mapping";
++    public const string UnmappedActiveReportableAccount = "unmapped_active_reportable_account";
++    public const string InvalidStatementSection = "invalid_statement_section";
++    public const string InvalidLineClassification = "invalid_line_classification";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 3333333..4444444 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -2890,6 +2890,49 @@ internal sealed class FinanceAccountConfiguration : IEntityTypeConfiguration<Fin
+     }
+ }
+ 
++internal sealed class FinancialStatementMappingConfiguration : IEntityTypeConfiguration<FinancialStatementMapping>
++{
++    public void Configure(EntityTypeBuilder<FinancialStatementMapping> builder)
++    {
++        builder.ToTable("financial_statement_mappings");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.FinanceAccountId).HasColumnName("finance_account_id").IsRequired();
++        builder.Property(x => x.StatementType)
++            .HasColumnName("statement_type")
++            .HasConversion(value => value.ToStorageValue(), value => FinancialStatementTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.ReportSection)
++            .HasColumnName("report_section")
++            .HasConversion(value => value.ToStorageValue(), value => FinancialStatementReportSectionValues.Parse(value))
++            .HasMaxLength(64)
++            .IsRequired();
++        builder.Property(x => x.LineClassification)
++            .HasColumnName("line_classification")
++            .HasConversion(value => value.ToStorageValue(), value => FinancialStatementLineClassificationValues.Parse(value))
++            .HasMaxLength(64)
++            .IsRequired();
++        builder.Property(x => x.IsActive).HasColumnName("is_active").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasCheckConstraint("CK_financial_statement_mappings_statement_type", FinancialStatementTypeValues.BuildCheckConstraintSql("statement_type"));
++        builder.HasCheckConstraint("CK_financial_statement_mappings_report_section", FinancialStatementReportSectionValues.BuildCheckConstraintSql("report_section"));
++        builder.HasCheckConstraint("CK_financial_statement_mappings_line_classification", FinancialStatementLineClassificationValues.BuildCheckConstraintSql("line_classification"));
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId });
++        builder.HasIndex(x => new { x.CompanyId, x.StatementType, x.IsActive });
++        builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId, x.StatementType }).HasFilter("is_active = 1").IsUnique();
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.FinanceAccount)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.FinanceAccountId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
+ internal sealed class FinanceCounterpartyConfiguration : IEntityTypeConfiguration<FinanceCounterparty>
+ {
+     public void Configure(EntityTypeBuilder<FinanceCounterparty> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420103000_AddFinancialStatementMappings.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420103000_AddFinancialStatementMappings.cs
+new file mode 100644
+index 0000000..5555555
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420103000_AddFinancialStatementMappings.cs
+@@ -0,0 +1,104 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++using VirtualCompany.Domain.Enums;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddFinancialStatementMappings : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var boolType = isPostgres ? "boolean" : "bit";
++            var trueDefault = isPostgres ? "TRUE" : "CAST(1 AS bit)";
++            var activeFilter = isPostgres ? "is_active = TRUE" : "[is_active] = CAST(1 AS bit)";
++
++            migrationBuilder.CreateTable(
++                name: "financial_statement_mappings",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    finance_account_id = table.Column<Guid>(type: guidType, nullable: false),
++                    statement_type = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    report_section = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    line_classification = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    is_active = table.Column<bool>(type: boolType, nullable: false, defaultValueSql: trueDefault),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_financial_statement_mappings", x => x.id);
++                    table.CheckConstraint("CK_financial_statement_mappings_statement_type", FinancialStatementTypeValues.BuildCheckConstraintSql("statement_type"));
++                    table.CheckConstraint("CK_financial_statement_mappings_report_section", FinancialStatementReportSectionValues.BuildCheckConstraintSql("report_section"));
++                    table.CheckConstraint("CK_financial_statement_mappings_line_classification", FinancialStatementLineClassificationValues.BuildCheckConstraintSql("line_classification"));
++                    table.ForeignKey(
++                        name: "FK_financial_statement_mappings_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_financial_statement_mappings_finance_accounts_company_id_finance_account_id",
++                        columns: x => new { x.company_id, x.finance_account_id },
++                        principalTable: "finance_accounts",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_financial_statement_mappings_company_id",
++                table: "financial_statement_mappings",
++                column: "company_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_financial_statement_mappings_company_id_finance_account_id",
++                table: "financial_statement_mappings",
++                columns: new[] { "company_id", "finance_account_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_financial_statement_mappings_company_id_statement_type_is_active",
++                table: "financial_statement_mappings",
++                columns: new[] { "company_id", "statement_type", "is_active" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_financial_statement_mappings_company_id_finance_account_id_statement_type",
++                table: "financial_statement_mappings",
++                columns: new[] { "company_id", "finance_account_id", "statement_type" },
++                unique: true,
++                filter: activeFilter);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "financial_statement_mappings");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 6666666..7777777 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -73,6 +73,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<DashboardDepartmentConfig> DashboardDepartmentConfigs => Set<DashboardDepartmentConfig>();
+     public DbSet<DashboardWidgetConfig> DashboardWidgetConfigs => Set<DashboardWidgetConfig>();
+     public DbSet<FinanceAccount> FinanceAccounts => Set<FinanceAccount>();
++    public DbSet<FinancialStatementMapping> FinancialStatementMappings => Set<FinancialStatementMapping>();
+     public DbSet<FinanceTransaction> FinanceTransactions => Set<FinanceTransaction>();
+     public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();
+     public DbSet<FinanceCounterparty> FinanceCounterparties => Set<FinanceCounterparty>();
+@@ -152,6 +153,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is DashboardWidgetConfig ||
+                 entry.Entity is Alert ||
+                 entry.Entity is FinanceAccount ||
++                entry.Entity is FinancialStatementMapping ||
+                 entry.Entity is FinanceTransaction ||
+                 entry.Entity is FinanceInvoice ||
+                 entry.Entity is FinanceBill ||
+@@ -300,6 +302,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FinanceAccount>()
+             .HasQueryFilter(account =>
+                 CurrentCompanyId.HasValue && account.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinancialStatementMapping>()
++            .HasQueryFilter(mapping =>
++                CurrentCompanyId.HasValue && mapping.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<FinanceTransaction>()
+             .HasQueryFilter(transaction =>
+                 CurrentCompanyId.HasValue && transaction.CompanyId == CurrentCompanyId.Value);
+END_OF_PATCH

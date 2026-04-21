@@ -7,7 +7,7 @@
         <div>
             <span class="dashboard-kicker">Finance snapshot</span>
             <h4 class="h6 mt-2 mb-1">Decision-ready cash view</h4>
-            <p class="text-body-secondary mb-0">Cash, daily burn, and runway for the active company.</p>
+            <p class="text-body-secondary mb-0">Live cash, receivables, and payables for the active company.</p>
         </div>
     </div>
 
@@ -25,20 +25,31 @@
     else
     {
         <div class="finance-snapshot-card__grid mt-3">
-            <section>
-                <div class="dashboard-kicker">Cash</div>
-                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-cash-position">@FormatCurrency(Snapshot.Cash, Snapshot.Currency)</strong>
+            <section class="finance-snapshot-card__metric">
+                <div class="dashboard-kicker">Current cash balance</div>
+                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-cash-position">@FormatCurrency(Snapshot.CurrentCashBalance, Snapshot.Currency)</strong>
             </section>
-            <section>
-                <div class="dashboard-kicker">Runway</div>
-                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-runway">@(Snapshot.RunwayDays.HasValue ? $"{Snapshot.RunwayDays.Value} days" : "Unavailable")</strong>
+            <section class="finance-snapshot-card__metric">
+                <div class="dashboard-kicker">Expected incoming cash</div>
+                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-expected-incoming-cash">@FormatCurrency(Snapshot.ExpectedIncomingCash, Snapshot.Currency)</strong>
             </section>
-            <section>
-                <div class="dashboard-kicker">Risk</div>
-                <span class="finance-risk-pill finance-risk-pill--@CssToken(Snapshot.RiskLevel)" data-testid="executive-cockpit-runway-status">@DisplayRisk(Snapshot.RiskLevel)</span>
+            <section class="finance-snapshot-card__metric">
+                <div class="dashboard-kicker">Expected outgoing cash</div>
+                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-expected-outgoing-cash">@FormatCurrency(Snapshot.ExpectedOutgoingCash, Snapshot.Currency)</strong>
+            </section>
+            <section class="finance-snapshot-card__metric">
+                <div class="dashboard-kicker">Overdue receivables</div>
+                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-overdue-receivables">@FormatCurrency(Snapshot.OverdueReceivables, Snapshot.Currency)</strong>
+            </section>
+            <section class="finance-snapshot-card__metric">
+                <div class="dashboard-kicker">Upcoming payables</div>
+                <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-upcoming-payables">@FormatCurrency(Snapshot.UpcomingPayables, Snapshot.Currency)</strong>
             </section>
         </div>
-        <p class="text-body-secondary mt-3 mb-0">Burn rate: @FormatCurrency(Snapshot.BurnRate, Snapshot.Currency) per day. Snapshot time: @Snapshot.AsOfUtc.ToLocalTime():g</p>
+        <p class="text-body-secondary mt-3 mb-0">
+            As of @Snapshot.AsOfUtc.ToLocalTime():g.
+            Upcoming window: next @Snapshot.UpcomingWindowDays day(s).
+        </p>
         <div class="dashboard-actions mt-3">
             <a class="btn btn-sm btn-outline-primary"
                href="@DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.CashPosition, "view-cash-position", "this-month")"
@@ -59,20 +70,6 @@
     [Parameter]
     public DashboardFinanceSnapshotViewModel? Snapshot { get; set; }
     [Parameter] public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
-
-    private static string CssToken(string? value) =>
-        string.IsNullOrWhiteSpace(value)
-            ? "neutral"
-            : value.Trim().ToLowerInvariant().Replace("_", "-");
-
-    private static string DisplayRisk(string? riskLevel) =>
-        CssToken(riskLevel) switch
-        {
-            "critical" => "Critical",
-            "warning" => "Warning",
-            "healthy" => "Healthy",
-            _ => "Missing"
-        };
 
     private static string FormatCurrency(decimal amount, string currency) =>
         $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";

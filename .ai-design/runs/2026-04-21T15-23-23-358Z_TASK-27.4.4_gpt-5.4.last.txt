@@ -1,0 +1,313 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -177,9 +177,11 @@ public sealed record BackfillFinanceApprovalTasksCommand(
+     bool IncludePayments = true);
+ 
+ public sealed record RerunFinanceBootstrapCommand(
+-    Guid CompanyId,
+-    int BatchSize = 250,
+-    string? CorrelationId = null);
++    Guid CompanyId,
++    bool RerunPlanningBackfill = true,
++    bool RerunApprovalBackfill = true,
++    int BatchSize = 250,
++    string? CorrelationId = null);
+ 
+ public sealed record ActOnFinanceApprovalTaskCommand(
+     Guid CompanyId,
+@@ -201,8 +203,11 @@ public sealed record FinanceApprovalTaskBackfillResultDto(
+ public sealed record FinanceBootstrapRerunResultDto(
+     Guid CompanyId,
+     string CorrelationId,
+     FinanceSeedingState SeedState,
++    bool PlanningBackfillRan,
++    bool ApprovalBackfillRan,
+     int PlanningRowsInserted,
+     FinanceApprovalTaskBackfillResultDto ApprovalBackfill,
++    DateTime CompletedAtUtc,
+     string Summary);
+ 
+ public sealed record FinanceInsightsDto(
+@@ -362,11 +367,10 @@ public sealed record FinancePayablePressureItemDto(
+     string Summary);
+ 
+ public sealed record FinanceBootstrapRerunRequestDto(
+-    int BatchSize = 250,
++    bool RerunPlanningBackfill = true,
++    bool RerunApprovalBackfill = true,
++    int BatchSize = 250,
+     string? CorrelationId = null);
+-
+-public sealed record FinanceBootstrapRerunRequest(
+-    int BatchSize = 250,
+-    int PaymentCreatedCount);
+ public sealed record ReviewFinanceInvoiceWorkflowCommand(
+     Guid CompanyId,
+     Guid InvoiceId,
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -926,6 +926,35 @@ public sealed partial class InternalFinanceController : ControllerBase
+                     request.AnomalyScenarioProfile),
+                 cancellationToken));
+ 
++    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++    [HttpPost("bootstrap/rerun")]
++    public async Task<ActionResult<FinanceBootstrapRerunResultDto>> RerunBootstrapAsync(
++        Guid companyId,
++        [FromBody] RerunFinanceBootstrapRequest? request,
++        CancellationToken cancellationToken)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++        if (request is not null && request.BatchSize <= 0)
++        {
++            errors[nameof(RerunFinanceBootstrapRequest.BatchSize)] = ["Batch size must be greater than zero."];
++        }
++
++        if (request is not null && !request.RerunPlanningBackfill && !request.RerunApprovalBackfill)
++        {
++            errors[nameof(RerunFinanceBootstrapRequest.RerunPlanningBackfill)] = ["Enable at least one bootstrap rerun operation."];
++        }
++
++        if (errors.Count > 0)
++        {
++            return ValidationProblem(new ValidationProblemDetails(errors)
++            {
++                Title = "Finance validation failed",
++                Status = StatusCodes.Status400BadRequest,
++                Instance = HttpContext.Request.Path
++            });
++        }
++
++        return await ExecuteWriteAsync(() => _financeBootstrapRerunService.RerunAsync(new RerunFinanceBootstrapCommand(companyId, request?.RerunPlanningBackfill ?? true, request?.RerunApprovalBackfill ?? true, request?.BatchSize ?? 250, request?.CorrelationId), cancellationToken));
++    }
++
+     [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+     [HttpPost("insights/refresh")]
+     public async Task<ActionResult<FinanceInsightsSnapshotRefreshResultDto>> RefreshInsightsSnapshotAsync(
+@@ -3468,32 +3497,12 @@ public sealed record CreateFinancePaymentRequest(
+     public CreateFinancePaymentDto ToDto() =>
+         new(PaymentType, Amount, Currency, PaymentDate, Method, Status, CounterpartyReference);
+ }
+-
+-public sealed record BootstrapFinanceSeedRequest(
+-    int SeedValue,
+-    DateTime? SeedAnchorUtc = null,
+-    bool ReplaceExisting = true,
+-    bool InjectAnomalies = false,
+-    string? AnomalyScenarioProfile = null);
+-
+-public sealed record CreateFinancePaymentRequest(
+-    string PaymentType,
+-    decimal Amount,
+-    string Currency,
+-    DateTime PaymentDate,
+-    string Method,
+-    string Status,
+-    string CounterpartyReference)
+-{
+-    public CreateFinancePaymentDto ToDto() =>
+-        new(PaymentType, Amount, Currency, PaymentDate, Method, Status, CounterpartyReference);
+-}
+ 
+ public sealed record BootstrapFinanceSeedRequest(
+     int SeedValue,
+     DateTime? SeedAnchorUtc = null,
+     bool ReplaceExisting = true,
+     bool InjectAnomalies = false,
+     string? AnomalyScenarioProfile = null);
+-
+ public sealed record UpsertFinanceCounterpartyRequest(
+     string Name,
+     string? Email,
+@@ -3507,13 +3516,11 @@ public sealed record UpsertFinanceCounterpartyRequest(
+     public FinanceCounterpartyUpsertDto ToDto() =>
+         new(Name, Email, PaymentTerms, TaxId, CreditLimit, PreferredPaymentMethod, DefaultAccountMapping);
+ }
+-
+-public sealed record BootstrapFinanceSeedRequest(
+-    int SeedValue,
+-    DateTime? SeedAnchorUtc = null,
+-    bool ReplaceExisting = true,
+-    bool InjectAnomalies = false,
+-    string? AnomalyScenarioProfile = null);
+ 
+ public sealed record RerunFinanceBootstrapRequest(
+     int BatchSize = 250,
+-    string? AnomalyScenarioProfile = null);
++    bool RerunPlanningBackfill = true,
++    bool RerunApprovalBackfill = true,
++    string? CorrelationId = null);
+ 
+ public sealed record RefreshFinanceInsightsSnapshotRequest(
+     DateTime? AsOfUtc = null,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBootstrapRerunService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBootstrapRerunService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBootstrapRerunService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBootstrapRerunService.cs
+@@ -39,6 +39,11 @@ public sealed class CompanyFinanceBootstrapRerunService : IFinanceBootstrapRerunService
+             ? $"finance-bootstrap-rerun:{command.CompanyId:N}"
+             : command.CorrelationId.Trim();
+ 
++        if (!command.RerunPlanningBackfill && !command.RerunApprovalBackfill)
++        {
++            throw new ArgumentException("At least one finance bootstrap rerun operation must be enabled.", nameof(command));
++        }
++
+         var company = await _dbContext.Companies
+             .IgnoreQueryFilters()
+             .SingleOrDefaultAsync(x => x.Id == command.CompanyId, cancellationToken);
+@@ -69,11 +74,13 @@ public sealed class CompanyFinanceBootstrapRerunService : IFinanceBootstrapRerunService
+         using var scope = _logger.BeginScope(ExecutionLogScope.ForBackground(correlationId, command.CompanyId));
+         _logger.LogInformation(
+-            "Completed finance bootstrap rerun for company {CompanyId}. PlanningRowsInserted={PlanningRowsInserted} ApprovalTasksCreated={ApprovalTasksCreated} ApprovalTasksSkipped={ApprovalTasksSkipped}.",
++            "Completed finance bootstrap rerun for company {CompanyId}. PlanningBackfillRan={PlanningBackfillRan} PlanningRowsInserted={PlanningRowsInserted} ApprovalBackfillRan={ApprovalBackfillRan} ApprovalTasksCreated={ApprovalTasksCreated} ApprovalTasksSkipped={ApprovalTasksSkipped}.",
+             command.CompanyId,
++            result.PlanningBackfillRan,
+             result.PlanningRowsInserted,
++            result.ApprovalBackfillRan,
+             result.ApprovalBackfill.CreatedCount,
+             result.ApprovalBackfill.SkippedExistingCount);
+-
+         return result;
+     }
+ 
+@@ -82,20 +89,44 @@ public sealed class CompanyFinanceBootstrapRerunService : IFinanceBootstrapRerunService
+         RerunFinanceBootstrapCommand command,
+         string correlationId,
+         CancellationToken cancellationToken)
+     {
+-        var planningRowsInserted = await _planningBaselineService.EnsureBaselineAsync(command.CompanyId, cancellationToken);
+-        var approvalBackfill = await _financeApprovalTaskService.BackfillApprovalTasksAsync(
+-            new BackfillFinanceApprovalTasksCommand(command.CompanyId, command.BatchSize, correlationId, IncludePayments: true),
+-            cancellationToken);
++        var planningRowsInserted = 0;
++        if (command.RerunPlanningBackfill)
++        {
++            planningRowsInserted = await _planningBaselineService.EnsureBaselineAsync(command.CompanyId, cancellationToken);
++        }
++
++        var approvalBackfill = command.RerunApprovalBackfill
++            ? await _financeApprovalTaskService.BackfillApprovalTasksAsync(
++                new BackfillFinanceApprovalTasksCommand(command.CompanyId, command.BatchSize, correlationId, IncludePayments: true),
++                cancellationToken)
++            : CreateSkippedApprovalBackfillResult(command.CompanyId, correlationId);
++
+         var seedState = await _dbContext.Companies
+             .IgnoreQueryFilters()
+             .Where(x => x.Id == command.CompanyId)
+             .Select(x => x.FinanceSeedStatus)
+             .SingleAsync(cancellationToken);
++        var completedAtUtc = DateTime.UtcNow;
++        var summary = BuildSummary(command, planningRowsInserted, approvalBackfill);
+ 
+-        var summary = $"Inserted {planningRowsInserted} planning baseline rows and created {approvalBackfill.CreatedCount} approval tasks while skipping {approvalBackfill.SkippedExistingCount} existing tasks.";
+-        return new FinanceBootstrapRerunResultDto(command.CompanyId, correlationId, seedState, planningRowsInserted, approvalBackfill, summary);
++        return new FinanceBootstrapRerunResultDto(
++            command.CompanyId,
++            correlationId,
++            seedState,
++            command.RerunPlanningBackfill,
++            command.RerunApprovalBackfill,
++            planningRowsInserted,
++            approvalBackfill,
++            completedAtUtc,
++            summary);
+     }
+ 
++    private static FinanceApprovalTaskBackfillResultDto CreateSkippedApprovalBackfillResult(Guid companyId, string correlationId) =>
++        new(companyId, correlationId, 0, 0, 0, 0, 0, 0, 0, 0);
++
++    private static string BuildSummary(RerunFinanceBootstrapCommand command, int planningRowsInserted, FinanceApprovalTaskBackfillResultDto approvalBackfill) =>
++        $"Planning backfill {(command.RerunPlanningBackfill ? "ran" : "skipped")} and inserted {planningRowsInserted} rows; approval backfill {(command.RerunApprovalBackfill ? "ran" : "skipped")} and created {approvalBackfill.CreatedCount} tasks while skipping {approvalBackfill.SkippedExistingCount} existing tasks.";
++
+     private void EnsureTenant(Guid companyId)
+     {
+         if (companyId == Guid.Empty)
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs
+@@ -82,7 +82,31 @@ public sealed class FinanceInsightsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+     [Fact]
+     public async Task Finance_bootstrap_rerun_endpoint_is_idempotent_for_existing_company()
+     {
+-        var seed = await SeedCompanyAsync(includeOtherCompanyMembership: true);
++        var seed = await SeedCompanyAsync(includeOtherCompanyMembership: true, membershipRole: CompanyMembershipRole.Admin);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/bootstrap/rerun",
++            new { batchSize = 250, rerunPlanningBackfill = true, rerunApprovalBackfill = true, correlationId = "finance-bootstrap-rerun-admin-001" });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<JsonObject>();
++        Assert.NotNull(payload);
++        Assert.True(payload!["planningBackfillRan"]!.GetValue<bool>());
++        Assert.True(payload["approvalBackfillRan"]!.GetValue<bool>());
++        Assert.NotEqual(DateTime.MinValue, payload["completedAtUtc"]!.GetValue<DateTime>());
++    }
++
++    [Fact]
++    public async Task Finance_bootstrap_rerun_endpoint_requires_owner_or_admin_membership()
++    {
++        var seed = await SeedCompanyAsync(includeOtherCompanyMembership: false, membershipRole: CompanyMembershipRole.Employee);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.PostAsJsonAsync($"/internal/companies/{seed.CompanyId}/finance/bootstrap/rerun", new { batchSize = 250 });
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Finance_bootstrap_rerun_endpoint_remains_idempotent_for_existing_company()
++    {
++        var seed = await SeedCompanyAsync(includeOtherCompanyMembership: true, membershipRole: CompanyMembershipRole.Owner);
+         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+ 
+         var firstResponse = await client.PostAsJsonAsync(
+@@ -99,7 +123,10 @@ public sealed class FinanceInsightsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+         var second = await secondResponse.Content.ReadFromJsonAsync<JsonObject>();
+         Assert.NotNull(first);
+         Assert.NotNull(second);
++
+         Assert.Equal(seed.CompanyId, first!["companyId"]!.GetValue<Guid>());
++        Assert.True(first["planningBackfillRan"]!.GetValue<bool>());
++        Assert.True(first["approvalBackfillRan"]!.GetValue<bool>());
+         Assert.True(first["approvalBackfill"]!["createdCount"]!.GetValue<int>() >= 0);
+         Assert.Equal(0, second!["planningRowsInserted"]!.GetValue<int>());
+         Assert.Equal(0, second["approvalBackfill"]!["createdCount"]!.GetValue<int>());
+@@ -118,15 +145,15 @@ public sealed class FinanceInsightsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+         client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.ProviderHeaderName, "dev-header");
+         return client;
+     }
+ 
+-    private async Task<SeedContext> SeedCompanyAsync(bool includeOtherCompanyMembership)
++    private async Task<SeedContext> SeedCompanyAsync(bool includeOtherCompanyMembership, CompanyMembershipRole membershipRole = CompanyMembershipRole.Owner)
+     {
+         var companyId = Guid.NewGuid();
+         var otherCompanyId = Guid.NewGuid();
+         var userId = Guid.NewGuid();
+-        const string subject = "finance-insight-owner";
+-        const string email = "finance.owner@example.com";
+-        const string displayName = "Finance Owner";
++        var subject = $"finance-insight-{membershipRole.ToStorageValue()}";
++        var email = $"finance.{membershipRole.ToStorageValue()}@example.com";
++        var displayName = $"Finance {membershipRole}";
+ 
+         await _factory.SeedAsync(async dbContext =>
+         {
+@@ -137,10 +164,10 @@ public sealed class FinanceInsightsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+             otherCompany.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
+ 
+             dbContext.Companies.AddRange(primaryCompany, otherCompany);
+             dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
+-            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, membershipRole, CompanyMembershipStatus.Active));
+             if (includeOtherCompanyMembership)
+             {
+-                dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++                dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, membershipRole, CompanyMembershipStatus.Active));
+             }
+ 
+             FinanceSeedData.AddMockFinanceData(dbContext, companyId);
+END_OF_PATCH

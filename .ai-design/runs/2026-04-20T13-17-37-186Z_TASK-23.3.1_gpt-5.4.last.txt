@@ -1,0 +1,1937 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 4dfb0a1..37dce41 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -154,6 +154,7 @@ public static class AuditTargetTypes
+     public const string CompanyNotification = "company_notification";
+     public const string ProactiveMessage = "proactive_message";
+     public const string AgentResponsibilityPolicy = "agent_responsibility_policy";
++    public const string FiscalPeriod = "fiscal_period";
+ }
+ 
+ public static class AuditEventOutcomes
+@@ -214,6 +215,10 @@ public static class AuditEventActions
+     public const string CompanyNotificationActioned = "company.notification.actioned";
+     public const string ProactiveMessageDelivered = "proactive_message.delivered";
+     public const string ProactiveMessageBlocked = "proactive_message.blocked";
++    public const string ReportingPeriodCloseValidationExecuted = "finance.reporting_period.close_validation.executed";
++    public const string ReportingPeriodLockApplied = "finance.reporting_period.lock.applied";
++    public const string ReportingPeriodLockRemoved = "finance.reporting_period.lock.removed";
++    public const string ReportingPeriodRegenerationBlocked = "finance.reporting_period.regeneration.blocked";
+     public const string AgentResponsibilityOutOfScopeHandled = "agent.responsibility.out_of_scope_handled";
+ }
+ 
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 1455f1d..6395e0f 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -21,6 +21,19 @@ public sealed record GetFinanceProfitAndLossReportQuery(
+     Guid FiscalPeriodId);
+ 
+ public sealed record GetFinanceBalanceSheetReportQuery(Guid CompanyId, Guid FiscalPeriodId);
++public sealed record ValidateReportingPeriodCloseQuery(Guid CompanyId, Guid FiscalPeriodId);
++public sealed record LockReportingPeriodCommand(Guid CompanyId, Guid FiscalPeriodId);
++public sealed record UnlockReportingPeriodCommand(Guid CompanyId, Guid FiscalPeriodId);
++public sealed record RegenerateStoredReportingStatementsCommand(
++    Guid CompanyId,
++    Guid FiscalPeriodId,
++    bool RunInBackground = false);
++
++public sealed record ReportingPeriodBlockingIssueDto(
++    string Code,
++    string Message,
++    int Count,
++    IReadOnlyList<string> SampleReferences);
+ 
+ public sealed record GetFinanceCashPositionQuery(
+     Guid CompanyId,
+@@ -335,6 +348,41 @@ public sealed record BalanceSheetReportDto(
+     decimal TotalEquity,
+     bool IsBalanced);
+ 
++public sealed record ReportingPeriodLockStateDto(
++    Guid CompanyId,
++    Guid FiscalPeriodId,
++    string FiscalPeriodName,
++    bool IsClosed,
++    bool IsReportingLocked,
++    DateTime? ReportingLockedAtUtc,
++    Guid? ReportingLockedByUserId,
++    DateTime? ReportingUnlockedAtUtc,
++    Guid? ReportingUnlockedByUserId,
++    DateTime UpdatedAtUtc);
++
++public sealed record ReportingPeriodCloseValidationResultDto(
++    Guid CompanyId,
++    Guid FiscalPeriodId,
++    string FiscalPeriodName,
++    DateTime ExecutedAtUtc,
++    string ExecutedByActorType,
++    Guid? ExecutedByActorId,
++    bool IsReadyToClose,
++    bool IsClosed,
++    bool IsReportingLocked,
++    IReadOnlyList<ReportingPeriodBlockingIssueDto> BlockingIssues);
++
++public sealed record ReportingPeriodRegenerationRequestResultDto(
++    Guid CompanyId,
++    Guid FiscalPeriodId,
++    bool Queued,
++    Guid? BackgroundExecutionId,
++    int SnapshotCount,
++    string Status,
++    DateTime RequestedAtUtc,
++    DateTime? CompletedAtUtc,
++    string RequestedByActorType,
++    Guid? RequestedByActorId,
++    ReportingPeriodLockStateDto LockState);
++
+ public sealed record FinanceExpenseBreakdownDto(
+     Guid CompanyId,
+     DateTime StartUtc,
+@@ -949,6 +997,46 @@ public sealed class FinanceValidationException : Exception
+ {
+     public FinanceValidationException(IDictionary<string, string[]> errors, string? message = null)
+         : base(string.IsNullOrWhiteSpace(message) ? "Finance validation failed." : message)
++    {
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
++
++public sealed class ReportingPeriodOperationException : InvalidOperationException
++{
++    public ReportingPeriodOperationException(string code, string title, string message)
++        : base(message)
++    {
++        Code = code;
++        Title = title;
++    }
++
++    public string Code { get; }
++    public string Title { get; }
++}
++
++public sealed class ReportingPeriodLockedException : ReportingPeriodOperationException
++{
++    public ReportingPeriodLockedException(Guid fiscalPeriodId, string fiscalPeriodName)
++        : base(
++            ReportingPeriodErrorCodes.ReportingPeriodLocked,
++            "Reporting period is locked.",
++            $"Fiscal period '{fiscalPeriodName}' is locked for stored reporting regeneration.")
++    {
++        FiscalPeriodId = fiscalPeriodId;
++        FiscalPeriodName = fiscalPeriodName;
++    }
++
++    public Guid FiscalPeriodId { get; }
++    public string FiscalPeriodName { get; }
++}
++
++public static class ReportingPeriodErrorCodes
++{
++    public const string ReportingPeriodLocked = "reporting_period_locked";
++    public const string ReportingPeriodNotClosed = "reporting_period_not_closed";
++    public const string ReportingPeriodInvalidState = "reporting_period_invalid_state";
++}
++
++public static class ReportingPeriodBlockingIssueCodes
++{
++    public const string UnpostedSourceDocuments = "unposted_source_documents";
++    public const string UnbalancedJournalEntries = "unbalanced_journal_entries";
++    public const string MissingStatementMappings = "missing_statement_mappings";
++}
++
++public interface IReportingPeriodCloseService
++{
++    Task<ReportingPeriodCloseValidationResultDto> ValidateAsync(ValidateReportingPeriodCloseQuery query, CancellationToken cancellationToken);
++    Task<ReportingPeriodLockStateDto> LockAsync(LockReportingPeriodCommand command, CancellationToken cancellationToken);
++    Task<ReportingPeriodLockStateDto> UnlockAsync(UnlockReportingPeriodCommand command, CancellationToken cancellationToken);
++    Task<ReportingPeriodRegenerationRequestResultDto> RegenerateStoredStatementsAsync(RegenerateStoredReportingStatementsCommand command, CancellationToken cancellationToken);
++    Task<int> RunBackgroundRegenerationAsync(Guid companyId, Guid fiscalPeriodId, string? correlationId, CancellationToken cancellationToken);
++}
++
++public interface IReportingPeriodRegenerationJobRunner
++{
++    Task<int> RunDueAsync(CancellationToken cancellationToken);
++}
++
++public sealed class FinanceValidationException : Exception
++{
++    public FinanceValidationException(IDictionary<string, string[]> errors, string? message = null)
++        : base(string.IsNullOrWhiteSpace(message) ? "Finance validation failed." : message)
+     {
+         Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
+     }
+diff --git a/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
+index 9c96dd4..a89f042 100644
+--- a/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
+@@ -192,4 +192,5 @@ public static class BackgroundExecutionRelatedEntityTypes
+     public const string WorkTask = "task";
+     public const string OutboxMessage = "outbox_message";
+     public const string Schedule = "schedule";
++    public const string FiscalPeriod = "fiscal_period";
+     public const string FinanceSeed = "finance_seed";
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs b/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
+index 5230f6f..f8ae516 100644
+--- a/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
+@@ -34,6 +34,11 @@ public sealed class FiscalPeriod : ICompanyOwnedEntity
+         DateTime endUtc,
+         bool isClosed = false,
+         DateTime? closedUtc = null,
++        bool isReportingLocked = false,
++        DateTime? reportingLockedUtc = null,
++        Guid? reportingLockedByUserId = null,
++        DateTime? reportingUnlockedUtc = null,
++        Guid? reportingUnlockedByUserId = null,
+         DateTime? createdUtc = null,
+         DateTime? updatedUtc = null)
+     {
+@@ -58,6 +63,11 @@ public sealed class FiscalPeriod : ICompanyOwnedEntity
+         StartUtc = normalizedStartUtc;
+         EndUtc = normalizedEndUtc;
+         IsClosed = isClosed;
++        IsReportingLocked = isReportingLocked;
++        ReportingLockedUtc = isReportingLocked && reportingLockedUtc.HasValue ? EntityTimestampNormalizer.NormalizeUtc(reportingLockedUtc.Value, nameof(reportingLockedUtc)) : null;
++        ReportingLockedByUserId = reportingLockedByUserId == Guid.Empty ? null : reportingLockedByUserId;
++        ReportingUnlockedUtc = reportingUnlockedUtc.HasValue ? EntityTimestampNormalizer.NormalizeUtc(reportingUnlockedUtc.Value, nameof(reportingUnlockedUtc)) : null;
++        ReportingUnlockedByUserId = reportingUnlockedByUserId == Guid.Empty ? null : reportingUnlockedByUserId;
+         ClosedUtc = isClosed && closedUtc.HasValue
+             ? EntityTimestampNormalizer.NormalizeUtc(closedUtc.Value, nameof(closedUtc))
+             : isClosed
+@@ -74,6 +84,11 @@ public sealed class FiscalPeriod : ICompanyOwnedEntity
+     public DateTime StartUtc { get; private set; }
+     public DateTime EndUtc { get; private set; }
+     public bool IsClosed { get; private set; }
++    public bool IsReportingLocked { get; private set; }
++    public DateTime? ReportingLockedUtc { get; private set; }
++    public Guid? ReportingLockedByUserId { get; private set; }
++    public DateTime? ReportingUnlockedUtc { get; private set; }
++    public Guid? ReportingUnlockedByUserId { get; private set; }
+     public DateTime? ClosedUtc { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+@@ -85,6 +100,36 @@ public sealed class FiscalPeriod : ICompanyOwnedEntity
+         ClosedUtc = EntityTimestampNormalizer.NormalizeUtc(closedUtc ?? EndUtc, nameof(closedUtc));
+         UpdatedUtc = DateTime.UtcNow;
+     }
++
++    public void LockReporting(Guid? actorUserId, DateTime? lockedUtc = null)
++    {
++        if (!IsClosed)
++        {
++            throw new InvalidOperationException("Reporting can only be locked for a closed fiscal period.");
++        }
++
++        if (actorUserId == Guid.Empty)
++        {
++            throw new ArgumentException("Actor user id cannot be empty.", nameof(actorUserId));
++        }
++
++        IsReportingLocked = true;
++        ReportingLockedUtc = EntityTimestampNormalizer.NormalizeUtc(lockedUtc ?? DateTime.UtcNow, nameof(lockedUtc));
++        ReportingLockedByUserId = actorUserId;
++        ReportingUnlockedUtc = null;
++        ReportingUnlockedByUserId = null;
++        UpdatedUtc = ReportingLockedUtc.Value;
++    }
++
++    public void UnlockReporting(Guid? actorUserId, DateTime? unlockedUtc = null)
++    {
++        if (actorUserId == Guid.Empty)
++        {
++            throw new ArgumentException("Actor user id cannot be empty.", nameof(actorUserId));
++        }
++
++        IsReportingLocked = false;
++        ReportingUnlockedUtc = EntityTimestampNormalizer.NormalizeUtc(unlockedUtc ?? DateTime.UtcNow, nameof(unlockedUtc));
++        ReportingUnlockedByUserId = actorUserId;
++        UpdatedUtc = ReportingUnlockedUtc.Value;
++    }
+ 
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+diff --git a/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs b/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
+index f57ed1a..38a91ca 100644
+--- a/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
+@@ -7,7 +7,8 @@ public enum BackgroundExecutionType
+     WorkflowProgression = 2,
+     Retry = 3,
+     LongRunningTask = 4,
+-    OutboxDispatch = 5,
+-    FinanceSeed = 6
++    OutboxDispatch = 5,
++    FinanceSeed = 6,
++    FinanceReportRegeneration = 7
+ }
+ 
+ public enum BackgroundExecutionStatus
+@@ -55,7 +56,8 @@ public static class BackgroundExecutionTypeValues
+         [BackgroundExecutionType.WorkflowProgression] = "workflow_progression",
+         [BackgroundExecutionType.Retry] = "retry",
+         [BackgroundExecutionType.LongRunningTask] = "long_running_task",
+-        [BackgroundExecutionType.OutboxDispatch] = "outbox_dispatch",
+-        [BackgroundExecutionType.FinanceSeed] = "finance_seed"
++        [BackgroundExecutionType.OutboxDispatch] = "outbox_dispatch",
++        [BackgroundExecutionType.FinanceSeed] = "finance_seed",
++        [BackgroundExecutionType.FinanceReportRegeneration] = "finance_report_regeneration"
+     };
+ 
+     private static readonly IReadOnlyDictionary<string, BackgroundExecutionType> ReverseValues =
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 6dbcf8b..bcb67a2 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -111,6 +111,10 @@ public static class DependencyInjection
+         services.AddOptions<FinanceSeedWorkerOptions>()
+             .Bind(configuration.GetSection(FinanceSeedWorkerOptions.SectionName))
+             .PostConfigure(options => options.BatchSize = Math.Max(1, options.BatchSize));
++        services.AddOptions<ReportingPeriodRegenerationWorkerOptions>()
++            .Bind(configuration.GetSection(ReportingPeriodRegenerationWorkerOptions.SectionName))
++            .PostConfigure(options => options.BatchSize = Math.Max(1, options.BatchSize))
++            .PostConfigure(options => options.PollIntervalMilliseconds = Math.Max(100, options.PollIntervalMilliseconds));
+         services.AddOptions<FinanceInitializationOptions>()
+             .Bind(configuration.GetSection(FinanceInitializationOptions.SectionName))
+             .PostConfigure(options =>
+@@ -244,6 +248,7 @@ public static class DependencyInjection
+         services.AddHostedService<WorkflowProgressionBackgroundService>();
+         services.AddHostedService<TriggerEvaluationBackgroundService>();
+         services.AddHostedService<FinanceSeedBackfillBackgroundService>();
++        services.AddHostedService<ReportingPeriodRegenerationBackgroundService>();
+         services.AddHostedService<CompanySimulationProgressionBackgroundService>();
+         services.AddHostedService<FinanceSeedBackgroundService>();
+ 
+@@ -340,6 +345,8 @@ public static class DependencyInjection
+         services.AddScoped<IFinanceSeedBackfillQueryService, FinanceSeedBackfillQueryService>();
+         services.AddScoped<IFinanceEntryService, CompanyFinanceEntryService>();
+         services.AddScoped<IFinanceSeedJobRunner, CompanyFinanceSeedJobRunner>();
++        services.AddScoped<IReportingPeriodCloseService, CompanyReportingPeriodCloseService>();
++        services.AddScoped<IReportingPeriodRegenerationJobRunner, ReportingPeriodRegenerationJobRunner>();
+         services.AddSingleton<IFinanceSeedBackfillExecutionScheduler, FinanceSeedBackfillExecutionScheduler>();
+         services.AddSingleton<IFinanceSeedBackfillDelayStrategy, SystemFinanceSeedBackfillDelayStrategy>();
+         services.AddScoped<IFinanceSeedingStateResolver, CompanyFinanceSeedingStateResolver>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs
+new file mode 100644
+index 0000000..b1c3244
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs
+@@ -0,0 +1,542 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseService
++{
++    private const int DefaultMaxAttempts = 3;
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly ICurrentUserAccessor _currentUserAccessor;
++    private readonly IAuditEventWriter _auditEventWriter;
++
++    public CompanyReportingPeriodCloseService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver membershipContextResolver,
++        ICurrentUserAccessor currentUserAccessor,
++        IAuditEventWriter auditEventWriter)
++    {
++        _dbContext = dbContext;
++        _membershipContextResolver = membershipContextResolver;
++        _currentUserAccessor = currentUserAccessor;
++        _auditEventWriter = auditEventWriter;
++    }
++
++    public async Task<ReportingPeriodCloseValidationResultDto> ValidateAsync(
++        ValidateReportingPeriodCloseQuery query,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(query.CompanyId, cancellationToken);
++        var actor = RequireUserActor();
++        var period = await LoadFiscalPeriodAsync(query.CompanyId, query.FiscalPeriodId, track: false, cancellationToken);
++        var issues = await BuildBlockingIssuesAsync(query.CompanyId, period.Id, cancellationToken);
++        var executedAtUtc = DateTime.UtcNow;
++        var result = new ReportingPeriodCloseValidationResultDto(
++            query.CompanyId,
++            period.Id,
++            period.Name,
++            executedAtUtc,
++            actor.ActorType,
++            actor.ActorId,
++            issues.Count == 0,
++            period.IsClosed,
++            period.IsReportingLocked,
++            issues);
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                query.CompanyId,
++                actor.ActorType,
++                actor.ActorId,
++                AuditEventActions.ReportingPeriodCloseValidationExecuted,
++                AuditTargetTypes.FiscalPeriod,
++                period.Id.ToString("D"),
++                result.IsReadyToClose ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Failed,
++                result.IsReadyToClose
++                    ? $"Executed reporting close validation for fiscal period '{period.Name}' with no blocking issues."
++                    : $"Executed reporting close validation for fiscal period '{period.Name}' and found {issues.Count} blocking issue type(s).",
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["fiscalPeriodName"] = period.Name,
++                    ["isReadyToClose"] = result.IsReadyToClose ? "true" : "false",
++                    ["issueCount"] = issues.Count.ToString(),
++                    ["isClosed"] = period.IsClosed ? "true" : "false",
++                    ["isReportingLocked"] = period.IsReportingLocked ? "true" : "false"
++                },
++                OccurredUtc: executedAtUtc),
++            cancellationToken);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return result;
++    }
++
++    public async Task<ReportingPeriodLockStateDto> LockAsync(
++        LockReportingPeriodCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(command.CompanyId, cancellationToken);
++        var actor = RequireUserActor();
++        var period = await LoadFiscalPeriodAsync(command.CompanyId, command.FiscalPeriodId, track: true, cancellationToken);
++
++        EnsureClosed(period);
++        if (!period.IsReportingLocked)
++        {
++            period.LockReporting(actor.ActorId, DateTime.UtcNow);
++        }
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                command.CompanyId,
++                actor.ActorType,
++                actor.ActorId,
++                AuditEventActions.ReportingPeriodLockApplied,
++                AuditTargetTypes.FiscalPeriod,
++                period.Id.ToString("D"),
++                AuditEventOutcomes.Succeeded,
++                $"Applied reporting lock for closed fiscal period '{period.Name}'.",
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["fiscalPeriodName"] = period.Name,
++                    ["isClosed"] = period.IsClosed ? "true" : "false",
++                    ["isReportingLocked"] = period.IsReportingLocked ? "true" : "false",
++                    ["reportingLockedAtUtc"] = period.ReportingLockedUtc?.ToString("O")
++                },
++                OccurredUtc: DateTime.UtcNow),
++            cancellationToken);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapLockState(period);
++    }
++
++    public async Task<ReportingPeriodLockStateDto> UnlockAsync(
++        UnlockReportingPeriodCommand command,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(command.CompanyId, cancellationToken);
++        if (membership.MembershipRole is not (CompanyMembershipRole.Owner or CompanyMembershipRole.Admin))
++        {
++            throw new UnauthorizedAccessException("Only company owners or admins can unlock reporting for a fiscal period.");
++        }
++
++        var actor = RequireUserActor();
++        var period = await LoadFiscalPeriodAsync(command.CompanyId, command.FiscalPeriodId, track: true, cancellationToken);
++
++        if (period.IsReportingLocked)
++        {
++            period.UnlockReporting(actor.ActorId, DateTime.UtcNow);
++        }
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                command.CompanyId,
++                actor.ActorType,
++                actor.ActorId,
++                AuditEventActions.ReportingPeriodLockRemoved,
++                AuditTargetTypes.FiscalPeriod,
++                period.Id.ToString("D"),
++                AuditEventOutcomes.Succeeded,
++                $"Removed reporting lock for fiscal period '{period.Name}'.",
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["fiscalPeriodName"] = period.Name,
++                    ["isClosed"] = period.IsClosed ? "true" : "false",
++                    ["isReportingLocked"] = period.IsReportingLocked ? "true" : "false",
++                    ["reportingUnlockedAtUtc"] = period.ReportingUnlockedUtc?.ToString("O")
++                },
++                OccurredUtc: DateTime.UtcNow),
++            cancellationToken);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapLockState(period);
++    }
++
++    public async Task<ReportingPeriodRegenerationRequestResultDto> RegenerateStoredStatementsAsync(
++        RegenerateStoredReportingStatementsCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(command.CompanyId, cancellationToken);
++        var actor = RequireUserActor();
++        var period = await LoadFiscalPeriodAsync(command.CompanyId, command.FiscalPeriodId, track: !command.RunInBackground, cancellationToken);
++
++        EnsureClosed(period);
++        await EnsureRegenerationAllowedAsync(period, actor, cancellationToken);
++
++        if (command.RunInBackground)
++        {
++            var execution = await QueueBackgroundRegenerationAsync(command.CompanyId, period.Id, cancellationToken);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return new ReportingPeriodRegenerationRequestResultDto(
++                command.CompanyId,
++                period.Id,
++                true,
++                execution.Id,
++                0,
++                execution.UpdatedUtc,
++                null,
++                actor.ActorType,
++                actor.ActorId,
++                MapLockState(period));
++        }
++
++        var completedAtUtc = DateTime.UtcNow;
++        var snapshotCount = await RegenerateSnapshotsAsync(period, completedAtUtc, cancellationToken);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new ReportingPeriodRegenerationRequestResultDto(
++            command.CompanyId,
++            period.Id,
++            false,
++            null,
++            snapshotCount,
++            completedAtUtc,
++            completedAtUtc,
++            actor.ActorType,
++            actor.ActorId,
++            MapLockState(period));
++    }
++
++    public async Task<int> RunBackgroundRegenerationAsync(
++        Guid companyId,
++        Guid fiscalPeriodId,
++        string? correlationId,
++        CancellationToken cancellationToken)
++    {
++        var period = await LoadFiscalPeriodAsync(companyId, fiscalPeriodId, track: true, cancellationToken);
++        EnsureClosed(period);
++        await EnsureRegenerationAllowedAsync(period, SystemActor(correlationId), cancellationToken);
++        var regeneratedAtUtc = DateTime.UtcNow;
++        return await RegenerateSnapshotsAsync(period, regeneratedAtUtc, cancellationToken);
++    }
++
++    private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken) =>
++        await _membershipContextResolver.ResolveAsync(companyId, cancellationToken)
++        ?? throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++
++    private ActorContext RequireUserActor()
++    {
++        if (_currentUserAccessor.UserId is not Guid userId)
++        {
++            throw new UnauthorizedAccessException("A resolved user identity is required for reporting period operations.");
++        }
++
++        return new ActorContext(AuditActorTypes.User, userId, null);
++    }
++
++    private static ActorContext SystemActor(string? correlationId) =>
++        new(AuditActorTypes.System, null, correlationId);
++
++    private static void EnsureClosed(FiscalPeriod period)
++    {
++        if (!period.IsClosed)
++        {
++            throw new ReportingPeriodOperationException(
++                ReportingPeriodErrorCodes.ReportingPeriodNotClosed,
++                "Fiscal period is not closed.",
++                $"Fiscal period '{period.Name}' must be closed before reporting can be locked or regenerated.");
++        }
++    }
++
++    private async Task EnsureRegenerationAllowedAsync(
++        FiscalPeriod period,
++        ActorContext actor,
++        CancellationToken cancellationToken)
++    {
++        if (!period.IsReportingLocked)
++        {
++            return;
++        }
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                period.CompanyId,
++                actor.ActorType,
++                actor.ActorId,
++                AuditEventActions.ReportingPeriodRegenerationBlocked,
++                AuditTargetTypes.FiscalPeriod,
++                period.Id.ToString("D"),
++                AuditEventOutcomes.Denied,
++                $"Blocked stored reporting regeneration because fiscal period '{period.Name}' is locked.",
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["fiscalPeriodName"] = period.Name,
++                    ["isReportingLocked"] = "true",
++                    ["reportingLockedAtUtc"] = period.ReportingLockedUtc?.ToString("O"),
++                    ["correlationId"] = actor.CorrelationId
++                },
++                CorrelationId: actor.CorrelationId,
++                OccurredUtc: DateTime.UtcNow),
++            cancellationToken);
++
++        throw new ReportingPeriodLockedException(period.Id, period.Name);
++    }
++
++    private async Task<BackgroundExecution> QueueBackgroundRegenerationAsync(
++        Guid companyId,
++        Guid fiscalPeriodId,
++        CancellationToken cancellationToken)
++    {
++        var execution = await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(
++                x =>
++                    x.CompanyId == companyId &&
++                    x.ExecutionType == BackgroundExecutionType.FinanceReportRegeneration &&
++                    x.RelatedEntityType == BackgroundExecutionRelatedEntityTypes.FiscalPeriod &&
++                    x.RelatedEntityId == fiscalPeriodId.ToString("D"),
++                cancellationToken);
++
++        var correlationId = Guid.NewGuid().ToString("N");
++        var idempotencyKey = $"finance-report-regeneration:{companyId:N}:{fiscalPeriodId:N}";
++        if (execution is null)
++        {
++            execution = new BackgroundExecution(
++                Guid.NewGuid(),
++                companyId,
++                BackgroundExecutionType.FinanceReportRegeneration,
++                BackgroundExecutionRelatedEntityTypes.FiscalPeriod,
++                fiscalPeriodId.ToString("D"),
++                correlationId,
++                idempotencyKey,
++                DefaultMaxAttempts);
++            _dbContext.BackgroundExecutions.Add(execution);
++            return execution;
++        }
++
++        if (!execution.IsTerminal)
++        {
++            return execution;
++        }
++
++        execution.Queue(DateTime.UtcNow, correlationId, resetAttempts: true);
++        return execution;
++    }
++
++    private async Task<int> RegenerateSnapshotsAsync(
++        FiscalPeriod period,
++        DateTime regeneratedAtUtc,
++        CancellationToken cancellationToken)
++    {
++        var accountRows = await _dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == period.CompanyId)
++            .Select(x => new AccountSnapshotSeed(x.Id, x.OpeningBalance, x.Currency))
++            .ToListAsync(cancellationToken);
++
++        var ledgerBalances = await _dbContext.LedgerEntryLines
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == period.CompanyId &&
++                x.LedgerEntry.Status == LedgerEntryStatuses.Posted &&
++                x.LedgerEntry.EntryUtc < period.EndUtc)
++            .GroupBy(x => x.FinanceAccountId)
++            .Select(group => new
++            {
++                FinanceAccountId = group.Key,
++                SignedAmount = group.Sum(line => line.DebitAmount - line.CreditAmount)
++            })
++            .ToDictionaryAsync(x => x.FinanceAccountId, x => x.SignedAmount, cancellationToken);
++
++        await _dbContext.TrialBalanceSnapshots
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == period.CompanyId && x.FiscalPeriodId == period.Id)
++            .ExecuteDeleteAsync(cancellationToken);
++
++        if (accountRows.Count == 0)
++        {
++            return 0;
++        }
++
++        var snapshots = accountRows
++            .Select(account => new TrialBalanceSnapshot(
++                Guid.NewGuid(),
++                period.CompanyId,
++                period.Id,
++                account.AccountId,
++                account.OpeningBalance + ledgerBalances.GetValueOrDefault(account.AccountId),
++                account.Currency,
++                regeneratedAtUtc))
++            .ToList();
++
++        _dbContext.TrialBalanceSnapshots.AddRange(snapshots);
++        return snapshots.Count;
++    }
++
++    private async Task<IReadOnlyList<ReportingPeriodBlockingIssueDto>> BuildBlockingIssuesAsync(
++        Guid companyId,
++        Guid fiscalPeriodId,
++        CancellationToken cancellationToken)
++    {
++        var issues = new List<ReportingPeriodBlockingIssueDto>();
++
++        var unpostedEntries = await _dbContext.LedgerEntries
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.FiscalPeriodId == fiscalPeriodId &&
++                x.Status != LedgerEntryStatuses.Posted)
++            .OrderBy(x => x.EntryNumber)
++            .Select(x => x.EntryNumber)
++            .ToListAsync(cancellationToken);
++
++        if (unpostedEntries.Count > 0)
++        {
++            issues.Add(new ReportingPeriodBlockingIssueDto(
++                ReportingPeriodBlockingIssueCodes.UnpostedSourceDocuments,
++                "One or more source documents have not been posted to the ledger for the fiscal period.",
++                unpostedEntries.Count,
++                unpostedEntries.Take(5).ToArray()));
++        }
++
++        var unbalancedEntries = await _dbContext.LedgerEntries
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.FiscalPeriodId == fiscalPeriodId)
++            .Select(x => new
++            {
++                x.EntryNumber,
++                DebitTotal = x.Lines.Sum(line => (decimal?)line.DebitAmount) ?? 0m,
++                CreditTotal = x.Lines.Sum(line => (decimal?)line.CreditAmount) ?? 0m
++            })
++            .Where(x => x.DebitTotal != x.CreditTotal)
++            .OrderBy(x => x.EntryNumber)
++            .ToListAsync(cancellationToken);
++
++        if (unbalancedEntries.Count > 0)
++        {
++            issues.Add(new ReportingPeriodBlockingIssueDto(
++                ReportingPeriodBlockingIssueCodes.UnbalancedJournalEntries,
++                "One or more journal entries are not balanced for the fiscal period.",
++                unbalancedEntries.Count,
++                unbalancedEntries.Select(x => x.EntryNumber).Take(5).ToArray()));
++        }
++
++        var referencedAccounts = await _dbContext.LedgerEntryLines
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.LedgerEntry.FiscalPeriodId == fiscalPeriodId)
++            .Select(x => new ReferencedAccountRow(
++                x.FinanceAccountId,
++                x.FinanceAccount.Code,
++                x.FinanceAccount.Name,
++                x.FinanceAccount.AccountType))
++            .Distinct()
++            .ToListAsync(cancellationToken);
++
++        if (referencedAccounts.Count > 0)
++        {
++            var accountIds = referencedAccounts.Select(x => x.AccountId).ToArray();
++            var mappings = await _dbContext.FinancialStatementMappings
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && x.IsActive && accountIds.Contains(x.FinanceAccountId))
++                .Select(x => new MappingRequirementRow(x.FinanceAccountId, x.StatementType))
++                .ToListAsync(cancellationToken);
++
++            var mappingLookup = mappings
++                .GroupBy(x => x.AccountId)
++                .ToDictionary(x => x.Key, x => x.Select(y => y.StatementType).ToHashSet());
++
++            var missingMappings = referencedAccounts
++                .Where(account =>
++                {
++                    var requiredStatementType = ResolveRequiredStatementType(account.AccountType);
++                    if (!mappingLookup.TryGetValue(account.AccountId, out var statementTypes))
++                    {
++                        return true;
++                    }
++
++                    return requiredStatementType is null
++                        ? statementTypes.Count == 0
++                        : !statementTypes.Contains(requiredStatementType.Value);
++                })
++                .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
++                .ToList();
++
++            if (missingMappings.Count > 0)
++            {
++                issues.Add(new ReportingPeriodBlockingIssueDto(
++                    ReportingPeriodBlockingIssueCodes.MissingStatementMappings,
++                    "One or more accounts used in the fiscal period are missing required financial statement mappings.",
++                    missingMappings.Count,
++                    missingMappings.Select(x => x.AccountCode).Take(5).ToArray()));
++            }
++        }
++
++        return issues;
++    }
++
++    private async Task<FiscalPeriod> LoadFiscalPeriodAsync(
++        Guid companyId,
++        Guid fiscalPeriodId,
++        bool track,
++        CancellationToken cancellationToken)
++    {
++        var query = _dbContext.FiscalPeriods
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.Id == fiscalPeriodId);
++
++        if (!track)
++        {
++            query = query.AsNoTracking();
++        }
++
++        return await query.SingleOrDefaultAsync(cancellationToken)
++            ?? throw new KeyNotFoundException("Fiscal period was not found in the requested company.");
++    }
++
++    private static ReportingPeriodLockStateDto MapLockState(FiscalPeriod period) =>
++        new(
++            period.CompanyId,
++            period.Id,
++            period.Name,
++            period.IsClosed,
++            period.IsReportingLocked,
++            period.ReportingLockedUtc,
++            period.ReportingLockedByUserId,
++            period.ReportingUnlockedUtc,
++            period.ReportingUnlockedByUserId,
++            period.UpdatedUtc);
++
++    private static FinancialStatementType? ResolveRequiredStatementType(string accountType)
++    {
++        if (string.IsNullOrWhiteSpace(accountType))
++        {
++            return null;
++        }
++
++        return accountType.Trim().ToLowerInvariant() switch
++        {
++            "asset" or "liability" or "equity" => FinancialStatementType.BalanceSheet,
++            "revenue" or "expense" => FinancialStatementType.ProfitAndLoss,
++            _ => null
++        };
++    }
++
++    private sealed record ActorContext(
++        string ActorType,
++        Guid? ActorId,
++        string? CorrelationId);
++
++    private sealed record AccountSnapshotSeed(
++        Guid AccountId,
++        decimal OpeningBalance,
++        string Currency);
++
++    private sealed record ReferencedAccountRow(
++        Guid AccountId,
++        string AccountCode,
++        string AccountName,
++        string AccountType);
++
++    private sealed record MappingRequirementRow(
++        Guid AccountId,
++        FinancialStatementType StatementType);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/ReportingPeriodRegenerationBackgroundService.cs b/src/VirtualCompany.Infrastructure/Finance/ReportingPeriodRegenerationBackgroundService.cs
+new file mode 100644
+index 0000000..d89c77e
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/ReportingPeriodRegenerationBackgroundService.cs
+@@ -0,0 +1,201 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.BackgroundJobs;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class ReportingPeriodRegenerationWorkerOptions
++{
++    public const string SectionName = "ReportingPeriodRegenerationWorker";
++
++    public bool Enabled { get; set; } = true;
++    public int PollIntervalMilliseconds { get; set; } = 1000;
++    public int BatchSize { get; set; } = 10;
++    public int ClaimTimeoutSeconds { get; set; } = 300;
++}
++
++public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegenerationJobRunner
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IReportingPeriodCloseService _reportingPeriodCloseService;
++    private readonly IBackgroundJobExecutor _backgroundJobExecutor;
++    private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
++    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
++    private readonly IOptions<ReportingPeriodRegenerationWorkerOptions> _options;
++
++    public ReportingPeriodRegenerationJobRunner(
++        VirtualCompanyDbContext dbContext,
++        IReportingPeriodCloseService reportingPeriodCloseService,
++        IBackgroundJobExecutor backgroundJobExecutor,
++        IBackgroundExecutionRetryPolicy retryPolicy,
++        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
++        IOptions<ReportingPeriodRegenerationWorkerOptions> options)
++    {
++        _dbContext = dbContext;
++        _reportingPeriodCloseService = reportingPeriodCloseService;
++        _backgroundJobExecutor = backgroundJobExecutor;
++        _retryPolicy = retryPolicy;
++        _companyExecutionScopeFactory = companyExecutionScopeFactory;
++        _options = options;
++    }
++
++    public async Task<int> RunDueAsync(CancellationToken cancellationToken)
++    {
++        var executions = await ClaimDueExecutionsAsync(cancellationToken);
++        var handled = 0;
++
++        foreach (var execution in executions)
++        {
++            using var tenantScope = _companyExecutionScopeFactory.BeginScope(execution.CompanyId);
++            var attempt = execution.AttemptCount + 1;
++            var maxAttempts = Math.Max(1, execution.MaxAttempts);
++            var retryDelay = _retryPolicy.GetRetryDelay(attempt);
++
++            execution.StartAttempt(execution.CorrelationId, attempt, maxAttempts);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++
++            if (!Guid.TryParse(execution.RelatedEntityId, out var fiscalPeriodId))
++            {
++                execution.MarkFailed(
++                    BackgroundExecutionFailureCategory.Validation,
++                    "invalid_fiscal_period_reference",
++                    "Background reporting regeneration execution does not reference a valid fiscal period id.");
++                await _dbContext.SaveChangesAsync(cancellationToken);
++                handled++;
++                continue;
++            }
++
++            var result = await _backgroundJobExecutor.ExecuteAsync(
++                new BackgroundJobExecutionContext(
++                    "reporting-period-regeneration",
++                    attempt,
++                    maxAttempts,
++                    execution.CompanyId,
++                    execution.CorrelationId,
++                    execution.IdempotencyKey,
++                    requireCompanyContext: true),
++                innerCancellationToken => _reportingPeriodCloseService.RunBackgroundRegenerationAsync(
++                    execution.CompanyId,
++                    fiscalPeriodId,
++                    execution.CorrelationId,
++                    innerCancellationToken),
++                retryDelay,
++                cancellationToken);
++
++            var nowUtc = DateTime.UtcNow;
++            switch (result.Outcome)
++            {
++                case BackgroundJobExecutionOutcome.Succeeded:
++                case BackgroundJobExecutionOutcome.IdempotentDuplicate:
++                    execution.MarkSucceeded();
++                    handled++;
++                    break;
++                case BackgroundJobExecutionOutcome.RetryScheduled:
++                    execution.ScheduleRetry(
++                        nowUtc.Add(result.RetryDelay ?? TimeSpan.Zero),
++                        MapFailureCategory(result.FailureClassification),
++                        ResolveFailureCode(result),
++                        ResolveFailureMessage(result));
++                    break;
++                case BackgroundJobExecutionOutcome.Blocked:
++                    execution.MarkBlocked(
++                        MapFailureCategory(result.FailureClassification),
++                        ResolveFailureCode(result),
++                        ResolveFailureMessage(result));
++                    handled++;
++                    break;
++                case BackgroundJobExecutionOutcome.PermanentFailure:
++                case BackgroundJobExecutionOutcome.RetryExhausted:
++                    execution.MarkFailed(
++                        MapFailureCategory(result.FailureClassification),
++                        ResolveFailureCode(result),
++                        ResolveFailureMessage(result));
++                    handled++;
++                    break;
++            }
++
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++
++        return handled;
++    }
++
++    private async Task<IReadOnlyList<BackgroundExecution>> ClaimDueExecutionsAsync(CancellationToken cancellationToken)
++    {
++        var nowUtc = DateTime.UtcNow;
++        var staleBeforeUtc = nowUtc.Subtract(TimeSpan.FromSeconds(Math.Max(30, _options.Value.ClaimTimeoutSeconds)));
++        var candidateIds = await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.ExecutionType == BackgroundExecutionType.FinanceReportRegeneration &&
++                (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
++                  (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
++                 (x.Status == BackgroundExecutionStatus.InProgress &&
++                  x.HeartbeatUtc != null &&
++                  x.HeartbeatUtc <= staleBeforeUtc)))
++            .OrderBy(x => x.NextRetryUtc ?? x.CreatedUtc)
++            .ThenBy(x => x.CreatedUtc)
++            .Take(Math.Max(1, _options.Value.BatchSize))
++            .Select(x => x.Id)
++            .ToArrayAsync(cancellationToken);
++
++        if (candidateIds.Length == 0)
++        {
++            return [];
++        }
++
++        await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .Where(x =>
++                candidateIds.Contains(x.Id) &&
++                x.ExecutionType == BackgroundExecutionType.FinanceReportRegeneration &&
++                (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
++                  (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
++                 (x.Status == BackgroundExecutionStatus.InProgress &&
++                  x.HeartbeatUtc != null &&
++                  x.HeartbeatUtc <= staleBeforeUtc)))
++            .ExecuteUpdateAsync(setters => setters
++                .SetProperty(x => x.Status, BackgroundExecutionStatus.InProgress)
++                .SetProperty(x => x.StartedUtc, nowUtc)
++                .SetProperty(x => x.HeartbeatUtc, nowUtc)
++                .SetProperty(x => x.NextRetryUtc, (DateTime?)null)
++                .SetProperty(x => x.UpdatedUtc, nowUtc),
++                cancellationToken);
++
++        return await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .Where(x =>
++                candidateIds.Contains(x.Id) &&
++                x.ExecutionType == BackgroundExecutionType.FinanceReportRegeneration &&
++                x.Status == BackgroundExecutionStatus.InProgress &&
++                x.StartedUtc == nowUtc)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync(cancellationToken);
++    }
++
++    private static string ResolveFailureCode(BackgroundJobExecutionResult result) =>
++        string.IsNullOrWhiteSpace(result.ExceptionType) ? result.Outcome.ToString() : result.ExceptionType;
++
++    private static string ResolveFailureMessage(BackgroundJobExecutionResult result) =>
++        string.IsNullOrWhiteSpace(result.ErrorMessage) ? "Reporting period regeneration failed." : result.ErrorMessage;
++
++    private static BackgroundExecutionFailureCategory MapFailureCategory(BackgroundJobFailureClassification? classification) =>
++        classification switch
++        {
++            BackgroundJobFailureClassification.Unknown => BackgroundExecutionFailureCategory.Unknown,
++            BackgroundJobFailureClassification.LockContention => BackgroundExecutionFailureCategory.LockContention,
++            BackgroundJobFailureClassification.ExternalDependencyTimeout => BackgroundExecutionFailureCategory.ExternalDependencyTimeout,
++            BackgroundJobFailureClassification.ExternalDependencyUnavailable => BackgroundExecutionFailureCategory.ExternalDependencyUnavailable,
++            BackgroundJobFailureClassification.RateLimited => BackgroundExecutionFailureCategory.RateLimited,
++            BackgroundJobFailureClassification.PermanentBusinessRule or BackgroundJobFailureClassification.Permanent => BackgroundExecutionFailureCategory.PermanentBusinessRule,
++            BackgroundJobFailureClassification.PermanentPolicy => BackgroundExecutionFailureCategory.PermanentPolicy,
++            BackgroundJobFailureClassification.Validation => BackgroundExecutionFailureCategory.Validation,
++            BackgroundJobFailureClassification.ApprovalRequired => BackgroundExecutionFailureCategory.ApprovalRequired,
++            BackgroundJobFailureClassification.Configuration => BackgroundExecutionFailureCategory.Configuration,
++            _ => BackgroundExecutionFailureCategory.TransientInfrastructure
++        };
++}
++
++public sealed class ReportingPeriodRegenerationBackgroundService : BackgroundService
++{
++    private readonly IServiceScopeFactory _scopeFactory;
++    private readonly IOptions<ReportingPeriodRegenerationWorkerOptions> _options;
++    private readonly ILogger<ReportingPeriodRegenerationBackgroundService> _logger;
++
++    public ReportingPeriodRegenerationBackgroundService(
++        IServiceScopeFactory scopeFactory,
++        IOptions<ReportingPeriodRegenerationWorkerOptions> options,
++        ILogger<ReportingPeriodRegenerationBackgroundService> logger)
++    {
++        _scopeFactory = scopeFactory;
++        _options = options;
++        _logger = logger;
++    }
++
++    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
++    {
++        if (!_options.Value.Enabled)
++        {
++            _logger.LogInformation("Reporting period regeneration worker is disabled.");
++            return;
++        }
++
++        var pollInterval = TimeSpan.FromMilliseconds(Math.Max(100, _options.Value.PollIntervalMilliseconds));
++        while (!stoppingToken.IsCancellationRequested)
++        {
++            try
++            {
++                using var scope = _scopeFactory.CreateScope();
++                var runner = scope.ServiceProvider.GetRequiredService<IReportingPeriodRegenerationJobRunner>();
++                var handled = await runner.RunDueAsync(stoppingToken);
++                if (handled == 0)
++                {
++                    await Task.Delay(pollInterval, stoppingToken);
++                }
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(ex, "Reporting period regeneration worker loop failed.");
++                await Task.Delay(pollInterval, stoppingToken);
++            }
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 26e6a52..9b672f6 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -3028,6 +3028,11 @@ internal sealed class FiscalPeriodConfiguration : IEntityTypeConfiguration<Fisca
+         builder.Property(x => x.StartUtc).HasColumnName("start_at").IsRequired();
+         builder.Property(x => x.EndUtc).HasColumnName("end_at").IsRequired();
+         builder.Property(x => x.IsClosed).HasColumnName("is_closed").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.IsReportingLocked).HasColumnName("is_reporting_locked").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.ReportingLockedUtc).HasColumnName("reporting_locked_at");
++        builder.Property(x => x.ReportingLockedByUserId).HasColumnName("reporting_locked_by_user_id");
++        builder.Property(x => x.ReportingUnlockedUtc).HasColumnName("reporting_unlocked_at");
++        builder.Property(x => x.ReportingUnlockedByUserId).HasColumnName("reporting_unlocked_by_user_id");
+         builder.Property(x => x.ClosedUtc).HasColumnName("closed_at");
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420143000_AddReportingPeriodLocks.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420143000_AddReportingPeriodLocks.cs
+new file mode 100644
+index 0000000..ad31f9b
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420143000_AddReportingPeriodLocks.cs
+@@ -0,0 +1,75 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddReportingPeriodLocks : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var boolType = isPostgres ? "boolean" : "bit";
++            var falseDefault = isPostgres ? "FALSE" : "CAST(0 AS bit)";
++
++            migrationBuilder.AddColumn<bool>(
++                name: "is_reporting_locked",
++                table: "finance_fiscal_periods",
++                type: boolType,
++                nullable: false,
++                defaultValueSql: falseDefault);
++
++            migrationBuilder.AddColumn<DateTime>(
++                name: "reporting_locked_at",
++                table: "finance_fiscal_periods",
++                type: dateTimeType,
++                nullable: true);
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "reporting_locked_by_user_id",
++                table: "finance_fiscal_periods",
++                type: guidType,
++                nullable: true);
++
++            migrationBuilder.AddColumn<DateTime>(
++                name: "reporting_unlocked_at",
++                table: "finance_fiscal_periods",
++                type: dateTimeType,
++                nullable: true);
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "reporting_unlocked_by_user_id",
++                table: "finance_fiscal_periods",
++                type: guidType,
++                nullable: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_fiscal_periods_company_id_is_closed_is_reporting_locked",
++                table: "finance_fiscal_periods",
++                columns: new[] { "company_id", "is_closed", "is_reporting_locked" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropIndex(
++                name: "IX_finance_fiscal_periods_company_id_is_closed_is_reporting_locked",
++                table: "finance_fiscal_periods");
++
++            migrationBuilder.DropColumn(
++                name: "is_reporting_locked",
++                table: "finance_fiscal_periods");
++
++            migrationBuilder.DropColumn(
++                name: "reporting_locked_at",
++                table: "finance_fiscal_periods");
++
++            migrationBuilder.DropColumn(
++                name: "reporting_locked_by_user_id",
++                table: "finance_fiscal_periods");
++
++            migrationBuilder.DropColumn(
++                name: "reporting_unlocked_at",
++                table: "finance_fiscal_periods");
++
++            migrationBuilder.DropColumn(
++                name: "reporting_unlocked_by_user_id",
++                table: "finance_fiscal_periods");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Api/Controllers/ReportingPeriodsController.cs b/src/VirtualCompany.Api/Controllers/ReportingPeriodsController.cs
+new file mode 100644
+index 0000000..27dcc13
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/ReportingPeriodsController.cs
+@@ -0,0 +1,186 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Http;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("internal/companies/{companyId:guid}/finance/fiscal-periods/{fiscalPeriodId:guid}/reporting")]
++[Authorize(Policy = CompanyPolicies.FinanceView)]
++[RequireCompanyContext]
++public sealed class ReportingPeriodsController : ControllerBase
++{
++    private readonly IReportingPeriodCloseService _service;
++
++    public ReportingPeriodsController(IReportingPeriodCloseService service)
++    {
++        _service = service;
++    }
++
++    [HttpPost("validation")]
++    public async Task<ActionResult<ReportingPeriodCloseValidationResultDto>> ValidateAsync(
++        Guid companyId,
++        Guid fiscalPeriodId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _service.ValidateAsync(
++                new ValidateReportingPeriodCloseQuery(companyId, fiscalPeriodId),
++                cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (KeyNotFoundException ex)
++        {
++            return NotFound(CreateProblemDetails("Fiscal period was not found.", ex.Message, StatusCodes.Status404NotFound, "fiscal_period_not_found"));
++        }
++    }
++
++    [HttpPost("lock")]
++    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
++    public async Task<ActionResult<ReportingPeriodLockStateDto>> LockAsync(
++        Guid companyId,
++        Guid fiscalPeriodId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _service.LockAsync(
++                new LockReportingPeriodCommand(companyId, fiscalPeriodId),
++                cancellationToken));
++        }
++        catch (ReportingPeriodOperationException ex)
++        {
++            return Conflict(CreateProblemDetails(ex.Title, ex.Message, StatusCodes.Status409Conflict, ex.Code));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (KeyNotFoundException ex)
++        {
++            return NotFound(CreateProblemDetails("Fiscal period was not found.", ex.Message, StatusCodes.Status404NotFound, "fiscal_period_not_found"));
++        }
++    }
++
++    [HttpPost("unlock")]
++    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++    public async Task<ActionResult<ReportingPeriodLockStateDto>> UnlockAsync(
++        Guid companyId,
++        Guid fiscalPeriodId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _service.UnlockAsync(
++                new UnlockReportingPeriodCommand(companyId, fiscalPeriodId),
++                cancellationToken));
++        }
++        catch (ReportingPeriodOperationException ex)
++        {
++            return Conflict(CreateProblemDetails(ex.Title, ex.Message, StatusCodes.Status409Conflict, ex.Code));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (KeyNotFoundException ex)
++        {
++            return NotFound(CreateProblemDetails("Fiscal period was not found.", ex.Message, StatusCodes.Status404NotFound, "fiscal_period_not_found"));
++        }
++    }
++
++    [HttpPost("stored-statements/regenerate")]
++    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
++    public async Task<ActionResult<ReportingPeriodRegenerationRequestResultDto>> RegenerateAsync(
++        Guid companyId,
++        Guid fiscalPeriodId,
++        [FromBody] RegenerateStoredReportingStatementsRequest? request,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _service.RegenerateStoredStatementsAsync(
++                new RegenerateStoredReportingStatementsCommand(
++                    companyId,
++                    fiscalPeriodId,
++                    request?.RunInBackground ?? false),
++                cancellationToken);
++
++            return result.Queued
++                ? Accepted(result)
++                : Ok(result);
++        }
++        catch (ReportingPeriodOperationException ex)
++        {
++            return Conflict(CreateProblemDetails(ex.Title, ex.Message, StatusCodes.Status409Conflict, ex.Code));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (KeyNotFoundException ex)
++        {
++            return NotFound(CreateProblemDetails("Fiscal period was not found.", ex.Message, StatusCodes.Status404NotFound, "fiscal_period_not_found"));
++        }
++    }
++
++    private ProblemDetails CreateProblemDetails(
++        string title,
++        string detail,
++        int status,
++        string code)
++    {
++        var problem = new ProblemDetails
++        {
++            Title = title,
++            Detail = detail,
++            Status = status,
++            Instance = HttpContext.Request.Path
++        };
++
++        problem.Extensions["code"] = code;
++        return problem;
++    }
++}
++
++public sealed record RegenerateStoredReportingStatementsRequest(bool RunInBackground = false);
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index 0d2c85d..53b4889 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -57,6 +57,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+                 [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",
+                 [$"{FinanceSeedWorkerOptions.SectionName}:Enabled"] = "false",
+                 [$"{KnowledgeEmbeddingOptions.SectionName}:Dimensions"] = "256",
++                [$"{ReportingPeriodRegenerationWorkerOptions.SectionName}:Enabled"] = "false",
+                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:Enabled"] = "true",
+                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KeyVersion"] = "tests-v1",
+                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KnowledgeTtlSeconds"] = "300",
+diff --git a/tests/VirtualCompany.Api.Tests/ReportingPeriodCloseIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ReportingPeriodCloseIntegrationTests.cs
+new file mode 100644
+index 0000000..504830a
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ReportingPeriodCloseIntegrationTests.cs
+@@ -0,0 +1,479 @@
++using System.Net;
++using System.Net.Http.Json;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ReportingPeriodCloseIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public ReportingPeriodCloseIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Validation_endpoint_returns_all_period_close_blocking_issue_types()
++    {
++        var seed = await SeedValidationScenarioAsync();
++        using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, "Finance Owner");
++
++        var response = await client.PostAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/validation", null);
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<ReportingPeriodCloseValidationResponse>();
++        Assert.NotNull(payload);
++        Assert.False(payload!.IsReadyToClose);
++        Assert.Contains(payload.BlockingIssues, x => x.Code == ReportingPeriodBlockingIssueCodes.UnpostedSourceDocuments && x.Count == 1);
++        Assert.Contains(payload.BlockingIssues, x => x.Code == ReportingPeriodBlockingIssueCodes.UnbalancedJournalEntries && x.Count == 1);
++        Assert.Contains(payload.BlockingIssues, x => x.Code == ReportingPeriodBlockingIssueCodes.MissingStatementMappings && x.Count == 1);
++    }
++
++    [Fact]
++    public async Task Lock_endpoint_rejects_open_periods()
++    {
++        var seed = await SeedValidationScenarioAsync();
++        using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, "Finance Owner");
++
++        var response = await client.PostAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.OpenPeriodId:D}/reporting/lock", null);
++        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
++
++        var problem = await response.Content.ReadFromJsonAsync<ProblemDetailsResponse>();
++        Assert.NotNull(problem);
++        Assert.Equal(ReportingPeriodErrorCodes.ReportingPeriodNotClosed, problem!.Code);
++    }
++
++    [Fact]
++    public async Task Unlock_endpoint_requires_owner_or_admin_authorization()
++    {
++        var seed = await SeedValidationScenarioAsync();
++        using var ownerClient = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, "Finance Owner");
++        using var managerClient = CreateAuthenticatedClient(seed.ManagerSubject, seed.ManagerEmail, "Finance Manager");
++
++        var lockResponse = await ownerClient.PostAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/lock", null);
++        Assert.Equal(HttpStatusCode.OK, lockResponse.StatusCode);
++
++        var unlockResponse = await managerClient.PostAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/unlock", null);
++        Assert.Equal(HttpStatusCode.Forbidden, unlockResponse.StatusCode);
++    }
++
++    [Fact]
++    public async Task Locked_period_blocks_synchronous_regeneration_and_allows_regeneration_after_authorized_unlock()
++    {
++        var seed = await SeedClosedBalancedScenarioAsync();
++        using var ownerClient = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, "Finance Owner");
++
++        var lockResponse = await ownerClient.PostAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/lock", null);
++        Assert.Equal(HttpStatusCode.OK, lockResponse.StatusCode);
++
++        var blockedResponse = await ownerClient.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/stored-statements/regenerate",
++            new { runInBackground = false });
++        Assert.Equal(HttpStatusCode.Conflict, blockedResponse.StatusCode);
++
++        var blockedProblem = await blockedResponse.Content.ReadFromJsonAsync<ProblemDetailsResponse>();
++        Assert.NotNull(blockedProblem);
++        Assert.Equal(ReportingPeriodErrorCodes.ReportingPeriodLocked, blockedProblem!.Code);
++
++        var unlockResponse = await ownerClient.PostAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/unlock", null);
++        Assert.Equal(HttpStatusCode.OK, unlockResponse.StatusCode);
++
++        var regenerateResponse = await ownerClient.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/stored-statements/regenerate",
++            new { runInBackground = false });
++        Assert.Equal(HttpStatusCode.OK, regenerateResponse.StatusCode);
++
++        var result = await regenerateResponse.Content.ReadFromJsonAsync<ReportingPeriodRegenerationResponse>();
++        Assert.NotNull(result);
++        Assert.False(result!.Queued);
++        Assert.True(result.SnapshotCount >= 3);
++
++        var snapshotCount = await _factory.ExecuteDbContextAsync(dbContext =>
++            dbContext.TrialBalanceSnapshots.IgnoreQueryFilters().CountAsync(
++                x => x.CompanyId == seed.CompanyId && x.FiscalPeriodId == seed.ClosedPeriodId));
++        Assert.True(snapshotCount >= 3);
++    }
++
++    [Fact]
++    public async Task Locked_period_blocks_background_regeneration_runner_and_preserves_stored_snapshots()
++    {
++        var seed = await SeedClosedBalancedScenarioAsync(locked: true);
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.BackgroundExecutions.Add(new BackgroundExecution(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                BackgroundExecutionType.FinanceReportRegeneration,
++                BackgroundExecutionRelatedEntityTypes.FiscalPeriod,
++                seed.ClosedPeriodId.ToString("D"),
++                "corr-reporting-regeneration",
++                $"finance-report-regeneration:{seed.CompanyId:N}:{seed.ClosedPeriodId:N}",
++                3));
++            return Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        var runner = scope.ServiceProvider.GetRequiredService<IReportingPeriodRegenerationJobRunner>();
++        var handled = await runner.RunDueAsync(CancellationToken.None);
++        Assert.Equal(1, handled);
++
++        var verification = await _factory.ExecuteDbContextAsync(async dbContext =>
++        {
++            var execution = await dbContext.BackgroundExecutions.IgnoreQueryFilters()
++                .SingleAsync(x =>
++                    x.CompanyId == seed.CompanyId &&
++                    x.ExecutionType == BackgroundExecutionType.FinanceReportRegeneration);
++            var snapshotCount = await dbContext.TrialBalanceSnapshots.IgnoreQueryFilters()
++                .CountAsync(x => x.CompanyId == seed.CompanyId && x.FiscalPeriodId == seed.ClosedPeriodId);
++            var audit = await dbContext.AuditEvents.IgnoreQueryFilters()
++                .SingleAsync(x =>
++                    x.CompanyId == seed.CompanyId &&
++                    x.Action == AuditEventActions.ReportingPeriodRegenerationBlocked);
++            return new { execution.Status, snapshotCount, audit.Outcome };
++        });
++
++        Assert.Equal(BackgroundExecutionStatus.Blocked, verification.Status);
++        Assert.Equal(0, verification.snapshotCount);
++        Assert.Equal(AuditEventOutcomes.Denied, verification.Outcome);
++    }
++
++    [Fact]
++    public async Task Validation_lock_and_unlock_operations_persist_audit_events_with_actor_and_timestamp()
++    {
++        var seed = await SeedClosedBalancedScenarioAsync();
++        using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, "Finance Owner");
++
++        var validationResponse = await client.PostAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/validation", null);
++        var lockResponse = await client.PostAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/lock", null);
++        var unlockResponse = await client.PostAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/unlock", null);
++
++        Assert.Equal(HttpStatusCode.OK, validationResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, lockResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, unlockResponse.StatusCode);
++
++        var auditEvents = await _factory.ExecuteDbContextAsync(dbContext =>
++            dbContext.AuditEvents.IgnoreQueryFilters()
++                .Where(x =>
++                    x.CompanyId == seed.CompanyId &&
++                    (x.Action == AuditEventActions.ReportingPeriodCloseValidationExecuted ||
++                     x.Action == AuditEventActions.ReportingPeriodLockApplied ||
++                     x.Action == AuditEventActions.ReportingPeriodLockRemoved))
++                .OrderBy(x => x.OccurredUtc)
++                .Select(x => new { x.Action, x.ActorType, x.ActorId, x.OccurredUtc, x.TargetId })
++                .ToListAsync());
++
++        Assert.Contains(auditEvents, x => x.Action == AuditEventActions.ReportingPeriodCloseValidationExecuted && x.ActorType == AuditActorTypes.User && x.ActorId == seed.OwnerUserId);
++        Assert.Contains(auditEvents, x => x.Action == AuditEventActions.ReportingPeriodLockApplied && x.ActorType == AuditActorTypes.User && x.ActorId == seed.OwnerUserId);
++        Assert.Contains(auditEvents, x => x.Action == AuditEventActions.ReportingPeriodLockRemoved && x.ActorType == AuditActorTypes.User && x.ActorId == seed.OwnerUserId);
++        Assert.All(auditEvents, x => Assert.Equal(seed.ClosedPeriodId.ToString("D"), x.TargetId));
++        Assert.All(auditEvents, x => Assert.True(x.OccurredUtc > DateTime.UtcNow.AddMinutes(-5)));
++    }
++
++    private async Task<SeedContext> SeedValidationScenarioAsync()
++    {
++        var seed = CreateSeedContext();
++        await _factory.SeedAsync(dbContext =>
++        {
++            var setup = SeedBaseCompanyData(dbContext, seed, closedPeriodLocked: false);
++
++            dbContext.FinancialStatementMappings.AddRange(
++                new FinancialStatementMapping(Guid.NewGuid(), seed.CompanyId, setup.CashAccountId, FinancialStatementType.BalanceSheet, FinancialStatementReportSection.BalanceSheetAssets, FinancialStatementLineClassification.CurrentAsset),
++                new FinancialStatementMapping(Guid.NewGuid(), seed.CompanyId, setup.RevenueAccountId, FinancialStatementType.ProfitAndLoss, FinancialStatementReportSection.ProfitAndLossRevenue, FinancialStatementLineClassification.Revenue));
++
++            var unposted = new LedgerEntry(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                seed.ClosedPeriodId,
++                "JE-UNPOSTED",
++                new DateTime(2026, 3, 10, 0, 0, 0, DateTimeKind.Utc),
++                LedgerEntryStatuses.Draft,
++                "Draft invoice posting");
++            dbContext.LedgerEntries.Add(unposted);
++            dbContext.LedgerEntryLines.AddRange(
++                new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, unposted.Id, setup.CashAccountId, 100m, 0m, "USD"),
++                new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, unposted.Id, setup.RevenueAccountId, 0m, 100m, "USD"));
++
++            var unbalanced = new LedgerEntry(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                seed.ClosedPeriodId,
++                "JE-UNBALANCED",
++                new DateTime(2026, 3, 12, 0, 0, 0, DateTimeKind.Utc),
++                LedgerEntryStatuses.Posted,
++                "Unbalanced closing entry");
++            dbContext.LedgerEntries.Add(unbalanced);
++            dbContext.LedgerEntryLines.AddRange(
++                new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, unbalanced.Id, setup.ExpenseAccountId, 150m, 0m, "USD"),
++                new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, unbalanced.Id, setup.CashAccountId, 0m, 125m, "USD"));
++
++            return Task.CompletedTask;
++        });
++
++        return seed;
++    }
++
++    private async Task<SeedContext> SeedClosedBalancedScenarioAsync(bool locked = false)
++    {
++        var seed = CreateSeedContext();
++        await _factory.SeedAsync(dbContext =>
++        {
++            var setup = SeedBaseCompanyData(dbContext, seed, closedPeriodLocked: locked);
++
++            dbContext.FinancialStatementMappings.AddRange(
++                new FinancialStatementMapping(Guid.NewGuid(), seed.CompanyId, setup.CashAccountId, FinancialStatementType.BalanceSheet, FinancialStatementReportSection.BalanceSheetAssets, FinancialStatementLineClassification.CurrentAsset),
++                new FinancialStatementMapping(Guid.NewGuid(), seed.CompanyId, setup.EquityAccountId, FinancialStatementType.BalanceSheet, FinancialStatementReportSection.BalanceSheetEquity, FinancialStatementLineClassification.Equity),
++                new FinancialStatementMapping(Guid.NewGuid(), seed.CompanyId, setup.RevenueAccountId, FinancialStatementType.ProfitAndLoss, FinancialStatementReportSection.ProfitAndLossRevenue, FinancialStatementLineClassification.Revenue),
++                new FinancialStatementMapping(Guid.NewGuid(), seed.CompanyId, setup.ExpenseAccountId, FinancialStatementType.ProfitAndLoss, FinancialStatementReportSection.ProfitAndLossOperatingExpenses, FinancialStatementLineClassification.OperatingExpense));
++
++            var capitalEntry = new LedgerEntry(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                seed.ClosedPeriodId,
++                "JE-CAPITAL",
++                new DateTime(2026, 3, 5, 0, 0, 0, DateTimeKind.Utc),
++                LedgerEntryStatuses.Posted,
++                "Initial capital");
++            dbContext.LedgerEntries.Add(capitalEntry);
++            dbContext.LedgerEntryLines.AddRange(
++                new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, capitalEntry.Id, setup.CashAccountId, 500m, 0m, "USD"),
++                new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, capitalEntry.Id, setup.EquityAccountId, 0m, 500m, "USD"));
++
++            var revenueEntry = new LedgerEntry(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                seed.ClosedPeriodId,
++                "JE-REV",
++                new DateTime(2026, 3, 10, 0, 0, 0, DateTimeKind.Utc),
++                LedgerEntryStatuses.Posted,
++                "Revenue");
++            dbContext.LedgerEntries.Add(revenueEntry);
++            dbContext.LedgerEntryLines.AddRange(
++                new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, revenueEntry.Id, setup.CashAccountId, 900m, 0m, "USD"),
++                new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, revenueEntry.Id, setup.RevenueAccountId, 0m, 900m, "USD"));
++
++            var expenseEntry = new LedgerEntry(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                seed.ClosedPeriodId,
++                "JE-EXP",
++                new DateTime(2026, 3, 18, 0, 0, 0, DateTimeKind.Utc),
++                LedgerEntryStatuses.Posted,
++                "Expense");
++            dbContext.LedgerEntries.Add(expenseEntry);
++            dbContext.LedgerEntryLines.AddRange(
++                new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, expenseEntry.Id, setup.ExpenseAccountId, 200m, 0m, "USD"),
++                new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, expenseEntry.Id, setup.CashAccountId, 0m, 200m, "USD"));
++
++            return Task.CompletedTask;
++        });
++
++        return seed;
++    }
++
++    private static SeedSetup SeedBaseCompanyData(
++        VirtualCompanyDbContext dbContext,
++        SeedContext seed,
++        bool closedPeriodLocked)
++    {
++        dbContext.Users.AddRange(
++            new User(seed.OwnerUserId, seed.OwnerEmail, "Finance Owner", "dev-header", seed.OwnerSubject),
++            new User(seed.ManagerUserId, seed.ManagerEmail, "Finance Manager", "dev-header", seed.ManagerSubject));
++        dbContext.Companies.Add(new Company(seed.CompanyId, "Reporting Close Company"));
++        dbContext.CompanyMemberships.AddRange(
++            new CompanyMembership(Guid.NewGuid(), seed.CompanyId, seed.OwnerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++            new CompanyMembership(Guid.NewGuid(), seed.CompanyId, seed.ManagerUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++
++        var cashAccountId = Guid.NewGuid();
++        var equityAccountId = Guid.NewGuid();
++        var revenueAccountId = Guid.NewGuid();
++        var expenseAccountId = Guid.NewGuid();
++
++        dbContext.FinanceAccounts.AddRange(
++            new FinanceAccount(cashAccountId, seed.CompanyId, "1000", "Operating Cash", "asset", "USD", 0m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FinanceAccount(equityAccountId, seed.CompanyId, "3000", "Owner Equity", "equity", "USD", 0m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FinanceAccount(revenueAccountId, seed.CompanyId, "4000", "Sales Revenue", "revenue", "USD", 0m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FinanceAccount(expenseAccountId, seed.CompanyId, "6100", "Operating Expense", "expense", "USD", 0m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++
++        dbContext.FinanceTransactions.Add(new FinanceTransaction(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            cashAccountId,
++            null,
++            null,
++            null,
++            new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc),
++            "bootstrap",
++            0m,
++            "USD",
++            "Seed completeness transaction",
++            $"BOOT-{seed.CompanyId:N}"));
++        dbContext.FinanceBalances.Add(new FinanceBalance(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            cashAccountId,
++            new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc),
++            0m,
++            "USD"));
++        dbContext.FinancePolicyConfigurations.Add(new FinancePolicyConfiguration(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            "USD",
++            1000m,
++            1000m,
++            true,
++            -10000m,
++            10000m,
++            90,
++            30));
++
++        dbContext.FiscalPeriods.AddRange(
++            new FiscalPeriod(
++                seed.OpenPeriodId,
++                seed.CompanyId,
++                "FY2026-02",
++                new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FiscalPeriod(
++                seed.ClosedPeriodId,
++                seed.CompanyId,
++                "FY2026-03",
++                new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                isClosed: true,
++                closedUtc: new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                isReportingLocked: closedPeriodLocked,
++                reportingLockedUtc: closedPeriodLocked ? new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc) : null,
++                reportingLockedByUserId: closedPeriodLocked ? seed.OwnerUserId : null));
++
++        return new SeedSetup(cashAccountId, equityAccountId, revenueAccountId, expenseAccountId);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private static SeedContext CreateSeedContext()
++    {
++        var companyId = Guid.NewGuid();
++        var ownerSubject = $"reporting-owner-{Guid.NewGuid():N}";
++        var managerSubject = $"reporting-manager-{Guid.NewGuid():N}";
++        return new SeedContext(
++            companyId,
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            ownerSubject,
++            $"{ownerSubject}@example.com",
++            managerSubject,
++            $"{managerSubject}@example.com",
++            Guid.NewGuid(),
++            Guid.NewGuid());
++    }
++
++    private sealed record SeedContext(
++        Guid CompanyId,
++        Guid OwnerUserId,
++        Guid ManagerUserId,
++        string OwnerSubject,
++        string OwnerEmail,
++        string ManagerSubject,
++        string ManagerEmail,
++        Guid OpenPeriodId,
++        Guid ClosedPeriodId);
++
++    private sealed record SeedSetup(
++        Guid CashAccountId,
++        Guid EquityAccountId,
++        Guid RevenueAccountId,
++        Guid ExpenseAccountId);
++
++    private sealed class ReportingPeriodCloseValidationResponse
++    {
++        public Guid CompanyId { get; set; }
++        public Guid FiscalPeriodId { get; set; }
++        public bool IsReadyToClose { get; set; }
++        public bool IsClosed { get; set; }
++        public bool IsReportingLocked { get; set; }
++        public List<ReportingPeriodBlockingIssueResponse> BlockingIssues { get; set; } = [];
++    }
++
++    private sealed class ReportingPeriodBlockingIssueResponse
++    {
++        public string Code { get; set; } = string.Empty;
++        public string Message { get; set; } = string.Empty;
++        public int Count { get; set; }
++        public List<string> SampleReferences { get; set; } = [];
++    }
++
++    private sealed class ReportingPeriodRegenerationResponse
++    {
++        public Guid CompanyId { get; set; }
++        public Guid FiscalPeriodId { get; set; }
++        public bool Queued { get; set; }
++        public Guid? BackgroundExecutionId { get; set; }
++        public int SnapshotCount { get; set; }
++        public string Status { get; set; } = string.Empty;
++    }
++
++    private sealed class ProblemDetailsResponse
++    {
++        public string Title { get; set; } = string.Empty;
++        public string Detail { get; set; } = string.Empty;
++        public int? Status { get; set; }
++        public string? Instance { get; set; }
++        public string? Code { get; set; }
++    }
++}
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 6395e0f..e622d4d 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -987,6 +987,7 @@ public sealed record FinanceSeedBackfillAttemptDto(
+     FinanceSeedingState SeedStateBefore,
+     FinanceSeedingState? SeedStateAfter);
+ 
++
+ public sealed record FinanceEntryStateDto(
+     Guid CompanyId,
+     string InitializationStatus,
+@@ -994,49 +995,6 @@ public sealed record FinanceEntryStateDto(
+     FinanceSeedingState SeedingState,
+     bool SeedJobEnqueued,
+     bool SeedJobActive,
+-    bool CanRetry,
+-    bool CanRefresh,
+-    string Message,
+-    DateTime CheckedAtUtc,
+-    DateTime? SeededAtUtc,
+-    DateTime? LastAttemptedUtc,
+-    DateTime? LastCompletedUtc,
+-    string? LastErrorCode,
+-    string? LastErrorMessage,
+-    string SeedMode,
+-    string SeedOperation,
+-    bool DataAlreadyExists,
+-    bool ConfirmationRequired,
+-    bool FallbackTriggered,
+-    string? StatusEndpoint,
+-    string? SeedEndpoint,
+-    string? JobStatus,
+-    string? IdempotencyKey,
+-    string? ConfirmationMessage,
+-    bool CanGenerate,
+-    string RecommendedAction,
+-    IReadOnlyList<string> SupportedModes,
+-    string? CorrelationId);
+-
+-public interface IFinanceSeedBootstrapService
+-{
+-    Task<FinanceSeedBootstrapResultDto> GenerateAsync(FinanceSeedBootstrapCommand command, CancellationToken cancellationToken);
+-}
+-
+-public interface IFinanceTransactionAnomalyDetectionService
+-{
+-    Task<FinanceTransactionAnomalyEvaluationDto> EvaluateAsync(EvaluateFinanceTransactionAnomalyCommand command, CancellationToken cancellationToken);
+-}
+-
+-public interface IFinanceSeedingStateService
+-{
+-    Task<FinanceSeedingStateResultDto> GetCompanyFinanceSeedingStateAsync(Guid companyId, CancellationToken cancellationToken = default);
+-}
+-
+-public interface IFinanceSeedingStateResolver : IFinanceSeedingStateService
+-{
+-    Task<FinanceSeedingStateResultDto> ResolveAsync(Guid companyId, CancellationToken cancellationToken = default);
+-}
+-
+-public interface IFinanceSeedBackfillOrchestrator
+-{
+-    Task<FinanceSeedBackfillRunDto> RunAsync(CancellationToken cancellationToken);
+-}
++    bool CanRetry,
++    bool CanRefresh,
++    string Message,
++    DateTime CheckedAtUtc,
++    DateTime? SeededAtUtc,
++    DateTime? LastAttemptedUtc,
++    DateTime? LastCompletedUtc,
++    string? LastErrorCode,
++    string? LastErrorMessage,
++    string SeedMode,
++    string SeedOperation,
++    bool DataAlreadyExists,
++    bool ConfirmationRequired,
++    bool FallbackTriggered,
++    string? StatusEndpoint,
++    string? SeedEndpoint,
++    string? JobStatus,
++    string? IdempotencyKey,
++    string? ConfirmationMessage,
++    bool CanGenerate,
++    string RecommendedAction,
++    IReadOnlyList<string> SupportedModes,
++    string? CorrelationId);
+ END_OF_PATCH

@@ -1,0 +1,880 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 9a2d7d1..f8d3d36 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -149,9 +149,10 @@ public sealed record GetPendingFinanceApprovalTasksQuery(Guid CompanyId);
+ 
+ public sealed record BackfillFinanceApprovalTasksCommand(
+     Guid CompanyId,
+     int BatchSize = 250,
+-    string? CorrelationId = null);
++    string? CorrelationId = null,
++    bool IncludePayments = true);
+ 
+ public sealed record ActOnFinanceApprovalTaskCommand(
+     Guid CompanyId,
+     Guid ApprovalTaskId,
+@@ -160,7 +161,16 @@ public sealed record ActOnFinanceApprovalTaskCommand(
+ 
+ public sealed record FinanceApprovalTaskAssigneeDto(Guid? UserId, string? DisplayName);
+ public sealed record FinancePendingApprovalTaskDto(Guid Id, string TargetType, Guid TargetId, FinanceApprovalTaskAssigneeDto? Assignee, DateTime? DueDateUtc, string Status);
+-public sealed record FinanceApprovalTaskBackfillResultDto(Guid CompanyId, string CorrelationId, int ScannedCount, int MatchedCount, int CreatedCount, int SkippedExistingCount);
++public sealed record FinanceApprovalTaskBackfillResultDto(
++    Guid CompanyId,
++    string CorrelationId,
++    int ScannedCount,
++    int MatchedCount,
++    int CreatedCount,
++    int SkippedExistingCount,
++    int BillScannedCount,
++    int PaymentScannedCount,
++    int BillCreatedCount,
++    int PaymentCreatedCount);
+ public sealed record ReviewFinanceInvoiceWorkflowCommand(
+     Guid CompanyId,
+     Guid InvoiceId,
+@@ -1269,6 +1279,11 @@ public interface IReportingPeriodRegenerationJobRunner
+     Task<int> RunDueAsync(CancellationToken cancellationToken);
+ }
+ 
++public interface IFinanceApprovalTaskBackfillJobRunner
++{
++    Task<int> RunDueAsync(CancellationToken cancellationToken);
++}
++
+ public interface IFinanceEntryService
+ {
+     Task<FinanceEntryStateDto> GetEntryStateAsync(GetFinanceEntryStateQuery query, CancellationToken cancellationToken);
+@@ -1470,7 +1485,7 @@ public interface IFinanceApprovalTaskService
+ {
+     Task<bool> EnsureTaskAsync(EnsureFinanceApprovalTaskCommand command, CancellationToken cancellationToken);
+     Task<IReadOnlyList<FinancePendingApprovalTaskDto>> GetPendingTasksAsync(GetPendingFinanceApprovalTasksQuery query, CancellationToken cancellationToken);
+-    Task<FinanceApprovalTaskBackfillResultDto> BackfillBillApprovalTasksAsync(BackfillFinanceApprovalTasksCommand command, CancellationToken cancellationToken);
++    Task<FinanceApprovalTaskBackfillResultDto> BackfillApprovalTasksAsync(BackfillFinanceApprovalTasksCommand command, CancellationToken cancellationToken);
+     Task<FinancePendingApprovalTaskDto> ActOnTaskAsync(ActOnFinanceApprovalTaskCommand command, CancellationToken cancellationToken);
+ }
+ 
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceApprovalsController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceApprovalsController.cs
+index 54ff603..2b77ef0 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceApprovalsController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceApprovalsController.cs
+@@ -34,9 +34,9 @@ public sealed class InternalFinanceApprovalsController : ControllerBase
+             })
+             { Title = "Finance validation failed", Status = StatusCodes.Status400BadRequest, Instance = HttpContext.Request.Path });
+         }
+ 
+-        return Ok(await _approvalTaskService.BackfillBillApprovalTasksAsync(new BackfillFinanceApprovalTasksCommand(companyId, request?.BatchSize ?? 250, request?.CorrelationId), cancellationToken));
++        return Ok(await _approvalTaskService.BackfillApprovalTasksAsync(new BackfillFinanceApprovalTasksCommand(companyId, request?.BatchSize ?? 250, request?.CorrelationId, request?.IncludePayments ?? true), cancellationToken));
+     }
+ }
+ 
+-public sealed record RunFinanceApprovalTaskBackfillRequest(int BatchSize = 250, string? CorrelationId = null);
++public sealed record RunFinanceApprovalTaskBackfillRequest(int BatchSize = 250, string? CorrelationId = null, bool IncludePayments = true);
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index 333b40a..f8aac0c 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -80,6 +80,12 @@
+     "LockTtlSeconds": 600,
+     "LockKey": "finance-seed-backfill"
+   },
++  "FinanceApprovalTaskBackfillWorker": {
++    "Enabled": false,
++    "PollIntervalMilliseconds": 600000,
++    "BatchSize": 25,
++    "BackfillBatchSize": 250
++  },
+   "FinanceInitialization": {
+     "MissingDatasetBehavior": "trigger_seed"
+   },
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 456dc74..c08ea57 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -114,6 +114,11 @@ public static class DependencyInjection
+         services.AddOptions<ReportingPeriodRegenerationWorkerOptions>()
+             .Bind(configuration.GetSection(ReportingPeriodRegenerationWorkerOptions.SectionName))
+             .PostConfigure(options => options.BatchSize = Math.Max(1, options.BatchSize))
++            .PostConfigure(options => options.PollIntervalMilliseconds = Math.Max(100, options.PollIntervalMilliseconds));
++        services.AddOptions<FinanceApprovalTaskBackfillWorkerOptions>()
++            .Bind(configuration.GetSection(FinanceApprovalTaskBackfillWorkerOptions.SectionName))
++            .PostConfigure(options => options.BatchSize = Math.Max(1, options.BatchSize))
++            .PostConfigure(options => options.BackfillBatchSize = Math.Max(1, options.BackfillBatchSize))
+             .PostConfigure(options => options.PollIntervalMilliseconds = Math.Max(100, options.PollIntervalMilliseconds));
+         services.AddOptions<FinanceInitializationOptions>()
+             .Bind(configuration.GetSection(FinanceInitializationOptions.SectionName))
+@@ -249,6 +254,7 @@ public static class DependencyInjection
+         services.AddHostedService<TriggerEvaluationBackgroundService>();
+         services.AddHostedService<FinanceSeedBackfillBackgroundService>();
+         services.AddHostedService<ReportingPeriodRegenerationBackgroundService>();
++        services.AddHostedService<FinanceApprovalTaskBackfillBackgroundService>();
+         services.AddHostedService<CompanySimulationProgressionBackgroundService>();
+         services.AddHostedService<FinanceSeedBackgroundService>();
+ 
+@@ -389,6 +395,7 @@ public static class DependencyInjection
+         services.AddScoped<IFinanceSeedJobRunner, CompanyFinanceSeedJobRunner>();
+         services.AddScoped<IReportingPeriodCloseService, CompanyReportingPeriodCloseService>();
+         services.AddScoped<IReportingPeriodRegenerationJobRunner, ReportingPeriodRegenerationJobRunner>();
++        services.AddScoped<IFinanceApprovalTaskBackfillJobRunner, FinanceApprovalTaskBackfillJobRunner>();
+         services.AddSingleton<IFinanceSeedBackfillExecutionScheduler, FinanceSeedBackfillExecutionScheduler>();
+         services.AddSingleton<IFinanceSeedBackfillDelayStrategy, SystemFinanceSeedBackfillDelayStrategy>();
+         services.AddScoped<IFinanceSeedingStateResolver, CompanyFinanceSeedingStateResolver>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceApprovalTaskService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceApprovalTaskService.cs
+index 467552d..e8e148f 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceApprovalTaskService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceApprovalTaskService.cs
+@@ -132,8 +132,8 @@ public sealed class CompanyFinanceApprovalTaskService : IFinanceApprovalTaskServ
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return MapTask(task);
+     }
+ 
+-    public async Task<FinanceApprovalTaskBackfillResultDto> BackfillBillApprovalTasksAsync(
++    public async Task<FinanceApprovalTaskBackfillResultDto> BackfillApprovalTasksAsync(
+         BackfillFinanceApprovalTasksCommand command,
+         CancellationToken cancellationToken)
+     {
+@@ -144,87 +144,40 @@ public sealed class CompanyFinanceApprovalTaskService : IFinanceApprovalTaskServ
+         var batchSize = Math.Clamp(command.BatchSize, 1, 1000);
+         var scannedCount = 0;
+         var matchedCount = 0;
+         var createdCount = 0;
+         var skippedExistingCount = 0;
+-        var page = 0;
+         var policy = await LoadPolicyAsync(command.CompanyId, cancellationToken);
+         var assignee = await ResolveAssigneeAsync(command.CompanyId, cancellationToken);
+ 
+-        while (true)
+-        {
+-            var bills = await _dbContext.FinanceBills
+-                .IgnoreQueryFilters()
+-                .AsNoTracking()
+-                .Where(x => x.CompanyId == command.CompanyId)
+-                .OrderBy(x => x.DueUtc)
+-                .ThenBy(x => x.Id)
+-                .Skip(page * batchSize)
+-                .Take(batchSize)
+-                .ToListAsync(cancellationToken);
+-
+-            if (bills.Count == 0)
+-            {
+-                break;
+-            }
+-
+-            page++;
+-            scannedCount += bills.Count;
+-
+-            var billIds = bills.Select(x => x.Id).ToArray();
+-            var existingTaskTargetIds = await _dbContext.ApprovalTasks
+-                .IgnoreQueryFilters()
+-                .AsNoTracking()
+-                .Where(x =>
+-                    x.CompanyId == command.CompanyId &&
+-                    x.TargetType == ApprovalTargetType.Bill &&
+-                    billIds.Contains(x.TargetId))
+-                .Select(x => x.TargetId)
+-                .ToHashSetAsync(cancellationToken);
+-
+-            foreach (var bill in bills)
+-            {
+-                if (!MatchesBillApprovalCriteria(bill, policy))
+-                {
+-                    continue;
+-                }
+-
+-                matchedCount++;
+-                if (existingTaskTargetIds.Contains(bill.Id) ||
+-                    HasTrackedTask(command.CompanyId, ApprovalTargetType.Bill, bill.Id))
+-                {
+-                    skippedExistingCount++;
+-                    continue;
+-                }
+-
+-                _dbContext.ApprovalTasks.Add(BuildTask(
+-                    command.CompanyId,
+-                    ApprovalTargetType.Bill,
+-                    bill.Id,
+-                    bill.DueUtc,
+-                    assignee));
+-                existingTaskTargetIds.Add(bill.Id);
+-                createdCount++;
+-            }
+-
+-            await _dbContext.SaveChangesAsync(cancellationToken);
+-        }
++        var billCounts = await BackfillBillsAsync(command, policy, assignee, batchSize, cancellationToken);
++        scannedCount += billCounts.ScannedCount;
++        matchedCount += billCounts.MatchedCount;
++        createdCount += billCounts.CreatedCount;
++        skippedExistingCount += billCounts.SkippedExistingCount;
++
++        BackfillTargetCounts paymentCounts = default;
++        if (command.IncludePayments)
++        {
++            paymentCounts = await BackfillPaymentsAsync(command, policy, assignee, batchSize, cancellationToken);
++            scannedCount += paymentCounts.ScannedCount;
++            matchedCount += paymentCounts.MatchedCount;
++            createdCount += paymentCounts.CreatedCount;
++            skippedExistingCount += paymentCounts.SkippedExistingCount;
++        }
+ 
+         using var scope = _logger.BeginScope(ExecutionLogScope.ForBackground(correlationId, command.CompanyId));
+         _logger.LogInformation(
+-            "Completed finance approval task backfill for company {CompanyId}. Scanned={ScannedCount} Matched={MatchedCount} Created={CreatedCount} SkippedExisting={SkippedExistingCount}.",
++            "Completed finance approval task backfill for company {CompanyId}. Scanned={ScannedCount} Matched={MatchedCount} Created={CreatedCount} SkippedExisting={SkippedExistingCount} BillCreated={BillCreatedCount} PaymentCreated={PaymentCreatedCount}.",
+             command.CompanyId,
+             scannedCount,
+             matchedCount,
+             createdCount,
+-            skippedExistingCount);
++            skippedExistingCount,
++            billCounts.CreatedCount,
++            paymentCounts.CreatedCount);
+ 
+         return new FinanceApprovalTaskBackfillResultDto(
+             command.CompanyId,
+             correlationId,
+             scannedCount,
+             matchedCount,
+             createdCount,
+-            skippedExistingCount);
++            skippedExistingCount,
++            billCounts.ScannedCount,
++            paymentCounts.ScannedCount,
++            billCounts.CreatedCount,
++            paymentCounts.CreatedCount);
+     }
+ 
+     private async Task<FinancePolicyConfigurationDto> LoadPolicyAsync(Guid companyId, CancellationToken cancellationToken)
+@@ -253,12 +206,138 @@ public sealed class CompanyFinanceApprovalTaskService : IFinanceApprovalTaskServ
+             _ => null
+         };
+ 
++    private async Task<BackfillTargetCounts> BackfillBillsAsync(
++        BackfillFinanceApprovalTasksCommand command,
++        FinancePolicyConfigurationDto policy,
++        FinanceApprovalTaskAssigneeDto assignee,
++        int batchSize,
++        CancellationToken cancellationToken)
++    {
++        var page = 0;
++        var counts = BackfillTargetCounts.Empty;
++
++        while (true)
++        {
++            var bills = await _dbContext.FinanceBills
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => x.CompanyId == command.CompanyId)
++                .OrderBy(x => x.DueUtc)
++                .ThenBy(x => x.Id)
++                .Skip(page * batchSize)
++                .Take(batchSize)
++                .ToListAsync(cancellationToken);
++
++            if (bills.Count == 0)
++            {
++                return counts;
++            }
++
++            page++;
++            counts = counts with { ScannedCount = counts.ScannedCount + bills.Count };
++
++            var billIds = bills.Select(x => x.Id).ToArray();
++            var existingTaskTargetIds = await LoadExistingTargetIdsAsync(command.CompanyId, ApprovalTargetType.Bill, billIds, cancellationToken);
++
++            foreach (var bill in bills)
++            {
++                if (!MatchesBillApprovalCriteria(bill, policy))
++                {
++                    continue;
++                }
++
++                counts = counts with { MatchedCount = counts.MatchedCount + 1 };
++                if (existingTaskTargetIds.Contains(bill.Id) ||
++                    HasTrackedTask(command.CompanyId, ApprovalTargetType.Bill, bill.Id))
++                {
++                    counts = counts with { SkippedExistingCount = counts.SkippedExistingCount + 1 };
++                    continue;
++                }
++
++                if (await TryCreateTaskAsync(BuildTask(command.CompanyId, ApprovalTargetType.Bill, bill.Id, bill.DueUtc, assignee), cancellationToken))
++                {
++                    existingTaskTargetIds.Add(bill.Id);
++                    counts = counts with { CreatedCount = counts.CreatedCount + 1 };
++                    continue;
++                }
++
++                existingTaskTargetIds.Add(bill.Id);
++                counts = counts with { SkippedExistingCount = counts.SkippedExistingCount + 1 };
++            }
++        }
++    }
++
++    private async Task<BackfillTargetCounts> BackfillPaymentsAsync(
++        BackfillFinanceApprovalTasksCommand command,
++        FinancePolicyConfigurationDto policy,
++        FinanceApprovalTaskAssigneeDto assignee,
++        int batchSize,
++        CancellationToken cancellationToken)
++    {
++        var page = 0;
++        var counts = BackfillTargetCounts.Empty;
++
++        while (true)
++        {
++            var payments = await _dbContext.Payments
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => x.CompanyId == command.CompanyId)
++                .OrderBy(x => x.PaymentDate)
++                .ThenBy(x => x.Id)
++                .Skip(page * batchSize)
++                .Take(batchSize)
++                .ToListAsync(cancellationToken);
++
++            if (payments.Count == 0)
++            {
++                return counts;
++            }
++
++            page++;
++            counts = counts with { ScannedCount = counts.ScannedCount + payments.Count };
++
++            var paymentIds = payments.Select(x => x.Id).ToArray();
++            var existingTaskTargetIds = await LoadExistingTargetIdsAsync(command.CompanyId, ApprovalTargetType.Payment, paymentIds, cancellationToken);
++
++            foreach (var payment in payments)
++            {
++                if (!MatchesPaymentApprovalCriteria(payment, policy))
++                {
++                    continue;
++                }
++
++                counts = counts with { MatchedCount = counts.MatchedCount + 1 };
++                if (existingTaskTargetIds.Contains(payment.Id) ||
++                    HasTrackedTask(command.CompanyId, ApprovalTargetType.Payment, payment.Id))
++                {
++                    counts = counts with { SkippedExistingCount = counts.SkippedExistingCount + 1 };
++                    continue;
++                }
++
++                if (await TryCreateTaskAsync(BuildTask(command.CompanyId, ApprovalTargetType.Payment, payment.Id, payment.PaymentDate, assignee), cancellationToken))
++                {
++                    existingTaskTargetIds.Add(payment.Id);
++                    counts = counts with { CreatedCount = counts.CreatedCount + 1 };
++                    continue;
++                }
++
++                existingTaskTargetIds.Add(payment.Id);
++                counts = counts with { SkippedExistingCount = counts.SkippedExistingCount + 1 };
++            }
++        }
++    }
++
+     private static bool MatchesBillApprovalCriteria(FinanceBill bill, FinancePolicyConfigurationDto policy) =>
+-        bill.Amount > policy.BillApprovalThreshold &&
+-        !string.Equals(bill.Currency, policy.ApprovalCurrency, StringComparison.OrdinalIgnoreCase) is false &&
++        MatchesApprovalCriteria(bill.Amount, bill.Currency, policy.BillApprovalThreshold, policy.ApprovalCurrency) &&
+         !string.Equals(bill.Status, "paid", StringComparison.OrdinalIgnoreCase) &&
+         !string.Equals(bill.SettlementStatus, FinanceSettlementStatuses.Paid, StringComparison.OrdinalIgnoreCase);
+ 
++    private static bool MatchesPaymentApprovalCriteria(Payment payment, FinancePolicyConfigurationDto policy) =>
++        MatchesApprovalCriteria(payment.Amount, payment.Currency, policy.BillApprovalThreshold, policy.ApprovalCurrency) &&
++        !string.Equals(payment.Status, PaymentStatuses.Completed, StringComparison.OrdinalIgnoreCase);
++
++    private static bool MatchesApprovalCriteria(decimal amount, string currency, decimal threshold, string approvalCurrency) =>
++        amount > threshold &&
++        string.Equals(currency, approvalCurrency, StringComparison.OrdinalIgnoreCase);
++
++    private async Task<HashSet<Guid>> LoadExistingTargetIdsAsync(Guid companyId, ApprovalTargetType targetType, IReadOnlyCollection<Guid> targetIds, CancellationToken cancellationToken) =>
++        await _dbContext.ApprovalTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.TargetType == targetType && targetIds.Contains(x.TargetId))
++            .Select(x => x.TargetId)
++            .ToHashSetAsync(cancellationToken);
++
+     private async Task<bool> HasExistingTaskAsync(Guid companyId, ApprovalTargetType targetType, Guid targetId, CancellationToken cancellationToken) =>
+         HasTrackedTask(companyId, targetType, targetId) ||
+         await _dbContext.ApprovalTasks
+@@ -270,6 +349,31 @@ public sealed class CompanyFinanceApprovalTaskService : IFinanceApprovalTaskServ
+                 x.Entity.TargetType == targetType &&
+                 x.Entity.TargetId == targetId);
+ 
++    private async Task<bool> TryCreateTaskAsync(ApprovalTask task, CancellationToken cancellationToken)
++    {
++        _dbContext.ApprovalTasks.Add(task);
++
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return true;
++        }
++        catch (DbUpdateException ex) when (IsDuplicateApprovalTaskException(ex))
++        {
++            _dbContext.Entry(task).State = EntityState.Detached;
++            return false;
++        }
++    }
++
++    private static bool IsDuplicateApprovalTaskException(DbUpdateException exception)
++    {
++        var message = exception.InnerException?.Message ?? exception.Message;
++        return message.Contains("IX_approval_tasks_company_id_target_type_target_id", StringComparison.OrdinalIgnoreCase) ||
++               (message.Contains("approval_tasks", StringComparison.OrdinalIgnoreCase) &&
++                message.Contains("target_id", StringComparison.OrdinalIgnoreCase) &&
++                message.Contains("unique", StringComparison.OrdinalIgnoreCase));
++    }
++
+     private async Task<FinanceApprovalTaskAssigneeDto> ResolveAssigneeAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var assignee = await _dbContext.CompanyMemberships
+@@ -329,4 +433,12 @@ public sealed class CompanyFinanceApprovalTaskService : IFinanceApprovalTaskServ
+             throw new UnauthorizedAccessException("Finance approval tasks are scoped to the active company context.");
+         }
+     }
++
++    private sealed record BackfillTargetCounts(
++        int ScannedCount,
++        int MatchedCount,
++        int CreatedCount,
++        int SkippedExistingCount)
++    {
++        public static BackfillTargetCounts Empty { get; } = new(0, 0, 0, 0);
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceApprovalTaskBackfillBackgroundService.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceApprovalTaskBackfillBackgroundService.cs
+new file mode 100644
+index 0000000..17d8133
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceApprovalTaskBackfillBackgroundService.cs
+@@ -0,0 +1,123 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class FinanceApprovalTaskBackfillWorkerOptions
++{
++    public const string SectionName = "FinanceApprovalTaskBackfillWorker";
++
++    public bool Enabled { get; set; } = false;
++    public int PollIntervalMilliseconds { get; set; } = 600000;
++    public int BatchSize { get; set; } = 25;
++    public int BackfillBatchSize { get; set; } = 250;
++}
++
++public sealed class FinanceApprovalTaskBackfillJobRunner : IFinanceApprovalTaskBackfillJobRunner
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IFinanceApprovalTaskService _approvalTaskService;
++    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
++    private readonly IOptions<FinanceApprovalTaskBackfillWorkerOptions> _options;
++    private readonly ILogger<FinanceApprovalTaskBackfillJobRunner> _logger;
++
++    public FinanceApprovalTaskBackfillJobRunner(
++        VirtualCompanyDbContext dbContext,
++        IFinanceApprovalTaskService approvalTaskService,
++        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
++        IOptions<FinanceApprovalTaskBackfillWorkerOptions> options,
++        ILogger<FinanceApprovalTaskBackfillJobRunner> logger)
++    {
++        _dbContext = dbContext;
++        _approvalTaskService = approvalTaskService;
++        _companyExecutionScopeFactory = companyExecutionScopeFactory;
++        _options = options;
++        _logger = logger;
++    }
++
++    public async Task<int> RunDueAsync(CancellationToken cancellationToken)
++    {
++        var companyIds = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                _dbContext.FinanceBills.IgnoreQueryFilters().Any(bill => bill.CompanyId == x.Id) ||
++                _dbContext.Payments.IgnoreQueryFilters().Any(payment => payment.CompanyId == x.Id))
++            .OrderBy(x => x.Id)
++            .Select(x => x.Id)
++            .Take(Math.Max(1, _options.Value.BatchSize))
++            .ToArrayAsync(cancellationToken);
++
++        var handled = 0;
++        foreach (var companyId in companyIds)
++        {
++            using var tenantScope = _companyExecutionScopeFactory.BeginScope(companyId);
++            var result = await _approvalTaskService.BackfillApprovalTasksAsync(
++                new BackfillFinanceApprovalTasksCommand(
++                    companyId,
++                    _options.Value.BackfillBatchSize,
++                    $"finance-approval-backfill:{companyId:N}",
++                    IncludePayments: true),
++                cancellationToken);
++
++            handled++;
++            _logger.LogInformation(
++                "Processed finance approval task backfill job for company {CompanyId}. Created={CreatedCount} SkippedExisting={SkippedExistingCount}.",
++                companyId,
++                result.CreatedCount,
++                result.SkippedExistingCount);
++        }
++
++        return handled;
++    }
++}
++
++public sealed class FinanceApprovalTaskBackfillBackgroundService : BackgroundService
++{
++    private readonly IServiceScopeFactory _scopeFactory;
++    private readonly IOptions<FinanceApprovalTaskBackfillWorkerOptions> _options;
++    private readonly ILogger<FinanceApprovalTaskBackfillBackgroundService> _logger;
++
++    public FinanceApprovalTaskBackfillBackgroundService(
++        IServiceScopeFactory scopeFactory,
++        IOptions<FinanceApprovalTaskBackfillWorkerOptions> options,
++        ILogger<FinanceApprovalTaskBackfillBackgroundService> logger)
++    {
++        _scopeFactory = scopeFactory;
++        _options = options;
++        _logger = logger;
++    }
++
++    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
++    {
++        while (!stoppingToken.IsCancellationRequested)
++        {
++            if (!_options.Value.Enabled)
++            {
++                await Task.Delay(TimeSpan.FromMilliseconds(Math.Max(100, _options.Value.PollIntervalMilliseconds)), stoppingToken);
++                continue;
++            }
++
++            try
++            {
++                using var scope = _scopeFactory.CreateScope();
++                var runner = scope.ServiceProvider.GetRequiredService<IFinanceApprovalTaskBackfillJobRunner>();
++                await runner.RunDueAsync(stoppingToken);
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(ex, "Finance approval task backfill background service failed.");
++            }
++
++            await Task.Delay(
++                TimeSpan.FromMilliseconds(Math.Max(100, _options.Value.PollIntervalMilliseconds)),
++                stoppingToken);
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskBackfillJobRunnerTests.cs b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskBackfillJobRunnerTests.cs
+new file mode 100644
+index 0000000..75ab41f
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskBackfillJobRunnerTests.cs
+@@ -0,0 +1,163 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceApprovalTaskBackfillJobRunnerTests
++{
++    [Fact]
++    public async Task RunDueAsync_backfills_seeded_companies_without_creating_duplicates()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        SeedCompany(dbContext, companyId, 1500m, "Runner finance company");
++        SeedCompany(dbContext, otherCompanyId, 10000m, "Runner non-qualifying company");
++        await dbContext.SaveChangesAsync();
++
++        var accessor = new TestCompanyContextAccessor();
++        var service = new CompanyFinanceApprovalTaskService(dbContext, accessor, NullLogger<CompanyFinanceApprovalTaskService>.Instance);
++        var runner = new FinanceApprovalTaskBackfillJobRunner(
++            dbContext,
++            service,
++            new TestCompanyExecutionScopeFactory(accessor),
++            Options.Create(new FinanceApprovalTaskBackfillWorkerOptions
++            {
++                BatchSize = 10,
++                BackfillBatchSize = 50
++            }),
++            NullLogger<FinanceApprovalTaskBackfillJobRunner>.Instance);
++
++        var first = await runner.RunDueAsync(CancellationToken.None);
++        var second = await runner.RunDueAsync(CancellationToken.None);
++
++        Assert.Equal(2, first);
++        Assert.Equal(2, second);
++
++        var companyTasks = await dbContext.ApprovalTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .ToListAsync();
++        var otherCompanyTasks = await dbContext.ApprovalTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == otherCompanyId)
++            .ToListAsync();
++
++        Assert.Equal(8, companyTasks.Count);
++        Assert.Equal(2, companyTasks.Count(x => x.TargetType == ApprovalTargetType.Bill));
++        Assert.Equal(6, companyTasks.Count(x => x.TargetType == ApprovalTargetType.Payment));
++        Assert.Empty(otherCompanyTasks);
++    }
++
++    private static void SeedCompany(VirtualCompanyDbContext dbContext, Guid companyId, decimal billApprovalThreshold, string companyName)
++    {
++        var approverUser = new User(Guid.NewGuid(), $"{companyId:N}@example.com", companyName, "dev-header", $"{companyId:N}-runner");
++        dbContext.Companies.Add(new Company(companyId, companyName));
++        dbContext.Users.Add(approverUser);
++        dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, approverUser.Id, CompanyMembershipRole.FinanceApprover, CompanyMembershipStatus.Active));
++        FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++
++        var policy = dbContext.FinancePolicyConfigurations.Local.Single(x => x.CompanyId == companyId);
++        policy.Update(
++            policy.ApprovalCurrency,
++            policy.InvoiceApprovalThreshold,
++            billApprovalThreshold,
++            policy.RequireCounterpartyForTransactions,
++            policy.AnomalyDetectionLowerBound,
++            policy.AnomalyDetectionUpperBound,
++            policy.CashRunwayWarningThresholdDays,
++            policy.CashRunwayCriticalThresholdDays);
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options);
++
++    private sealed class TestCompanyContextAccessor : ICompanyContextAccessor
++    {
++        public Guid? CompanyId { get; private set; }
++        public Guid? UserId => null;
++        public bool IsResolved => CompanyId.HasValue;
++        public ResolvedCompanyMembershipContext? Membership => null;
++
++        public void SetCompanyId(Guid? companyId)
++        {
++            CompanyId = companyId;
++        }
++
++        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext)
++        {
++            CompanyId = companyContext?.CompanyId;
++        }
++    }
++
++    private sealed class TestCompanyExecutionScopeFactory : ICompanyExecutionScopeFactory
++    {
++        private readonly TestCompanyContextAccessor _accessor;
++
++        public TestCompanyExecutionScopeFactory(TestCompanyContextAccessor accessor)
++        {
++            _accessor = accessor;
++        }
++
++        public IDisposable BeginScope(Guid companyId)
++        {
++            var previousCompanyId = _accessor.CompanyId;
++            _accessor.SetCompanyId(companyId);
++            return new ResetScope(_accessor, previousCompanyId);
++        }
++
++        private sealed class ResetScope : IDisposable
++        {
++            private readonly TestCompanyContextAccessor _accessor;
++            private readonly Guid? _previousCompanyId;
++            private bool _disposed;
++
++            public ResetScope(TestCompanyContextAccessor accessor, Guid? previousCompanyId)
++            {
++                _accessor = accessor;
++                _previousCompanyId = previousCompanyId;
++            }
++
++            public void Dispose()
++            {
++                if (_disposed)
++                {
++                    return;
++                }
++
++                _accessor.SetCompanyId(_previousCompanyId);
++                _disposed = true;
++            }
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskBackfillServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskBackfillServiceTests.cs
+index b174e96..fc822d4 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskBackfillServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskBackfillServiceTests.cs
+@@ -12,25 +12,30 @@ public sealed class FinanceApprovalTaskBackfillServiceTests
+     [Fact]
+     public async Task Backfill_creates_tasks_for_matching_mock_bills_and_is_idempotent()
+     {
+         var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
+         await using var connection = await OpenConnectionAsync();
+         await using var dbContext = CreateContext(connection);
+         await dbContext.Database.EnsureCreatedAsync();
+ 
+         dbContext.Companies.Add(new Company(companyId, "Approval backfill company"));
++        dbContext.Companies.Add(new Company(otherCompanyId, "Other approval backfill company"));
+         var approverUser = new User(Guid.NewGuid(), "approver@example.com", "Finance Approver", "dev-header", "approval-backfill");
+         dbContext.Users.Add(approverUser);
+         dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, approverUser.Id, CompanyMembershipRole.FinanceApprover, CompanyMembershipStatus.Active));
++        dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), otherCompanyId, approverUser.Id, CompanyMembershipRole.FinanceApprover, CompanyMembershipStatus.Active));
+         FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        FinanceSeedData.AddMockFinanceData(dbContext, otherCompanyId);
+         var policy = dbContext.FinancePolicyConfigurations.Local.Single(x => x.CompanyId == companyId);
+         policy.Update(
+             policy.ApprovalCurrency,
+             policy.InvoiceApprovalThreshold,
+             1000m,
+             policy.RequireCounterpartyForTransactions,
+             policy.AnomalyDetectionLowerBound,
+             policy.AnomalyDetectionUpperBound,
+             policy.CashRunwayWarningThresholdDays,
+             policy.CashRunwayCriticalThresholdDays);
+         await dbContext.SaveChangesAsync();
+ 
+         var accessor = new TestCompanyContextAccessor(companyId);
+         var logger = new ScopeCapturingLogger<CompanyFinanceApprovalTaskService>();
+         var service = new CompanyFinanceApprovalTaskService(dbContext, accessor, logger);
+ 
+-        var first = await service.BackfillBillApprovalTasksAsync(
+-            new BackfillFinanceApprovalTasksCommand(companyId, 50, "approval-backfill-001"),
++        var first = await service.BackfillApprovalTasksAsync(
++            new BackfillFinanceApprovalTasksCommand(companyId, 50, "approval-backfill-001"),
+             CancellationToken.None);
+-        var second = await service.BackfillBillApprovalTasksAsync(
+-            new BackfillFinanceApprovalTasksCommand(companyId, 50, "approval-backfill-001"),
++        var second = await service.BackfillApprovalTasksAsync(
++            new BackfillFinanceApprovalTasksCommand(companyId, 50, "approval-backfill-001"),
+             CancellationToken.None);
+ 
+-        Assert.Equal(5, first.ScannedCount);
+-        Assert.Equal(3, first.MatchedCount);
+-        Assert.Equal(3, first.CreatedCount);
++        Assert.Equal(15, first.ScannedCount);
++        Assert.Equal(10, first.MatchedCount);
++        Assert.Equal(10, first.CreatedCount);
+         Assert.Equal(0, first.SkippedExistingCount);
++        Assert.Equal(5, first.BillScannedCount);
++        Assert.Equal(10, first.PaymentScannedCount);
++        Assert.Equal(3, first.BillCreatedCount);
++        Assert.Equal(7, first.PaymentCreatedCount);
+         Assert.Equal(0, second.CreatedCount);
+-        Assert.Equal(3, second.SkippedExistingCount);
++        Assert.Equal(10, second.SkippedExistingCount);
+ 
+-        var tasks = await dbContext.ApprovalTasks
++        var companyTasks = await dbContext.ApprovalTasks
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.TargetType == ApprovalTargetType.Bill)
++            .Where(x => x.CompanyId == companyId)
+             .ToListAsync();
+-        Assert.Equal(3, tasks.Count);
+-        Assert.All(tasks, task => Assert.Equal(ApprovalTaskStatus.Pending, task.Status));
++        var otherCompanyTasks = await dbContext.ApprovalTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == otherCompanyId)
++            .ToListAsync();
++        Assert.Equal(10, companyTasks.Count);
++        Assert.Equal(3, companyTasks.Count(x => x.TargetType == ApprovalTargetType.Bill));
++        Assert.Equal(7, companyTasks.Count(x => x.TargetType == ApprovalTargetType.Payment));
++        Assert.All(companyTasks, task => Assert.Equal(ApprovalTaskStatus.Pending, task.Status));
++        Assert.Empty(otherCompanyTasks);
+ 
+         var logEntry = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Completed finance approval task backfill", StringComparison.Ordinal)));
+         Assert.Equal("approval-backfill-001", AssertScopeValue(logEntry.Scope, "CorrelationId"));
+         Assert.Equal(companyId, AssertScopeValue(logEntry.Scope, "CompanyId"));
+     }
++
++    [Fact]
++    public async Task Backfill_skips_non_qualifying_records_and_existing_bills_remain_readable_without_tasks()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        dbContext.Companies.Add(new Company(companyId, "Approval compatibility company"));
++        var approverUser = new User(Guid.NewGuid(), "compat@example.com", "Compatibility Approver", "dev-header", "approval-compatibility");
++        dbContext.Users.Add(approverUser);
++        dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, approverUser.Id, CompanyMembershipRole.FinanceApprover, CompanyMembershipStatus.Active));
++        FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        var policy = dbContext.FinancePolicyConfigurations.Local.Single(x => x.CompanyId == companyId);
++        policy.Update(
++            policy.ApprovalCurrency,
++            policy.InvoiceApprovalThreshold,
++            10000m,
++            policy.RequireCounterpartyForTransactions,
++            policy.AnomalyDetectionLowerBound,
++            policy.AnomalyDetectionUpperBound,
++            policy.CashRunwayWarningThresholdDays,
++            policy.CashRunwayCriticalThresholdDays);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceApprovalTaskService(dbContext, new TestCompanyContextAccessor(companyId), new ScopeCapturingLogger<CompanyFinanceApprovalTaskService>());
++        var result = await service.BackfillApprovalTasksAsync(
++            new BackfillFinanceApprovalTasksCommand(companyId, 50, "approval-backfill-compat"),
++            CancellationToken.None);
++
++        Assert.Equal(15, result.ScannedCount);
++        Assert.Equal(0, result.MatchedCount);
++        Assert.Equal(0, result.CreatedCount);
++        Assert.Empty(await dbContext.ApprovalTasks.IgnoreQueryFilters().AsNoTracking().ToListAsync());
++
++        var bills = await dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.BillNumber)
++            .ToListAsync();
++        Assert.Equal(5, bills.Count);
++        Assert.Contains(bills, bill => string.Equals(bill.Status, "open", StringComparison.OrdinalIgnoreCase));
++    }
+ 
+     private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key)
+     {
+         Assert.True(scope.TryGetValue(key, out var value));
+         return value;
+END_OF_PATCH

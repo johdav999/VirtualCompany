@@ -1,0 +1,569 @@
+diff --git a/src/VirtualCompany.Domain/Entities/ApprovalTask.cs b/src/VirtualCompany.Domain/Entities/ApprovalTask.cs
+new file mode 100644
+index 0000000..7fd8b2c
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/ApprovalTask.cs
+@@ -0,0 +1,114 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class ApprovalTask : ICompanyOwnedEntity
++{
++    private ApprovalTask()
++    {
++    }
++
++    public ApprovalTask(
++        Guid id,
++        Guid companyId,
++        ApprovalTargetType targetType,
++        Guid targetId,
++        Guid? assigneeId = null,
++        DateTime? dueDate = null,
++        ApprovalTaskStatus status = ApprovalTaskStatus.Pending,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (targetId == Guid.Empty)
++        {
++            throw new ArgumentException("TargetId is required.", nameof(targetId));
++        }
++
++        if (assigneeId == Guid.Empty)
++        {
++            throw new ArgumentException("AssigneeId cannot be empty.", nameof(assigneeId));
++        }
++
++        ApprovalTargetTypeValues.EnsureSupported(targetType, nameof(targetType));
++        ApprovalTaskStatusValues.EnsureSupported(status, nameof(status));
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        TargetType = targetType;
++        TargetId = targetId;
++        AssigneeId = assigneeId;
++        DueDate = NormalizeOptionalUtc(dueDate, nameof(dueDate));
++        Status = status;
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public ApprovalTargetType TargetType { get; private set; }
++    public Guid TargetId { get; private set; }
++    public Guid? AssigneeId { get; private set; }
++    public ApprovalTaskStatus Status { get; private set; }
++    public DateTime? DueDate { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User? Assignee { get; private set; }
++
++    public void Assign(Guid? assigneeId, DateTime? dueDate = null)
++    {
++        if (assigneeId == Guid.Empty)
++        {
++            throw new ArgumentException("AssigneeId cannot be empty.", nameof(assigneeId));
++        }
++
++        AssigneeId = assigneeId;
++        DueDate = NormalizeOptionalUtc(dueDate, nameof(dueDate));
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void SetStatus(ApprovalTaskStatus status, DateTime? dueDate = null)
++    {
++        ApprovalTaskStatusValues.EnsureSupported(status, nameof(status));
++        Status = status;
++        DueDate = dueDate.HasValue ? NormalizeOptionalUtc(dueDate, nameof(dueDate)) : DueDate;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void SetDueDate(DateTime? dueDate)
++    {
++        DueDate = NormalizeOptionalUtc(dueDate, nameof(dueDate));
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static DateTime? NormalizeOptionalUtc(DateTime? value, string name)
++    {
++        if (!value.HasValue)
++        {
++            return null;
++        }
++
++        return NormalizeUtc(value.Value, name);
++    }
++
++    private static DateTime NormalizeUtc(DateTime value, string name)
++    {
++        if (value == default)
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        return value.Kind switch
++        {
++            DateTimeKind.Utc => value,
++            DateTimeKind.Local => value.ToUniversalTime(),
++            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
++        };
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Enums/FinanceApprovalEnums.cs b/src/VirtualCompany.Domain/Enums/FinanceApprovalEnums.cs
+new file mode 100644
+index 0000000..4c89e3e
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/FinanceApprovalEnums.cs
+@@ -0,0 +1,132 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum ApprovalTargetType
++{
++    Bill = 1,
++    Payment = 2,
++    Exception = 3
++}
++
++public static class ApprovalTargetTypeValues
++{
++    private static readonly IReadOnlyDictionary<ApprovalTargetType, string> Values = new Dictionary<ApprovalTargetType, string>
++    {
++        [ApprovalTargetType.Bill] = "bill",
++        [ApprovalTargetType.Payment] = "payment",
++        [ApprovalTargetType.Exception] = "exception"
++    };
++
++    private static readonly IReadOnlyDictionary<string, ApprovalTargetType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this ApprovalTargetType targetType) =>
++        Values.TryGetValue(targetType, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(targetType), targetType, "Unsupported approval target type.");
++
++    public static ApprovalTargetType Parse(string value) =>
++        TryParse(value, out var targetType)
++            ? targetType
++            : throw new ArgumentOutOfRangeException(nameof(value), value, $"Unsupported approval target type. Allowed values: {string.Join(", ", AllowedValues)}.");
++
++    public static bool TryParse(string? value, out ApprovalTargetType targetType)
++    {
++        targetType = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out targetType) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out targetType) && Values.ContainsKey(targetType);
++    }
++
++    public static void EnsureSupported(ApprovalTargetType targetType, string? paramName = null)
++    {
++        if (!Values.ContainsKey(targetType))
++        {
++            throw new ArgumentOutOfRangeException(paramName ?? nameof(targetType), targetType, "Unsupported approval target type.");
++        }
++    }
++
++    public static string BuildCheckConstraintSql(string columnName)
++    {
++        var allowedValues = string.Join(", ", AllowedValues.Select(value => $"'{value}'"));
++        return $"{columnName} IN ({allowedValues})";
++    }
++}
++
++public enum ApprovalTaskStatus
++{
++    Pending = 1,
++    Approved = 2,
++    Rejected = 3,
++    Escalated = 4
++}
++
++public static class ApprovalTaskStatusValues
++{
++    private static readonly IReadOnlyDictionary<ApprovalTaskStatus, string> Values = new Dictionary<ApprovalTaskStatus, string>
++    {
++        [ApprovalTaskStatus.Pending] = "pending",
++        [ApprovalTaskStatus.Approved] = "approved",
++        [ApprovalTaskStatus.Rejected] = "rejected",
++        [ApprovalTaskStatus.Escalated] = "escalated"
++    };
++
++    private static readonly IReadOnlyDictionary<string, ApprovalTaskStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this ApprovalTaskStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported approval task status.");
++
++    public static ApprovalTaskStatus Parse(string value) =>
++        TryParse(value, out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, $"Unsupported approval task status. Allowed values: {string.Join(", ", AllowedValues)}.");
++
++    public static bool TryParse(string? value, out ApprovalTaskStatus status)
++    {
++        status = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out status) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++
++    public static void EnsureSupported(ApprovalTaskStatus status, string? paramName = null)
++    {
++        if (!Values.ContainsKey(status))
++        {
++            throw new ArgumentOutOfRangeException(paramName ?? nameof(status), status, "Unsupported approval task status.");
++        }
++    }
++
++    public static string BuildCheckConstraintSql(string columnName)
++    {
++        var allowedValues = string.Join(", ", AllowedValues.Select(value => $"'{value}'"));
++        return $"{columnName} IN ({allowedValues})";
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/ApprovalTaskEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/ApprovalTaskEntityConfiguration.cs
+new file mode 100644
+index 0000000..3a6b61d
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/ApprovalTaskEntityConfiguration.cs
+@@ -0,0 +1,52 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class ApprovalTaskEntityConfiguration : IEntityTypeConfiguration<ApprovalTask>
++{
++    public void Configure(EntityTypeBuilder<ApprovalTask> builder)
++    {
++        builder.ToTable("approval_tasks");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.TargetType)
++            .HasColumnName("target_type")
++            .HasConversion(value => value.ToStorageValue(), value => ApprovalTargetTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.TargetId).HasColumnName("target_id").IsRequired();
++        builder.Property(x => x.AssigneeId).HasColumnName("assignee_id");
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => ApprovalTaskStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.DueDate).HasColumnName("due_date");
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasCheckConstraint("CK_approval_tasks_target_type", ApprovalTargetTypeValues.BuildCheckConstraintSql("target_type"));
++        builder.HasCheckConstraint("CK_approval_tasks_status", ApprovalTaskStatusValues.BuildCheckConstraintSql("status"));
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.AssigneeId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.DueDate });
++        // Current workflow keeps one tenant-scoped approval task per target so repeated backfills stay idempotent.
++        builder.HasIndex(x => new { x.CompanyId, x.TargetType, x.TargetId }).IsUnique();
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++
++        builder.HasOne(x => x.Assignee)
++            .WithMany()
++            .HasForeignKey(x => x.AssigneeId)
++            .OnDelete(DeleteBehavior.SetNull);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421170000_AddApprovalTasksWorkflowState.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421170000_AddApprovalTasksWorkflowState.cs
+new file mode 100644
+index 0000000..7ea4ca4
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421170000_AddApprovalTasksWorkflowState.cs
+@@ -0,0 +1,89 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++using VirtualCompany.Domain.Enums;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddApprovalTasksWorkflowState : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++
++            migrationBuilder.CreateTable(
++                name: "approval_tasks",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    target_type = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    target_id = table.Column<Guid>(type: guidType, nullable: false),
++                    assignee_id = table.Column<Guid>(type: guidType, nullable: true),
++                    status = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    due_date = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_approval_tasks", x => x.id);
++                    table.UniqueConstraint("AK_approval_tasks_company_id_id", x => new { x.company_id, x.id });
++                    table.CheckConstraint("CK_approval_tasks_status", ApprovalTaskStatusValues.BuildCheckConstraintSql("status"));
++                    table.CheckConstraint("CK_approval_tasks_target_type", ApprovalTargetTypeValues.BuildCheckConstraintSql("target_type"));
++                    table.ForeignKey(
++                        name: "FK_approval_tasks_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_approval_tasks_users_assignee_id",
++                        column: x => x.assignee_id,
++                        principalTable: "users",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.SetNull);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_approval_tasks_company_id",
++                table: "approval_tasks",
++                column: "company_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_approval_tasks_company_id_assignee_id_status",
++                table: "approval_tasks",
++                columns: new[] { "company_id", "assignee_id", "status" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_approval_tasks_company_id_status_due_date",
++                table: "approval_tasks",
++                columns: new[] { "company_id", "status", "due_date" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_approval_tasks_company_id_target_type_target_id",
++                table: "approval_tasks",
++                columns: new[] { "company_id", "target_type", "target_id" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_approval_tasks_assignee_id",
++                table: "approval_tasks",
++                column: "assignee_id");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "approval_tasks");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 8bb9f0e..3d53b4a 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -42,6 +42,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<AgentTaskCreationDedupeRecord> AgentTaskCreationDedupeRecords => Set<AgentTaskCreationDedupeRecord>();
+     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+     public DbSet<Conversation> Conversations => Set<Conversation>();
++    public DbSet<ApprovalTask> ApprovalTasks => Set<ApprovalTask>();
+     public DbSet<Message> Messages => Set<Message>();
+     public DbSet<ConversationTaskLink> ConversationTaskLinks => Set<ConversationTaskLink>();
+     public DbSet<CompanyBriefing> CompanyBriefings => Set<CompanyBriefing>();
+@@ -199,6 +200,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+         ChangeTracker.Entries()
+             .Where(entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+             .Where(entry =>
++                entry.Entity is ApprovalTask ||
+                 entry.Entity is WorkTask ||
+                 entry.Entity is ApprovalRequest ||
+                 entry.Entity is Agent ||
+@@ -266,6 +268,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<ApprovalRequest>()
+             .HasQueryFilter(approval =>
+                 CurrentCompanyId.HasValue && approval.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ApprovalTask>()
++            .HasQueryFilter(task =>
++                CurrentCompanyId.HasValue && task.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<Conversation>()
+             .HasQueryFilter(conversation =>
+                 CurrentCompanyId.HasValue && conversation.CompanyId == CurrentCompanyId.Value);
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskPersistenceTests.cs
+new file mode 100644
+index 0000000..ca45c2e
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskPersistenceTests.cs
+@@ -0,0 +1,135 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceApprovalTaskPersistenceTests
++{
++    [Fact]
++    public async Task EnsureCreated_maps_approval_task_columns_and_indexes()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var columns = await ReadColumnsAsync(connection, "approval_tasks");
++        Assert.Contains("company_id", columns);
++        Assert.Contains("target_type", columns);
++        Assert.Contains("target_id", columns);
++        Assert.Contains("assignee_id", columns);
++        Assert.Contains("status", columns);
++        Assert.Contains("due_date", columns);
++
++        var indexes = await ReadIndexesAsync(connection, "approval_tasks");
++        Assert.Contains("IX_approval_tasks_company_id", indexes);
++        Assert.Contains("IX_approval_tasks_company_id_assignee_id_status", indexes);
++        Assert.Contains("IX_approval_tasks_company_id_status_due_date", indexes);
++        Assert.Contains("IX_approval_tasks_company_id_target_type_target_id", indexes);
++
++        var company = new Company(Guid.NewGuid(), "Approval Task Persistence Company");
++        dbContext.Companies.Add(company);
++        dbContext.ApprovalTasks.Add(new ApprovalTask(
++            Guid.NewGuid(),
++            company.Id,
++            ApprovalTargetType.Bill,
++            Guid.NewGuid(),
++            dueDate: new DateTime(2026, 4, 25, 0, 0, 0, DateTimeKind.Utc)));
++        await dbContext.SaveChangesAsync();
++
++        var stored = await dbContext.ApprovalTasks.AsNoTracking().SingleAsync();
++        Assert.Equal(ApprovalTargetType.Bill, stored.TargetType);
++        Assert.Equal(ApprovalTaskStatus.Pending, stored.Status);
++        Assert.Equal(new DateTime(2026, 4, 25, 0, 0, 0, DateTimeKind.Utc), stored.DueDate);
++    }
++
++    [Fact]
++    public async Task Finance_bills_do_not_require_approval_tasks_and_target_uniqueness_is_enforced()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(Guid.NewGuid(), "Approval Optional Bill Company");
++        var counterparty = new FinanceCounterparty(Guid.NewGuid(), company.Id, "Approval Optional Vendor", "supplier", "vendor@example.com");
++        var bill = new FinanceBill(
++            Guid.NewGuid(),
++            company.Id,
++            counterparty.Id,
++            "BILL-APPROVAL-001",
++            new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            4500m,
++            "USD",
++            "open");
++
++        dbContext.Companies.Add(company);
++        dbContext.FinanceCounterparties.Add(counterparty);
++        dbContext.FinanceBills.Add(bill);
++        await dbContext.SaveChangesAsync();
++
++        var storedBill = await dbContext.FinanceBills.AsNoTracking().SingleAsync();
++        Assert.Equal(bill.Id, storedBill.Id);
++        Assert.Empty(await dbContext.ApprovalTasks.AsNoTracking().ToListAsync());
++
++        dbContext.ApprovalTasks.Add(new ApprovalTask(
++            Guid.NewGuid(),
++            company.Id,
++            ApprovalTargetType.Bill,
++            bill.Id,
++            dueDate: bill.DueUtc));
++        await dbContext.SaveChangesAsync();
++
++        dbContext.ApprovalTasks.Add(new ApprovalTask(
++            Guid.NewGuid(),
++            company.Id,
++            ApprovalTargetType.Bill,
++            bill.Id,
++            status: ApprovalTaskStatus.Escalated,
++            dueDate: bill.DueUtc));
++
++        await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());
++    }
++
++    private static async Task<HashSet<string>> ReadColumnsAsync(SqliteConnection connection, string tableName)
++    {
++        var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        using var command = connection.CreateCommand();
++        command.CommandText = $"PRAGMA table_info('{tableName}');";
++        await using var reader = await command.ExecuteReaderAsync();
++        while (await reader.ReadAsync())
++        {
++            values.Add(reader.GetString(1));
++        }
++
++        return values;
++    }
++
++    private static async Task<HashSet<string>> ReadIndexesAsync(SqliteConnection connection, string tableName)
++    {
++        var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        using var command = connection.CreateCommand();
++        command.CommandText = $"PRAGMA index_list('{tableName}');";
++        await using var reader = await command.ExecuteReaderAsync();
++        while (await reader.ReadAsync())
++        {
++            values.Add(reader.GetString(1));
++        }
++
++        return values;
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options);
++}
+END_OF_PATCH

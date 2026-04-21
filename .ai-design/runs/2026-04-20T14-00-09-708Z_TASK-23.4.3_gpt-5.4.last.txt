@@ -1,0 +1,375 @@
+diff --git a/src/VirtualCompany.Api/Controllers/FinancialStatementSnapshotsController.cs b/src/VirtualCompany.Api/Controllers/FinancialStatementSnapshotsController.cs
+index 8e6b0e7..f643c91 100644
+--- a/src/VirtualCompany.Api/Controllers/FinancialStatementSnapshotsController.cs
++++ b/src/VirtualCompany.Api/Controllers/FinancialStatementSnapshotsController.cs
+@@ -65,6 +65,32 @@ public sealed class FinancialStatementSnapshotsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("snapshots/{snapshotId:guid}/lines/{lineCode}/drilldown")]
++    public async Task<ActionResult<FinancialStatementDrilldownDto>> GetSnapshotDrilldownAsync(
++        Guid companyId,
++        Guid snapshotId,
++        string lineCode,
++        CancellationToken cancellationToken)
++    {
++        if (string.IsNullOrWhiteSpace(lineCode))
++        {
++            return BadRequest(CreateProblemDetails("LineCode is required.", "Invalid financial statement request.", StatusCodes.Status400BadRequest));
++        }
++
++        try
++        {
++            return Ok(await _financeReadService.GetFinancialStatementDrilldownAsync(
++                new GetFinancialStatementDrilldownQuery(companyId, null, null, lineCode.Trim(), null, snapshotId),
++                cancellationToken));
++        }
++        catch (KeyNotFoundException ex)
++        {
++            return NotFound(CreateProblemDetails(ex.Message, "Financial statement resource was not found.", StatusCodes.Status404NotFound));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet("drilldown")]
+     public async Task<ActionResult<FinancialStatementDrilldownDto>> GetDrilldownAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 11c5027..00d4fa8 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -15,10 +15,11 @@ public sealed record GetFinanceProfitAndLossReportQuery(
+ 
+ public sealed record GetFinancialStatementDrilldownQuery(
+     Guid CompanyId,
+-    Guid FiscalPeriodId,
+-    FinancialStatementType StatementType,
++    Guid? FiscalPeriodId,
++    FinancialStatementType? StatementType,
+     string LineCode,
+-    int? SnapshotVersionNumber = null);
++    int? SnapshotVersionNumber = null,
++    Guid? SnapshotId = null);
+ 
+ public sealed record ListFinancialStatementSnapshotsQuery(
+     Guid CompanyId,
+@@ -474,6 +475,7 @@ public sealed record FinancialStatementDrilldownDto(
+     decimal OpeningBalanceAdjustment,
+     decimal JournalLineTotal,
+     decimal ReconciliationTotal,
++    decimal ReconciliationDelta,
+     IReadOnlyList<FinancialStatementDrilldownJournalEntryDto> JournalEntries);
+ 
+ public sealed record FinancialStatementDrilldownLineDto(
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 2904441..4ca6fb8 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -286,28 +286,43 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+         GetFinancialStatementDrilldownQuery query,
+         CancellationToken cancellationToken)
+     {
++        if (query.SnapshotId.HasValue && query.SnapshotVersionNumber.HasValue)
++        {
++            throw new ArgumentException("Specify either snapshotId or snapshotVersionNumber when requesting statement drilldown.", nameof(query));
++        }
++
+         EnsureTenant(query.CompanyId);
+         await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
+-        var period = await LoadFiscalPeriodAsync(query.CompanyId, query.FiscalPeriodId, cancellationToken);
+-        var resolution = query.SnapshotVersionNumber.HasValue
+-            ? await ResolveSnapshotStatementLineAsync(query, period, cancellationToken)
+-            : await ResolveLiveStatementLineAsync(query, period, cancellationToken);
++        var resolution = query.SnapshotId.HasValue || query.SnapshotVersionNumber.HasValue
++            ? await ResolveSnapshotStatementLineAsync(query, cancellationToken)
++            : await ResolveLiveStatementLineAsync(
++                query,
++                await LoadFiscalPeriodAsync(
++                    query.CompanyId,
++                    query.FiscalPeriodId ?? throw new ArgumentException("FiscalPeriodId is required for live statement drilldown.", nameof(query)),
++                    cancellationToken),
++                cancellationToken);
+         var drilldownEntries = await LoadDrilldownEntriesAsync(
+             query.CompanyId,
+-            period,
++            resolution.Period,
+             resolution.StatementType,
+             resolution.ContributionRules,
+             cancellationToken);
+         var journalLineTotal = Math.Round(drilldownEntries.Sum(x => x.TotalContributionAmount), 2, MidpointRounding.AwayFromZero);
+         var reconciliationTotal = Math.Round(resolution.OpeningBalanceAdjustment + journalLineTotal, 2, MidpointRounding.AwayFromZero);
++        var reconciliationDelta = Math.Round(resolution.Amount - reconciliationTotal, 2, MidpointRounding.AwayFromZero);
+ 
+         return new FinancialStatementDrilldownDto(
+             query.CompanyId,
+-            period.FiscalPeriodId,
+-            period.Name,
++            resolution.Period.FiscalPeriodId,
++            resolution.Period.Name,
+             resolution.StatementType.ToStorageValue(),
+             resolution.SourceMode,
+             resolution.Snapshot,
+             new FinancialStatementDrilldownLineDto(
+                 resolution.LineCode,
++                resolution.LineName,
++                resolution.ReportSection.ToStorageValue(),
++                resolution.LineClassification.ToStorageValue(),
++                resolution.Amount,
++                resolution.Currency),
++            resolution.OpeningBalanceAdjustment,
++            journalLineTotal,
++            reconciliationTotal,
++            reconciliationDelta,
++            drilldownEntries);
+-                resolution.LineName,
+-                resolution.ReportSection.ToStorageValue(),
+-                resolution.LineClassification.ToStorageValue(),
+-                resolution.Amount,
+-                resolution.Currency),
+-            resolution.OpeningBalanceAdjustment,
+-            journalLineTotal,
+-            reconciliationTotal,
+-            drilldownEntries);
+     }
+@@ -1419,22 +1434,40 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+ 
+     private async Task<StatementLineResolution> ResolveSnapshotStatementLineAsync(
+         GetFinancialStatementDrilldownQuery query,
+-        FiscalPeriodRow period,
+         CancellationToken cancellationToken)
+     {
+-        var snapshot = await _dbContext.FinancialStatementSnapshots
++        var snapshots = _dbContext.FinancialStatementSnapshots
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x =>
+-                x.CompanyId == query.CompanyId &&
+-                x.FiscalPeriodId == query.FiscalPeriodId &&
+-                x.StatementType == query.StatementType &&
+-                x.VersionNumber == query.SnapshotVersionNumber)
++            .Where(x => x.CompanyId == query.CompanyId);
++
++        if (query.SnapshotId.HasValue)
++        {
++            snapshots = snapshots.Where(x => x.Id == query.SnapshotId.Value);
++        }
++        else
++        {
++            if (!query.FiscalPeriodId.HasValue || !query.StatementType.HasValue || !query.SnapshotVersionNumber.HasValue)
++            {
++                throw new ArgumentException("Snapshot drilldown requires either snapshotId or fiscalPeriodId, statementType, and snapshotVersionNumber.", nameof(query));
++            }
++
++            snapshots = snapshots.Where(x =>
++                x.FiscalPeriodId == query.FiscalPeriodId.Value &&
++                x.StatementType == query.StatementType.Value &&
++                x.VersionNumber == query.SnapshotVersionNumber.Value);
++        }
++
++        var snapshot = await snapshots
+             .Select(x => new FinancialStatementSnapshotHeaderRow(
+                 x.Id,
++                x.FiscalPeriodId,
+                 x.StatementType,
+                 x.VersionNumber,
+                 x.BalancesChecksum,
+                 x.GeneratedAtUtc,
+                 x.SourcePeriodStartUtc,
+                 x.SourcePeriodEndUtc,
+                 x.Currency))
+             .SingleOrDefaultAsync(cancellationToken);
+@@ -1444,6 +1477,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             throw new KeyNotFoundException("The requested financial statement snapshot version was not found.");
+         }
+ 
++        var period = await LoadFiscalPeriodAsync(query.CompanyId, snapshot.FiscalPeriodId, cancellationToken);
+         var line = await _dbContext.FinancialStatementSnapshotLines
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+@@ -1466,6 +1500,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             return new StatementLineResolution(
+                 query.StatementType,
+                 "snapshot",
++                period,
+                 snapshotMetadata,
+                 line.LineCode,
+                 line.LineName,
+@@ -1496,8 +1531,9 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+ 
+         return new StatementLineResolution(
+-            query.StatementType,
++            snapshot.StatementType,
+             "snapshot",
+             snapshotMetadata,
++            period,
+             line.LineCode,
+             line.LineName,
+             line.ReportSection,
+@@ -1519,14 +1555,16 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+         FiscalPeriodRow period,
+         CancellationToken cancellationToken)
+     {
+-        if (query.StatementType == FinancialStatementType.BalanceSheet &&
++        var statementType = query.StatementType
++            ?? throw new ArgumentException("StatementType is required for live statement drilldown.", nameof(query));
++
++        if (statementType == FinancialStatementType.BalanceSheet &&
+             string.Equals(query.LineCode, "current_earnings", StringComparison.OrdinalIgnoreCase))
+         {
+             var currentEarnings = await CalculateCurrentEarningsAsync(query.CompanyId, period.EndUtc, cancellationToken);
+             var rules = await LoadCurrentEarningsContributionRulesAsync(query.CompanyId, cancellationToken);
+             return new StatementLineResolution(
+-                query.StatementType,
++                statementType,
+                 "live",
++                period,
+                 null,
+                 "current_earnings",
+                 "Current Earnings",
+@@ -1541,7 +1579,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+                 rules);
+         }
+ 
+-        if (query.StatementType == FinancialStatementType.ProfitAndLoss)
++        if (statementType == FinancialStatementType.ProfitAndLoss)
+         {
+             var rows = await LoadLedgerStatementRowsForPeriodAsync(query.CompanyId, period, FinancialStatementType.ProfitAndLoss, cancellationToken);
+             var row = rows.SingleOrDefault(x => string.Equals(x.AccountCode, query.LineCode, StringComparison.OrdinalIgnoreCase))
+@@ -1557,8 +1595,9 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+ 
+             return new StatementLineResolution(
+-                query.StatementType,
++                statementType,
+                 "live",
+                 null,
++                period,
+                 row.AccountCode,
+                 row.AccountName,
+                 row.ReportSection,
+@@ -1582,8 +1621,9 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+ 
+         return new StatementLineResolution(
+-            query.StatementType,
++            statementType,
+             "live",
+             null,
++            period,
+             balanceSheetRow.AccountCode,
+             balanceSheetRow.AccountName,
+             balanceSheetRow.ReportSection,
+@@ -2560,6 +2600,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+ 
+     private sealed record FinancialStatementSnapshotHeaderRow(
+         Guid SnapshotId,
++        Guid FiscalPeriodId,
+         FinancialStatementType StatementType,
+         int VersionNumber,
+         string BalancesChecksum,
+@@ -2607,6 +2648,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     private sealed record StatementLineResolution(
+         FinancialStatementType StatementType,
+         string SourceMode,
++        FiscalPeriodRow Period,
+         FinancialStatementSnapshotMetadataDto? Snapshot,
+         string LineCode,
+         string LineName,
+diff --git a/tests/VirtualCompany.Api.Tests/FinancialStatementSnapshotDrilldownIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancialStatementSnapshotDrilldownIntegrationTests.cs
+index 7d11aac..74927a1 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancialStatementSnapshotDrilldownIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancialStatementSnapshotDrilldownIntegrationTests.cs
+@@ -113,7 +113,7 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass
+     }
+ 
+     [Fact]
+-    public async Task Snapshot_and_live_drilldown_reconcile_to_selected_report_line_amounts()
++    public async Task Snapshot_drilldown_by_snapshot_id_matches_live_drilldown_for_same_period_and_reconciles_exactly()
+     {
+         var seed = await SeedScenarioAsync();
+         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+@@ -123,35 +123,56 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass
+             new { runInBackground = false });
+         Assert.Equal(HttpStatusCode.OK, regenerateResponse.StatusCode);
+ 
++        var summaries = await client.GetFromJsonAsync<List<FinancialStatementSnapshotSummaryResponse>>(
++            $"/api/companies/{seed.CompanyId:D}/financial-statements/snapshots?fiscalPeriodId={seed.JanuaryPeriodId:D}&statementType=profit_and_loss");
++        var snapshotSummary = Assert.Single(summaries!, x => x.VersionNumber == 1);
++
+         var snapshotResponse = await client.GetAsync(
+-            $"/internal/companies/{seed.CompanyId:D}/finance/reports/drilldown?fiscalPeriodId={seed.JanuaryPeriodId:D}&statementType=profit_and_loss&lineCode=4000&snapshotVersionNumber=1");
++            $"/api/companies/{seed.CompanyId:D}/financial-statements/snapshots/{snapshotSummary.SnapshotId:D}/lines/4000/drilldown");
+         Assert.Equal(HttpStatusCode.OK, snapshotResponse.StatusCode);
+         var snapshotPayload = await snapshotResponse.Content.ReadFromJsonAsync<FinancialStatementDrilldownResponse>();
+ 
+         Assert.NotNull(snapshotPayload);
+         Assert.Equal("snapshot", snapshotPayload!.SourceMode);
++        Assert.Equal(snapshotSummary.SnapshotId, snapshotPayload.Snapshot!.SnapshotId);
+         Assert.Equal(900m, snapshotPayload.SelectedLine.Amount);
+         Assert.Equal(900m, snapshotPayload.ReconciliationTotal);
+         Assert.Equal(900m, snapshotPayload.JournalLineTotal);
+         Assert.Equal(0m, snapshotPayload.OpeningBalanceAdjustment);
++        Assert.Equal(0m, snapshotPayload.ReconciliationDelta);
+         Assert.Equal(1, snapshotPayload.Snapshot!.VersionNumber);
+         Assert.Equal(900m, snapshotPayload.JournalEntries.SelectMany(x => x.Lines).Sum(x => x.ContributionAmount));
+ 
+         var liveResponse = await client.GetAsync(
+-            $"/internal/companies/{seed.CompanyId:D}/finance/reports/drilldown?fiscalPeriodId={seed.FebruaryPeriodId:D}&statementType=profit_and_loss&lineCode=4000");
++            $"/api/companies/{seed.CompanyId:D}/financial-statements/drilldown?fiscalPeriodId={seed.JanuaryPeriodId:D}&statementType=profit_and_loss&lineCode=4000");
+         Assert.Equal(HttpStatusCode.OK, liveResponse.StatusCode);
+         var livePayload = await liveResponse.Content.ReadFromJsonAsync<FinancialStatementDrilldownResponse>();
+ 
+         Assert.NotNull(livePayload);
+         Assert.Equal("live", livePayload!.SourceMode);
+         Assert.Null(livePayload.Snapshot);
+-        Assert.Equal(300m, livePayload.SelectedLine.Amount);
+-        Assert.Equal(300m, livePayload.ReconciliationTotal);
+-        Assert.Equal(300m, livePayload.JournalLineTotal);
++        Assert.Equal(900m, livePayload.SelectedLine.Amount);
++        Assert.Equal(900m, livePayload.ReconciliationTotal);
++        Assert.Equal(900m, livePayload.JournalLineTotal);
+         Assert.Equal(0m, livePayload.OpeningBalanceAdjustment);
+-        Assert.Equal(300m, livePayload.JournalEntries.SelectMany(x => x.Lines).Sum(x => x.ContributionAmount));
++        Assert.Equal(0m, livePayload.ReconciliationDelta);
++        Assert.Equal(900m, livePayload.JournalEntries.SelectMany(x => x.Lines).Sum(x => x.ContributionAmount));
+         Assert.All(livePayload.JournalEntries, entry =>
+-            Assert.True(entry.EntryUtc >= new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc) &&
+-                        entry.EntryUtc < new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc)));
++            Assert.True(entry.EntryUtc >= new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) &&
++                        entry.EntryUtc < new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc)));
++
++        Assert.Equal(snapshotPayload.SelectedLine.Amount, livePayload.SelectedLine.Amount);
++        Assert.Equal(snapshotPayload.JournalLineTotal, livePayload.JournalLineTotal);
++        Assert.Equal(snapshotPayload.ReconciliationTotal, livePayload.ReconciliationTotal);
++    }
++
++    [Fact]
++    public async Task Snapshot_drilldown_returns_not_found_for_unknown_snapshot_line()
++    {
++        var seed = await SeedScenarioAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.JanuaryPeriodId:D}/reporting/stored-statements/regenerate",
++            new { runInBackground = false });
++        var summaries = await client.GetFromJsonAsync<List<FinancialStatementSnapshotSummaryResponse>>(
++            $"/api/companies/{seed.CompanyId:D}/financial-statements/snapshots?fiscalPeriodId={seed.JanuaryPeriodId:D}&statementType=profit_and_loss");
++        var snapshotSummary = Assert.Single(summaries!, x => x.VersionNumber == 1);
++
++        var response = await client.GetAsync(
++            $"/api/companies/{seed.CompanyId:D}/financial-statements/snapshots/{snapshotSummary.SnapshotId:D}/lines/unknown-line/drilldown");
++
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+     }
+ 
+     [Fact]
+@@ -346,6 +367,7 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass
+         public decimal OpeningBalanceAdjustment { get; set; }
+         public decimal JournalLineTotal { get; set; }
+         public decimal ReconciliationTotal { get; set; }
++        public decimal ReconciliationDelta { get; set; }
+         public List<DrilldownEntryResponse> JournalEntries { get; set; } = [];
+     }
+ 
+END_OF_PATCH

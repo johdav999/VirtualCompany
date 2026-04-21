@@ -1,0 +1,81 @@
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 44a66d2..a14d179 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -2572,6 +2572,11 @@ public sealed class InternalFinanceController : ControllerBase
+             LogHandledFinanceException("read_not_initialized", ex);
+             return await CreateFinanceNotInitializedResultAsync<T>(ex);
+         }
++        catch (KeyNotFoundException ex)
++        {
++            LogHandledFinanceException("read_not_found", ex);
++            return NotFound(CreateProblemDetails(ex.Message, "Finance record was not found.", StatusCodes.Status404NotFound));
++        }
+         catch (ArgumentOutOfRangeException ex)
+         {
+             LogHandledFinanceException("read_argument_out_of_range", ex);
+@@ -2598,6 +2603,11 @@ public sealed class InternalFinanceController : ControllerBase
+             LogHandledFinanceException("read_optional_not_initialized", ex);
+             return await CreateFinanceNotInitializedResultAsync<T>(ex);
+         }
++        catch (KeyNotFoundException ex)
++        {
++            LogHandledFinanceException("read_optional_not_found", ex);
++            return NotFound(CreateProblemDetails(ex.Message, "Finance record was not found.", StatusCodes.Status404NotFound));
++        }
+         catch (ArgumentOutOfRangeException ex)
+         {
+             LogHandledFinanceException("read_optional_argument_out_of_range", ex);
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index b0f8140..9cb97d2 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -918,7 +918,7 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+                 x.IsClosed))
+             .SingleOrDefaultAsync(cancellationToken);
+ 
+-        return period ?? throw new ArgumentException("The requested fiscal period was not found in the active company.");
++        return period ?? throw new KeyNotFoundException("The requested fiscal period was not found in the active company.");
+     }
+ 
+     private async Task<Dictionary<Guid, StatementMappingRow>> LoadStatementMappingLookupAsync(
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePeriodReportingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePeriodReportingIntegrationTests.cs
+index 5b0784f..82395b0 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancePeriodReportingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePeriodReportingIntegrationTests.cs
+@@ -49,6 +49,32 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+         Assert.Contains(balanceSheet.EquityLines, x => x.AccountCode == "current_earnings" && x.Amount == 900m);
+     }
+ 
++    [Fact]
++    public async Task Report_endpoints_return_not_found_when_fiscal_period_is_out_of_scope()
++    {
++        var seed = await SeedOpenPeriodScenarioAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var missingFiscalPeriodId = Guid.NewGuid();
++
++        var profitAndLossResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/reports/profit-loss?fiscalPeriodId={missingFiscalPeriodId:D}");
++        Assert.Equal(HttpStatusCode.NotFound, profitAndLossResponse.StatusCode);
++
++        var balanceSheetResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/reports/balance-sheet?fiscalPeriodId={missingFiscalPeriodId:D}");
++        Assert.Equal(HttpStatusCode.NotFound, balanceSheetResponse.StatusCode);
++    }
++
++    [Fact]
++    public async Task Report_endpoints_are_scoped_to_company_membership_context()
++    {
++        var authorizedSeed = await SeedOpenPeriodScenarioAsync();
++        var outOfScopeSeed = await SeedOpenPeriodScenarioAsync();
++        using var client = CreateAuthenticatedClient(authorizedSeed.Subject, authorizedSeed.Email, authorizedSeed.DisplayName);
++
++        var profitAndLossResponse = await client.GetAsync($"/internal/companies/{outOfScopeSeed.CompanyId:D}/finance/reports/profit-loss?fiscalPeriodId={outOfScopeSeed.JanuaryPeriodId:D}");
++        Assert.Equal(HttpStatusCode.Forbidden, profitAndLossResponse.StatusCode);
++
++        var balanceSheetResponse = await client.GetAsync($"/internal/companies/{outOfScopeSeed.CompanyId:D}/finance/reports/balance-sheet?fiscalPeriodId={outOfScopeSeed.JanuaryPeriodId:D}");
++        Assert.Equal(HttpStatusCode.Forbidden, balanceSheetResponse.StatusCode);
++    }
++
+     [Fact]
+     public async Task Closed_period_reports_use_trial_balance_snapshots_for_stable_values()
+     {
+END_OF_PATCH

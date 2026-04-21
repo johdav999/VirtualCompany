@@ -1,0 +1,611 @@
+diff --git a/src/VirtualCompany.Application/Finance/PaymentContracts.cs b/src/VirtualCompany.Application/Finance/PaymentContracts.cs
+index 6f7dd8b..44d495a 100644
+--- a/src/VirtualCompany.Application/Finance/PaymentContracts.cs
++++ b/src/VirtualCompany.Application/Finance/PaymentContracts.cs
+@@ -6,6 +6,15 @@ public sealed record GetFinancePaymentsQuery(
+ public sealed record GetFinancePaymentDetailQuery(
+     Guid CompanyId,
+     Guid PaymentId);
++
++public sealed record GetFinancePaymentAllocationsByPaymentQuery(
++    Guid CompanyId,
++    Guid PaymentId);
++
++public sealed record GetFinanceInvoiceAllocationsQuery(Guid CompanyId, Guid InvoiceId);
++
++public sealed record GetFinanceBillAllocationsQuery(
++    Guid CompanyId,
++    Guid BillId);
+ 
+ public sealed record CreateFinancePaymentDto(
+     string PaymentType,
+@@ -82,6 +91,9 @@ public sealed record FinancePaymentAllocationBackfillResultDto(
+ public interface IFinancePaymentReadService
+ {
+     Task<IReadOnlyList<FinancePaymentDto>> GetPaymentsAsync(GetFinancePaymentsQuery query, CancellationToken cancellationToken);
+     Task<FinancePaymentDto?> GetPaymentDetailAsync(GetFinancePaymentDetailQuery query, CancellationToken cancellationToken);
++    Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByPaymentAsync(GetFinancePaymentAllocationsByPaymentQuery query, CancellationToken cancellationToken);
++    Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByInvoiceAsync(GetFinanceInvoiceAllocationsQuery query, CancellationToken cancellationToken);
++    Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByBillAsync(GetFinanceBillAllocationsQuery query, CancellationToken cancellationToken);
+ }
+ 
+ public interface IFinancePaymentCommandService
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 5007e83..e8467fe 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -348,6 +348,16 @@ public sealed class InternalFinanceController : ControllerBase
+             () => _financePaymentReadService.GetPaymentDetailAsync(
+                 new GetFinancePaymentDetailQuery(companyId, paymentId),
+                 cancellationToken),
++            "Finance payment was not found.");
++
++    [HttpGet("payments/{paymentId:guid}/allocations")]
++    public async Task<ActionResult<IReadOnlyList<FinancePaymentAllocationDto>>> GetPaymentAllocationsAsync(
++        Guid companyId,
++        Guid paymentId,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financePaymentReadService.GetAllocationsByPaymentAsync(
++                new GetFinancePaymentAllocationsByPaymentQuery(companyId, paymentId),
++                cancellationToken),
+             "Finance payment was not found.");
+ 
+     [Authorize(Policy = CompanyPolicies.FinanceEdit)]
+@@ -360,6 +370,16 @@ public sealed class InternalFinanceController : ControllerBase
+             () => _financePaymentCommandService.CreatePaymentAsync(
+                 new CreateFinancePaymentCommand(companyId, request.ToDto()),
+                 cancellationToken));
++
++    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
++    [HttpPost("payments/{paymentId:guid}/allocations")]
++    public async Task<ActionResult<FinancePaymentAllocationDto>> CreatePaymentAllocationAsync(
++        Guid companyId,
++        Guid paymentId,
++        [FromBody] CreateFinancePaymentAllocationRequest request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _financePaymentCommandService.CreateAllocationAsync(
++                new CreateFinancePaymentAllocationCommand(companyId, request.ToDto(paymentId)),
++                cancellationToken));
+ 
+     [HttpGet("invoices")]
+     public async Task<ActionResult<IReadOnlyList<FinanceInvoiceDto>>> GetInvoicesAsync(
+@@ -373,6 +393,16 @@ public sealed class InternalFinanceController : ControllerBase
+             () => _financeReadService.GetInvoicesAsync(
+                 new GetFinanceInvoicesQuery(companyId, startUtc, endUtc, limit),
+                 cancellationToken));
++
++    [HttpGet("invoices/{invoiceId:guid}/allocations")]
++    public async Task<ActionResult<IReadOnlyList<FinancePaymentAllocationDto>>> GetInvoiceAllocationsAsync(
++        Guid companyId,
++        Guid invoiceId,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financePaymentReadService.GetAllocationsByInvoiceAsync(
++                new GetFinanceInvoiceAllocationsQuery(companyId, invoiceId),
++                cancellationToken),
++            "Finance invoice was not found.");
+ 
+     [HttpGet("reviews")]
+     public async Task<ActionResult<IReadOnlyList<FinanceInvoiceReviewListItemResponse>>> GetInvoiceReviewsAsync(
+@@ -631,6 +661,16 @@ public sealed class InternalFinanceController : ControllerBase
+             () => _financeReadService.GetBillsAsync(
+                 new GetFinanceBillsQuery(companyId, startUtc, endUtc, limit),
+                 cancellationToken));
++
++    [HttpGet("bills/{billId:guid}/allocations")]
++    public async Task<ActionResult<IReadOnlyList<FinancePaymentAllocationDto>>> GetBillAllocationsAsync(
++        Guid companyId,
++        Guid billId,
++        CancellationToken cancellationToken) =>
++        await ExecuteReadAsync(
++            () => _financePaymentReadService.GetAllocationsByBillAsync(
++                new GetFinanceBillAllocationsQuery(companyId, billId),
++                cancellationToken),
++            "Finance bill was not found.");
+ 
+     [HttpGet("customers")]
+     public async Task<ActionResult<IReadOnlyList<FinanceCounterpartyDto>>> GetCustomersAsync(
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinancePaymentAllocationRequests.cs b/src/VirtualCompany.Api/Controllers/InternalFinancePaymentAllocationRequests.cs
+new file mode 100644
+index 0000000..79ca9a5
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/InternalFinancePaymentAllocationRequests.cs
+@@ -0,0 +1,12 @@
++using VirtualCompany.Application.Finance;
++
++namespace VirtualCompany.Api.Controllers;
++
++public sealed record CreateFinancePaymentAllocationRequest(
++    Guid? InvoiceId,
++    Guid? BillId,
++    decimal AllocatedAmount,
++    string Currency)
++{
++    public CreateFinancePaymentAllocationDto ToDto(Guid paymentId) =>
++        new(paymentId, InvoiceId, BillId, AllocatedAmount, Currency);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 895b0e9..49d04c0 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -524,6 +524,81 @@ public sealed class CompanyFinanceReadService : IFinanceReadService, IFinancePay
+                 x.UpdatedUtc))
+             .SingleOrDefaultAsync(cancellationToken);
+     }
++
++    public async Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByPaymentAsync(
++        GetFinancePaymentAllocationsByPaymentQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++        if (query.PaymentId == Guid.Empty)
++        {
++            throw new ArgumentException("Payment id is required.", nameof(query));
++        }
++
++        var exists = await _dbContext.Payments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AnyAsync(x => x.CompanyId == query.CompanyId && x.Id == query.PaymentId, cancellationToken);
++        if (!exists)
++        {
++            throw new KeyNotFoundException("Finance payment was not found.");
++        }
++
++        return await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.PaymentId == query.PaymentId)
++            .OrderBy(x => x.CreatedUtc)
++            .ThenBy(x => x.Id)
++            .Select(MapPaymentAllocation)
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByInvoiceAsync(
++        GetFinanceInvoiceAllocationsQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++        if (query.InvoiceId == Guid.Empty)
++        {
++            throw new ArgumentException("Invoice id is required.", nameof(query));
++        }
++
++        var exists = await _dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AnyAsync(x => x.CompanyId == query.CompanyId && x.Id == query.InvoiceId, cancellationToken);
++        if (!exists)
++        {
++            throw new KeyNotFoundException("Finance invoice was not found.");
++        }
++
++        return await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.InvoiceId == query.InvoiceId)
++            .OrderBy(x => x.CreatedUtc)
++            .ThenBy(x => x.Id)
++            .Select(MapPaymentAllocation)
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByBillAsync(
++        GetFinanceBillAllocationsQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++        if (query.BillId == Guid.Empty)
++        {
++            throw new ArgumentException("Bill id is required.", nameof(query));
++        }
++
++        var exists = await _dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AnyAsync(x => x.CompanyId == query.CompanyId && x.Id == query.BillId, cancellationToken);
++        if (!exists)
++        {
++            throw new KeyNotFoundException("Finance bill was not found.");
++        }
++
++        return await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.BillId == query.BillId)
++            .OrderBy(x => x.CreatedUtc)
++            .ThenBy(x => x.Id)
++            .Select(MapPaymentAllocation)
++            .ToListAsync(cancellationToken);
++    }
+ 
+     public async Task<IReadOnlyList<FinanceTransactionDto>> GetTransactionsAsync(
+         GetFinanceTransactionsQuery query,
+@@ -1848,6 +1923,17 @@ public sealed class CompanyFinanceReadService : IFinanceReadService, IFinancePay
+         return summary is null
+             ? null
+             : new FinanceCounterpartyDetailDto(summary, metrics, documents);
++    }
++
++    private static FinancePaymentAllocationDto MapPaymentAllocation(PaymentAllocation allocation) =>
++        new(
++            allocation.Id,
++            allocation.CompanyId,
++            allocation.PaymentId,
++            allocation.InvoiceId,
++            allocation.BillId,
++            allocation.AllocatedAmount,
++            allocation.Currency,
++            allocation.CreatedUtc,
++            allocation.UpdatedUtc);
+     }
+ 
+     public async Task<FinanceCounterpartyDetailDto?> GetCounterpartyDetailAsync(
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationsIntegrationTests.cs
+new file mode 100644
+index 0000000..67d8173
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationsIntegrationTests.cs
+@@ -0,0 +1,282 @@
++using System.Net;
++using System.Net.Http.Json;
++using Microsoft.AspNetCore.Mvc;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinancePaymentAllocationsIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinancePaymentAllocationsIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Allocation_endpoints_create_and_list_allocations_by_payment_and_document()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var invoiceAPartialResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments/{seed.IncomingPaymentId}/allocations",
++            new AllocationCreateRequest
++            {
++                InvoiceId = seed.InvoiceAId,
++                AllocatedAmount = 40.25m,
++                Currency = "usd"
++            });
++
++        Assert.Equal(HttpStatusCode.OK, invoiceAPartialResponse.StatusCode);
++        var invoiceAPartial = await invoiceAPartialResponse.Content.ReadFromJsonAsync<FinancePaymentAllocationResponse>();
++        Assert.NotNull(invoiceAPartial);
++        Assert.Equal(seed.CompanyId, invoiceAPartial!.CompanyId);
++        Assert.Equal(seed.IncomingPaymentId, invoiceAPartial.PaymentId);
++        Assert.Equal(seed.InvoiceAId, invoiceAPartial.InvoiceId);
++        Assert.Equal(40.25m, invoiceAPartial.AllocatedAmount);
++        Assert.Equal("USD", invoiceAPartial.Currency);
++
++        var invoiceARemainingResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments/{seed.IncomingPaymentBId}/allocations",
++            new AllocationCreateRequest
++            {
++                InvoiceId = seed.InvoiceAId,
++                AllocatedAmount = 29.75m,
++                Currency = "USD"
++            });
++
++        Assert.Equal(HttpStatusCode.OK, invoiceARemainingResponse.StatusCode);
++        var invoiceARemaining = await invoiceARemainingResponse.Content.ReadFromJsonAsync<FinancePaymentAllocationResponse>();
++        Assert.NotNull(invoiceARemaining);
++
++        var invoiceBResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments/{seed.IncomingPaymentId}/allocations",
++            new AllocationCreateRequest
++            {
++                InvoiceId = seed.InvoiceBId,
++                AllocatedAmount = 30m,
++                Currency = "USD"
++            });
++
++        Assert.Equal(HttpStatusCode.OK, invoiceBResponse.StatusCode);
++        var invoiceBAllocation = await invoiceBResponse.Content.ReadFromJsonAsync<FinancePaymentAllocationResponse>();
++        Assert.NotNull(invoiceBAllocation);
++
++        var billResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments/{seed.OutgoingPaymentId}/allocations",
++            new AllocationCreateRequest
++            {
++                BillId = seed.BillId,
++                AllocatedAmount = 50m,
++                Currency = "usd"
++            });
++
++        Assert.Equal(HttpStatusCode.OK, billResponse.StatusCode);
++        var billAllocation = await billResponse.Content.ReadFromJsonAsync<FinancePaymentAllocationResponse>();
++        Assert.NotNull(billAllocation);
++        Assert.Equal(seed.BillId, billAllocation!.BillId);
++
++        var paymentAllocationsResponse = await client.GetAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments/{seed.IncomingPaymentId}/allocations");
++        Assert.Equal(HttpStatusCode.OK, paymentAllocationsResponse.StatusCode);
++        var paymentAllocations = await paymentAllocationsResponse.Content.ReadFromJsonAsync<List<FinancePaymentAllocationResponse>>();
++        Assert.NotNull(paymentAllocations);
++        Assert.Equal(2, paymentAllocations!.Count);
++        Assert.Contains(paymentAllocations, allocation => allocation.Id == invoiceAPartial.Id);
++        Assert.Contains(paymentAllocations, allocation => allocation.Id == invoiceBAllocation!.Id);
++
++        var invoiceAllocationsResponse = await client.GetAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.InvoiceAId}/allocations");
++        Assert.Equal(HttpStatusCode.OK, invoiceAllocationsResponse.StatusCode);
++        var invoiceAllocations = await invoiceAllocationsResponse.Content.ReadFromJsonAsync<List<FinancePaymentAllocationResponse>>();
++        Assert.NotNull(invoiceAllocations);
++        Assert.Equal(2, invoiceAllocations!.Count);
++        Assert.Contains(invoiceAllocations, allocation => allocation.Id == invoiceAPartial.Id);
++        Assert.Contains(invoiceAllocations, allocation => allocation.Id == invoiceARemaining!.Id);
++
++        var billAllocationsResponse = await client.GetAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/bills/{seed.BillId}/allocations");
++        Assert.Equal(HttpStatusCode.OK, billAllocationsResponse.StatusCode);
++        var billAllocations = await billAllocationsResponse.Content.ReadFromJsonAsync<List<FinancePaymentAllocationResponse>>();
++        Assert.NotNull(billAllocations);
++        Assert.Single(billAllocations!);
++        Assert.Equal(billAllocation.Id, billAllocations[0].Id);
++
++        var snapshot = await _factory.ExecuteDbContextAsync(async dbContext =>
++        {
++            var invoiceASettlementStatus = await dbContext.FinanceInvoices
++                .IgnoreQueryFilters()
++                .Where(x => x.Id == seed.InvoiceAId)
++                .Select(x => x.SettlementStatus)
++                .SingleAsync();
++            var invoiceBSettlementStatus = await dbContext.FinanceInvoices
++                .IgnoreQueryFilters()
++                .Where(x => x.Id == seed.InvoiceBId)
++                .Select(x => x.SettlementStatus)
++                .SingleAsync();
++            var billSettlementStatus = await dbContext.FinanceBills
++                .IgnoreQueryFilters()
++                .Where(x => x.Id == seed.BillId)
++                .Select(x => x.SettlementStatus)
++                .SingleAsync();
++            var allocatedOnPrimaryPayment = await dbContext.PaymentAllocations
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyId && x.PaymentId == seed.IncomingPaymentId)
++                .SumAsync(x => x.AllocatedAmount);
++
++            return new AllocationSnapshot(invoiceASettlementStatus, invoiceBSettlementStatus, billSettlementStatus, allocatedOnPrimaryPayment);
++        });
++
++        Assert.Equal(FinanceSettlementStatuses.Paid, snapshot.InvoiceASettlementStatus);
++        Assert.Equal(FinanceSettlementStatuses.PartiallyPaid, snapshot.InvoiceBSettlementStatus);
++        Assert.Equal(FinanceSettlementStatuses.Paid, snapshot.BillSettlementStatus);
++        Assert.Equal(70.25m, snapshot.AllocatedOnPrimaryPayment);
++    }
++
++    [Fact]
++    public async Task Allocation_endpoints_reject_over_allocation_and_hide_foreign_records()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var firstResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments/{seed.IncomingPaymentId}/allocations",
++            new AllocationCreateRequest
++            {
++                InvoiceId = seed.InvoiceBId,
++                AllocatedAmount = 60m,
++                Currency = "USD"
++            });
++
++        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
++
++        var overAllocationResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments/{seed.IncomingPaymentId}/allocations",
++            new AllocationCreateRequest
++            {
++                InvoiceId = seed.InvoiceAId,
++                AllocatedAmount = 50m,
++                Currency = "USD"
++            });
++
++        Assert.Equal(HttpStatusCode.BadRequest, overAllocationResponse.StatusCode);
++        var problem = await overAllocationResponse.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(problem);
++        Assert.Contains("AllocatedAmount", problem!.Errors.Keys);
++
++        var foreignPaymentResponse = await client.GetAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments/{seed.OtherCompanyPaymentId}/allocations");
++        Assert.Equal(HttpStatusCode.NotFound, foreignPaymentResponse.StatusCode);
++    }
++
++    private async Task<AllocationEndpointSeed> SeedAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var subject = $"finance-payment-allocations-{Guid.NewGuid():N}";
++        var email = $"{subject}@example.com";
++        const string displayName = "Finance Allocation Owner";
++        var counterpartyId = Guid.NewGuid();
++        var supplierId = Guid.NewGuid();
++        var invoiceAId = Guid.NewGuid();
++        var invoiceBId = Guid.NewGuid();
++        var billId = Guid.NewGuid();
++        var incomingPaymentId = Guid.NewGuid();
++        var incomingPaymentBId = Guid.NewGuid();
++        var outgoingPaymentId = Guid.NewGuid();
++        var otherCompanyPaymentId = Guid.Empty;
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Allocation Endpoint Company"),
++                new Company(otherCompanyId, "Other Allocation Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++
++            FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++            FinanceSeedData.AddMockFinanceData(dbContext, otherCompanyId);
++
++            dbContext.FinanceCounterparties.AddRange(
++                new FinanceCounterparty(counterpartyId, companyId, "Allocation Customer", "customer", "customer@example.com"),
++                new FinanceCounterparty(supplierId, companyId, "Allocation Supplier", "vendor", "supplier@example.com"));
++
++            dbContext.FinanceInvoices.AddRange(
++                new FinanceInvoice(
++                    invoiceAId,
++                    companyId,
++                    counterpartyId,
++                    "INV-API-ALLOC-001",
++                    new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),
++                    70m,
++                    "USD",
++                    "open"),
++                new FinanceInvoice(
++                    invoiceBId,
++                    companyId,
++                    counterpartyId,
++                    "INV-API-ALLOC-002",
++                    new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc),
++                    60m,
++                    "USD",
++                    "open"));
++
++            dbContext.FinanceBills.Add(new FinanceBill(
++                billId,
++                companyId,
++                supplierId,
++                "BILL-API-ALLOC-001",
++                new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                50m,
++                "USD",
++                "open"));
++
++            dbContext.Payments.AddRange(
++                new Payment(
++                    incomingPaymentId,
++                    companyId,
++                    PaymentTypes.Incoming,
++                    100m,
++                    "USD",
++                    new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc),
++                    "bank_transfer",
++                    "completed",
++                    "ALLOC-API-INCOMING-A"),
++                new Payment(
++                    incomingPaymentBId,
++                    companyId,
++                    PaymentTypes.Incoming,
++                    30m,
++                    "USD",
++                    new DateTime(2026, 4, 11, 0, 0, 0, DateTimeKind.Utc),
++                    "bank_transfer",
++                    "completed",
++                    "ALLOC-API-INCOMING-B"),
++                new Payment(
++                    outgoingPaymentId,
++                    companyId,
++                    PaymentTypes.Outgoing,
++                    50m,
++                    "USD",
++                    new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc),
++                    "ach",
++                    "completed",
++                    "ALLOC-API-OUTGOING-A"));
++
++            var foreignPayment = new Payment(
++                Guid.NewGuid(),
++                otherCompanyId,
++                PaymentTypes.Incoming,
++                125m,
++                "USD",
++                new DateTime(2026, 4, 15, 0, 0, 0, DateTimeKind.Utc),
++                "bank_transfer",
++                "completed",
++                "FOREIGN-ALLOC-PAYMENT");
++            dbContext.Payments.Add(foreignPayment);
++            otherCompanyPaymentId = foreignPayment.Id;
++
++            return Task.CompletedTask;
++        });
++
++        return new AllocationEndpointSeed(
++            companyId,
++            subject,
++            email,
++            displayName,
++            invoiceAId,
++            invoiceBId,
++            billId,
++            incomingPaymentId,
++            incomingPaymentBId,
++            outgoingPaymentId,
++            otherCompanyPaymentId);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private sealed record AllocationEndpointSeed(
++        Guid CompanyId,
++        string Subject,
++        string Email,
++        string DisplayName,
++        Guid InvoiceAId,
++        Guid InvoiceBId,
++        Guid BillId,
++        Guid IncomingPaymentId,
++        Guid IncomingPaymentBId,
++        Guid OutgoingPaymentId,
++        Guid OtherCompanyPaymentId);
++
++    private sealed record AllocationSnapshot(
++        string InvoiceASettlementStatus,
++        string InvoiceBSettlementStatus,
++        string BillSettlementStatus,
++        decimal AllocatedOnPrimaryPayment);
++
++    private sealed class FinancePaymentAllocationResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CompanyId { get; set; }
++        public Guid PaymentId { get; set; }
++        public Guid? InvoiceId { get; set; }
++        public Guid? BillId { get; set; }
++        public decimal AllocatedAmount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public DateTime CreatedUtc { get; set; }
++        public DateTime UpdatedUtc { get; set; }
++    }
++
++    private sealed class AllocationCreateRequest
++    {
++        public Guid? InvoiceId { get; set; }
++        public Guid? BillId { get; set; }
++        public decimal AllocatedAmount { get; set; }
++        public string Currency { get; set; } = string.Empty;
++    }
++}
+END_OF_PATCH

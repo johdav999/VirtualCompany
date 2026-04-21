@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Domain.Entities;
 
@@ -50,6 +51,7 @@ public sealed class FinanceAccount : ICompanyOwnedEntity
     public Company Company { get; private set; } = null!;
     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
     public ICollection<FinanceBalance> Balances { get; } = new List<FinanceBalance>();
+    public ICollection<FinancialStatementMapping> FinancialStatementMappings { get; } = new List<FinancialStatementMapping>();
 
     public void Rename(string name)
     {
@@ -72,6 +74,7 @@ public sealed class FinanceAccount : ICompanyOwnedEntity
 
         return trimmed;
     }
+
 }
 
 public sealed class FinanceCounterparty : ICompanyOwnedEntity
@@ -86,6 +89,11 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
         string name,
         string counterpartyType,
         string? email = null,
+        string? paymentTerms = null,
+        string? taxId = null,
+        decimal? creditLimit = null,
+        string? preferredPaymentMethod = null,
+        string? defaultAccountMapping = null,
         DateTime? createdUtc = null,
         DateTime? updatedUtc = null)
     {
@@ -96,9 +104,14 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
 
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = companyId;
+        CounterpartyType = NormalizeCounterpartyType(counterpartyType);
         Name = NormalizeRequired(name, nameof(name), 200);
-        CounterpartyType = NormalizeRequired(counterpartyType, nameof(counterpartyType), 64);
         Email = NormalizeOptional(email, nameof(email), 256);
+        PaymentTerms = NormalizeOptionalOrDefault(paymentTerms, nameof(paymentTerms), 64, ResolveDefaultPaymentTerms(CounterpartyType));
+        TaxId = NormalizeOptional(taxId, nameof(taxId), 64);
+        CreditLimit = NormalizeCreditLimit(creditLimit, nameof(creditLimit));
+        PreferredPaymentMethod = NormalizeOptionalOrDefault(preferredPaymentMethod, nameof(preferredPaymentMethod), 64, DefaultPreferredPaymentMethod);
+        DefaultAccountMapping = NormalizeOptionalOrDefault(defaultAccountMapping, nameof(defaultAccountMapping), 64, ResolveDefaultAccountMapping(CounterpartyType));
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
     }
@@ -108,12 +121,76 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
     public string Name { get; private set; } = null!;
     public string CounterpartyType { get; private set; } = null!;
     public string? Email { get; private set; }
+    public string? PaymentTerms { get; private set; }
+    public string? TaxId { get; private set; }
+    public decimal? CreditLimit { get; private set; }
+    public string? PreferredPaymentMethod { get; private set; }
+    public string? DefaultAccountMapping { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
     public ICollection<FinanceInvoice> Invoices { get; } = new List<FinanceInvoice>();
     public ICollection<FinanceBill> Bills { get; } = new List<FinanceBill>();
+
+    public void UpdateMasterData(
+        string name,
+        string counterpartyType,
+        string? email = null,
+        string? paymentTerms = null,
+        string? taxId = null,
+        decimal? creditLimit = null,
+        string? preferredPaymentMethod = null,
+        string? defaultAccountMapping = null)
+    {
+        CounterpartyType = NormalizeCounterpartyType(counterpartyType);
+        Name = NormalizeRequired(name, nameof(name), 200);
+        Email = NormalizeOptional(email, nameof(email), 256);
+        PaymentTerms = NormalizeOptionalOrDefault(paymentTerms, nameof(paymentTerms), 64, ResolveDefaultPaymentTerms(CounterpartyType));
+        TaxId = NormalizeOptional(taxId, nameof(taxId), 64);
+        CreditLimit = NormalizeCreditLimit(creditLimit, nameof(creditLimit));
+        PreferredPaymentMethod = NormalizeOptionalOrDefault(preferredPaymentMethod, nameof(preferredPaymentMethod), 64, DefaultPreferredPaymentMethod);
+        DefaultAccountMapping = NormalizeOptionalOrDefault(defaultAccountMapping, nameof(defaultAccountMapping), 64, ResolveDefaultAccountMapping(CounterpartyType));
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    private const string DefaultPreferredPaymentMethod = "bank_transfer";
+
+    private static string NormalizeOptionalOrDefault(string? value, string name, int maxLength, string fallback)
+    {
+        var normalized = NormalizeOptional(value, name, maxLength);
+        return string.IsNullOrWhiteSpace(normalized) ? fallback : normalized;
+    }
+
+    private static string ResolveDefaultPaymentTerms(string counterpartyType) =>
+        counterpartyType switch
+        {
+            "customer" => "Net30",
+            "supplier" => "Net30",
+            _ => "Net30"
+        };
+
+    private static string ResolveDefaultAccountMapping(string counterpartyType) =>
+        counterpartyType switch
+        {
+            "customer" => "1100",
+            "supplier" => "2000",
+            _ => "2000"
+        };
+
+    public static string NormalizeCounterpartyKind(string value) =>
+        NormalizeCounterpartyType(value) switch
+        {
+            "supplier" => "supplier",
+            _ => "customer"
+        };
+
+    private static string NormalizeCounterpartyType(string value) =>
+        NormalizeRequired(value, nameof(value), 64).ToLowerInvariant() switch
+        {
+            "vendor" => "supplier",
+            var normalized => normalized
+        };
 
     private static string NormalizeRequired(string value, string name, int maxLength)
     {
@@ -129,6 +206,17 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
         }
 
         return trimmed;
+    }
+
+    private static decimal NormalizeCreditLimit(decimal? value, string name)
+    {
+        var normalized = value ?? 0m;
+        if (normalized < 0m)
+        {
+            throw new ArgumentOutOfRangeException(name, $"{name} cannot be negative.");
+        }
+
+        return normalized;
     }
 
     private static string? NormalizeOptional(string? value, string name, int maxLength)
@@ -277,7 +365,8 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         string status,
         Guid? documentId = null,
         DateTime? createdUtc = null,
-        DateTime? updatedUtc = null)
+        DateTime? updatedUtc = null,
+        string? settlementStatus = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -303,6 +392,7 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         Amount = amount;
         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
         Status = NormalizeRequired(status, nameof(status), 32);
+        SettlementStatus = ResolveInitialSettlementStatus(status, settlementStatus);
         DocumentId = documentId;
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? IssuedUtc, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
@@ -317,12 +407,14 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
     public decimal Amount { get; private set; }
     public string Currency { get; private set; } = null!;
     public string Status { get; private set; } = null!;
+    public string SettlementStatus { get; private set; } = null!;
     public Guid? DocumentId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
     public FinanceCounterparty Counterparty { get; private set; } = null!;
     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
+    public ICollection<PaymentAllocation> Allocations { get; } = new List<PaymentAllocation>();
     public CompanyKnowledgeDocument? Document { get; private set; }
 
     public void ChangeApprovalStatus(string status)
@@ -334,6 +426,12 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         }
 
         Status = normalized;
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void ApplySettlementStatus(string settlementStatus)
+    {
+        SettlementStatus = NormalizeSettlementStatus(settlementStatus);
         UpdatedUtc = DateTime.UtcNow;
     }
 
@@ -371,6 +469,26 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
 
         return trimmed;
     }
+
+    private static string ResolveInitialSettlementStatus(string status, string? settlementStatus)
+    {
+        if (!string.IsNullOrWhiteSpace(settlementStatus))
+        {
+            return NormalizeSettlementStatus(settlementStatus);
+        }
+
+        return string.Equals(status?.Trim(), "paid", StringComparison.OrdinalIgnoreCase)
+            ? FinanceSettlementStatuses.Paid
+            : FinanceSettlementStatuses.Unpaid;
+    }
+
+    private static string NormalizeSettlementStatus(string value)
+    {
+        var normalized = FinanceSettlementStatuses.Normalize(value);
+        return FinanceSettlementStatuses.IsSupported(normalized)
+            ? normalized
+            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported settlement status.");
+    }
 }
 
 public sealed class FinanceBill : ICompanyOwnedEntity
@@ -391,7 +509,8 @@ public sealed class FinanceBill : ICompanyOwnedEntity
         string status,
         Guid? documentId = null,
         DateTime? createdUtc = null,
-        DateTime? updatedUtc = null)
+        DateTime? updatedUtc = null,
+        string? settlementStatus = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -417,6 +536,7 @@ public sealed class FinanceBill : ICompanyOwnedEntity
         Amount = amount;
         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
         Status = NormalizeRequired(status, nameof(status), 32);
+        SettlementStatus = ResolveInitialSettlementStatus(status, settlementStatus);
         DocumentId = documentId;
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? ReceivedUtc, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
@@ -431,12 +551,14 @@ public sealed class FinanceBill : ICompanyOwnedEntity
     public decimal Amount { get; private set; }
     public string Currency { get; private set; } = null!;
     public string Status { get; private set; } = null!;
+    public string SettlementStatus { get; private set; } = null!;
     public Guid? DocumentId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
     public FinanceCounterparty Counterparty { get; private set; } = null!;
     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
+    public ICollection<PaymentAllocation> Allocations { get; } = new List<PaymentAllocation>();
     public CompanyKnowledgeDocument? Document { get; private set; }
 
     private static string NormalizeRequired(string value, string name, int maxLength)
@@ -454,6 +576,29 @@ public sealed class FinanceBill : ICompanyOwnedEntity
 
         return trimmed;
     }
+
+    public void ApplySettlementStatus(string settlementStatus)
+    {
+        SettlementStatus = NormalizeSettlementStatus(settlementStatus);
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    private static string ResolveInitialSettlementStatus(string status, string? settlementStatus)
+    {
+        if (!string.IsNullOrWhiteSpace(settlementStatus))
+        {
+            return NormalizeSettlementStatus(settlementStatus);
+        }
+
+        return string.Equals(status?.Trim(), "paid", StringComparison.OrdinalIgnoreCase)
+            ? FinanceSettlementStatuses.Paid
+            : FinanceSettlementStatuses.Unpaid;
+    }
+
+    private static string NormalizeSettlementStatus(string value) =>
+        FinanceSettlementStatuses.Normalize(value) is var normalized && FinanceSettlementStatuses.IsSupported(normalized)
+            ? normalized
+            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported settlement status.");
 }
 
 public sealed class FinanceBalance : ICompanyOwnedEntity

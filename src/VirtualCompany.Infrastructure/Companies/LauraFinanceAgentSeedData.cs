@@ -85,6 +85,7 @@ internal static class LauraFinanceAgentSeedData
         {
             ["allowed"] = new JsonArray(
                 JsonValue.Create("get_cash_balance"),
+                JsonValue.Create("resolve_finance_agent_query"),
                 JsonValue.Create("list_transactions"),
                 JsonValue.Create("list_uncategorized_transactions"),
                 JsonValue.Create("list_invoices_awaiting_approval"),

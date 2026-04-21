@@ -1,0 +1,501 @@
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+@@ -44,6 +44,7 @@ public sealed class FinanceAccount : ICompanyOwnedEntity
+     public Company Company { get; private set; } = null!;
+     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
+     public ICollection<FinanceBalance> Balances { get; } = new List<FinanceBalance>();
++    public ICollection<FinancialStatementMapping> FinancialStatementMappings { get; } = new List<FinancialStatementMapping>();
+ 
+     public void Rename(string name)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -2923,13 +2923,14 @@ internal sealed class FinancialStatementMappingConfiguration : IEntityTypeConfig
+ 
+         builder.HasIndex(x => x.CompanyId);
+         builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId });
++        builder.HasIndex(x => x.FinanceAccountId);
+         builder.HasIndex(x => new { x.CompanyId, x.StatementType, x.IsActive });
+         builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId, x.StatementType }).HasFilter("is_active = 1").IsUnique();
+ 
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasOne(x => x.FinanceAccount)
+-            .WithMany()
++            .WithMany(x => x.FinancialStatementMappings)
+             .HasForeignKey(x => new { x.CompanyId, x.FinanceAccountId })
+             .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+             .OnDelete(DeleteBehavior.Restrict);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420103000_AddFinancialStatementMappings.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420103000_AddFinancialStatementMappings.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420103000_AddFinancialStatementMappings.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420103000_AddFinancialStatementMappings.cs
+@@ -58,6 +58,11 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                 table: "financial_statement_mappings",
+                 column: "company_id");
+ 
++            migrationBuilder.CreateIndex(
++                name: "IX_financial_statement_mappings_finance_account_id",
++                table: "financial_statement_mappings",
++                column: "finance_account_id");
++
+             migrationBuilder.CreateIndex(
+                 name: "IX_financial_statement_mappings_company_id_finance_account_id",
+                 table: "financial_statement_mappings",
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs b/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
+@@ -88,6 +88,7 @@ public static class DeterministicFinanceSeedDatasetGenerator
+         dbContext.FinanceAccounts.AddRange(accounts);
+         dbContext.FinanceCounterparties.AddRange(counterparties);
+         dbContext.CompanyKnowledgeDocuments.AddRange(documents);
++        FinancialStatementMappingSeedDefaults.Apply(dbContext, companyId, accounts);
+         dbContext.FinanceInvoices.AddRange(invoices);
+         dbContext.FinanceBills.AddRange(bills);
+         if (includeTransactions)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+@@ -134,6 +134,7 @@ public static class FinanceSeedData
+         dbContext.FinanceCounterparties.AddRange(counterparties);
+         dbContext.CompanyKnowledgeDocuments.AddRange(documents);
+         dbContext.FinanceInvoices.AddRange(invoices);
++        FinancialStatementMappingSeedDefaults.Apply(dbContext, companyId, accounts);
+         dbContext.FinanceBills.AddRange(bills);
+         dbContext.FinanceTransactions.AddRange(transactions);
+         dbContext.FinanceBalances.AddRange(balances);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinancialStatementMappingSeedDefaults.cs b/src/VirtualCompany.Infrastructure/Persistence/FinancialStatementMappingSeedDefaults.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinancialStatementMappingSeedDefaults.cs
+@@ -0,0 +1,153 @@
++using System.Security.Cryptography;
++using System.Text;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal static class FinancialStatementMappingSeedDefaults
++{
++    private static readonly IReadOnlyDictionary<string, IReadOnlyList<MappingTemplate>> Templates =
++        new Dictionary<string, IReadOnlyList<MappingTemplate>>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["1000"] =
++            [
++                new(
++                    FinancialStatementType.BalanceSheet,
++                    FinancialStatementReportSection.BalanceSheetAssets,
++                    FinancialStatementLineClassification.CurrentAsset)
++            ],
++            ["1100"] =
++            [
++                new(
++                    FinancialStatementType.BalanceSheet,
++                    FinancialStatementReportSection.BalanceSheetAssets,
++                    FinancialStatementLineClassification.CurrentAsset),
++                new(
++                    FinancialStatementType.CashFlow,
++                    FinancialStatementReportSection.CashFlowOperatingActivities,
++                    FinancialStatementLineClassification.WorkingCapital)
++            ],
++            ["2000"] =
++            [
++                new(
++                    FinancialStatementType.BalanceSheet,
++                    FinancialStatementReportSection.BalanceSheetLiabilities,
++                    FinancialStatementLineClassification.CurrentLiability),
++                new(
++                    FinancialStatementType.CashFlow,
++                    FinancialStatementReportSection.CashFlowOperatingActivities,
++                    FinancialStatementLineClassification.WorkingCapital)
++            ],
++            ["4000"] =
++            [
++                new(
++                    FinancialStatementType.ProfitAndLoss,
++                    FinancialStatementReportSection.ProfitAndLossRevenue,
++                    FinancialStatementLineClassification.Revenue),
++                new(
++                    FinancialStatementType.CashFlow,
++                    FinancialStatementReportSection.CashFlowOperatingActivities,
++                    FinancialStatementLineClassification.CashReceipt)
++            ],
++            ["6100"] =
++            [
++                new(
++                    FinancialStatementType.ProfitAndLoss,
++                    FinancialStatementReportSection.ProfitAndLossOperatingExpenses,
++                    FinancialStatementLineClassification.OperatingExpense),
++                new(
++                    FinancialStatementType.CashFlow,
++                    FinancialStatementReportSection.CashFlowOperatingActivities,
++                    FinancialStatementLineClassification.CashDisbursement)
++            ]
++        };
++
++    public static void Apply(
++        VirtualCompanyDbContext dbContext,
++        Guid companyId,
++        IReadOnlyCollection<FinanceAccount> accounts)
++    {
++        ArgumentNullException.ThrowIfNull(dbContext);
++        ArgumentNullException.ThrowIfNull(accounts);
++
++        if (companyId == Guid.Empty || accounts.Count == 0)
++        {
++            return;
++        }
++
++        var companyAccounts = accounts
++            .Where(account => account.CompanyId == companyId)
++            .GroupBy(account => account.Id)
++            .Select(group => group.First())
++            .ToArray();
++        if (companyAccounts.Length == 0)
++        {
++            return;
++        }
++
++        var accountIds = companyAccounts.Select(account => account.Id).ToHashSet();
++        var existingKeys = dbContext.FinancialStatementMappings
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(mapping => mapping.CompanyId == companyId && accountIds.Contains(mapping.FinanceAccountId))
++            .Select(mapping => new MappingKey(mapping.FinanceAccountId, mapping.StatementType))
++            .ToHashSet();
++
++        foreach (var entry in dbContext.ChangeTracker.Entries<FinancialStatementMapping>())
++        {
++            if (entry.State == EntityState.Deleted || entry.Entity.CompanyId != companyId || !accountIds.Contains(entry.Entity.FinanceAccountId))
++            {
++                continue;
++            }
++
++            existingKeys.Add(new MappingKey(entry.Entity.FinanceAccountId, entry.Entity.StatementType));
++        }
++
++        foreach (var account in companyAccounts.OrderBy(account => account.Code, StringComparer.OrdinalIgnoreCase))
++        {
++            if (!Templates.TryGetValue(account.Code, out var mappings))
++            {
++                continue;
++            }
++
++            foreach (var template in mappings)
++            {
++                var key = new MappingKey(account.Id, template.StatementType);
++                if (!existingKeys.Add(key))
++                {
++                    continue;
++                }
++
++                dbContext.FinancialStatementMappings.Add(
++                    new FinancialStatementMapping(
++                        StableId(companyId, account.Id, template.StatementType),
++                        companyId,
++                        account.Id,
++                        template.StatementType,
++                        template.ReportSection,
++                        template.LineClassification,
++                        isActive: true,
++                        createdUtc: account.CreatedUtc,
++                        updatedUtc: account.UpdatedUtc));
++            }
++        }
++    }
++
++    private static Guid StableId(Guid companyId, Guid financeAccountId, FinancialStatementType statementType)
++    {
++        var hash = MD5.HashData(Encoding.UTF8.GetBytes(
++            $"{companyId:N}:{financeAccountId:N}:{statementType.ToStorageValue()}"));
++
++        hash[6] = (byte)((hash[6] & 0x0F) | 0x30);
++        hash[8] = (byte)((hash[8] & 0x3F) | 0x80);
++
++        return new Guid(hash);
++    }
++
++    private readonly record struct MappingKey(
++        Guid FinanceAccountId,
++        FinancialStatementType StatementType);
++
++    private sealed record MappingTemplate(
++        FinancialStatementType StatementType,
++        FinancialStatementReportSection ReportSection,
++        FinancialStatementLineClassification LineClassification);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+@@ -106,7 +106,8 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+         await _dbContext.FinanceTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceInvoices.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceBills.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceBalances.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
++        await _dbContext.FinancialStatementMappings.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken) ||
+         await _dbContext.FinanceSeedAnomalies.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+ 
+@@ -138,6 +139,10 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+             .ToListAsync(cancellationToken);
++        var mappings = await _dbContext.FinancialStatementMappings
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .ToListAsync(cancellationToken);
+         var seedDocuments = await _dbContext.CompanyKnowledgeDocuments
+             .IgnoreQueryFilters()
+             .Where(x =>
+@@ -150,6 +155,7 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+         var company = await _dbContext.Companies
+             .IgnoreQueryFilters()
+             .SingleAsync(x => x.Id == companyId, cancellationToken);
++        _dbContext.FinancialStatementMappings.RemoveRange(mappings);
+         _dbContext.FinanceSeedAnomalies.RemoveRange(anomalies);
+         _dbContext.FinanceTransactions.RemoveRange(transactions);
+         _dbContext.FinanceBalances.RemoveRange(balances);
+diff --git a/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs
+@@ -0,0 +1,244 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinancialStatementMappingPersistenceTests
++{
++    [Fact]
++    public async Task EnsureCreated_maps_financial_statement_mappings_table_and_partial_unique_index()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var columns = await ReadColumnsAsync(connection, "financial_statement_mappings");
++        Assert.Contains("company_id", columns);
++        Assert.Contains("finance_account_id", columns);
++        Assert.Contains("statement_type", columns);
++        Assert.Contains("report_section", columns);
++        Assert.Contains("line_classification", columns);
++        Assert.Contains("is_active", columns);
++        Assert.Contains("created_at", columns);
++        Assert.Contains("updated_at", columns);
++
++        var indexes = await ReadIndexMetadataAsync(connection, "financial_statement_mappings");
++        Assert.True(indexes.TryGetValue("IX_financial_statement_mappings_finance_account_id", out var accountIndex));
++        Assert.False(accountIndex.IsUnique);
++        Assert.False(accountIndex.IsPartial);
++
++        Assert.True(indexes.TryGetValue("IX_financial_statement_mappings_company_id_finance_account_id_statement_type", out var uniquenessIndex));
++        Assert.True(uniquenessIndex.IsUnique);
++        Assert.True(uniquenessIndex.IsPartial);
++    }
++
++    [Fact]
++    public async Task SaveChanges_rejects_two_active_mappings_for_same_account_and_statement_type()
++    {
++        var companyId = Guid.NewGuid();
++        var accountId = Guid.NewGuid();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        dbContext.Companies.Add(new Company(companyId, "Financial Statement Constraint Company"));
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            accountId,
++            companyId,
++            "1000",
++            "Operating Cash",
++            "asset",
++            "USD",
++            0m,
++            new DateTime(2026, 4, 20, 8, 0, 0, DateTimeKind.Utc)));
++        await dbContext.SaveChangesAsync();
++
++        dbContext.FinancialStatementMappings.AddRange(
++            new FinancialStatementMapping(
++                Guid.NewGuid(),
++                companyId,
++                accountId,
++                FinancialStatementType.BalanceSheet,
++                FinancialStatementReportSection.BalanceSheetAssets,
++                FinancialStatementLineClassification.CurrentAsset),
++            new FinancialStatementMapping(
++                Guid.NewGuid(),
++                companyId,
++                accountId,
++                FinancialStatementType.BalanceSheet,
++                FinancialStatementReportSection.BalanceSheetAssets,
++                FinancialStatementLineClassification.NonCurrentAsset));
++
++        await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());
++    }
++
++    [Fact]
++    public async Task SaveChanges_allows_inactive_historical_mapping_for_same_account_and_statement_type()
++    {
++        var companyId = Guid.NewGuid();
++        var accountId = Guid.NewGuid();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        dbContext.Companies.Add(new Company(companyId, "Historical Mapping Company"));
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            accountId,
++            companyId,
++            "2000",
++            "Payables",
++            "liability",
++            "USD",
++            0m,
++            new DateTime(2026, 4, 20, 8, 0, 0, DateTimeKind.Utc)));
++        await dbContext.SaveChangesAsync();
++
++        dbContext.FinancialStatementMappings.AddRange(
++            new FinancialStatementMapping(
++                Guid.NewGuid(),
++                companyId,
++                accountId,
++                FinancialStatementType.BalanceSheet,
++                FinancialStatementReportSection.BalanceSheetLiabilities,
++                FinancialStatementLineClassification.CurrentLiability,
++                isActive: true),
++            new FinancialStatementMapping(
++                Guid.NewGuid(),
++                companyId,
++                accountId,
++                FinancialStatementType.BalanceSheet,
++                FinancialStatementReportSection.BalanceSheetLiabilities,
++                FinancialStatementLineClassification.NonCurrentLiability,
++                isActive: false));
++
++        await dbContext.SaveChangesAsync();
++
++        var count = await dbContext.FinancialStatementMappings
++            .IgnoreQueryFilters()
++            .CountAsync(x => x.CompanyId == companyId && x.FinanceAccountId == accountId);
++
++        Assert.Equal(2, count);
++    }
++
++    [Fact]
++    public async Task Finance_seed_bootstrap_creates_seeded_default_mappings_deterministically()
++    {
++        var companyId = Guid.NewGuid();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        dbContext.Companies.Add(new Company(companyId, "Bootstrap Mapping Company"));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceSeedBootstrapService(dbContext);
++        await service.GenerateAsync(new FinanceSeedBootstrapCommand(companyId, 42), CancellationToken.None);
++
++        var firstPass = await ReadSeededMappingsAsync(dbContext, companyId);
++        Assert.Equal(
++            [
++                "1000|balance_sheet|balance_sheet_assets|current_asset|True",
++                "1100|balance_sheet|balance_sheet_assets|current_asset|True",
++                "1100|cash_flow|cash_flow_operating_activities|working_capital|True",
++                "2000|balance_sheet|balance_sheet_liabilities|current_liability|True",
++                "2000|cash_flow|cash_flow_operating_activities|working_capital|True",
++                "6100|cash_flow|cash_flow_operating_activities|cash_disbursement|True",
++                "6100|profit_and_loss|profit_and_loss_operating_expenses|operating_expense|True"
++            ],
++            firstPass);
++
++        await service.GenerateAsync(
++            new FinanceSeedBootstrapCommand(companyId, 42, ReplaceExisting: true),
++            CancellationToken.None);
++
++        var secondPass = await ReadSeededMappingsAsync(dbContext, companyId);
++        Assert.Equal(firstPass, secondPass);
++        Assert.Equal(secondPass.Length, secondPass.Distinct(StringComparer.Ordinal).Count());
++    }
++
++    private static async Task<string[]> ReadSeededMappingsAsync(VirtualCompanyDbContext dbContext, Guid companyId) =>
++        await dbContext.FinancialStatementMappings
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.FinanceAccount.Code)
++            .ThenBy(x => x.StatementType)
++            .Select(x => string.Concat(
++                x.FinanceAccount.Code,
++                "|",
++                x.StatementType.ToStorageValue(),
++                "|",
++                x.ReportSection.ToStorageValue(),
++                "|",
++                x.LineClassification.ToStorageValue(),
++                "|",
++                x.IsActive))
++            .ToArrayAsync();
++
++    private static async Task<HashSet<string>> ReadColumnsAsync(SqliteConnection connection, string tableName)
++    {
++        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++
++        using var command = connection.CreateCommand();
++        command.CommandText = $"PRAGMA table_info('{tableName}');";
++
++        await using var reader = await command.ExecuteReaderAsync();
++        while (await reader.ReadAsync())
++        {
++            columns.Add(reader.GetString(1));
++        }
++
++        return columns;
++    }
++
++    private static async Task<Dictionary<string, IndexMetadata>> ReadIndexMetadataAsync(SqliteConnection connection, string tableName)
++    {
++        var indexes = new Dictionary<string, IndexMetadata>(StringComparer.OrdinalIgnoreCase);
++
++        using var command = connection.CreateCommand();
++        command.CommandText = $"PRAGMA index_list('{tableName}');";
++
++        await using var reader = await command.ExecuteReaderAsync();
++        while (await reader.ReadAsync())
++        {
++            indexes[reader.GetString(1)] = new IndexMetadata(
++                IsUnique: reader.GetInt64(2) == 1,
++                IsPartial: reader.GetInt64(4) == 1);
++        }
++
++        return indexes;
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options);
++
++    private readonly record struct IndexMetadata(
++        bool IsUnique,
++        bool IsPartial);
++}
+END_OF_PATCH

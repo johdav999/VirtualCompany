@@ -11,6 +11,8 @@ public sealed class FinanceRouteRegistrationTests
     [InlineData(typeof(FinancePage), FinanceRoutes.Home)]
     [InlineData(typeof(CashPositionPage), FinanceRoutes.CashPosition)]
     [InlineData(typeof(TransactionsPage), FinanceRoutes.Transactions)]
+    [InlineData(typeof(PaymentsPage), FinanceRoutes.Payments)]
+    [InlineData(typeof(PaymentsPage), FinanceRoutes.PaymentDetail)]
     [InlineData(typeof(TransactionsPage), FinanceRoutes.TransactionDetail)]
     [InlineData(typeof(InvoiceReviewsPage), FinanceRoutes.Reviews)]
     [InlineData(typeof(InvoiceReviewDetailPage), FinanceRoutes.ReviewDetail)]
@@ -42,9 +44,10 @@ public sealed class FinanceRouteRegistrationTests
     {
         var routes = FinanceRoutes.SectionPages.Select(route => route.Path).ToArray();
 
-        Assert.Equal(11, routes.Length);
+        Assert.Equal(12, routes.Length);
         Assert.Contains(FinanceRoutes.CashPosition, routes);
         Assert.Contains(FinanceRoutes.Transactions, routes);
+        Assert.Contains(FinanceRoutes.Payments, routes);
         Assert.Contains(FinanceRoutes.Reviews, routes);
         Assert.Contains(FinanceRoutes.Invoices, routes);
         Assert.Contains(FinanceRoutes.Balances, routes);

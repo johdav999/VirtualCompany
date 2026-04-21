@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-25.1.3",
+  "promptPath": ".ai-design/prompts/TASK-25.1.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T16:33:40.869Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T16-33-40-869Z_TASK-25.1.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T16-33-40-869Z_TASK-25.1.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T16:36:19.270Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "er.RequestedCompanyIds);\n+        Assert.True(firstResult.Suggestions[0].ConfidenceScore > secondResult.Suggestions[0].ConfidenceScore);\n+        Assert.True(Rule(firstResult.Suggestions[0], ReconciliationRuleNames.DateProximity).Matched);\n+        Assert.False(Rule(secondResult.Suggestions[0], ReconciliationRuleNames.DateProximity).Matched);\n     }\n \n     private static CompanyReconciliationScoringService CreateService(\n         ReconciliationScoringSettings settings,\n         Guid companyId) =>\n@@ -395,6 +668,30 @@ public sealed class ReconciliationScoringServiceTests\n     private static ReconciliationRuleDetail Rule(\n         ReconciliationSuggestion suggestion,\n         string ruleName) =>\n         Assert.Single(suggestion.RuleDetails.Where(x => x.RuleName == ruleName));\n+\n+    private static void AssertSuggestionShape(ReconciliationSuggestion suggestion)\n+    {\n+        Assert.InRange(suggestion.ConfidenceScore, 0m, 1m);\n+        Assert.True(suggestion.Rank > 0);\n+        Assert.Equal(5, suggestion.RuleDetails.Count);\n+        Assert.Equal(\n+            new[]\n+            {\n+                ReconciliationRuleNames.AmountExact,\n+                ReconciliationRuleNames.AmountNear,\n+                ReconciliationRuleNames.DateProximity,\n+                ReconciliationRuleNames.ReferenceSimilarity,\n+                ReconciliationRuleNames.CounterpartySimilarity\n+            },\n+            suggestion.RuleDetails.Select(x => x.RuleName).ToArray());\n+        Assert.All(suggestion.RuleDetails, detail =>\n+        {\n+            Assert.InRange(detail.Score, 0m, 1m);\n+            Assert.InRange(detail.AwardedScore, 0m, 1m);\n+            Assert.True(detail.Weight >= 0m);\n+            Assert.False(string.IsNullOrWhiteSpace(detail.RuleName));\n+            Assert.False(string.IsNullOrWhiteSpace(detail.Explanation));\n+        });\n+    }\n \n     private static DateTime Utc(int year, int month, int day) =>\n         new(year, month, day, 0, 0, 0, DateTimeKind.Utc);\n END_OF_PATCH\n",
+  "stderrTail": "ds);\n+        Assert.True(firstResult.Suggestions[0].ConfidenceScore > secondResult.Suggestions[0].ConfidenceScore);\n+        Assert.True(Rule(firstResult.Suggestions[0], ReconciliationRuleNames.DateProximity).Matched);\n+        Assert.False(Rule(secondResult.Suggestions[0], ReconciliationRuleNames.DateProximity).Matched);\n     }\n \n     private static CompanyReconciliationScoringService CreateService(\n         ReconciliationScoringSettings settings,\n         Guid companyId) =>\n@@ -395,6 +668,30 @@ public sealed class ReconciliationScoringServiceTests\n     private static ReconciliationRuleDetail Rule(\n         ReconciliationSuggestion suggestion,\n         string ruleName) =>\n         Assert.Single(suggestion.RuleDetails.Where(x => x.RuleName == ruleName));\n+\n+    private static void AssertSuggestionShape(ReconciliationSuggestion suggestion)\n+    {\n+        Assert.InRange(suggestion.ConfidenceScore, 0m, 1m);\n+        Assert.True(suggestion.Rank > 0);\n+        Assert.Equal(5, suggestion.RuleDetails.Count);\n+        Assert.Equal(\n+            new[]\n+            {\n+                ReconciliationRuleNames.AmountExact,\n+                ReconciliationRuleNames.AmountNear,\n+                ReconciliationRuleNames.DateProximity,\n+                ReconciliationRuleNames.ReferenceSimilarity,\n+                ReconciliationRuleNames.CounterpartySimilarity\n+            },\n+            suggestion.RuleDetails.Select(x => x.RuleName).ToArray());\n+        Assert.All(suggestion.RuleDetails, detail =>\n+        {\n+            Assert.InRange(detail.Score, 0m, 1m);\n+            Assert.InRange(detail.AwardedScore, 0m, 1m);\n+            Assert.True(detail.Weight >= 0m);\n+            Assert.False(string.IsNullOrWhiteSpace(detail.RuleName));\n+            Assert.False(string.IsNullOrWhiteSpace(detail.Explanation));\n+        });\n+    }\n \n     private static DateTime Utc(int year, int month, int day) =>\n         new(year, month, day, 0, 0, 0, DateTimeKind.Utc);\n END_OF_PATCH\ntokens used\n128,905\n",
+  "verbosityMode": "verbose"
+}

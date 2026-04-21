@@ -1,0 +1,281 @@
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePeriodReportingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePeriodReportingIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinancePeriodReportingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePeriodReportingIntegrationTests.cs
+@@ -20,32 +20,69 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+     [Fact]
+-    public async Task Profit_and_loss_and_balance_sheet_reports_filter_to_posted_entries_in_requested_period()
++    public async Task Profit_and_loss_reports_include_only_posted_entries_inside_requested_fiscal_period()
+     {
+         var seed = await SeedOpenPeriodScenarioAsync();
+         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+ 
+-        var profitAndLossResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/reports/profit-loss?fiscalPeriodId={seed.JanuaryPeriodId:D}");
+-        Assert.Equal(HttpStatusCode.OK, profitAndLossResponse.StatusCode);
+-        var profitAndLoss = await profitAndLossResponse.Content.ReadFromJsonAsync<ProfitAndLossReportResponse>();
++        var januaryResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/reports/profit-loss?fiscalPeriodId={seed.JanuaryPeriodId:D}");
++        Assert.Equal(HttpStatusCode.OK, januaryResponse.StatusCode);
++        var januaryProfitAndLoss = await januaryResponse.Content.ReadFromJsonAsync<ProfitAndLossReportResponse>();
+ 
+-        Assert.NotNull(profitAndLoss);
+-        Assert.Equal(seed.CompanyId, profitAndLoss!.CompanyId);
+-        Assert.Equal(1200m, profitAndLoss.TotalRevenue);
+-        Assert.Equal(300m, profitAndLoss.TotalExpenses);
+-        Assert.Equal(900m, profitAndLoss.NetIncome);
+-        Assert.Single(profitAndLoss.RevenueLines);
+-        Assert.Single(profitAndLoss.ExpenseLines);
+-        Assert.False(profitAndLoss.UsedSnapshot);
++        Assert.NotNull(januaryProfitAndLoss);
++        Assert.Equal(seed.CompanyId, januaryProfitAndLoss!.CompanyId);
++        Assert.Equal(seed.JanuaryPeriodId, januaryProfitAndLoss.FiscalPeriodId);
++        Assert.False(januaryProfitAndLoss.UsedSnapshot);
++        Assert.Equal(1400m, januaryProfitAndLoss.TotalRevenue);
++        Assert.Equal(300m, januaryProfitAndLoss.TotalExpenses);
++        Assert.Equal(1100m, januaryProfitAndLoss.NetIncome);
++
++        var januaryRevenueLine = Assert.Single(januaryProfitAndLoss.RevenueLines);
++        Assert.Equal("4000", januaryRevenueLine.AccountCode);
++        Assert.Equal("Sales Revenue", januaryRevenueLine.AccountName);
++        Assert.Equal(1400m, januaryRevenueLine.Amount);
++
++        var januaryExpenseLine = Assert.Single(januaryProfitAndLoss.ExpenseLines);
++        Assert.Equal("6100", januaryExpenseLine.AccountCode);
++        Assert.Equal("Operating Expense", januaryExpenseLine.AccountName);
++        Assert.Equal(300m, januaryExpenseLine.Amount);
++
++        var februaryResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/reports/profit-loss?fiscalPeriodId={seed.FebruaryPeriodId:D}");
++        Assert.Equal(HttpStatusCode.OK, februaryResponse.StatusCode);
++        var februaryProfitAndLoss = await februaryResponse.Content.ReadFromJsonAsync<ProfitAndLossReportResponse>();
++
++        Assert.NotNull(februaryProfitAndLoss);
++        Assert.Equal(seed.FebruaryPeriodId, februaryProfitAndLoss!.FiscalPeriodId);
++        Assert.Equal(1427m, februaryProfitAndLoss.TotalRevenue);
++        Assert.Equal(0m, februaryProfitAndLoss.TotalExpenses);
++        Assert.Equal(1427m, februaryProfitAndLoss.NetIncome);
++        Assert.Equal(1427m, Assert.Single(februaryProfitAndLoss.RevenueLines).Amount);
++    }
++
++    [Fact]
++    public async Task Balance_sheet_reports_use_posted_as_of_values_and_exclude_unposted_and_future_entries()
++    {
++        var seed = await SeedOpenPeriodScenarioAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+ 
+-        var balanceSheetResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/reports/balance-sheet?fiscalPeriodId={seed.JanuaryPeriodId:D}");
+-        Assert.Equal(HttpStatusCode.OK, balanceSheetResponse.StatusCode);
+-        var balanceSheet = await balanceSheetResponse.Content.ReadFromJsonAsync<BalanceSheetReportResponse>();
++        var response = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/reports/balance-sheet?fiscalPeriodId={seed.JanuaryPeriodId:D}");
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var balanceSheet = await response.Content.ReadFromJsonAsync<BalanceSheetReportResponse>();
+ 
+         Assert.NotNull(balanceSheet);
+         Assert.Equal(seed.CompanyId, balanceSheet!.CompanyId);
+-        Assert.Equal(900m, balanceSheet.TotalAssets);
++        Assert.Equal(seed.JanuaryPeriodId, balanceSheet.FiscalPeriodId);
++        Assert.False(balanceSheet.UsedSnapshot);
++        Assert.Equal(1550m, balanceSheet.TotalAssets);
+         Assert.Equal(0m, balanceSheet.TotalLiabilities);
+-        Assert.Equal(900m, balanceSheet.TotalEquity);
++        Assert.Equal(1550m, balanceSheet.TotalEquity);
+         Assert.True(balanceSheet.IsBalanced);
+         Assert.Equal(balanceSheet.TotalAssets, balanceSheet.TotalLiabilities + balanceSheet.TotalEquity);
+-        Assert.Contains(balanceSheet.EquityLines, x => x.AccountCode == "current_earnings" && x.Amount == 900m);
++
++        var assetLine = Assert.Single(balanceSheet.AssetLines);
++        Assert.Equal("1000", assetLine.AccountCode);
++        Assert.Equal("Operating Cash", assetLine.AccountName);
++        Assert.Equal(1550m, assetLine.Amount);
++
++        var currentEarningsLine = balanceSheet.EquityLines.Single(x => x.AccountCode == "current_earnings");
++        Assert.Equal(1550m, currentEarningsLine.Amount);
++        Assert.Empty(balanceSheet.LiabilityLines);
+     }
+ 
+     [Fact]
+@@ -81,30 +118,46 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+     [Fact]
+     public async Task Closed_period_reports_use_trial_balance_snapshots_for_stable_values()
+     {
+         var seed = await SeedClosedPeriodScenarioAsync();
+         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+ 
+-        var profitAndLossResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/reports/profit-loss?fiscalPeriodId={seed.JanuaryPeriodId:D}");
+-        Assert.Equal(HttpStatusCode.OK, profitAndLossResponse.StatusCode);
+-        var profitAndLoss = await profitAndLossResponse.Content.ReadFromJsonAsync<ProfitAndLossReportResponse>();
++        var profitAndLossResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/reports/profit-loss?fiscalPeriodId={seed.JanuaryPeriodId:D}");
++        Assert.Equal(HttpStatusCode.OK, profitAndLossResponse.StatusCode);
++        var profitAndLoss = await profitAndLossResponse.Content.ReadFromJsonAsync<ProfitAndLossReportResponse>();
+ 
+         Assert.NotNull(profitAndLoss);
+         Assert.True(profitAndLoss!.IsClosed);
+         Assert.True(profitAndLoss.UsedSnapshot);
+         Assert.Equal(1000m, profitAndLoss.TotalRevenue);
+         Assert.Equal(400m, profitAndLoss.TotalExpenses);
+         Assert.Equal(600m, profitAndLoss.NetIncome);
+ 
++        var revenueLine = Assert.Single(profitAndLoss.RevenueLines);
++        Assert.Equal("4000", revenueLine.AccountCode);
++        Assert.Equal(1000m, revenueLine.Amount);
++
++        var expenseLine = Assert.Single(profitAndLoss.ExpenseLines);
++        Assert.Equal("6100", expenseLine.AccountCode);
++        Assert.Equal(400m, expenseLine.Amount);
++
+         var balanceSheetResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/reports/balance-sheet?fiscalPeriodId={seed.JanuaryPeriodId:D}");
+         Assert.Equal(HttpStatusCode.OK, balanceSheetResponse.StatusCode);
+         var balanceSheet = await balanceSheetResponse.Content.ReadFromJsonAsync<BalanceSheetReportResponse>();
+ 
+         Assert.NotNull(balanceSheet);
+         Assert.True(balanceSheet!.IsClosed);
+         Assert.True(balanceSheet.UsedSnapshot);
+         Assert.Equal(600m, balanceSheet.TotalAssets);
+         Assert.Equal(0m, balanceSheet.TotalLiabilities);
+         Assert.Equal(600m, balanceSheet.TotalEquity);
+         Assert.True(balanceSheet.IsBalanced);
+         Assert.Equal(balanceSheet.TotalAssets, balanceSheet.TotalLiabilities + balanceSheet.TotalEquity);
++
++        var assetLine = Assert.Single(balanceSheet.AssetLines);
++        Assert.Equal("1000", assetLine.AccountCode);
++        Assert.Equal(600m, assetLine.Amount);
++
++        var currentEarningsLine = balanceSheet.EquityLines.Single(x => x.AccountCode == "current_earnings");
++        Assert.Equal(600m, currentEarningsLine.Amount);
++        Assert.Empty(balanceSheet.LiabilityLines);
+     }
+ 
+     [Fact]
+@@ -112,17 +165,28 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+     {
+         var seed = await SeedBalancedScenarioAsync();
+         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+ 
+         var response = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/reports/balance-sheet?fiscalPeriodId={seed.JanuaryPeriodId:D}");
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+         var balanceSheet = await response.Content.ReadFromJsonAsync<BalanceSheetReportResponse>();
+ 
+         Assert.NotNull(balanceSheet);
+         Assert.True(balanceSheet!.IsBalanced);
+         Assert.Equal(1500m, balanceSheet.TotalAssets);
+         Assert.Equal(500m, balanceSheet.TotalLiabilities);
+         Assert.Equal(1000m, balanceSheet.TotalEquity);
+         Assert.Equal(balanceSheet.TotalAssets, balanceSheet.TotalLiabilities + balanceSheet.TotalEquity);
++
++        var assetLine = Assert.Single(balanceSheet.AssetLines);
++        Assert.Equal("1000", assetLine.AccountCode);
++        Assert.Equal(1500m, assetLine.Amount);
++
++        var liabilityLine = Assert.Single(balanceSheet.LiabilityLines);
++        Assert.Equal("2000", liabilityLine.AccountCode);
++        Assert.Equal(500m, liabilityLine.Amount);
++
++        Assert.Contains(balanceSheet.EquityLines, x => x.AccountCode == "3000" && x.Amount == 100m);
++        Assert.Contains(balanceSheet.EquityLines, x => x.AccountCode == "current_earnings" && x.Amount == 900m);
+     }
+ 
+     private async Task<ReportingSeed> SeedOpenPeriodScenarioAsync()
+     {
+         var seed = CreateSeedContext("Open Period Reporting Company");
+@@ -134,6 +198,7 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+         {
+             var context = SeedBaseCompanyData(dbContext, seed);
+             context.DbContext = dbContext;
+             context.CompanyId = seed.CompanyId;
++            context.DecemberPeriodId = seed.DecemberPeriodId;
+             context.JanuaryPeriodId = seed.JanuaryPeriodId;
+             context.FebruaryPeriodId = seed.FebruaryPeriodId;
+             SeedOpenPeriodLedger(context);
+@@ -151,6 +216,7 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+         {
+             var context = SeedBaseCompanyData(dbContext, seed, closeJanuary: true);
+             context.DbContext = dbContext;
+             context.CompanyId = seed.CompanyId;
++            context.DecemberPeriodId = seed.DecemberPeriodId;
+             context.JanuaryPeriodId = seed.JanuaryPeriodId;
+             context.FebruaryPeriodId = seed.FebruaryPeriodId;
+             SeedClosedPeriodLedger(context);
+@@ -168,6 +234,7 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+         {
+             var context = SeedBaseCompanyData(dbContext, seed);
+             context.DbContext = dbContext;
+             context.CompanyId = seed.CompanyId;
++            context.DecemberPeriodId = seed.DecemberPeriodId;
+             context.JanuaryPeriodId = seed.JanuaryPeriodId;
+             context.FebruaryPeriodId = seed.FebruaryPeriodId;
+ 
+@@ -242,6 +309,7 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+             $"{subject}@example.com",
+             "Finance Reporting Reader",
+             companyName,
++            Guid.NewGuid(),
+             Guid.NewGuid(),
+             Guid.NewGuid());
+     }
+@@ -340,6 +408,13 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+         dbContext.FiscalPeriods.AddRange(
+             new FiscalPeriod(
++                seed.DecemberPeriodId,
++                seed.CompanyId,
++                "FY2025-12",
++                new DateTime(2025, 12, 1, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
++            new FiscalPeriod(
+                 seed.JanuaryPeriodId,
+                 seed.CompanyId,
+                 "FY2026-01",
+                 new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                 new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),
+@@ -360,6 +435,7 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+     {
+         var dbContext = context.DbContext;
+         var companyId = context.CompanyId;
++        var decemberPeriodId = context.DecemberPeriodId;
+         var januaryPeriodId = context.JanuaryPeriodId;
+         var februaryPeriodId = context.FebruaryPeriodId;
+ 
++        // Boundary and adjacent-period entries prove the API filters by entry date.
++        var priorPeriodRevenue = new LedgerEntry(Guid.NewGuid(), companyId, decemberPeriodId, "JE-0000", new DateTime(2025, 12, 31, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "December revenue");
++        dbContext.LedgerEntries.Add(priorPeriodRevenue);
++        dbContext.LedgerEntryLines.AddRange(
++            new LedgerEntryLine(Guid.NewGuid(), companyId, priorPeriodRevenue.Id, context.CashAccountId, 450m, 0m, "USD", "Prior-period cash receipt"),
++            new LedgerEntryLine(Guid.NewGuid(), companyId, priorPeriodRevenue.Id, context.RevenueAccountId, 0m, 450m, "USD", "Prior-period revenue"));
++
++        var periodStartRevenue = new LedgerEntry(Guid.NewGuid(), companyId, januaryPeriodId, "JE-0001", new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "January opening-day revenue");
++        dbContext.LedgerEntries.Add(periodStartRevenue);
++        dbContext.LedgerEntryLines.AddRange(
++            new LedgerEntryLine(Guid.NewGuid(), companyId, periodStartRevenue.Id, context.CashAccountId, 200m, 0m, "USD", "Boundary cash receipt"),
++            new LedgerEntryLine(Guid.NewGuid(), companyId, periodStartRevenue.Id, context.RevenueAccountId, 0m, 200m, "USD", "Boundary revenue"));
++
+         var postedRevenue = new LedgerEntry(Guid.NewGuid(), companyId, januaryPeriodId, "JE-0001", new DateTime(2026, 1, 10, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "Posted January revenue");
+         dbContext.LedgerEntries.Add(postedRevenue);
+         dbContext.LedgerEntryLines.AddRange(
+             new LedgerEntryLine(Guid.NewGuid(), companyId, postedRevenue.Id, context.CashAccountId, 1200m, 0m, "USD", "Cash receipt"),
+             new LedgerEntryLine(Guid.NewGuid(), companyId, postedRevenue.Id, context.RevenueAccountId, 0m, 1200m, "USD", "Revenue"));
+@@ -381,6 +457,12 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+             new LedgerEntryLine(Guid.NewGuid(), companyId, draftRevenue.Id, context.CashAccountId, 999m, 0m, "USD"),
+             new LedgerEntryLine(Guid.NewGuid(), companyId, draftRevenue.Id, context.RevenueAccountId, 0m, 999m, "USD"));
+ 
++        var periodBoundaryRevenue = new LedgerEntry(Guid.NewGuid(), companyId, februaryPeriodId, "JE-0004", new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "Revenue at next period boundary");
++        dbContext.LedgerEntries.Add(periodBoundaryRevenue);
++        dbContext.LedgerEntryLines.AddRange(
++            new LedgerEntryLine(Guid.NewGuid(), companyId, periodBoundaryRevenue.Id, context.CashAccountId, 650m, 0m, "USD"),
++            new LedgerEntryLine(Guid.NewGuid(), companyId, periodBoundaryRevenue.Id, context.RevenueAccountId, 0m, 650m, "USD"));
++
+         var outOfPeriodRevenue = new LedgerEntry(Guid.NewGuid(), companyId, februaryPeriodId, "JE-0004", new DateTime(2026, 2, 5, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "February revenue");
+         dbContext.LedgerEntries.Add(outOfPeriodRevenue);
+         dbContext.LedgerEntryLines.AddRange(
+             new LedgerEntryLine(Guid.NewGuid(), companyId, outOfPeriodRevenue.Id, context.CashAccountId, 777m, 0m, "USD"),
+@@ -433,6 +515,7 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+         string Email,
+         string DisplayName,
+         string CompanyName,
++        Guid DecemberPeriodId,
+         Guid JanuaryPeriodId,
+         Guid FebruaryPeriodId);
+ 
+@@ -495,6 +578,7 @@ public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestW
+         public VirtualCompanyDbContext DbContext { get; set; } = null!;
+         public Guid CompanyId { get; set; }
++        public Guid DecemberPeriodId { get; set; }
+         public Guid JanuaryPeriodId { get; set; }
+         public Guid FebruaryPeriodId { get; set; }
+         public Guid CashAccountId { get; }
+END_OF_PATCH

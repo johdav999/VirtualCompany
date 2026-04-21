@@ -49,6 +49,7 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
     [
         FinanceDefinition("get_cash_balance", ToolActionType.Read, FinanceInputSchemas.AsOfDate(), FinanceOutputSchemas.WithDataProperty("cashBalance")),
         FinanceDefinition("list_transactions", ToolActionType.Read, FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("transactions")),
+        FinanceDefinition("resolve_finance_agent_query", ToolActionType.Read, FinanceInputSchemas.AgentQuery(), FinanceOutputSchemas.WithDataProperty("result")),
         FinanceDefinition("list_uncategorized_transactions", ToolActionType.Read, FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("transactions")),
         FinanceDefinition("list_invoices_awaiting_approval", ToolActionType.Read, FinanceInputSchemas.ListRange(), FinanceOutputSchemas.WithDataProperty("invoices")),
         FinanceDefinition("get_profit_and_loss_summary", ToolActionType.Read, FinanceInputSchemas.ProfitAndLoss(), FinanceOutputSchemas.WithDataProperty("profitAndLossSummary")),
@@ -133,6 +134,20 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
                     "startUtc": { "type": "string", "format": "date-time" },
                     "endUtc": { "type": "string", "format": "date-time" },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
+                  }
+                }
+                """);
+
+        public static JsonObject AgentQuery() =>
+            ParseSchema(
+                """
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [ "queryText" ],
+                  "properties": {
+                    "queryText": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "asOfUtc": { "type": "string", "format": "date-time" }
                   }
                 }
                 """);

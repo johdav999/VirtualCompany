@@ -1,0 +1,494 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs
+index 5555555..6666666 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs
+@@ -141,8 +141,8 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
+     private async Task<LedgerEntry?> FindExistingAsync(
+         Guid companyId,
+         string normalizedSourceType,
+-        DateTime postedAtUtc,
+         string normalizedSourceId,
++        DateTime postedAtUtc,
+         CancellationToken cancellationToken) =>
+         (await _dbContext.LedgerEntrySourceMappings
+             .IgnoreQueryFilters()
+@@ -166,8 +166,11 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
+ 
+     private async Task<CashSettlementPostingResultDto> MapExistingAsync(
+         LedgerEntry entry,
++        string normalizedSourceType,
++        string normalizedSourceId,
++        DateTime postedAtUtc,
+         CancellationToken cancellationToken)
+-    {
++    { 
+         var mapping = await _dbContext.LedgerEntrySourceMappings
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+diff --git a/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs
+index 7777777..8888888 100644
+--- a/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs
+@@ -55,7 +55,7 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+     }
+ 
+     [Fact]
+-    public async Task Reconcile_endpoint_is_idempotent_for_cash_ledger_side_effects()
++    public async Task Reconcile_endpoint_replays_bank_event_without_duplicate_cash_ledger_posting()
+     {
+         var seed = await SeedReconciliationScenarioAsync();
+         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+@@ -138,35 +138,57 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+                 .CountAsync(x => x.CompanyId == seed.CompanyId && x.BankTransactionId == seed.BankTransactionId);
+             var ledgerEntries = await dbContext.LedgerEntries
+                 .IgnoreQueryFilters()
+-                .Where(x => x.CompanyId == seed.CompanyId && x.Description == "Bank reconciliation for Batch customer remittance")
++                .Where(x =>
++                    x.CompanyId == seed.CompanyId &&
++                    x.SourceType == FinanceCashPostingSourceTypes.BankTransaction &&
++                    x.SourceId == seed.BankTransactionId.ToString("D"))
+                 .ToListAsync();
++            var ledgerLines = await dbContext.LedgerEntryLines
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyId && x.LedgerEntryId == firstResult.CashLedgerEntryId)
++                .OrderBy(x => x.DebitAmount == 0m)
++                .ToListAsync();
+             var sourceMappings = await dbContext.LedgerEntrySourceMappings
+                 .IgnoreQueryFilters()
+                 .Where(x =>
+                     x.CompanyId == seed.CompanyId &&
+                     x.SourceType == FinanceCashPostingSourceTypes.BankTransaction &&
+                     x.SourceId == seed.BankTransactionId.ToString("D"))
+-                .ToListAsync();
++                .OrderBy(x => x.PostedAtUtc)
++                .ToListAsync();
+ 
+             return new
+             {
+                 paymentLinks,
+                 cashLedgerLinks,
+-                ledgerEntries = ledgerEntries.Count,
++                ledgerEntry = ledgerEntries.Single(),
++                ledgerEntryCount = ledgerEntries.Count,
++                ledgerLines,
+                 sourceMappings = sourceMappings.Count,
+                 sourceMapping = sourceMappings.Single()
+             };
+         });
+ 
+         Assert.Equal(2, counts.paymentLinks);
+         Assert.Equal(1, counts.cashLedgerLinks);
+-        Assert.Equal(1, counts.ledgerEntries);
++        Assert.Equal(1, counts.ledgerEntryCount);
+         Assert.Equal(1, counts.sourceMappings);
++        Assert.Equal(seed.CompanyId, counts.ledgerEntry.CompanyId);
++        Assert.Equal(LedgerEntryStatuses.Posted, counts.ledgerEntry.Status);
++        Assert.Equal(FinanceCashPostingSourceTypes.BankTransaction, counts.ledgerEntry.SourceType);
++        Assert.Equal(seed.BankTransactionId.ToString("D"), counts.ledgerEntry.SourceId);
++        Assert.Equal(new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), counts.ledgerEntry.PostedAtUtc);
++        Assert.Equal(firstResult.CashLedgerEntryId, counts.ledgerEntry.Id);
++        Assert.Equal(2, counts.ledgerLines.Count);
++        Assert.Equal(seed.CashAccountId, counts.ledgerLines[0].FinanceAccountId);
++        Assert.Equal(150m, counts.ledgerLines[0].DebitAmount);
++        Assert.Equal(0m, counts.ledgerLines[0].CreditAmount);
++        Assert.Equal(seed.ReceivablesAccountId, counts.ledgerLines[1].FinanceAccountId);
++        Assert.Equal(0m, counts.ledgerLines[1].DebitAmount);
++        Assert.Equal(150m, counts.ledgerLines[1].CreditAmount);
++        Assert.Equal(counts.ledgerLines.Sum(x => x.DebitAmount), counts.ledgerLines.Sum(x => x.CreditAmount));
+         Assert.Equal(firstResult.CashLedgerEntryId, counts.sourceMapping.LedgerEntryId);
+         Assert.Equal(new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), counts.sourceMapping.PostedAtUtc);
+     }
++
+     [Fact]
+     public async Task Reconcile_endpoint_rejects_pending_and_overallocated_payments()
+     {
+@@ -324,7 +346,14 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+             return Task.CompletedTask;
+         });
+ 
+-        return new BankTransactionReconcileSeed(companyId, subject, email, displayName, bankTransactionId, firstPaymentId, secondPaymentId, pendingPaymentId);
++        return new BankTransactionReconcileSeed(
++            companyId,
++            subject,
++            email,
++            displayName,
++            bankTransactionId,
++            cashAccount.Id,
++            receivablesAccount.Id,
++            firstPaymentId, secondPaymentId, pendingPaymentId);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+@@ -347,6 +376,8 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+         string Email,
+         string DisplayName,
+         Guid BankTransactionId,
++        Guid CashAccountId,
++        Guid ReceivablesAccountId,
+         Guid FirstPaymentId,
+         Guid SecondPaymentId,
+         Guid PendingPaymentId);
+diff --git a/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs b/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs
+index 9999999..aaaaaaa 100644
+--- a/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs
+@@ -13,10 +13,11 @@ namespace VirtualCompany.Api.Tests;
+ public sealed class CashSettlementPostingServiceTests
+ {
+     [Fact]
+-    public async Task Post_cash_settlement_creates_balanced_incoming_entry_with_traceability()
++    public async Task SettledCustomerPayment_CreatesSingleBalancedCashToReceivablesJournalEntry()
+     {
+         var companyId = Guid.NewGuid();
+         await using var connection = await OpenConnectionAsync();
++        var postedAtUtc = new DateTime(2026, 4, 20, 10, 15, 0, DateTimeKind.Utc);
+         var accessor = new TestCompanyContextAccessor(companyId);
+         await using var dbContext = CreateContext(connection, accessor);
+         await dbContext.Database.EnsureCreatedAsync();
+@@ -33,32 +34,31 @@ public sealed class CashSettlementPostingServiceTests
+                 "allocation-incoming-001",
+                 seed.IncomingPaymentId,
+                 100m,
+-                new DateTime(2026, 4, 20, 10, 15, 0, DateTimeKind.Utc)),
++                postedAtUtc),
+             CancellationToken.None);
+ 
+         Assert.True(result.Created);
++        Assert.Equal(companyId, result.CompanyId);
++        Assert.Equal(FinanceCashPostingSourceTypes.PaymentAllocation, result.SourceType);
++        Assert.Equal("allocation-incoming-001", result.SourceId);
+         Assert.Equal(100m, result.PostedAmount);
++        Assert.Equal(postedAtUtc, result.PostedAtUtc);
+ 
+-        var entry = await dbContext.LedgerEntries
+-            .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .SingleAsync(x => x.Id == result.LedgerEntryId);
+-        var lines = await dbContext.LedgerEntryLines
+-            .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.LedgerEntryId == entry.Id)
+-            .OrderBy(x => x.DebitAmount == 0m)
+-            .ToListAsync();
+-        var sourceMapping = await dbContext.LedgerEntrySourceMappings
+-            .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .SingleAsync(x => x.CompanyId == companyId && x.LedgerEntryId == entry.Id);
++        var entry = await LoadLedgerEntryAsync(dbContext, companyId, result.LedgerEntryId);
++        var lines = await LoadLedgerLinesAsync(dbContext, companyId, entry.Id);
++        var sourceMapping = await LoadSourceMappingAsync(dbContext, companyId, entry.Id);
+ 
++        Assert.Equal(
++            1,
++            await dbContext.LedgerEntries
++                .IgnoreQueryFilters()
++                .CountAsync(x => x.CompanyId == companyId && x.SourceType == FinanceCashPostingSourceTypes.PaymentAllocation && x.SourceId == "allocation-incoming-001"));
+         Assert.Equal(companyId, entry.CompanyId);
++        Assert.Equal(result.LedgerEntryId, entry.Id);
+         Assert.Equal(FinanceCashPostingSourceTypes.PaymentAllocation, entry.SourceType);
+         Assert.Equal("allocation-incoming-001", entry.SourceId);
+-        Assert.Equal(new DateTime(2026, 4, 20, 10, 15, 0, DateTimeKind.Utc), entry.PostedAtUtc);
++        Assert.Equal(postedAtUtc, entry.PostedAtUtc);
+         Assert.Equal(LedgerEntryStatuses.Posted, entry.Status);
+         Assert.Equal(companyId, sourceMapping.CompanyId);
++        Assert.Equal(entry.Id, sourceMapping.Id);
+         Assert.Equal(entry.Id, sourceMapping.LedgerEntryId);
+         Assert.Equal(FinanceCashPostingSourceTypes.PaymentAllocation, sourceMapping.SourceType);
+         Assert.Equal("allocation-incoming-001", sourceMapping.SourceId);
+@@ -75,10 +75,11 @@ public sealed class CashSettlementPostingServiceTests
+     }
+ 
+     [Fact]
+-    public async Task Post_cash_settlement_creates_balanced_outgoing_entry()
++    public async Task SettledSupplierPayment_CreatesSingleBalancedPayablesToCashJournalEntry()
+     {
+         var companyId = Guid.NewGuid();
+         await using var connection = await OpenConnectionAsync();
++        var postedAtUtc = new DateTime(2026, 4, 21, 11, 0, 0, DateTimeKind.Utc);
+         var accessor = new TestCompanyContextAccessor(companyId);
+         await using var dbContext = CreateContext(connection, accessor);
+         await dbContext.Database.EnsureCreatedAsync();
+@@ -93,19 +94,33 @@ public sealed class CashSettlementPostingServiceTests
+                 "allocation-outgoing-001",
+                 seed.OutgoingPaymentId,
+                 80m,
+-                new DateTime(2026, 4, 21, 11, 0, 0, DateTimeKind.Utc)),
++                postedAtUtc),
+             CancellationToken.None);
+ 
+         Assert.True(result.Created);
++        Assert.Equal(companyId, result.CompanyId);
++        Assert.Equal(FinanceCashPostingSourceTypes.PaymentAllocation, result.SourceType);
++        Assert.Equal("allocation-outgoing-001", result.SourceId);
++        Assert.Equal(80m, result.PostedAmount);
++        Assert.Equal(postedAtUtc, result.PostedAtUtc);
+ 
+-        var lines = await dbContext.LedgerEntryLines
+-            .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.LedgerEntryId == result.LedgerEntryId)
+-            .OrderBy(x => x.DebitAmount == 0m)
+-            .ToListAsync();
++        var entry = await LoadLedgerEntryAsync(dbContext, companyId, result.LedgerEntryId);
++        var lines = await LoadLedgerLinesAsync(dbContext, companyId, result.LedgerEntryId);
++        var sourceMapping = await LoadSourceMappingAsync(dbContext, companyId, result.LedgerEntryId);
+ 
++        Assert.Equal(
++            1,
++            await dbContext.LedgerEntries
++                .IgnoreQueryFilters()
++                .CountAsync(x => x.CompanyId == companyId && x.SourceType == FinanceCashPostingSourceTypes.PaymentAllocation && x.SourceId == "allocation-outgoing-001"));
++        Assert.Equal(companyId, entry.CompanyId);
++        Assert.Equal(FinanceCashPostingSourceTypes.PaymentAllocation, entry.SourceType);
++        Assert.Equal("allocation-outgoing-001", entry.SourceId);
++        Assert.Equal(postedAtUtc, entry.PostedAtUtc);
+         Assert.Equal(2, lines.Count);
++        Assert.Equal(companyId, sourceMapping.CompanyId);
++        Assert.Equal(FinanceCashPostingSourceTypes.PaymentAllocation, sourceMapping.SourceType);
++        Assert.Equal("allocation-outgoing-001", sourceMapping.SourceId);
++        Assert.Equal(postedAtUtc, sourceMapping.PostedAtUtc);
+         Assert.Equal(seed.PayablesAccountId, lines[0].FinanceAccountId);
+         Assert.Equal(80m, lines[0].DebitAmount);
+         Assert.Equal(0m, lines[0].CreditAmount);
+@@ -116,10 +131,11 @@ public sealed class CashSettlementPostingServiceTests
+     }
+ 
+     [Fact]
+-    public async Task Post_cash_settlement_uses_partial_settlement_amount()
++    public async Task PartialSettlement_PostsSettledAmountOnly()
+     {
+         var companyId = Guid.NewGuid();
+         await using var connection = await OpenConnectionAsync();
++        var postedAtUtc = new DateTime(2026, 4, 22, 9, 30, 0, DateTimeKind.Utc);
+         var accessor = new TestCompanyContextAccessor(companyId);
+         await using var dbContext = CreateContext(connection, accessor);
+         await dbContext.Database.EnsureCreatedAsync();
+@@ -134,31 +150,43 @@ public sealed class CashSettlementPostingServiceTests
+                 "allocation-partial-001",
+                 seed.IncomingPaymentId,
+                 40.25m,
+-                new DateTime(2026, 4, 22, 9, 30, 0, DateTimeKind.Utc)),
++                postedAtUtc),
+             CancellationToken.None);
+ 
+         Assert.True(result.Created);
+         Assert.Equal(40.25m, result.PostedAmount);
++        Assert.Equal(postedAtUtc, result.PostedAtUtc);
+ 
+-        var totals = await dbContext.LedgerEntryLines
+-            .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.LedgerEntryId == result.LedgerEntryId)
+-            .GroupBy(_ => 1)
+-            .Select(x => new
+-            {
+-                Debit = x.Sum(line => line.DebitAmount),
+-                Credit = x.Sum(line => line.CreditAmount)
+-            })
+-            .SingleAsync();
++        var entry = await LoadLedgerEntryAsync(dbContext, companyId, result.LedgerEntryId);
++        var lines = await LoadLedgerLinesAsync(dbContext, companyId, result.LedgerEntryId);
++        var sourceMapping = await LoadSourceMappingAsync(dbContext, companyId, result.LedgerEntryId);
+ 
+-        Assert.Equal(40.25m, totals.Debit);
+-        Assert.Equal(40.25m, totals.Credit);
++        Assert.Equal(
++            1,
++            await dbContext.LedgerEntries
++                .IgnoreQueryFilters()
++                .CountAsync(x => x.CompanyId == companyId && x.SourceType == FinanceCashPostingSourceTypes.PaymentAllocation && x.SourceId == "allocation-partial-001"));
++        Assert.Equal(FinanceCashPostingSourceTypes.PaymentAllocation, entry.SourceType);
++        Assert.Equal("allocation-partial-001", entry.SourceId);
++        Assert.Equal(postedAtUtc, entry.PostedAtUtc);
++        Assert.Equal(postedAtUtc, sourceMapping.PostedAtUtc);
++        Assert.Equal(2, lines.Count);
++        Assert.Equal(seed.CashAccountId, lines[0].FinanceAccountId);
++        Assert.Equal(40.25m, lines[0].DebitAmount);
++        Assert.Equal(0m, lines[0].CreditAmount);
++        Assert.Equal(seed.ReceivablesAccountId, lines[1].FinanceAccountId);
++        Assert.Equal(0m, lines[1].DebitAmount);
++        Assert.Equal(40.25m, lines[1].CreditAmount);
++        Assert.Equal(lines.Sum(x => x.DebitAmount), lines.Sum(x => x.CreditAmount));
+     }
+ 
+     [Fact]
+-    public async Task Post_cash_settlement_posts_incremental_partial_replays_once_per_source_timestamp()
++    public async Task ReprocessingLaterSettlementTimestamp_CreatesNewJournalEntryWhileSameTimestampReplayReturnsExistingResult()
+     {
+         var companyId = Guid.NewGuid();
+         await using var connection = await OpenConnectionAsync();
++        var firstPostedAtUtc = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
++        var secondPostedAtUtc = new DateTime(2026, 4, 23, 12, 0, 0, DateTimeKind.Utc);
+         var accessor = new TestCompanyContextAccessor(companyId);
+         await using var dbContext = CreateContext(connection, accessor);
+         await dbContext.Database.EnsureCreatedAsync();
+@@ -172,16 +200,14 @@ public sealed class CashSettlementPostingServiceTests
+             FinanceCashPostingSourceTypes.PaymentSettlement,
+             "payment-progress-001",
+             seed.IncomingPaymentId,
+-            40m,
+-            new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc));
++            40m, firstPostedAtUtc);
+ 
+         var secondCommand = firstCommand with
+         {
+             SettledAmount = 15m,
+-            SettledAtUtc = new DateTime(2026, 4, 23, 12, 0, 0, DateTimeKind.Utc)
++            SettledAtUtc = secondPostedAtUtc
+         };
+ 
+         var first = await service.PostCashSettlementAsync(firstCommand, CancellationToken.None);
+         var replay = await service.PostCashSettlementAsync(firstCommand, CancellationToken.None);
+         var second = await service.PostCashSettlementAsync(secondCommand, CancellationToken.None);
+@@ -191,9 +217,24 @@ public sealed class CashSettlementPostingServiceTests
+         Assert.True(second.Created);
+         Assert.Equal(first.LedgerEntryId, replay.LedgerEntryId);
+         Assert.NotEqual(first.LedgerEntryId, second.LedgerEntryId);
++        Assert.Equal(first.SourceType, replay.SourceType);
++        Assert.Equal(first.SourceId, replay.SourceId);
++        Assert.Equal(first.PostedAtUtc, replay.PostedAtUtc);
+         Assert.Equal(40m, first.PostedAmount);
+         Assert.Equal(15m, second.PostedAmount);
+ 
++        Assert.Equal(
++            2,
++            await dbContext.LedgerEntries
++                .IgnoreQueryFilters()
++                .CountAsync(x =>
++                    x.CompanyId == companyId &&
++                    x.SourceType == FinanceCashPostingSourceTypes.PaymentSettlement &&
++                    x.SourceId == "payment-progress-001"));
++        Assert.Equal(
++            4,
++            await dbContext.LedgerEntryLines
++                .IgnoreQueryFilters()
++                .CountAsync(x => x.CompanyId == companyId && (x.LedgerEntryId == first.LedgerEntryId || x.LedgerEntryId == second.LedgerEntryId)));
+         var sourceMappings = await dbContext.LedgerEntrySourceMappings
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+@@ -204,17 +245,18 @@ public sealed class CashSettlementPostingServiceTests
+             .OrderBy(x => x.PostedAtUtc)
+             .ToListAsync();
+ 
++        Assert.Equal(2, sourceMappings.Select(x => x.LedgerEntryId).Distinct().Count());
+         Assert.Equal(2, sourceMappings.Count);
+-        Assert.Equal(firstCommand.SettledAtUtc, sourceMappings[0].PostedAtUtc);
+-        Assert.Equal(secondCommand.SettledAtUtc, sourceMappings[1].PostedAtUtc);
++        Assert.Equal(firstPostedAtUtc, sourceMappings[0].PostedAtUtc);
++        Assert.Equal(secondPostedAtUtc, sourceMappings[1].PostedAtUtc);
+     }
+ 
+     [Fact]
+-    public async Task Post_cash_settlement_is_idempotent_for_replay()
++    public async Task ReprocessingSameSettledPayment_DoesNotCreateDuplicateJournalEntryAndReturnsExistingPostingResult()
+     {
+         var companyId = Guid.NewGuid();
+         await using var connection = await OpenConnectionAsync();
++        var postedAtUtc = new DateTime(2026, 4, 23, 8, 0, 0, DateTimeKind.Utc);
+         var accessor = new TestCompanyContextAccessor(companyId);
+         await using var dbContext = CreateContext(connection, accessor);
+         await dbContext.Database.EnsureCreatedAsync();
+@@ -224,11 +266,11 @@ public sealed class CashSettlementPostingServiceTests
+         var command = new PostCashSettlementCommand(
+             companyId,
+-            FinanceCashPostingSourceTypes.PaymentAllocation,
+-            "allocation-replay-001",
++            FinanceCashPostingSourceTypes.PaymentSettlement,
++            "payment-replay-001",
+             seed.IncomingPaymentId,
+             55m,
+-            new DateTime(2026, 4, 23, 8, 0, 0, DateTimeKind.Utc));
++            postedAtUtc);
+ 
+         var first = await service.PostCashSettlementAsync(command, CancellationToken.None);
+         var second = await service.PostCashSettlementAsync(command, CancellationToken.None);
+@@ -236,23 +278,65 @@ public sealed class CashSettlementPostingServiceTests
+         Assert.True(first.Created);
+         Assert.False(second.Created);
+         Assert.Equal(first.LedgerEntryId, second.LedgerEntryId);
++        Assert.Equal(first.CompanyId, second.CompanyId);
++        Assert.Equal(first.SourceType, second.SourceType);
++        Assert.Equal(first.SourceId, second.SourceId);
+         Assert.Equal(first.PostedAmount, second.PostedAmount);
++        Assert.Equal(first.PostedAtUtc, second.PostedAtUtc);
++        Assert.Equal(postedAtUtc, second.PostedAtUtc);
++
++        var entry = await LoadLedgerEntryAsync(dbContext, companyId, first.LedgerEntryId);
++        var lines = await LoadLedgerLinesAsync(dbContext, companyId, first.LedgerEntryId);
++        var sourceMapping = await LoadSourceMappingAsync(dbContext, companyId, first.LedgerEntryId);
++
+         Assert.Equal(
+             1,
+             await dbContext.LedgerEntrySourceMappings
+                 .IgnoreQueryFilters()
+-                .CountAsync(x => x.CompanyId == companyId && x.SourceType == FinanceCashPostingSourceTypes.PaymentAllocation && x.SourceId == "allocation-replay-001"));
++                .CountAsync(x => x.CompanyId == companyId && x.SourceType == FinanceCashPostingSourceTypes.PaymentSettlement && x.SourceId == "payment-replay-001"));
+         Assert.Equal(
+             1,
+             await dbContext.LedgerEntries
+                 .IgnoreQueryFilters()
+                 .CountAsync(x =>
+                     x.CompanyId == companyId &&
+-                    x.SourceType == FinanceCashPostingSourceTypes.PaymentAllocation &&
+-                    x.SourceId == "allocation-replay-001"));
++                    x.SourceType == FinanceCashPostingSourceTypes.PaymentSettlement &&
++                    x.SourceId == "payment-replay-001"));
++        Assert.Equal(
++            2,
++            await dbContext.LedgerEntryLines
++                .IgnoreQueryFilters()
++                .CountAsync(x => x.CompanyId == companyId && x.LedgerEntryId == first.LedgerEntryId));
++        Assert.Equal(companyId, entry.CompanyId);
++        Assert.Equal(FinanceCashPostingSourceTypes.PaymentSettlement, entry.SourceType);
++        Assert.Equal("payment-replay-001", entry.SourceId);
++        Assert.Equal(postedAtUtc, entry.PostedAtUtc);
++        Assert.Equal(companyId, sourceMapping.CompanyId);
++        Assert.Equal(FinanceCashPostingSourceTypes.PaymentSettlement, sourceMapping.SourceType);
++        Assert.Equal("payment-replay-001", sourceMapping.SourceId);
++        Assert.Equal(postedAtUtc, sourceMapping.PostedAtUtc);
++        Assert.Equal(lines.Sum(x => x.DebitAmount), lines.Sum(x => x.CreditAmount));
+     }
+ 
+     [Fact]
+-    public async Task Ensure_created_maps_traceability_columns_unique_source_index_and_source_mapping_table()
++    public async Task Ensure_created_maps_traceability_columns_unique_source_index_and_source_mapping_table()
+     {
+         await using var connection = await OpenConnectionAsync();
+         await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(Guid.NewGuid()));
+@@ -397,6 +481,33 @@ public sealed class CashSettlementPostingServiceTests
+         return values;
+     }
+ 
++    private static Task<LedgerEntry> LoadLedgerEntryAsync(
++        VirtualCompanyDbContext dbContext,
++        Guid companyId,
++        Guid ledgerEntryId) =>
++        dbContext.LedgerEntries
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleAsync(x => x.CompanyId == companyId && x.Id == ledgerEntryId);
++
++    private static Task<List<LedgerEntryLine>> LoadLedgerLinesAsync(
++        VirtualCompanyDbContext dbContext,
++        Guid companyId,
++        Guid ledgerEntryId) =>
++        dbContext.LedgerEntryLines
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.LedgerEntryId == ledgerEntryId)
++            .OrderBy(x => x.DebitAmount == 0m)
++            .ToListAsync();
++
++    private static Task<LedgerEntrySourceMapping> LoadSourceMappingAsync(
++        VirtualCompanyDbContext dbContext,
++        Guid companyId,
++        Guid ledgerEntryId) =>
++        dbContext.LedgerEntrySourceMappings
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleAsync(x => x.CompanyId == companyId && x.LedgerEntryId == ledgerEntryId);
++
+     private static async Task<SqliteConnection> OpenConnectionAsync()
+     {
+         var connection = new SqliteConnection("Data Source=:memory:");
+END_OF_PATCH

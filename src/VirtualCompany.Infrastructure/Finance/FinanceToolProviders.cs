@@ -60,6 +60,11 @@ public sealed class InternalFinanceToolProvider : IFinanceToolProvider
         CancellationToken cancellationToken) =>
         _readService.GetBalancesAsync(query, cancellationToken);
 
+    public Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
+        GetFinanceAgentQueryQuery query,
+        CancellationToken cancellationToken) =>
+        _readService.ResolveAgentQueryAsync(query, cancellationToken);
+
     public Task<FinanceTransactionCategoryRecommendationDto> RecommendTransactionCategoryAsync(
         InternalToolExecutionRequest request,
         CancellationToken cancellationToken)
@@ -127,6 +132,11 @@ public sealed class MockFinanceToolProvider : IFinanceToolProvider
     private static readonly Guid CounterpartyId = Guid.Parse("30000000-0000-0000-0000-000000000001");
     private static readonly Guid InvoiceId = Guid.Parse("40000000-0000-0000-0000-000000000001");
     private static readonly Guid BillId = Guid.Parse("50000000-0000-0000-0000-000000000001");
+    private static readonly Guid AllocationId = Guid.Parse("60000000-0000-0000-0000-000000000001");
+    private static readonly Guid PriorTransactionId = Guid.Parse("70000000-0000-0000-0000-000000000001");
+    private static readonly Guid CurrentTransactionId = Guid.Parse("70000000-0000-0000-0000-000000000002");
+    private static readonly Guid PayrollTransactionId = Guid.Parse("70000000-0000-0000-0000-000000000003");
+    private static readonly Guid SoftwareTransactionId = Guid.Parse("70000000-0000-0000-0000-000000000004");
 
     public Task<FinanceCashBalanceDto> GetCashBalanceAsync(
         GetFinanceCashBalanceQuery query,
@@ -305,6 +315,107 @@ public sealed class MockFinanceToolProvider : IFinanceToolProvider
         ];
 
         return Task.FromResult(balances);
+    }
+
+    public Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
+        GetFinanceAgentQueryQuery query,
+        CancellationToken cancellationToken)
+    {
+        var asOfUtc = query.AsOfUtc ?? DefaultAsOfUtc;
+        if (!FinanceAgentQueryRouting.TryResolveIntent(query.QueryText, out var intent))
+        {
+            throw new ArgumentException(
+                $"Unsupported finance agent query '{query.QueryText}'. Supported queries: {string.Join(", ", FinanceAgentQueryRouting.SupportedPhrases)}.",
+                nameof(query));
+        }
+
+        return Task.FromResult(intent switch
+        {
+            var value when string.Equals(value, FinanceAgentQueryIntents.WhatShouldIPayThisWeek, StringComparison.Ordinal) =>
+                new FinanceAgentQueryResultDto(
+                    query.CompanyId,
+                    value,
+                    FinanceAgentQueryRouting.NormalizeQueryText(query.QueryText),
+                    "Selected 1 payable item for this company week.",
+                    "USD",
+                    asOfUtc,
+                    new FinanceAgentQueryPeriodDto(
+                        asOfUtc,
+                        new DateTime(2026, 4, 13, 0, 0, 0, DateTimeKind.Utc),
+                        new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
+                        null,
+                        null,
+                        "UTC"),
+                    [
+                        new FinanceAgentQueryItemDto(
+                            BillId,
+                            "bill",
+                            CounterpartyId,
+                            "Mock Vendor",
+                            "MOCK-BILL-001",
+                            new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
+                            250m,
+                            "USD",
+                            "Due within the current company week.",
+                            1,
+                            null,
+                            null,
+                            [BillId, AllocationId],
+                            [
+                                new FinanceAgentMetricComponentDto("original_amount", "Original amount", 250m, null, 250m, "USD", [BillId]),
+                                new FinanceAgentMetricComponentDto("scheduled_outgoing_this_week", "Scheduled outgoing this week", 125m, null, 125m, "USD", [AllocationId])
+                            ])
+                    ],
+                    [
+                        new FinanceAgentMetricComponentDto("recommended_payables_total", "Recommended payables total", 250m, null, 250m, "USD", [BillId]),
+                        new FinanceAgentMetricComponentDto("scheduled_outgoing_this_week", "Scheduled outgoing this week", 125m, null, 125m, "USD", [AllocationId])
+                    ],
+                    [AllocationId, BillId]),
+            var value when string.Equals(value, FinanceAgentQueryIntents.WhichCustomersAreOverdue, StringComparison.Ordinal) =>
+                new FinanceAgentQueryResultDto(
+                    query.CompanyId,
+                    value,
+                    FinanceAgentQueryRouting.NormalizeQueryText(query.QueryText),
+                    "Selected 1 overdue customer receivable.",
+                    "USD",
+                    asOfUtc,
+                    new FinanceAgentQueryPeriodDto(asOfUtc, null, asOfUtc, null, null, "UTC"),
+                    [
+                        new FinanceAgentQueryItemDto(
+                            InvoiceId,
+                            "invoice",
+                            CounterpartyId,
+                            "Mock Customer",
+                            "MOCK-INV-001",
+                            new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
+                            1500m,
+                            "USD",
+                            "1-30 days overdue.",
+                            1,
+                            15,
+                            "1-30",
+                            [InvoiceId],
+                            [new FinanceAgentMetricComponentDto("remaining_balance", "Remaining balance", 1500m, null, 1500m, "USD", [InvoiceId])])
+                    ],
+                    [new FinanceAgentMetricComponentDto("overdue_receivables_total", "Overdue receivables total", 1500m, null, 1500m, "USD", [InvoiceId])],
+                    [InvoiceId]),
+            _ =>
+                new FinanceAgentQueryResultDto(
+                    query.CompanyId,
+                    FinanceAgentQueryIntents.WhyIsCashDownThisMonth,
+                    FinanceAgentQueryRouting.NormalizeQueryText(query.QueryText),
+                    "Net cash movement is down by 1,100.00 USD month-to-date versus the same number of days in the prior month. Largest drivers: revenue (-800.00 USD) and payroll (-300.00 USD).",
+                    "USD",
+                    asOfUtc,
+                    new FinanceAgentQueryPeriodDto(asOfUtc, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), asOfUtc.AddTicks(1), new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 3, 16, 0, 0, 0, DateTimeKind.Utc), "UTC"),
+                    [new FinanceAgentQueryItemDto(null, "cash_movement_category", null, null, "revenue", null, -800m, "USD", "Cash inflows for revenue are down by 800.00 USD versus the prior comparable period.", 1, null, null, [PriorTransactionId, CurrentTransactionId], [new FinanceAgentMetricComponentDto("revenue", "Revenue", 1200m, 2000m, -800m, "USD", [PriorTransactionId, CurrentTransactionId])])],
+                    [
+                        new FinanceAgentMetricComponentDto("net_cash_movement", "Net cash movement", -250m, 850m, -1100m, "USD", [PriorTransactionId, CurrentTransactionId, PayrollTransactionId, SoftwareTransactionId]),
+                        new FinanceAgentMetricComponentDto("revenue", "Revenue", 1200m, 2000m, -800m, "USD", [PriorTransactionId, CurrentTransactionId]),
+                        new FinanceAgentMetricComponentDto("payroll", "Payroll", -900m, -600m, -300m, "USD", [PayrollTransactionId])
+                    ],
+                    [CurrentTransactionId, PayrollTransactionId, PriorTransactionId, SoftwareTransactionId])
+        });
     }
 
     public Task<FinanceTransactionCategoryRecommendationDto> RecommendTransactionCategoryAsync(

@@ -1,0 +1,178 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+@@ -318,9 +318,42 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+         var bankTransactionCashLedgerLinks = await _dbContext.BankTransactionCashLedgerLinks
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+             .ToListAsync(cancellationToken);
++        var paymentCashLedgerLinks = await _dbContext.PaymentCashLedgerLinks
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .ToListAsync(cancellationToken);
+         var bankTransactions = await _dbContext.BankTransactions
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+             .ToListAsync(cancellationToken);
++        var cashPostingLedgerEntryIds = paymentCashLedgerLinks
++            .Select(x => x.LedgerEntryId)
++            .Concat(bankTransactionCashLedgerLinks.Select(x => x.LedgerEntryId))
++            .Distinct()
++            .ToArray();
++        var cashPostingSourceMappings = await _dbContext.LedgerEntrySourceMappings
++            .IgnoreQueryFilters()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                (cashPostingLedgerEntryIds.Contains(x.LedgerEntryId) ||
++                 x.SourceType == FinanceCashPostingSourceTypes.BankTransaction ||
++                 x.SourceType == FinanceCashPostingSourceTypes.PaymentAllocation ||
++                 x.SourceType == FinanceCashPostingSourceTypes.PaymentSettlement))
++            .ToListAsync(cancellationToken);
++        cashPostingLedgerEntryIds = cashPostingLedgerEntryIds
++            .Concat(cashPostingSourceMappings.Select(x => x.LedgerEntryId))
++            .Distinct()
++            .ToArray();
++        var cashPostingLedgerEntryLines = cashPostingLedgerEntryIds.Length == 0
++            ? []
++            : await _dbContext.LedgerEntryLines
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == companyId && cashPostingLedgerEntryIds.Contains(x.LedgerEntryId))
++                .ToListAsync(cancellationToken);
++        var cashPostingLedgerEntries = cashPostingLedgerEntryIds.Length == 0
++            ? []
++            : await _dbContext.LedgerEntries
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == companyId && cashPostingLedgerEntryIds.Contains(x.Id))
++                .ToListAsync(cancellationToken);
+         var bankAccounts = await _dbContext.CompanyBankAccounts.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync(cancellationToken);
+         var payments = await _dbContext.Payments
+             .IgnoreQueryFilters()
+@@ -353,6 +386,10 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+         var company = await _dbContext.Companies
+             .IgnoreQueryFilters()
+             .SingleAsync(x => x.Id == companyId, cancellationToken);
++        _dbContext.PaymentCashLedgerLinks.RemoveRange(paymentCashLedgerLinks);
++        _dbContext.LedgerEntrySourceMappings.RemoveRange(cashPostingSourceMappings);
++        _dbContext.LedgerEntryLines.RemoveRange(cashPostingLedgerEntryLines);
++        _dbContext.LedgerEntries.RemoveRange(cashPostingLedgerEntries);
+         _dbContext.BankTransactionCashLedgerLinks.RemoveRange(bankTransactionCashLedgerLinks);
+         _dbContext.BankTransactionPaymentLinks.RemoveRange(bankTransactionPaymentLinks);
+         _dbContext.BankTransactions.RemoveRange(bankTransactions);
+diff --git a/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs
+index 3333333..4444444 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs
+@@ -183,6 +183,90 @@ public sealed class FinancialStatementMappingPersistenceTests
+         Assert.Equal(regeneratedPaymentIds.Length, regeneratedPaymentIds.Distinct().Count());
+     }
+ 
++    [Fact]
++    public async Task Finance_seed_bootstrap_replace_existing_removes_cash_posting_traceability_entries()
++    {
++        var companyId = Guid.NewGuid();
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        dbContext.Companies.Add(new Company(companyId, "Bootstrap Cash Traceability Company"));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceSeedBootstrapService(dbContext);
++        await service.GenerateAsync(new FinanceSeedBootstrapCommand(companyId, 42), CancellationToken.None);
++
++        var bankTransaction = await dbContext.BankTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.BookingDate)
++            .FirstAsync();
++        var payment = await dbContext.Payments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.PaymentDate)
++            .FirstAsync();
++        var fiscalPeriodId = await dbContext.FiscalPeriods
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => (Guid?)x.Id)
++            .FirstOrDefaultAsync() ?? Guid.Empty;
++
++        if (fiscalPeriodId == Guid.Empty)
++        {
++            fiscalPeriodId = Guid.NewGuid();
++            dbContext.FiscalPeriods.Add(new FiscalPeriod(
++                fiscalPeriodId,
++                companyId,
++                "FY 2026",
++                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++            await dbContext.SaveChangesAsync();
++        }
++
++        var accountIds = await dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.Code)
++            .Select(x => x.Id)
++            .Take(2)
++            .ToArrayAsync();
++
++        var ledgerEntryId = Guid.NewGuid();
++        dbContext.LedgerEntries.Add(new LedgerEntry(
++            ledgerEntryId,
++            companyId,
++            fiscalPeriodId,
++            "CSP-LEGACY-001",
++            bankTransaction.BookingDate,
++            LedgerEntryStatuses.Posted,
++            "Legacy cash settlement",
++            FinanceCashPostingSourceTypes.BankTransaction,
++            bankTransaction.Id.ToString("D"),
++            bankTransaction.BookingDate,
++            bankTransaction.BookingDate,
++            bankTransaction.BookingDate));
++        dbContext.LedgerEntryLines.AddRange(
++            new LedgerEntryLine(Guid.NewGuid(), companyId, ledgerEntryId, accountIds[0], 100m, 0m, bankTransaction.Currency, "Legacy cash settlement"),
++            new LedgerEntryLine(Guid.NewGuid(), companyId, ledgerEntryId, accountIds[1], 0m, 100m, bankTransaction.Currency, "Legacy cash settlement"));
++        dbContext.LedgerEntrySourceMappings.Add(new LedgerEntrySourceMapping(
++            Guid.NewGuid(),
++            companyId,
++            ledgerEntryId,
++            FinanceCashPostingSourceTypes.BankTransaction,
++            bankTransaction.Id.ToString("D"),
++            bankTransaction.BookingDate,
++            bankTransaction.BookingDate));
++        dbContext.BankTransactionCashLedgerLinks.Add(new BankTransactionCashLedgerLink(
++            Guid.NewGuid(),
++            companyId,
++            bankTransaction.Id,
++            ledgerEntryId,
++            $"bank-transaction-ledger:{companyId:N}:{bankTransaction.Id:N}",
++            bankTransaction.BookingDate));
++        dbContext.PaymentCashLedgerLinks.Add(new PaymentCashLedgerLink(
++            Guid.NewGuid(),
++            companyId,
++            payment.Id,
++            ledgerEntryId,
++            FinanceCashPostingSourceTypes.BankTransaction,
++            bankTransaction.Id.ToString("D"),
++            bankTransaction.BookingDate,
++            bankTransaction.BookingDate));
++        await dbContext.SaveChangesAsync();
++
++        await service.GenerateAsync(new FinanceSeedBootstrapCommand(companyId, 42, ReplaceExisting: true), CancellationToken.None);
++
++        Assert.Empty(await dbContext.PaymentCashLedgerLinks.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
++        Assert.Empty(await dbContext.BankTransactionCashLedgerLinks.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
++        Assert.Empty(await dbContext.LedgerEntrySourceMappings.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && (x.SourceType == FinanceCashPostingSourceTypes.BankTransaction || x.SourceType == FinanceCashPostingSourceTypes.PaymentAllocation || x.SourceType == FinanceCashPostingSourceTypes.PaymentSettlement)).ToListAsync());
++        Assert.Empty(await dbContext.LedgerEntryLines.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && x.LedgerEntryId == ledgerEntryId).ToListAsync());
++        Assert.False(await dbContext.LedgerEntries.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.Id == ledgerEntryId));
++    }
++
+     private static async Task<string[]> ReadSeededMappingsAsync(VirtualCompanyDbContext dbContext, Guid companyId) =>
+         await dbContext.FinancialStatementMappings
+             .IgnoreQueryFilters()
+END_OF_PATCH

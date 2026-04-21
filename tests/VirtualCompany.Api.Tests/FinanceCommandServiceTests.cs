@@ -94,6 +94,37 @@ public sealed class FinanceCommandServiceTests
     }
 
     [Fact]
+    public async Task Create_counterparty_rejects_negative_credit_limit_with_field_error()
+    {
+        var companyId = Guid.NewGuid();
+        await using var connection = await OpenConnectionAsync();
+        var accessor = new TestCompanyContextAccessor(companyId);
+        await using var dbContext = CreateContext(connection, accessor);
+        await dbContext.Database.EnsureCreatedAsync();
+        dbContext.Companies.Add(new Company(companyId, "Counterparty Validation Company"));
+        await dbContext.SaveChangesAsync();
+
+        var service = new CompanyFinanceCommandService(dbContext, accessor);
+        var exception = await Assert.ThrowsAsync<FinanceValidationException>(() =>
+            service.CreateCounterpartyAsync(
+                new CreateFinanceCounterpartyCommand(
+                    companyId,
+                    "customer",
+                    new FinanceCounterpartyUpsertDto(
+                        "Fourth Coffee",
+                        "finance@fourthcoffee.example",
+                        "Net30",
+                        null,
+                        -1m,
+                        "bank_transfer",
+                        "1100")),
+                CancellationToken.None));
+
+        Assert.True(exception.Errors.ContainsKey("CreditLimit"));
+        Assert.Equal(0, await dbContext.FinanceCounterparties.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
+    }
+
+    [Fact]
     public async Task Finance_writes_reject_records_from_another_tenant()
     {
         var companyAId = Guid.NewGuid();

@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Infrastructure.Companies;
@@ -236,6 +237,14 @@ public sealed class NoOpInternalCompanyToolContract : IInternalCompanyToolContra
                     ["amount"] = JsonValue.Create(0m),
                     ["currency"] = JsonValue.Create("USD"),
                     ["accounts"] = new JsonArray()
+                }
+            },
+            "resolve_finance_agent_query" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["result"] = new JsonObject
+                {
+                    ["intent"] = JsonValue.Create(FinanceAgentQueryIntents.WhatShouldIPayThisWeek),
+                    ["summary"] = JsonValue.Create("Selected 0 payable item(s) for the current company week.")
                 }
             },
             "list_transactions" or "list_uncategorized_transactions" => new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)

@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-23.2.2",
+  "promptPath": ".ai-design/prompts/TASK-23.2.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T13:10:31.434Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T13-10-31-434Z_TASK-23.2.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T13-10-31-434Z_TASK-23.2.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T13:12:43.666Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ontains(balanceSheet.EquityLines, x => x.AccountCode == \"current_earnings\" && x.Amount == 900m);\n     }\n \n+    [Fact]\n+    public async Task Report_endpoints_return_not_found_when_fiscal_period_is_out_of_scope()\n+    {\n+        var seed = await SeedOpenPeriodScenarioAsync();\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+        var missingFiscalPeriodId = Guid.NewGuid();\n+\n+        var profitAndLossResponse = await client.GetAsync($\"/internal/companies/{seed.CompanyId:D}/finance/reports/profit-loss?fiscalPeriodId={missingFiscalPeriodId:D}\");\n+        Assert.Equal(HttpStatusCode.NotFound, profitAndLossResponse.StatusCode);\n+\n+        var balanceSheetResponse = await client.GetAsync($\"/internal/companies/{seed.CompanyId:D}/finance/reports/balance-sheet?fiscalPeriodId={missingFiscalPeriodId:D}\");\n+        Assert.Equal(HttpStatusCode.NotFound, balanceSheetResponse.StatusCode);\n+    }\n+\n+    [Fact]\n+    public async Task Report_endpoints_are_scoped_to_company_membership_context()\n+    {\n+        var authorizedSeed = await SeedOpenPeriodScenarioAsync();\n+        var outOfScopeSeed = await SeedOpenPeriodScenarioAsync();\n+        using var client = CreateAuthenticatedClient(authorizedSeed.Subject, authorizedSeed.Email, authorizedSeed.DisplayName);\n+\n+        var profitAndLossResponse = await client.GetAsync($\"/internal/companies/{outOfScopeSeed.CompanyId:D}/finance/reports/profit-loss?fiscalPeriodId={outOfScopeSeed.JanuaryPeriodId:D}\");\n+        Assert.Equal(HttpStatusCode.Forbidden, profitAndLossResponse.StatusCode);\n+\n+        var balanceSheetResponse = await client.GetAsync($\"/internal/companies/{outOfScopeSeed.CompanyId:D}/finance/reports/balance-sheet?fiscalPeriodId={outOfScopeSeed.JanuaryPeriodId:D}\");\n+        Assert.Equal(HttpStatusCode.Forbidden, balanceSheetResponse.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task Closed_period_reports_use_trial_balance_snapshots_for_stable_values()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "t.EquityLines, x => x.AccountCode == \"current_earnings\" && x.Amount == 900m);\n     }\n \n+    [Fact]\n+    public async Task Report_endpoints_return_not_found_when_fiscal_period_is_out_of_scope()\n+    {\n+        var seed = await SeedOpenPeriodScenarioAsync();\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+        var missingFiscalPeriodId = Guid.NewGuid();\n+\n+        var profitAndLossResponse = await client.GetAsync($\"/internal/companies/{seed.CompanyId:D}/finance/reports/profit-loss?fiscalPeriodId={missingFiscalPeriodId:D}\");\n+        Assert.Equal(HttpStatusCode.NotFound, profitAndLossResponse.StatusCode);\n+\n+        var balanceSheetResponse = await client.GetAsync($\"/internal/companies/{seed.CompanyId:D}/finance/reports/balance-sheet?fiscalPeriodId={missingFiscalPeriodId:D}\");\n+        Assert.Equal(HttpStatusCode.NotFound, balanceSheetResponse.StatusCode);\n+    }\n+\n+    [Fact]\n+    public async Task Report_endpoints_are_scoped_to_company_membership_context()\n+    {\n+        var authorizedSeed = await SeedOpenPeriodScenarioAsync();\n+        var outOfScopeSeed = await SeedOpenPeriodScenarioAsync();\n+        using var client = CreateAuthenticatedClient(authorizedSeed.Subject, authorizedSeed.Email, authorizedSeed.DisplayName);\n+\n+        var profitAndLossResponse = await client.GetAsync($\"/internal/companies/{outOfScopeSeed.CompanyId:D}/finance/reports/profit-loss?fiscalPeriodId={outOfScopeSeed.JanuaryPeriodId:D}\");\n+        Assert.Equal(HttpStatusCode.Forbidden, profitAndLossResponse.StatusCode);\n+\n+        var balanceSheetResponse = await client.GetAsync($\"/internal/companies/{outOfScopeSeed.CompanyId:D}/finance/reports/balance-sheet?fiscalPeriodId={outOfScopeSeed.JanuaryPeriodId:D}\");\n+        Assert.Equal(HttpStatusCode.Forbidden, balanceSheetResponse.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task Closed_period_reports_use_trial_balance_snapshots_for_stable_values()\n     {\nEND_OF_PATCH\ntokens used\n87,206\n",
+  "verbosityMode": "verbose"
+}

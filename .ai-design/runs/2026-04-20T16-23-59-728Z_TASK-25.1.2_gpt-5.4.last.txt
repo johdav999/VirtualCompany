@@ -1,0 +1,705 @@
+diff --git a/src/VirtualCompany.Domain/Finance/ReconciliationScoring.cs b/src/VirtualCompany.Domain/Finance/ReconciliationScoring.cs
+--- a/src/VirtualCompany.Domain/Finance/ReconciliationScoring.cs
++++ b/src/VirtualCompany.Domain/Finance/ReconciliationScoring.cs
+@@ -1,377 +1,522 @@
+ using System.Globalization;
+ using System.Text;
+ 
+ namespace VirtualCompany.Domain.Finance;
+ 
+ public static class ReconciliationRuleNames
+ {
+-    public const string Amount = "amount";
+-    public const string Date = "date";
+-    public const string Reference = "reference";
+-    public const string Counterparty = "counterparty";
++    public const string AmountExact = "amount_exact";
++    public const string AmountNear = "amount_near";
++    public const string DateProximity = "date_proximity";
++    public const string ReferenceSimilarity = "reference_similarity";
++    public const string CounterpartySimilarity = "counterparty_similarity";
++}
++
++public sealed record ReconciliationScoringWeights
++{
++    public static ReconciliationScoringWeights Default { get; } = new(0.40m, 0.30m, 0.20m, 0.25m, 0.15m);
++
++    public ReconciliationScoringWeights(
++        decimal amountExactMatch,
++        decimal amountNearMatch,
++        decimal dateProximity,
++        decimal referenceSimilarity,
++        decimal counterpartySimilarity)
++    {
++        AmountExactMatch = ClampWeight(amountExactMatch);
++        AmountNearMatch = ClampWeight(amountNearMatch);
++        DateProximity = ClampWeight(dateProximity);
++        ReferenceSimilarity = ClampWeight(referenceSimilarity);
++        CounterpartySimilarity = ClampWeight(counterpartySimilarity);
++    }
++
++    public decimal AmountExactMatch { get; }
++    public decimal AmountNearMatch { get; }
++    public decimal DateProximity { get; }
++    public decimal ReferenceSimilarity { get; }
++    public decimal CounterpartySimilarity { get; }
++
++    public bool HasPositiveWeight =>
++        AmountExactMatch > 0m ||
++        AmountNearMatch > 0m ||
++        DateProximity > 0m ||
++        ReferenceSimilarity > 0m ||
++        CounterpartySimilarity > 0m;
++
++    private static decimal ClampWeight(decimal value) =>
++        decimal.Round(Math.Max(0m, value), 2, MidpointRounding.AwayFromZero);
+ }
+ 
+ public sealed record ReconciliationScoringSettings
+ {
+-    public static ReconciliationScoringSettings Default { get; } = new(5m, 7);
++    public static ReconciliationScoringSettings Default { get; } = new(5m, 7, ReconciliationScoringWeights.Default);
+ 
+-    public ReconciliationScoringSettings(decimal nearAmountTolerance, int dateProximityWindowDays)
++    public ReconciliationScoringSettings(
++        decimal nearAmountTolerance,
++        int dateProximityWindowDays,
++        ReconciliationScoringWeights? weights = null)
+     {
+         NearAmountTolerance = decimal.Round(Math.Max(0m, nearAmountTolerance), 2, MidpointRounding.AwayFromZero);
+         DateProximityWindowDays = Math.Max(0, dateProximityWindowDays);
++        Weights = weights is { HasPositiveWeight: true }
++            ? weights
++            : ReconciliationScoringWeights.Default;
+     }
+ 
+     public decimal NearAmountTolerance { get; }
+     public int DateProximityWindowDays { get; }
++    public ReconciliationScoringWeights Weights { get; }
+ }
+ 
+ public sealed record ReconciliationComparableRecord(
+     Guid RecordId,
+@@ -40,7 +185,8 @@ public sealed record ReconciliationRuleDetail(
+     decimal Weight,
+     bool Matched,
+     string Explanation,
+     string? SourceValue = null,
+-    string? CandidateValue = null);
++    string? CandidateValue = null,
++    decimal AwardedScore = 0m);
+ 
+ public sealed record ReconciliationSuggestion(
+     Guid CandidatePaymentId,
+@@ -56,10 +202,6 @@ public sealed record ReconciliationSuggestion(
+ 
+ public static class ReconciliationScoringEngine
+ {
+-    private const decimal AmountWeight = 0.40m;
+-    private const decimal DateWeight = 0.20m;
+-    private const decimal ReferenceWeight = 0.25m;
+-    private const decimal CounterpartyWeight = 0.15m;
+-
+     public static IReadOnlyList<ReconciliationSuggestion> ScoreCandidates(
+         ReconciliationComparableRecord source,
+         IEnumerable<ReconciliationComparableRecord> candidates,
+@@ -72,10 +214,11 @@ public static class ReconciliationScoringEngine
+         var scored = candidates
+             .Select(candidate => BuildSuggestion(source, candidate, settings))
+             .OrderByDescending(x => x.ConfidenceScore)
+-            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.Amount))
+-            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.Date))
+-            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.Reference))
+-            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.Counterparty))
++            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.AmountExact))
++            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.AmountNear))
++            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.DateProximity))
++            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.ReferenceSimilarity))
++            .ThenByDescending(x => GetRuleScore(x.RuleDetails, ReconciliationRuleNames.CounterpartySimilarity))
+             .ThenBy(x => x.CandidatePaymentId)
+             .ToList();
+ 
+@@ -92,34 +235,47 @@ public static class ReconciliationScoringEngine
+         ReconciliationComparableRecord source,
+         ReconciliationComparableRecord candidate,
+         ReconciliationScoringSettings settings)
+     {
+-        var amountDetail = ScoreAmount(source, candidate, settings);
+-        var dateDetail = ScoreDate(source, candidate, settings);
++        var amountExactDetail = ScoreAmountExact(source, candidate, settings.Weights.AmountExactMatch);
++        var amountNearDetail = ScoreAmountNear(source, candidate, settings);
++        var dateDetail = ScoreDate(source, candidate, settings, settings.Weights.DateProximity);
+         var referenceDetail = ScoreTextRule(
+-            ReconciliationRuleNames.Reference,
++            ReconciliationRuleNames.ReferenceSimilarity,
+             source.Reference,
+             candidate.Reference,
+-            ReferenceWeight,
++            settings.Weights.ReferenceSimilarity,
+             "Reference");
+         var counterpartyDetail = ScoreTextRule(
+-            ReconciliationRuleNames.Counterparty,
++            ReconciliationRuleNames.CounterpartySimilarity,
+             source.Counterparty,
+             candidate.Counterparty,
+-            CounterpartyWeight,
++            settings.Weights.CounterpartySimilarity,
+             "Counterparty");
+ 
+-        var details = new[]
++        var rawDetails = new[]
+         {
+-            amountDetail,
++            amountExactDetail,
++            amountNearDetail,
+             dateDetail,
+             referenceDetail,
+             counterpartyDetail
+         };
+ 
+-        var confidenceScore = RoundScore(details.Sum(x => x.Score * x.Weight));
++        var normalizationWeight = GetNormalizationWeight(rawDetails, settings.Weights);
++        var confidenceScore = normalizationWeight == 0m
++            ? 0m
++            : RoundScore(rawDetails.Sum(x => x.Score * x.Weight) / normalizationWeight);
++        var details = rawDetails
++            .Select(detail => detail with
++            {
++                AwardedScore = normalizationWeight == 0m
++                    ? 0m
++                    : RoundScore((detail.Score * detail.Weight) / normalizationWeight)
++            })
++            .ToArray();
+         var explanation = string.Join(
+             "; ",
+             details
+                 .Where(x => x.Matched)
+                 .Select(x => x.Explanation));
+ 
+@@ -136,25 +292,24 @@ public static class ReconciliationScoringEngine
+             details,
+             string.IsNullOrWhiteSpace(explanation) ? "No reconciliation rules matched." : explanation);
+     }
+ 
+-    private static ReconciliationRuleDetail ScoreAmount(
++    private static ReconciliationRuleDetail ScoreAmountExact(
+         ReconciliationComparableRecord source,
+         ReconciliationComparableRecord candidate,
+-        ReconciliationScoringSettings settings)
++        decimal weight)
+     {
+-        var sourceCurrency = NormalizeCurrency(source.Currency);
+-        var candidateCurrency = NormalizeCurrency(candidate.Currency);
+-        var sourceAmount = decimal.Round(Math.Abs(source.Amount), 2, MidpointRounding.AwayFromZero);
+-        var candidateAmount = decimal.Round(Math.Abs(candidate.Amount), 2, MidpointRounding.AwayFromZero);
+-
+-        if (!string.Equals(sourceCurrency, candidateCurrency, StringComparison.OrdinalIgnoreCase))
++        var comparison = CreateAmountComparison(source, candidate);
++        if (!comparison.CurrencyMatches)
+         {
+             return new ReconciliationRuleDetail(
+-                ReconciliationRuleNames.Amount,
++                ReconciliationRuleNames.AmountExact,
+                 0m,
+-                AmountWeight,
++                weight,
+                 false,
+-                $"Currency mismatch ({sourceCurrency} vs {candidateCurrency}).",
+-                FormatAmount(sourceAmount, sourceCurrency),
+-                FormatAmount(candidateAmount, candidateCurrency));
++                $"Currency mismatch ({comparison.SourceCurrency} vs {comparison.CandidateCurrency}).",
++                comparison.SourceDisplay,
++                comparison.CandidateDisplay);
+         }
+ 
+-        var difference = decimal.Round(Math.Abs(sourceAmount - candidateAmount), 2, MidpointRounding.AwayFromZero);
+-        if (difference == 0m)
++        if (comparison.Difference == 0m)
+         {
+             return new ReconciliationRuleDetail(
+-                ReconciliationRuleNames.Amount,
++                ReconciliationRuleNames.AmountExact,
+                 1m,
+-                AmountWeight,
++                weight,
+                 true,
+                 "Amount exact match.",
+-                FormatAmount(sourceAmount, sourceCurrency),
+-                FormatAmount(candidateAmount, candidateCurrency));
++                comparison.SourceDisplay,
++                comparison.CandidateDisplay);
+         }
+ 
++        return new ReconciliationRuleDetail(
++            ReconciliationRuleNames.AmountExact,
++            0m,
++            weight,
++            false,
++            $"Amount difference {comparison.Difference.ToString("0.00", CultureInfo.InvariantCulture)} is not an exact match.",
++            comparison.SourceDisplay,
++            comparison.CandidateDisplay);
++    }
++
++    private static ReconciliationRuleDetail ScoreAmountNear(
++        ReconciliationComparableRecord source,
++        ReconciliationComparableRecord candidate,
++        ReconciliationScoringSettings settings)
++    {
++        var comparison = CreateAmountComparison(source, candidate);
++        if (!comparison.CurrencyMatches)
++        {
++            return new ReconciliationRuleDetail(
++                ReconciliationRuleNames.AmountNear,
++                0m,
++                settings.Weights.AmountNearMatch,
++                false,
++                $"Currency mismatch ({comparison.SourceCurrency} vs {comparison.CandidateCurrency}).",
++                comparison.SourceDisplay,
++                comparison.CandidateDisplay);
++        }
++
++        if (comparison.Difference == 0m)
++        {
++            return new ReconciliationRuleDetail(
++                ReconciliationRuleNames.AmountNear,
++                0m,
++                settings.Weights.AmountNearMatch,
++                false,
++                "Exact amount match takes precedence over near-match scoring.",
++                comparison.SourceDisplay,
++                comparison.CandidateDisplay);
++        }
++
++        if (settings.NearAmountTolerance <= 0m)
++        {
++            return new ReconciliationRuleDetail(
++                ReconciliationRuleNames.AmountNear,
++                0m,
++                settings.Weights.AmountNearMatch,
++                false,
++                "Near amount tolerance is disabled for this tenant.",
++                comparison.SourceDisplay,
++                comparison.CandidateDisplay);
++        }
++
+-        if (settings.NearAmountTolerance > 0m && difference <= settings.NearAmountTolerance)
++        if (comparison.Difference <= settings.NearAmountTolerance)
+         {
+-            var ratio = 1m - (difference / settings.NearAmountTolerance);
++            var ratio = 1m - (comparison.Difference / settings.NearAmountTolerance);
+             var score = 0.70m + (0.20m * Math.Clamp(ratio, 0m, 1m));
+             return new ReconciliationRuleDetail(
+-                ReconciliationRuleNames.Amount,
++                ReconciliationRuleNames.AmountNear,
+                 RoundScore(score),
+-                AmountWeight,
++                settings.Weights.AmountNearMatch,
+                 true,
+                 $"Amount within tenant tolerance of {settings.NearAmountTolerance.ToString("0.00", CultureInfo.InvariantCulture)}.",
+-                FormatAmount(sourceAmount, sourceCurrency),
+-                FormatAmount(candidateAmount, candidateCurrency));
++                comparison.SourceDisplay,
++                comparison.CandidateDisplay);
+         }
+ 
+         return new ReconciliationRuleDetail(
+-            ReconciliationRuleNames.Amount,
++            ReconciliationRuleNames.AmountNear,
+             0m,
+-            AmountWeight,
++            settings.Weights.AmountNearMatch,
+             false,
+-            difference > 0m
+-                ? $"Amount difference {difference.ToString("0.00", CultureInfo.InvariantCulture)} exceeds tenant tolerance of {settings.NearAmountTolerance.ToString("0.00", CultureInfo.InvariantCulture)}."
+-                : "Amount did not match.",
+-            FormatAmount(sourceAmount, sourceCurrency),
+-            FormatAmount(candidateAmount, candidateCurrency));
++            $"Amount difference {comparison.Difference.ToString("0.00", CultureInfo.InvariantCulture)} exceeds tenant tolerance of {settings.NearAmountTolerance.ToString("0.00", CultureInfo.InvariantCulture)}.",
++            comparison.SourceDisplay,
++            comparison.CandidateDisplay);
+     }
+ 
+     private static ReconciliationRuleDetail ScoreDate(
+         ReconciliationComparableRecord source,
+         ReconciliationComparableRecord candidate,
+-        ReconciliationScoringSettings settings)
++        ReconciliationScoringSettings settings,
++        decimal weight)
+     {
+         var sourceDate = NormalizeUtc(source.Date).Date;
+         var candidateDate = NormalizeUtc(candidate.Date).Date;
+         var differenceDays = Math.Abs((sourceDate - candidateDate).Days);
+ 
+         if (differenceDays == 0)
+         {
+             return new ReconciliationRuleDetail(
+-                ReconciliationRuleNames.Date,
++                ReconciliationRuleNames.DateProximity,
+                 1m,
+-                DateWeight,
++                weight,
+                 true,
+                 "Date exact match.",
+                 sourceDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                 candidateDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+@@ -163,10 +318,10 @@ public static class ReconciliationScoringEngine
+         if (differenceDays <= settings.DateProximityWindowDays && settings.DateProximityWindowDays > 0)
+         {
+             var score = 1m - (differenceDays / (decimal)(settings.DateProximityWindowDays + 1));
+             return new ReconciliationRuleDetail(
+-                ReconciliationRuleNames.Date,
++                ReconciliationRuleNames.DateProximity,
+                 RoundScore(score),
+-                DateWeight,
++                weight,
+                 true,
+                 $"Date difference {differenceDays} day(s) within window {settings.DateProximityWindowDays}.",
+                 sourceDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                 candidateDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+@@ -174,10 +329,10 @@ public static class ReconciliationScoringEngine
+         }
+ 
+         return new ReconciliationRuleDetail(
+-            ReconciliationRuleNames.Date,
++            ReconciliationRuleNames.DateProximity,
+             0m,
+-            DateWeight,
++            weight,
+             false,
+             settings.DateProximityWindowDays == 0
+                 ? "Date did not exactly match."
+                 : $"Date difference {differenceDays} day(s) is outside window {settings.DateProximityWindowDays}.",
+@@ -316,6 +471,30 @@ public static class ReconciliationScoringEngine
+             sourceValue?.Trim(),
+             candidateValue?.Trim());
+     }
+ 
++    private static decimal GetNormalizationWeight(
++        IReadOnlyList<ReconciliationRuleDetail> details,
++        ReconciliationScoringWeights weights)
++    {
++        var amountWeight = details.Any(x => x.RuleName == ReconciliationRuleNames.AmountExact && x.Matched)
++            ? weights.AmountExactMatch
++            : details.Any(x => x.RuleName == ReconciliationRuleNames.AmountNear && x.Matched)
++                ? weights.AmountNearMatch
++                : Math.Max(weights.AmountExactMatch, weights.AmountNearMatch);
++
++        return amountWeight +
++            weights.DateProximity +
++            weights.ReferenceSimilarity +
++            weights.CounterpartySimilarity;
++    }
++
+     private static decimal GetRuleScore(
+         IReadOnlyList<ReconciliationRuleDetail> details,
+         string ruleName) =>
+         details.First(x => string.Equals(x.RuleName, ruleName, StringComparison.Ordinal)).Score;
++
++    private static AmountComparison CreateAmountComparison(
++        ReconciliationComparableRecord source,
++        ReconciliationComparableRecord candidate)
++    {
++        var sourceCurrency = NormalizeCurrency(source.Currency);
++        var candidateCurrency = NormalizeCurrency(candidate.Currency);
++        var sourceAmount = decimal.Round(Math.Abs(source.Amount), 2, MidpointRounding.AwayFromZero);
++        var candidateAmount = decimal.Round(Math.Abs(candidate.Amount), 2, MidpointRounding.AwayFromZero);
++
++        return new AmountComparison(
++            sourceCurrency,
++            candidateCurrency,
++            sourceAmount,
++            candidateAmount,
++            decimal.Round(Math.Abs(sourceAmount - candidateAmount), 2, MidpointRounding.AwayFromZero),
++            string.Equals(sourceCurrency, candidateCurrency, StringComparison.OrdinalIgnoreCase),
++            FormatAmount(sourceAmount, sourceCurrency),
++            FormatAmount(candidateAmount, candidateCurrency));
++    }
+ 
+     private static string NormalizeCurrency(string currency) =>
+         string.IsNullOrWhiteSpace(currency)
+             ? string.Empty
+@@ -374,4 +553,13 @@ public static class ReconciliationScoringEngine
+             : $"{amount.ToString("0.00", CultureInfo.InvariantCulture)} {currency}";
+ 
+     private static decimal RoundScore(decimal score) =>
+         decimal.Round(Math.Clamp(score, 0m, 1m), 2, MidpointRounding.AwayFromZero);
++
++    private sealed record AmountComparison(
++        string SourceCurrency,
++        string CandidateCurrency,
++        decimal SourceAmount,
++        decimal CandidateAmount,
++        decimal Difference,
++        bool CurrencyMatches,
++        string SourceDisplay,
++        string CandidateDisplay);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationScoringService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationScoringService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationScoringService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyReconciliationScoringService.cs
+@@ -132,118 +132,141 @@ public sealed class CompanyReconciliationScoringSettingsProvider : IReconciliati
+ {
+     private const string ExtensionKey = "reconciliationScoring";
+     private const string AmountToleranceKey = "nearAmountTolerance";
+     private const string DateWindowKey = "dateProximityWindowDays";
++    private const string WeightsKey = "scoringWeights";
++    private const string AmountExactWeightKey = "amountExactMatch";
++    private const string AmountNearWeightKey = "amountNearMatch";
++    private const string DateWeightKey = "dateProximity";
++    private const string ReferenceWeightKey = "referenceSimilarity";
++    private const string CounterpartyWeightKey = "counterpartySimilarity";
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyContextAccessor? _companyContextAccessor;
+ 
+     public CompanyReconciliationScoringSettingsProvider(VirtualCompanyDbContext dbContext)
+@@ -175,9 +198,28 @@ public sealed class CompanyReconciliationScoringSettingsProvider : IReconciliati
+         {
+             return ReconciliationScoringSettings.Default;
+         }
+ 
+-        var tolerance = ReadDecimal(values, AmountToleranceKey) ?? ReconciliationScoringSettings.Default.NearAmountTolerance;
+-        var dateWindow = ReadInt(values, DateWindowKey) ?? ReconciliationScoringSettings.Default.DateProximityWindowDays;
+-        return new ReconciliationScoringSettings(tolerance, dateWindow);
++        return BuildSettings(values);
+     }
+ 
+     private void EnsureTenant(Guid companyId)
+     {
+@@ -189,6 +231,23 @@ public sealed class CompanyReconciliationScoringSettingsProvider : IReconciliati
+             throw new UnauthorizedAccessException("Reconciliation scoring settings can only be resolved for the active company context.");
+         }
+     }
+ 
++    private static ReconciliationScoringSettings BuildSettings(JsonObject values)
++    {
++        var defaultSettings = ReconciliationScoringSettings.Default;
++        var defaultWeights = defaultSettings.Weights;
++        var configuredWeights = values[WeightsKey] as JsonObject;
++        var weightValues = configuredWeights ?? values;
++
++        var tolerance = ReadDecimal(values, AmountToleranceKey) ?? defaultSettings.NearAmountTolerance;
++        var dateWindow = ReadInt(values, DateWindowKey) ?? defaultSettings.DateProximityWindowDays;
++        var weights = new ReconciliationScoringWeights(
++            ReadDecimal(weightValues, AmountExactWeightKey) ?? defaultWeights.AmountExactMatch,
++            ReadDecimal(weightValues, AmountNearWeightKey) ?? defaultWeights.AmountNearMatch,
++            ReadDecimal(weightValues, DateWeightKey) ?? defaultWeights.DateProximity,
++            ReadDecimal(weightValues, ReferenceWeightKey) ?? defaultWeights.ReferenceSimilarity,
++            ReadDecimal(weightValues, CounterpartyWeightKey) ?? defaultWeights.CounterpartySimilarity);
++
++        return new ReconciliationScoringSettings(tolerance, dateWindow, weights);
++    }
++
+     private static decimal? ReadDecimal(JsonObject values, string key)
+     {
+         if (!values.TryGetPropertyValue(key, out var node) || node is null)
+diff --git a/tests/VirtualCompany.Api.Tests/ReconciliationScoringServiceTests.cs b/tests/VirtualCompany.Api.Tests/ReconciliationScoringServiceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/ReconciliationScoringServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ReconciliationScoringServiceTests.cs
+@@ -11,26 +11,27 @@ public sealed class ReconciliationScoringServiceTests
+     public async Task Exact_match_scores_near_one_and_ranks_first()
+     {
+         var companyId = Guid.NewGuid();
+-        var service = CreateService(new ReconciliationScoringSettings(5m, 7m is int i ? i : 7), companyId);
++        var service = CreateService(new ReconciliationScoringSettings(5m, 7), companyId);
+ 
+         var result = await service.ScoreBankTransactionCandidatesAsync(
+             new ScoreBankTransactionPaymentCandidatesQuery(
+                 companyId,
+                 Guid.NewGuid(),
+@@ -29,8 +30,9 @@ public sealed class ReconciliationScoringServiceTests
+ 
+         var top = Assert.Single(result.Suggestions.Where(x => x.Rank == 1));
+         Assert.Equal(1.00m, top.ConfidenceScore);
+-        Assert.Equal(1.00m, Rule(top, ReconciliationRuleNames.Amount).Score);
+-        Assert.Equal(1.00m, Rule(top, ReconciliationRuleNames.Date).Score);
+-        Assert.Equal(1.00m, Rule(top, ReconciliationRuleNames.Reference).Score);
+-        Assert.Equal(1.00m, Rule(top, ReconciliationRuleNames.Counterparty).Score);
++        Assert.Equal(1.00m, Rule(top, ReconciliationRuleNames.AmountExact).Score);
++        Assert.False(Rule(top, ReconciliationRuleNames.AmountNear).Matched);
++        Assert.Equal(1.00m, Rule(top, ReconciliationRuleNames.DateProximity).Score);
++        Assert.Equal(1.00m, Rule(top, ReconciliationRuleNames.ReferenceSimilarity).Score);
++        Assert.Equal(1.00m, Rule(top, ReconciliationRuleNames.CounterpartySimilarity).Score);
+     }
+@@ -40,30 +41,31 @@ public sealed class ReconciliationScoringServiceTests
+     public async Task Near_amount_match_scores_lower_than_exact_and_above_zero()
+     {
+         var companyId = Guid.NewGuid();
+         var service = CreateService(new ReconciliationScoringSettings(5m, 7), companyId);
+ 
+@@ -64,5 +66,6 @@ public sealed class ReconciliationScoringServiceTests
+         Assert.Equal(1.00m, exact.ConfidenceScore);
+         Assert.InRange(near.ConfidenceScore, 0.01m, 0.99m);
+         Assert.True(near.ConfidenceScore < exact.ConfidenceScore);
+-        Assert.True(Rule(near, ReconciliationRuleNames.Amount).Matched);
+-        Assert.True(Rule(near, ReconciliationRuleNames.Amount).Score < 1.00m);
++        Assert.False(Rule(near, ReconciliationRuleNames.AmountExact).Matched);
++        Assert.True(Rule(near, ReconciliationRuleNames.AmountNear).Matched);
++        Assert.True(Rule(near, ReconciliationRuleNames.AmountNear).Score < 1.00m);
+     }
+@@ -72,23 +74,24 @@ public sealed class ReconciliationScoringServiceTests
+     public async Task Date_only_match_returns_date_contribution_only()
+     {
+         var companyId = Guid.NewGuid();
+         var service = CreateService(new ReconciliationScoringSettings(0m, 7), companyId);
+ 
+@@ -89,6 +92,7 @@ public sealed class ReconciliationScoringServiceTests
+ 
+         var suggestion = Assert.Single(result.Suggestions);
+         Assert.Equal(0.20m, suggestion.ConfidenceScore);
+-        Assert.Equal(1.00m, Rule(suggestion, ReconciliationRuleNames.Date).Score);
+-        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Amount).Score);
+-        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Reference).Score);
+-        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Counterparty).Score);
++        Assert.Equal(1.00m, Rule(suggestion, ReconciliationRuleNames.DateProximity).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.AmountExact).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.AmountNear).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.ReferenceSimilarity).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.CounterpartySimilarity).Score);
+     }
+@@ -98,23 +101,24 @@ public sealed class ReconciliationScoringServiceTests
+     public async Task Reference_only_match_returns_reference_contribution_only()
+     {
+         var companyId = Guid.NewGuid();
+         var service = CreateService(ReconciliationScoringSettings.Default, companyId);
+ 
+@@ -115,6 +119,7 @@ public sealed class ReconciliationScoringServiceTests
+ 
+         var suggestion = Assert.Single(result.Suggestions);
+         Assert.Equal(0.25m, suggestion.ConfidenceScore);
+-        Assert.Equal(1.00m, Rule(suggestion, ReconciliationRuleNames.Reference).Score);
+-        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Amount).Score);
+-        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Date).Score);
+-        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Counterparty).Score);
++        Assert.Equal(1.00m, Rule(suggestion, ReconciliationRuleNames.ReferenceSimilarity).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.AmountExact).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.AmountNear).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.DateProximity).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.CounterpartySimilarity).Score);
+     }
+@@ -124,23 +128,24 @@ public sealed class ReconciliationScoringServiceTests
+     public async Task Counterparty_only_match_returns_counterparty_contribution_only()
+     {
+         var companyId = Guid.NewGuid();
+         var service = CreateService(ReconciliationScoringSettings.Default, companyId);
+ 
+@@ -141,6 +146,7 @@ public sealed class ReconciliationScoringServiceTests
+ 
+         var suggestion = Assert.Single(result.Suggestions);
+         Assert.Equal(0.15m, suggestion.ConfidenceScore);
+-        Assert.Equal(1.00m, Rule(suggestion, ReconciliationRuleNames.Counterparty).Score);
+-        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Amount).Score);
+-        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Date).Score);
+-        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Reference).Score);
++        Assert.Equal(1.00m, Rule(suggestion, ReconciliationRuleNames.CounterpartySimilarity).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.AmountExact).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.AmountNear).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.DateProximity).Score);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.ReferenceSimilarity).Score);
+     }
+@@ -173,20 +178,21 @@ public sealed class ReconciliationScoringServiceTests
+     public async Task Amount_outside_tolerance_gets_no_amount_score()
+     {
+         var companyId = Guid.NewGuid();
+         var service = CreateService(new ReconciliationScoringSettings(2m, 7), companyId);
+ 
+@@ -190,3 +196,4 @@ public sealed class ReconciliationScoringServiceTests
+ 
+         var suggestion = Assert.Single(result.Suggestions);
+-        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Amount).Score);
+-        Assert.False(Rule(suggestion, ReconciliationRuleNames.Amount).Matched);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.AmountExact).Score);
++        Assert.False(Rule(suggestion, ReconciliationRuleNames.AmountExact).Matched);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.AmountNear).Score);
++        Assert.False(Rule(suggestion, ReconciliationRuleNames.AmountNear).Matched);
+     }
+@@ -196,20 +202,20 @@ public sealed class ReconciliationScoringServiceTests
+     public async Task Date_outside_window_gets_no_date_score()
+     {
+         var companyId = Guid.NewGuid();
+         var service = CreateService(new ReconciliationScoringSettings(5m, 3), companyId);
+ 
+@@ -213,3 +219,3 @@ public sealed class ReconciliationScoringServiceTests
+ 
+         var suggestion = Assert.Single(result.Suggestions);
+-        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.Date).Score);
+-        Assert.False(Rule(suggestion, ReconciliationRuleNames.Date).Matched);
++        Assert.Equal(0m, Rule(suggestion, ReconciliationRuleNames.DateProximity).Score);
++        Assert.False(Rule(suggestion, ReconciliationRuleNames.DateProximity).Matched);
+     }
+@@ -255,4 +261,4 @@ public sealed class ReconciliationScoringServiceTests
+ 
+         Assert.Equal(new[] { firstCompanyId, secondCompanyId }, provider.RequestedCompanyIds);
+         Assert.True(firstResult.Suggestions[0].ConfidenceScore > secondResult.Suggestions[0].ConfidenceScore);
+-        Assert.True(Rule(firstResult.Suggestions[0], ReconciliationRuleNames.Amount).Matched);
+-        Assert.False(Rule(secondResult.Suggestions[0], ReconciliationRuleNames.Amount).Matched);
++        Assert.True(Rule(firstResult.Suggestions[0], ReconciliationRuleNames.AmountNear).Matched);
++        Assert.False(Rule(secondResult.Suggestions[0], ReconciliationRuleNames.AmountNear).Matched);
+     }
+ 
++    [Fact]
++    public async Task Tenant_specific_weights_change_confidence_for_same_match_signal()
++    {
++        var firstCompanyId = Guid.NewGuid();
++        var secondCompanyId = Guid.NewGuid();
++        var provider = new FakeReconciliationScoringSettingsProvider(
++            new Dictionary<Guid, ReconciliationScoringSettings>
++            {
++                [firstCompanyId] = new(5m, 7, new ReconciliationScoringWeights(0.40m, 0.30m, 0.20m, 0.60m, 0.10m)),
++                [secondCompanyId] = new(5m, 7, new ReconciliationScoringWeights(0.40m, 0.30m, 0.20m, 0.05m, 0.10m))
++            });
++        var service = new CompanyReconciliationScoringService(provider);
++        var candidate = Candidate(450m, Utc(2026, 5, 15), "INV 700", "Different Vendor");
++
++        var firstResult = await service.ScoreInvoiceCandidatesAsync(
++            new ScoreInvoicePaymentCandidatesQuery(
++                firstCompanyId,
++                Guid.NewGuid(),
++                300m,
++                "USD",
++                Utc(2026, 4, 20),
++                "INV-700",
++                "Vendor A",
++                [candidate]),
++            CancellationToken.None);
++        var secondResult = await service.ScoreInvoiceCandidatesAsync(
++            new ScoreInvoicePaymentCandidatesQuery(
++                secondCompanyId,
++                Guid.NewGuid(),
++                300m,
++                "USD",
++                Utc(2026, 4, 20),
++                "INV-700",
++                "Vendor A",
++                [candidate]),
++            CancellationToken.None);
++
++        Assert.True(firstResult.Suggestions[0].ConfidenceScore > secondResult.Suggestions[0].ConfidenceScore);
++        Assert.True(Rule(firstResult.Suggestions[0], ReconciliationRuleNames.ReferenceSimilarity).Matched);
++        Assert.True(Rule(secondResult.Suggestions[0], ReconciliationRuleNames.ReferenceSimilarity).Matched);
++    }
++
+     [Fact]
+     public async Task Results_are_ranked_descending_and_deterministic_for_ties()
+     {
+@@ -295,22 +342,28 @@ public sealed class ReconciliationScoringServiceTests
+     public async Task Suggestions_include_rule_breakdown_and_normalized_scores()
+     {
+         var companyId = Guid.NewGuid();
+         var service = CreateService(ReconciliationScoringSettings.Default, companyId);
+ 
+@@ -313,4 +366,10 @@ public sealed class ReconciliationScoringServiceTests
+ 
+         var suggestion = Assert.Single(result.Suggestions);
+         Assert.InRange(suggestion.ConfidenceScore, 0m, 1m);
+-        Assert.Equal(4, suggestion.RuleDetails.Count);
++        Assert.Equal(5, suggestion.RuleDetails.Count);
+         Assert.All(suggestion.RuleDetails, detail => Assert.InRange(detail.Score, 0m, 1m));
++        Assert.All(suggestion.RuleDetails, detail => Assert.InRange(detail.AwardedScore, 0m, 1m));
++        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.AmountExact);
++        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.AmountNear);
++        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.DateProximity);
++        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.ReferenceSimilarity);
++        Assert.Contains(suggestion.RuleDetails, x => x.RuleName == ReconciliationRuleNames.CounterpartySimilarity);
+     }
+END_OF_PATCH

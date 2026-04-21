@@ -1,0 +1,116 @@
+@page "/finance/payments"
+@page "/finance/payments/{PaymentId:guid}"
+@inherits FinancePageBase
+
+<PageTitle>Payments</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Payments"
+    Description="Inspect incoming and outgoing cash movement records for the selected company."
+    LoadingMessage="Loading payments workspace...">
+    <form method="get" class="agent-filter-bar mb-4">
+        <input type="hidden" name="@FinanceRoutes.CompanyIdQueryKey" value="@AccessState.CompanyId" />
+        <div>
+            <label class="form-label" for="payment-filter-type">Direction</label>
+            <select id="payment-filter-type" class="form-select" name="type">
+                <option value="" selected="@string.IsNullOrWhiteSpace(TypeFilterValue)">All payments</option>
+                <option value="incoming" selected="@IsTypeSelected("incoming")">Incoming</option>
+                <option value="outgoing" selected="@IsTypeSelected("outgoing")">Outgoing</option>
+            </select>
+        </div>
+        <div class="dashboard-actions">
+            <button class="btn btn-primary" type="submit">Apply filters</button>
+            <a class="btn btn-outline-secondary" href="@ClearFiltersHref">Clear</a>
+        </div>
+    </form>
+
+    <div class="row g-4 align-items-start">
+        <div class="col-lg-7">
+            <div class="wizard-card wizard-card--compact">
+                <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
+                    <div>
+                        <h2 class="h5 mb-1">Payment list</h2>
+                        <p class="text-body-secondary mb-0">Incoming and outgoing cash movements are scoped to the active company route.</p>
+                    </div>
+                    <span class="badge text-bg-light">@Payments.Count item@(Payments.Count == 1 ? string.Empty : "s")</span>
+                </div>
+
+                <FinanceDataState
+                    IsLoading="@IsListLoading"
+                    IsEmpty="@IsListEmpty"
+                    ErrorMessage="@ListErrorMessage"
+                    LoadingTitle="Loading payments"
+                    LoadingMessage="Fetching tenant-scoped payment activity."
+                    EmptyTitle="No payments matched the active filter"
+                    EmptyMessage="Adjust the payment direction filter and try again."
+                    OnRetry="@ReloadAsync">
+                    <div class="list-group">
+                        @foreach (var payment in Payments)
+                        {
+                            <a class="@GetPaymentListItemClass(payment.Id)" href="@BuildPaymentHref(payment.Id)">
+                                <div class="d-flex w-100 justify-content-between gap-3">
+                                    <div>
+                                        <strong>@payment.CounterpartyReference</strong>
+                                        <div class="text-body-secondary small mt-1">@FormatDate(payment.PaymentDate) | @FormatLabel(payment.Method)</div>
+                                        <div class="small mt-2">@FormatLabel(payment.PaymentType)</div>
+                                    </div>
+                                    <div class="text-end">
+                                        <div class="fw-semibold">@FormatCurrency(payment.Amount, payment.Currency)</div>
+                                        <div class="mt-2 d-flex gap-2 justify-content-end">
+                                            <span class="badge text-bg-light">@FormatLabel(payment.PaymentType)</span>
+                                            <span class="badge @GetStatusBadgeClass(payment.Status)">@FormatLabel(payment.Status)</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </a>
+                        }
+                    </div>
+                </FinanceDataState>
+            </div>
+        </div>
+
+        <div class="col-lg-5">
+            <div class="wizard-card wizard-card--compact">
+                @if (IsDetailLoading)
+                {
+                    <FinanceLoadingState Title="Loading payment detail" Message="Resolving the selected payment from the current route." />
+                }
+                else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
+                {
+                    <FinanceErrorState Title="Payment detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                }
+                else if (SelectedPayment is null)
+                {
+                    <FinanceEmptyState Title="No payment selected" Message="Select a payment to inspect its header details." />
+                }
+                else
+                {
+                    <h2 class="h5">Payment detail</h2>
+                    <p class="text-body-secondary mb-4">@SelectedPayment.CounterpartyReference</p>
+
+                    <dl class="mb-0">
+                        <dt>Status</dt>
+                        <dd><span class="badge @GetStatusBadgeClass(SelectedPayment.Status)">@FormatLabel(SelectedPayment.Status)</span></dd>
+                        <dt>Amount</dt>
+                        <dd>@FormatCurrency(SelectedPayment.Amount, SelectedPayment.Currency)</dd>
+                        <dt>Currency</dt>
+                        <dd>@SelectedPayment.Currency</dd>
+                        <dt>Direction</dt>
+                        <dd>@FormatLabel(SelectedPayment.PaymentType)</dd>
+                        <dt>Payment date</dt>
+                        <dd>@FormatDate(SelectedPayment.PaymentDate)</dd>
+                        <dt>Method</dt>
+                        <dd>@FormatLabel(SelectedPayment.Method)</dd>
+                        <dt>Counterparty reference</dt>
+                        <dd>@SelectedPayment.CounterpartyReference</dd>
+                        <dt>Created</dt>
+                        <dd>@FormatDate(SelectedPayment.CreatedUtc)</dd>
+                    </dl>
+                }
+            </div>
+        </div>
+    </div>
+</FinancePageLayout>

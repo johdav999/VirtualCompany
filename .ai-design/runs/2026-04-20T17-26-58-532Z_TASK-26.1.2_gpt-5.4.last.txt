@@ -1,0 +1,579 @@
+diff --git a/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs b/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
+index 2d3e4f1..7d1aa9c 100644
+--- a/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
+@@ -231,6 +231,84 @@ public sealed class LedgerEntry : ICompanyOwnedEntity
+     public string? SourceId { get; private set; }
+     public DateTime? PostedAtUtc { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
++    public ICollection<LedgerEntrySourceMapping> SourceMappings { get; } = new List<LedgerEntrySourceMapping>();
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FiscalPeriod FiscalPeriod { get; private set; } = null!;
++    public ICollection<LedgerEntryLine> Lines { get; } = new List<LedgerEntryLine>();
++
++    public void Post(DateTime? updatedUtc = null)
++    {
++        Status = LedgerEntryStatuses.Posted;
++        PostedAtUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static void ValidateSourceReference(string? sourceType, string? sourceId)
++    {
++        var hasSourceType = !string.IsNullOrWhiteSpace(sourceType);
++        var hasSourceId = !string.IsNullOrWhiteSpace(sourceId);
++
++        if (hasSourceType != hasSourceId)
++        {
++            throw new ArgumentException("Source type and source id must be provided together.");
++        }
++    }
++}
++
++public sealed class LedgerEntrySourceMapping : ICompanyOwnedEntity
++{
++    private LedgerEntrySourceMapping()
++    {
++    }
++
++    public LedgerEntrySourceMapping(
++        Guid id,
++        Guid companyId,
++        Guid ledgerEntryId,
++        string sourceType,
++        string sourceId,
++        DateTime postedAtUtc,
++        DateTime? createdUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (ledgerEntryId == Guid.Empty)
++        {
++            throw new ArgumentException("LedgerEntryId is required.", nameof(ledgerEntryId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        LedgerEntryId = ledgerEntryId;
++        SourceType = NormalizeRequired(sourceType, nameof(sourceType), 64).ToLowerInvariant();
++        SourceId = NormalizeRequired(sourceId, nameof(sourceId), 128);
++        PostedAtUtc = EntityTimestampNormalizer.NormalizeUtc(postedAtUtc, nameof(postedAtUtc));
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? PostedAtUtc, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid LedgerEntryId { get; private set; }
++    public string SourceType { get; private set; } = null!;
++    public string SourceId { get; private set; } = null!;
++    public DateTime PostedAtUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+-    public FiscalPeriod FiscalPeriod { get; private set; } = null!;
+-    public ICollection<LedgerEntryLine> Lines { get; } = new List<LedgerEntryLine>();
+-
+-    public void Post(DateTime? updatedUtc = null)
+-    {
+-        Status = LedgerEntryStatuses.Posted;
+-        PostedAtUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
+-        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
+-    }
++    public LedgerEntry LedgerEntry { get; private set; } = null!;
+ 
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+@@ -257,17 +335,6 @@ public sealed class LedgerEntry : ICompanyOwnedEntity
+ 
+         return trimmed;
+     }
+-
+-    private static void ValidateSourceReference(string? sourceType, string? sourceId)
+-    {
+-        var hasSourceType = !string.IsNullOrWhiteSpace(sourceType);
+-        var hasSourceId = !string.IsNullOrWhiteSpace(sourceId);
+-
+-        if (hasSourceType != hasSourceId)
+-        {
+-            throw new ArgumentException("Source type and source id must be provided together.");
+-        }
+-    }
+ }
+ 
+ public sealed class LedgerEntryLine : ICompanyOwnedEntity
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
+index e43c55a..3da1478 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
+@@ -285,6 +285,15 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+                         transaction.Currency,
+                         transaction.ReferenceText));
+ 
++                _dbContext.LedgerEntrySourceMappings.Add(new LedgerEntrySourceMapping(
++                    ledgerEntry.Id,
++                    command.CompanyId,
++                    ledgerEntry.Id,
++                    FinanceCashPostingSourceTypes.BankTransaction,
++                    transaction.Id.ToString("D"),
++                    transaction.BookingDate,
++                    transaction.BookingDate));
++
+                 _dbContext.BankTransactionCashLedgerLinks.Add(new BankTransactionCashLedgerLink(
+                     Guid.NewGuid(),
+                     command.CompanyId,
+@@ -472,7 +481,9 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+                 message.Contains("bank_transaction_payment_links", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("bank_transaction_cash_ledger_links", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("IX_bank_transaction_payment_links_company_id_bank_transaction_id_payment_id", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("ledger_entry_source_mappings", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("IX_bank_transaction_cash_ledger_links_company_id_bank_transaction_id", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("IX_ledger_entry_source_mappings_company_id_source_type_source_id", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("IX_bank_transaction_cash_ledger_links_company_id_idempotency_key", StringComparison.OrdinalIgnoreCase);
+ 
+             if (!referencesReconciliationLink)
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs
+index 2e50b24..6ca1a38 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs
+@@ -34,7 +34,7 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
+         var settledAmount = NormalizeMoney(command.SettledAmount);
+         var postedAtUtc = NormalizeUtc(command.SettledAtUtc);
+ 
+-        var existingEntry = await FindExistingAsync(command.CompanyId, normalizedSourceType, normalizedSourceId, cancellationToken);
++        var existingEntry = await FindExistingAsync(command.CompanyId, normalizedSourceType, normalizedSourceId, cancellationToken);
+         if (existingEntry is not null)
+         {
+             return await MapExistingAsync(existingEntry, cancellationToken);
+@@ -86,6 +86,15 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
+                 payment.Currency,
+                 entry.Description));
+ 
++        _dbContext.LedgerEntrySourceMappings.Add(new LedgerEntrySourceMapping(
++            entry.Id,
++            command.CompanyId,
++            entry.Id,
++            normalizedSourceType,
++            normalizedSourceId,
++            postedAtUtc,
++            postedAtUtc));
++
+         try
+         {
+             await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -105,28 +114,40 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
+ 
+     private async Task<LedgerEntry?> FindExistingAsync(
+         Guid companyId,
+-        string sourceType,
+-        string sourceId,
++        string normalizedSourceType,
++        string normalizedSourceId,
+         CancellationToken cancellationToken) =>
+-        await _dbContext.LedgerEntries
++        (await _dbContext.LedgerEntrySourceMappings
+             .IgnoreQueryFilters()
+             .AsNoTracking()
++            .Include(x => x.LedgerEntry)
+             .SingleOrDefaultAsync(
+                 x => x.CompanyId == companyId &&
+-                     x.SourceType == sourceType &&
+-                     x.SourceId == sourceId,
+-                cancellationToken);
++                     x.SourceType == normalizedSourceType &&
++                     x.SourceId == normalizedSourceId,
++                cancellationToken))?.LedgerEntry
++        ?? await _dbContext.LedgerEntries
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == companyId &&
++                     x.SourceType == normalizedSourceType &&
++                     x.SourceId == normalizedSourceId,
++                cancellationToken);
+ 
+     private async Task<CashSettlementPostingResultDto> MapExistingAsync(
+         LedgerEntry entry,
+         CancellationToken cancellationToken)
+     {
++        var mapping = await _dbContext.LedgerEntrySourceMappings
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == entry.CompanyId && x.LedgerEntryId == entry.Id, cancellationToken);
+         var postedAmount = await _dbContext.LedgerEntryLines
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == entry.CompanyId && x.LedgerEntryId == entry.Id)
+             .SumAsync(x => (decimal?)x.DebitAmount, cancellationToken) ?? 0m;
+ 
++        var sourceType = mapping?.SourceType ?? entry.SourceType ?? string.Empty;
++        var sourceId = mapping?.SourceId ?? entry.SourceId ?? string.Empty;
++        var postedAtUtc = mapping?.PostedAtUtc ?? entry.PostedAtUtc ?? entry.EntryUtc;
+         return new CashSettlementPostingResultDto(
+             entry.CompanyId,
+             entry.Id,
+-            entry.SourceType ?? string.Empty,
+-            entry.SourceId ?? string.Empty,
++            sourceType,
++            sourceId,
+             postedAmount,
+-            entry.PostedAtUtc ?? entry.EntryUtc,
++            postedAtUtc,
+             false);
+     }
+@@ -291,7 +312,9 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
+         {
+             var message = current.Message;
+             if (message.Contains("IX_ledger_entries_company_id_source_type_source_id", StringComparison.OrdinalIgnoreCase) ||
+-                message.Contains("unique", StringComparison.OrdinalIgnoreCase) && message.Contains("ledger_entries", StringComparison.OrdinalIgnoreCase))
++                message.Contains("IX_ledger_entry_source_mappings_company_id_source_type_source_id", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("unique", StringComparison.OrdinalIgnoreCase) && message.Contains("ledger_entries", StringComparison.OrdinalIgnoreCase) ||
++                message.Contains("unique", StringComparison.OrdinalIgnoreCase) && message.Contains("ledger_entry_source_mappings", StringComparison.OrdinalIgnoreCase))
+             {
+                 return true;
+             }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 40d5891..1988918 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -3092,6 +3092,33 @@ internal sealed class LedgerEntryConfiguration : IEntityTypeConfiguration<Ledger
+     }
+ }
+ 
++internal sealed class LedgerEntrySourceMappingConfiguration : IEntityTypeConfiguration<LedgerEntrySourceMapping>
++{
++    public void Configure(EntityTypeBuilder<LedgerEntrySourceMapping> builder)
++    {
++        builder.ToTable("ledger_entry_source_mappings");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.LedgerEntryId).HasColumnName("ledger_entry_id").IsRequired();
++        builder.Property(x => x.SourceType).HasColumnName("source_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.SourceId).HasColumnName("source_id").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.PostedAtUtc).HasColumnName("posted_at").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.LedgerEntryId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.SourceId }).IsUnique();
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.LedgerEntry)
++            .WithMany(x => x.SourceMappings)
++            .HasForeignKey(x => new { x.CompanyId, x.LedgerEntryId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal sealed class LedgerEntryLineConfiguration : IEntityTypeConfiguration<LedgerEntryLine>
+ {
+     public void Configure(EntityTypeBuilder<LedgerEntryLine> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421133000_AddLedgerEntrySourceMappings.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421133000_AddLedgerEntrySourceMappings.cs
+new file mode 100644
+index 0000000..df97a93
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421133000_AddLedgerEntrySourceMappings.cs
+@@ -0,0 +1,104 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddLedgerEntrySourceMappings : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
++
++            migrationBuilder.CreateTable(
++                name: "ledger_entry_source_mappings",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    ledger_entry_id = table.Column<Guid>(type: guidType, nullable: false),
++                    source_type = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    source_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: false),
++                    posted_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_ledger_entry_source_mappings", x => x.id);
++                    table.ForeignKey(
++                        name: "FK_ledger_entry_source_mappings_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_ledger_entry_source_mappings_ledger_entries_company_id_ledger_entry_id",
++                        columns: x => new { x.company_id, x.ledger_entry_id },
++                        principalTable: "ledger_entries",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_ledger_entry_source_mappings_company_id_ledger_entry_id",
++                table: "ledger_entry_source_mappings",
++                columns: new[] { "company_id", "ledger_entry_id" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_ledger_entry_source_mappings_company_id_source_type_source_id",
++                table: "ledger_entry_source_mappings",
++                columns: new[] { "company_id", "source_type", "source_id" },
++                unique: true);
++
++            migrationBuilder.Sql(
++                @"
++INSERT INTO ledger_entry_source_mappings (id, company_id, ledger_entry_id, source_type, source_id, posted_at, created_at)
++SELECT
++    id,
++    company_id,
++    id,
++    source_type,
++    source_id,
++    COALESCE(posted_at, entry_at),
++    COALESCE(posted_at, created_at)
++FROM ledger_entries
++WHERE source_type IS NOT NULL
++  AND source_id IS NOT NULL
++  AND NOT EXISTS (
++      SELECT 1
++      FROM ledger_entry_source_mappings mapping
++      WHERE mapping.company_id = ledger_entries.company_id
++        AND mapping.source_type = ledger_entries.source_type
++        AND mapping.source_id = ledger_entries.source_id
++  );");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "ledger_entry_source_mappings");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 46d8e1d..1511c52 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -93,6 +93,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<FinanceSeedBackfillAttempt> FinanceSeedBackfillAttempts => Set<FinanceSeedBackfillAttempt>();
+     public DbSet<FiscalPeriod> FiscalPeriods => Set<FiscalPeriod>();
+     public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
++    public DbSet<LedgerEntrySourceMapping> LedgerEntrySourceMappings => Set<LedgerEntrySourceMapping>();
+     public DbSet<LedgerEntryLine> LedgerEntryLines => Set<LedgerEntryLine>();
+     public DbSet<TrialBalanceSnapshot> TrialBalanceSnapshots => Set<TrialBalanceSnapshot>();
+     public DbSet<FinancialStatementSnapshot> FinancialStatementSnapshots => Set<FinancialStatementSnapshot>();
+@@ -179,6 +180,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is FinanceSimulationStepLog ||
+                 entry.Entity is FiscalPeriod ||
+                 entry.Entity is LedgerEntry ||
++                entry.Entity is LedgerEntrySourceMapping ||
+                 entry.Entity is LedgerEntryLine ||
+                 entry.Entity is TrialBalanceSnapshot ||
+                 entry.Entity is FinancialStatementSnapshot ||
+@@ -383,6 +385,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<LedgerEntry>()
+             .HasQueryFilter(entry =>
+                 CurrentCompanyId.HasValue && entry.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<LedgerEntrySourceMapping>()
++            .HasQueryFilter(mapping =>
++                CurrentCompanyId.HasValue && mapping.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<LedgerEntryLine>()
+             .HasQueryFilter(line =>
+                 CurrentCompanyId.HasValue && line.CompanyId == CurrentCompanyId.Value);
+diff --git a/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs
+index e6265d4..20f6bb0 100644
+--- a/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BankTransactionPersistenceTests.cs
+@@ -36,6 +36,11 @@ public sealed class BankTransactionPersistenceTests
+         Assert.Contains("bank_transaction_id", cashLedgerLinkColumns);
+         Assert.Contains("ledger_entry_id", cashLedgerLinkColumns);
+         Assert.Contains("idempotency_key", cashLedgerLinkColumns);
++        
++        var sourceMappingColumns = await ReadColumnsAsync(connection, "ledger_entry_source_mappings");
++        Assert.Contains("ledger_entry_id", sourceMappingColumns);
++        Assert.Contains("source_type", sourceMappingColumns);
++        Assert.Contains("posted_at", sourceMappingColumns);
+ 
+         var bankTransactionIndexes = await ReadIndexesAsync(connection, "bank_transactions");
+         Assert.Contains("IX_bank_transactions_company_id_bank_account_id_booking_date", bankTransactionIndexes);
+@@ -47,6 +52,10 @@ public sealed class BankTransactionPersistenceTests
+         var cashLedgerIndexes = await ReadIndexesAsync(connection, "bank_transaction_cash_ledger_links");
+         Assert.Contains("IX_bank_transaction_cash_ledger_links_company_id_bank_transaction_id", cashLedgerIndexes);
+         Assert.Contains("IX_bank_transaction_cash_ledger_links_company_id_idempotency_key", cashLedgerIndexes);
++
++        var sourceMappingIndexes = await ReadIndexesAsync(connection, "ledger_entry_source_mappings");
++        Assert.Contains("IX_ledger_entry_source_mappings_company_id_ledger_entry_id", sourceMappingIndexes);
++        Assert.Contains("IX_ledger_entry_source_mappings_company_id_source_type_source_id", sourceMappingIndexes);
+     }
+ 
+     [Fact]
+diff --git a/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs
+index 683eb3e..7b450c1 100644
+--- a/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BankTransactionsIntegrationTests.cs
+@@ -3,6 +3,7 @@ using System.Net;
+ using System.Net.Http.Json;
+ using Microsoft.AspNetCore.Mvc;
+ using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+@@ -136,20 +137,33 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
+                 .IgnoreQueryFilters()
+                 .CountAsync(x => x.CompanyId == seed.CompanyId && x.BankTransactionId == seed.BankTransactionId);
+             var ledgerEntries = await dbContext.LedgerEntries
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyId && x.Description == "Bank reconciliation for Batch customer remittance")
++                .ToListAsync();
++            var sourceMappings = await dbContext.LedgerEntrySourceMappings
+                 .IgnoreQueryFilters()
+-                .CountAsync(x => x.CompanyId == seed.CompanyId && x.Description == "Bank reconciliation for Batch customer remittance");
++                .Where(x =>
++                    x.CompanyId == seed.CompanyId &&
++                    x.SourceType == FinanceCashPostingSourceTypes.BankTransaction &&
++                    x.SourceId == seed.BankTransactionId.ToString("D"))
++                .ToListAsync();
+ 
+-            return new { paymentLinks, cashLedgerLinks, ledgerEntries };
++            return new
++            {
++                paymentLinks,
++                cashLedgerLinks,
++                ledgerEntries = ledgerEntries.Count,
++                sourceMappings = sourceMappings.Count,
++                sourceMapping = sourceMappings.Single()
++            };
+         });
+ 
+         Assert.Equal(2, counts.paymentLinks);
+         Assert.Equal(1, counts.cashLedgerLinks);
+         Assert.Equal(1, counts.ledgerEntries);
++        Assert.Equal(1, counts.sourceMappings);
++        Assert.Equal(firstResult.CashLedgerEntryId, counts.sourceMapping.LedgerEntryId);
++        Assert.Equal(new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), counts.sourceMapping.PostedAtUtc);
+     }
+-
+     [Fact]
+     public async Task Reconcile_endpoint_rejects_pending_and_overallocated_payments()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs b/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs
+index 4bfaec5..8cb1a92 100644
+--- a/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs
+@@ -35,6 +35,11 @@ public sealed class CashSettlementPostingServiceTests
+         var lines = await dbContext.LedgerEntryLines
+             .IgnoreQueryFilters()
+             .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.LedgerEntryId == entry.Id)
++            .OrderBy(x => x.DebitAmount == 0m)
++            .ToListAsync();
++        var sourceMapping = await dbContext.LedgerEntrySourceMappings
++            .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId && x.LedgerEntryId == entry.Id)
+             .OrderBy(x => x.DebitAmount == 0m)
+             .ToListAsync();
+@@ -45,6 +50,11 @@ public sealed class CashSettlementPostingServiceTests
+         Assert.Equal("allocation-incoming-001", entry.SourceId);
+         Assert.Equal(new DateTime(2026, 4, 20, 10, 15, 0, DateTimeKind.Utc), entry.PostedAtUtc);
+         Assert.Equal(LedgerEntryStatuses.Posted, entry.Status);
++        Assert.Equal(companyId, sourceMapping.CompanyId);
++        Assert.Equal(entry.Id, sourceMapping.LedgerEntryId);
++        Assert.Equal(FinanceCashPostingSourceTypes.PaymentAllocation, sourceMapping.SourceType);
++        Assert.Equal("allocation-incoming-001", sourceMapping.SourceId);
++        Assert.Equal(new DateTime(2026, 4, 20, 10, 15, 0, DateTimeKind.Utc), sourceMapping.PostedAtUtc);
+         Assert.Equal(2, lines.Count);
+         Assert.Equal(seed.CashAccountId, lines[0].FinanceAccountId);
+         Assert.Equal(100m, lines[0].DebitAmount);
+@@ -154,6 +164,11 @@ public sealed class CashSettlementPostingServiceTests
+         Assert.False(second.Created);
+         Assert.Equal(first.LedgerEntryId, second.LedgerEntryId);
+         Assert.Equal(first.PostedAmount, second.PostedAmount);
++        Assert.Equal(
++            1,
++            await dbContext.LedgerEntrySourceMappings
++                .IgnoreQueryFilters()
++                .CountAsync(x => x.CompanyId == companyId && x.SourceType == FinanceCashPostingSourceTypes.PaymentAllocation && x.SourceId == "allocation-replay-001"));
+         Assert.Equal(
+             1,
+             await dbContext.LedgerEntries
+@@ -167,7 +182,7 @@ public sealed class CashSettlementPostingServiceTests
+     }
+ 
+     [Fact]
+-    public async Task Ensure_created_maps_traceability_columns_and_unique_source_index()
++    public async Task Ensure_created_maps_traceability_columns_unique_source_index_and_source_mapping_table()
+     {
+         await using var connection = await OpenConnectionAsync();
+         await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(Guid.NewGuid()));
+@@ -175,12 +190,20 @@ public sealed class CashSettlementPostingServiceTests
+ 
+         var columns = await ReadColumnsAsync(connection, "ledger_entries");
+         var indexes = await ReadIndexesAsync(connection, "ledger_entries");
++        var sourceMappingColumns = await ReadColumnsAsync(connection, "ledger_entry_source_mappings");
++        var sourceMappingIndexes = await ReadIndexesAsync(connection, "ledger_entry_source_mappings");
+ 
+         Assert.Contains("source_type", columns);
+         Assert.Contains("source_id", columns);
+         Assert.Contains("posted_at", columns);
+         Assert.Contains("IX_ledger_entries_company_id_source_type_source_id", indexes);
++        Assert.Contains("ledger_entry_id", sourceMappingColumns);
++        Assert.Contains("source_type", sourceMappingColumns);
++        Assert.Contains("source_id", sourceMappingColumns);
++        Assert.Contains("posted_at", sourceMappingColumns);
++        Assert.Contains("IX_ledger_entry_source_mappings_company_id_ledger_entry_id", sourceMappingIndexes);
++        Assert.Contains("IX_ledger_entry_source_mappings_company_id_source_type_source_id", sourceMappingIndexes);
+     }
++
+ 
+     private static async Task<PostingSeed> SeedPostingScenarioAsync(VirtualCompanyDbContext dbContext, Guid companyId)
+     {
+END_OF_PATCH

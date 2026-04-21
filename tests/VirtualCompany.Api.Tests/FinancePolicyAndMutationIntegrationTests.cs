@@ -86,6 +86,30 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Tes
     }
 
     [Fact]
+    public async Task Internal_finance_counterparty_create_returns_validation_problem_for_negative_credit_limit()
+    {
+        var seed = await SeedFinanceWriteCompanyAsync();
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+
+        var response = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/customers",
+            new
+            {
+                Name = "Invalid Credit Customer",
+                Email = "finance@invalid-credit.example",
+                PaymentTerms = "Net30",
+                CreditLimit = -5m,
+                PreferredPaymentMethod = "bank_transfer",
+                DefaultAccountMapping = "1100"
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
+        Assert.NotNull(payload);
+        Assert.True(payload!.Errors.ContainsKey("CreditLimit"));
+    }
+
+    [Fact]
     public async Task Internal_finance_invoice_pending_approval_update_runs_review_workflow_and_exposes_updated_detail_state()
     {
         var seed = await SeedFinanceWriteCompanyAsync();
@@ -173,6 +197,100 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Tes
         Assert.Equal(
             "customer_payment",
             await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.Id == seed.TransactionId).Select(x => x.TransactionType).SingleAsync());
+    }
+
+    [Fact]
+    public async Task Internal_finance_counterparty_endpoints_round_trip_customer_and_supplier_master_data()
+    {
+        var seed = await SeedFinanceWriteCompanyAsync();
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+
+        var createCustomer = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/customers",
+            new
+            {
+                Name = "Fourth Coffee",
+                Email = "finance@fourthcoffee.example",
+                PaymentTerms = "Net45",
+                TaxId = "SE556677-8899",
+                CreditLimit = 25000m,
+                PreferredPaymentMethod = "bank_transfer",
+                DefaultAccountMapping = "1100"
+            });
+        var createSupplier = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/suppliers",
+            new
+            {
+                Name = "Litware Services",
+                Email = "ap@litware.example",
+                PaymentTerms = "Net15",
+                TaxId = "SE998877-6655",
+                CreditLimit = 0m,
+                PreferredPaymentMethod = "bank_transfer",
+                DefaultAccountMapping = "2000"
+            });
+
+        Assert.Equal(HttpStatusCode.OK, createCustomer.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, createSupplier.StatusCode);
+
+        var customer = await createCustomer.Content.ReadFromJsonAsync<CounterpartyResponse>();
+        var supplier = await createSupplier.Content.ReadFromJsonAsync<CounterpartyResponse>();
+        Assert.NotNull(customer);
+        Assert.NotNull(supplier);
+        Assert.Equal("Net45", customer!.PaymentTerms);
+        Assert.Equal("SE556677-8899", customer.TaxId);
+        Assert.Equal(25000m, customer.CreditLimit);
+        Assert.Equal("bank_transfer", customer.PreferredPaymentMethod);
+        Assert.Equal("1100", customer.DefaultAccountMapping);
+        Assert.Equal("Net15", supplier!.PaymentTerms);
+        Assert.Equal("SE998877-6655", supplier.TaxId);
+        Assert.Equal(0m, supplier.CreditLimit);
+        Assert.Equal("bank_transfer", supplier.PreferredPaymentMethod);
+        Assert.Equal("2000", supplier.DefaultAccountMapping);
+
+        var updateSupplier = await client.PutAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/suppliers/{supplier!.Id}",
+            new
+            {
+                supplier.Name,
+                supplier.Email,
+                PaymentTerms = "Net30",
+                TaxId = "SE998877-6655",
+                CreditLimit = 5000m,
+                PreferredPaymentMethod = "bank_transfer",
+                DefaultAccountMapping = "2100"
+            });
+        Assert.Equal(HttpStatusCode.OK, updateSupplier.StatusCode);
+
+        var customers = await client.GetFromJsonAsync<List<CounterpartyResponse>>($"/internal/companies/{seed.CompanyId}/finance/customers?limit=50");
+        var suppliers = await client.GetFromJsonAsync<List<CounterpartyResponse>>($"/internal/companies/{seed.CompanyId}/finance/suppliers?limit=50");
+        var customerDetail = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/customers/{customer.Id}");
+        var supplierDetail = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/suppliers/{supplier.Id}");
+
+        Assert.Contains(customers!, x =>
+            x.Id == customer.Id &&
+            x.PaymentTerms == "Net45" &&
+            x.TaxId == "SE556677-8899" &&
+            x.CreditLimit == 25000m &&
+            x.PreferredPaymentMethod == "bank_transfer" &&
+            x.DefaultAccountMapping == "1100");
+        Assert.Contains(suppliers!, x =>
+            x.Id == supplier.Id &&
+            x.PaymentTerms == "Net30" &&
+            x.TaxId == "SE998877-6655" &&
+            x.CreditLimit == 5000m &&
+            x.PreferredPaymentMethod == "bank_transfer" &&
+            x.DefaultAccountMapping == "2100");
+        Assert.Equal("Net45", customerDetail!.PaymentTerms);
+        Assert.Equal("SE556677-8899", customerDetail.TaxId);
+        Assert.Equal(25000m, customerDetail.CreditLimit);
+        Assert.Equal("bank_transfer", customerDetail.PreferredPaymentMethod);
+        Assert.Equal("1100", customerDetail.DefaultAccountMapping);
+        Assert.Equal("Net30", supplierDetail!.PaymentTerms);
+        Assert.Equal("SE998877-6655", supplierDetail.TaxId);
+        Assert.Equal(5000m, supplierDetail.CreditLimit);
+        Assert.Equal("bank_transfer", supplierDetail.PreferredPaymentMethod);
+        Assert.Equal("2100", supplierDetail.DefaultAccountMapping);
     }
 
     [Fact]
@@ -450,6 +568,19 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<Tes
     {
         public Guid Id { get; set; }
         public string TransactionType { get; set; } = string.Empty;
+    }
+
+    private sealed class CounterpartyResponse
+    {
+        public Guid Id { get; set; }
+        public string CounterpartyType { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string? Email { get; set; }
+        public string? PaymentTerms { get; set; }
+        public string? TaxId { get; set; }
+        public decimal? CreditLimit { get; set; }
+        public string? PreferredPaymentMethod { get; set; }
+        public string? DefaultAccountMapping { get; set; }
     }
 
     private sealed record PolicyConfigurationResponse(

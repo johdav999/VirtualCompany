@@ -12,6 +12,7 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
     private static readonly IReadOnlyDictionary<string, ToolActionType> FinanceTools = new Dictionary<string, ToolActionType>(StringComparer.OrdinalIgnoreCase)
     [
         ["get_cash_balance"] = ToolActionType.Read,
+        ["resolve_finance_agent_query"] = ToolActionType.Read,
         ["list_transactions"] = ToolActionType.Read,
         ["list_uncategorized_transactions"] = ToolActionType.Read,
         ["list_invoices_awaiting_approval"] = ToolActionType.Read,
@@ -119,6 +120,16 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
 
         yield return
         [
+            "resolve_finance_agent_query",
+            ToolActionType.Read,
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["queryText"] = JsonValue.Create("what should i pay this week")
+            }
+        ];
+
+        yield return
+        [
             "list_transactions",
             ToolActionType.Read,
             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
@@ -203,6 +214,16 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
             {
                 ["asOfUtc"] = JsonValue.Create("not-a-date")
+            }
+        ];
+
+        yield return
+        [
+            "resolve_finance_agent_query",
+            ToolActionType.Read,
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["queryText"] = JsonValue.Create(string.Empty)
             }
         ];
 
@@ -330,6 +351,10 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
                 "get_cash_balance" => new(StringComparer.OrdinalIgnoreCase)
                 {
                     ["cashBalance"] = new JsonObject { ["amount"] = JsonValue.Create(123.45m), ["currency"] = JsonValue.Create("USD") }
+                },
+                "resolve_finance_agent_query" => new(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["result"] = new JsonObject { ["intent"] = JsonValue.Create(FinanceAgentQueryIntents.WhatShouldIPayThisWeek), ["summary"] = JsonValue.Create("Selected 1 payable item.") }
                 },
                 "list_transactions" or "list_uncategorized_transactions" => new(StringComparer.OrdinalIgnoreCase)
                 {

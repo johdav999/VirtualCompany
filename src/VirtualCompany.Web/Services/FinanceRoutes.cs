@@ -18,11 +18,14 @@ public static class FinanceRoutes
     public const string Home = "/finance";
     public const string CashPosition = "/finance/cash-position";
     public const string Transactions = "/finance/transactions";
+    public const string Payments = "/finance/payments";
+    public const string PaymentDetail = "/finance/payments/{paymentId:guid}";
     public const string TransactionDetail = "/finance/transactions/{transactionId:guid}";
     public const string Invoices = "/finance/invoices";
     public const string Reviews = "/finance/reviews";
     public const string ReviewDetail = "/finance/reviews/{invoiceId:guid}";
     public const string InvoiceDetail = "/finance/invoices/{invoiceId:guid}";
+    public const string Counterparties = "/finance/admin/counterparties";
     public const string Balances = "/finance/balances";
     public const string MonthlySummary = "/finance/monthly-summary";
     public const string Anomalies = "/finance/anomalies";
@@ -50,10 +53,12 @@ public static class FinanceRoutes
         [
             new("Cash position", CashPosition, "Review cash coverage and company liquidity in the active tenant context."),
             new("Transactions", Transactions, "Inspect transaction activity and categorization work for the selected company."),
+            new("Payments", Payments, "Inspect incoming and outgoing cash movement records for the selected company."),
             new("Invoice reviews", Reviews, "Review finance workflow recommendations and actions for invoice workbench items."),
             new("Invoices", Invoices, "Track invoice review and collection workflows inside the active company."),
             new("Balances", Balances, "Browse account balances with explicit tenant-scoped routing."),
             new("Transparency events", TransparencyEvents, "Inspect finance domain events, payload summaries, and trigger trace coverage.", true),
+            new("Counterparties", Counterparties, "Manage customer and supplier master data used by finance documents.", true),
             new("Tool registry", TransparencyToolRegistry, "Inspect finance tool manifests, schema summaries, and provider metadata.", true),
             new("Tool executions", TransparencyToolExecutions, "Review finance tool execution history and related approval links.", true),
             new("Sandbox admin", SandboxAdmin, "Inspect sandbox dataset generation, anomaly injection, simulation controls, tool execution visibility, and domain events.", true),
@@ -63,6 +68,9 @@ public static class FinanceRoutes
 
     public static string BuildTransactionDetailPath(Guid transactionId, Guid? companyId) =>
         WithCompanyContext($"/finance/transactions/{transactionId:D}", companyId);
+
+    public static string BuildPaymentDetailPath(Guid paymentId, Guid? companyId) =>
+        WithCompanyContext($"/finance/payments/{paymentId:D}", companyId);
 
     public static string BuildInvoiceDetailPath(Guid invoiceId, Guid? companyId) =>
         WithCompanyContext($"/finance/invoices/{invoiceId:D}", companyId);

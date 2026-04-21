@@ -1,0 +1,1200 @@
+diff --git a/src/VirtualCompany.Api/Controllers/FinancialStatementMappingsController.cs b/src/VirtualCompany.Api/Controllers/FinancialStatementMappingsController.cs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/FinancialStatementMappingsController.cs
+@@ -0,0 +1,155 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Http;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/financial-statement-mappings")]
++[Authorize(Policy = CompanyPolicies.FinanceView)]
++[RequireCompanyContext]
++public sealed class FinancialStatementMappingsController : ControllerBase
++{
++    private readonly IFinancialStatementMappingService _mappings;
++
++    public FinancialStatementMappingsController(IFinancialStatementMappingService mappings)
++    {
++        _mappings = mappings;
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<IReadOnlyList<FinancialStatementMappingDto>>> ListAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _mappings.ListAsync(new ListFinancialStatementMappingsQuery(companyId), cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("validation")]
++    public async Task<ActionResult<FinancialStatementMappingValidationResultDto>> ValidateAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _mappings.ValidateAsync(new ValidateFinancialStatementMappingsQuery(companyId), cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost]
++    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
++    public async Task<ActionResult<FinancialStatementMappingDto>> CreateAsync(
++        Guid companyId,
++        [FromBody] CreateFinancialStatementMappingRequest request,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var created = await _mappings.CreateAsync(
++                new CreateFinancialStatementMappingCommand(
++                    companyId,
++                    request.AccountId,
++                    request.StatementType,
++                    request.ReportSection,
++                    request.LineClassification,
++                    request.IsActive),
++                cancellationToken);
++
++            return Created($"/api/companies/{companyId:D}/financial-statement-mappings/{created.Id:D}", created);
++        }
++        catch (FinancialStatementMappingCommandException ex)
++        {
++            return StatusCode(ex.StatusCode, CreateProblemDetails(ex.Title, ex.Message, ex.StatusCode, ex.Code, ex.Errors));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPut("{mappingId:guid}")]
++    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
++    public async Task<ActionResult<FinancialStatementMappingDto>> UpdateAsync(
++        Guid companyId,
++        Guid mappingId,
++        [FromBody] UpdateFinancialStatementMappingRequest request,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _mappings.UpdateAsync(
++                new UpdateFinancialStatementMappingCommand(
++                    companyId,
++                    mappingId,
++                    request.AccountId,
++                    request.StatementType,
++                    request.ReportSection,
++                    request.LineClassification,
++                    request.IsActive),
++                cancellationToken));
++        }
++        catch (FinancialStatementMappingCommandException ex)
++        {
++            return StatusCode(ex.StatusCode, CreateProblemDetails(ex.Title, ex.Message, ex.StatusCode, ex.Code, ex.Errors));
++        }
++        catch (KeyNotFoundException ex)
++        {
++            return NotFound(CreateProblemDetails(
++                "Financial statement mapping was not found.",
++                ex.Message,
++                StatusCodes.Status404NotFound,
++                FinancialStatementMappingValidationErrorCodes.MappingNotFound));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    private ProblemDetails CreateProblemDetails(
++        string title,
++        string detail,
++        int status,
++        string code,
++        IReadOnlyList<FinancialStatementMappingCommandErrorDto>? errors = null)
++    {
++        var problem = new ProblemDetails
++        {
++            Title = title,
++            Detail = detail,
++            Status = status,
++            Instance = HttpContext.Request.Path
++        };
++
++        problem.Extensions["code"] = code;
++        if (errors is { Count: > 0 })
++        {
++            problem.Extensions["errors"] = errors;
++        }
++
++        return problem;
++    }
++}
++
++public sealed record CreateFinancialStatementMappingRequest(
++    Guid AccountId,
++    string StatementType,
++    string ReportSection,
++    string LineClassification,
++    bool IsActive = true);
++
++public sealed record UpdateFinancialStatementMappingRequest(
++    Guid AccountId,
++    string StatementType,
++    string ReportSection,
++    string LineClassification,
++    bool IsActive = true);
+diff --git a/src/VirtualCompany.Application/Finance/FinancialStatementMappingContracts.cs b/src/VirtualCompany.Application/Finance/FinancialStatementMappingContracts.cs
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/FinancialStatementMappingContracts.cs
+@@ -0,0 +1,76 @@
++using System.Collections.ObjectModel;
++
++namespace VirtualCompany.Application.Finance;
++
++public sealed record ListFinancialStatementMappingsQuery(Guid CompanyId);
++
++public sealed record CreateFinancialStatementMappingCommand(
++    Guid CompanyId,
++    Guid AccountId,
++    string StatementType,
++    string ReportSection,
++    string LineClassification,
++    bool IsActive = true);
++
++public sealed record UpdateFinancialStatementMappingCommand(
++    Guid CompanyId,
++    Guid MappingId,
++    Guid AccountId,
++    string StatementType,
++    string ReportSection,
++    string LineClassification,
++    bool IsActive = true);
++
++public sealed record ValidateFinancialStatementMappingsQuery(Guid CompanyId);
++
++public sealed record FinancialStatementMappingDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid AccountId,
++    string AccountCode,
++    string AccountName,
++    string StatementType,
++    string ReportSection,
++    string LineClassification,
++    bool IsActive,
++    DateTime CreatedUtc,
++    DateTime UpdatedUtc);
++
++public sealed record FinancialStatementMappingValidationIssueDto(
++    string Code,
++    string Message,
++    Guid AccountId,
++    string AccountCode,
++    string AccountName,
++    Guid? MappingId,
++    string? StatementType);
++
++public sealed record FinancialStatementMappingValidationResultDto(
++    Guid CompanyId,
++    int AccountCount,
++    int MappingCount,
++    int IssueCount,
++    int UnmappedCount,
++    int ConflictCount,
++    IReadOnlyList<FinancialStatementMappingValidationIssueDto> Issues);
++
++public sealed record FinancialStatementMappingCommandErrorDto(
++    string Code,
++    string Field,
++    string Message);
++
++public interface IFinancialStatementMappingService
++{
++    Task<IReadOnlyList<FinancialStatementMappingDto>> ListAsync(ListFinancialStatementMappingsQuery query, CancellationToken cancellationToken);
++    Task<FinancialStatementMappingDto> CreateAsync(CreateFinancialStatementMappingCommand command, CancellationToken cancellationToken);
++    Task<FinancialStatementMappingDto> UpdateAsync(UpdateFinancialStatementMappingCommand command, CancellationToken cancellationToken);
++    Task<FinancialStatementMappingValidationResultDto> ValidateAsync(ValidateFinancialStatementMappingsQuery query, CancellationToken cancellationToken);
++}
++
++public sealed class FinancialStatementMappingCommandException : Exception
++{
++    public FinancialStatementMappingCommandException(int statusCode, string code, string title, string message, IReadOnlyList<FinancialStatementMappingCommandErrorDto> errors)
++        : base(message)
++    {
++        StatusCode = statusCode;
++        Code = code;
++        Title = title;
++        Errors = new ReadOnlyCollection<FinancialStatementMappingCommandErrorDto>(errors.ToList());
++    }
++
++    public int StatusCode { get; }
++    public string Code { get; }
++    public string Title { get; }
++    public IReadOnlyList<FinancialStatementMappingCommandErrorDto> Errors { get; }
++}
+diff --git a/src/VirtualCompany.Domain/Enums/FinancialStatementMappingEnums.cs b/src/VirtualCompany.Domain/Enums/FinancialStatementMappingEnums.cs
+index 8449b76..3333333 100644
+--- a/src/VirtualCompany.Domain/Enums/FinancialStatementMappingEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/FinancialStatementMappingEnums.cs
+@@ -301,9 +301,13 @@ public static class FinancialStatementMappingCompatibility
+ 
+ public static class FinancialStatementMappingValidationErrorCodes
+ {
+-    public const string DuplicateActiveStatementMapping = "duplicate_active_statement_mapping";
+-    public const string ConflictingStatementMapping = "conflicting_statement_mapping";
+-    public const string UnmappedActiveReportableAccount = "unmapped_active_reportable_account";
+-    public const string InvalidStatementSection = "invalid_statement_section";
+-    public const string InvalidLineClassification = "invalid_line_classification";
++    public const string ConflictDuplicateActive = "ACCOUNT_MAPPING_CONFLICT_DUPLICATE_ACTIVE";
++    public const string UnmappedActiveReportableAccount = "ACCOUNT_MAPPING_UNMAPPED_ACTIVE_REPORTABLE";
++    public const string AccountNotFound = "ACCOUNT_MAPPING_ACCOUNT_NOT_FOUND";
++    public const string AccountCompanyMismatch = "ACCOUNT_MAPPING_ACCOUNT_COMPANY_MISMATCH";
++    public const string InvalidStatementType = "ACCOUNT_MAPPING_INVALID_STATEMENT_TYPE";
++    public const string InvalidReportSection = "ACCOUNT_MAPPING_INVALID_REPORT_SECTION";
++    public const string InvalidLineClassification = "ACCOUNT_MAPPING_INVALID_LINE_CLASSIFICATION";
++    public const string MappingNotFound = "ACCOUNT_MAPPING_MAPPING_NOT_FOUND";
++    public const string ValidationFailed = "ACCOUNT_MAPPING_VALIDATION_FAILED";
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 95f0f80..4444444 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -364,6 +364,7 @@ public static class DependencyInjection
+         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
+         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
+         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
++        services.AddScoped<IFinancialStatementMappingService, CompanyFinancialStatementMappingService>();
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<ExecutionExceptionService>();
+         services.AddScoped<ICompanySimulationService, CompanySimulationService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinancialStatementMappingService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinancialStatementMappingService.cs
+new file mode 100644
+index 0000000..5555555
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinancialStatementMappingService.cs
+@@ -0,0 +1,401 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyFinancialStatementMappingService : IFinancialStatementMappingService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++
++    public CompanyFinancialStatementMappingService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver membershipContextResolver)
++    {
++        _dbContext = dbContext;
++        _membershipContextResolver = membershipContextResolver;
++    }
++
++    public async Task<IReadOnlyList<FinancialStatementMappingDto>> ListAsync(
++        ListFinancialStatementMappingsQuery query,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(query.CompanyId, cancellationToken);
++
++        var rows = await _dbContext.FinancialStatementMappings
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .Select(x => new MappingRow(
++                x.Id,
++                x.CompanyId,
++                x.FinanceAccountId,
++                x.FinanceAccount.Code,
++                x.FinanceAccount.Name,
++                x.StatementType,
++                x.ReportSection,
++                x.LineClassification,
++                x.IsActive,
++                x.CreatedUtc,
++                x.UpdatedUtc))
++            .ToListAsync(cancellationToken);
++
++        return rows
++            .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.AccountName, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.AccountId)
++            .ThenBy(x => x.StatementType.ToStorageValue(), StringComparer.Ordinal)
++            .ThenBy(x => x.Id)
++            .Select(MapDto)
++            .ToList();
++    }
++
++    public async Task<FinancialStatementMappingDto> CreateAsync(
++        CreateFinancialStatementMappingCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(command.CompanyId, cancellationToken);
++
++        var validated = await ValidateCommandAsync(
++            command.CompanyId,
++            command.AccountId,
++            command.StatementType,
++            command.ReportSection,
++            command.LineClassification,
++            cancellationToken);
++
++        var mapping = new FinancialStatementMapping(
++            Guid.NewGuid(),
++            command.CompanyId,
++            validated.Account.Id,
++            validated.StatementType,
++            validated.ReportSection,
++            validated.LineClassification,
++            command.IsActive);
++
++        _dbContext.FinancialStatementMappings.Add(mapping);
++
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++        catch (DbUpdateException ex) when (IsDuplicateActiveMappingViolation(ex))
++        {
++            throw BuildConflictException();
++        }
++
++        return MapDto(new MappingRow(
++            mapping.Id,
++            mapping.CompanyId,
++            mapping.FinanceAccountId,
++            validated.Account.Code,
++            validated.Account.Name,
++            mapping.StatementType,
++            mapping.ReportSection,
++            mapping.LineClassification,
++            mapping.IsActive,
++            mapping.CreatedUtc,
++            mapping.UpdatedUtc));
++    }
++
++    public async Task<FinancialStatementMappingDto> UpdateAsync(
++        UpdateFinancialStatementMappingCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(command.CompanyId, cancellationToken);
++
++        var mapping = await _dbContext.FinancialStatementMappings
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == command.CompanyId && x.Id == command.MappingId,
++                cancellationToken);
++
++        if (mapping is null)
++        {
++            throw new KeyNotFoundException("Financial statement mapping was not found in the requested company.");
++        }
++
++        var validated = await ValidateCommandAsync(
++            command.CompanyId,
++            command.AccountId,
++            command.StatementType,
++            command.ReportSection,
++            command.LineClassification,
++            cancellationToken);
++
++        mapping.ReassignAccount(validated.Account.Id);
++        mapping.ReassignStatement(validated.StatementType, validated.ReportSection, validated.LineClassification);
++        mapping.SetActive(command.IsActive);
++
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++        catch (DbUpdateException ex) when (IsDuplicateActiveMappingViolation(ex))
++        {
++            throw BuildConflictException();
++        }
++
++        return MapDto(new MappingRow(
++            mapping.Id,
++            mapping.CompanyId,
++            mapping.FinanceAccountId,
++            validated.Account.Code,
++            validated.Account.Name,
++            mapping.StatementType,
++            mapping.ReportSection,
++            mapping.LineClassification,
++            mapping.IsActive,
++            mapping.CreatedUtc,
++            mapping.UpdatedUtc));
++    }
++
++    public async Task<FinancialStatementMappingValidationResultDto> ValidateAsync(
++        ValidateFinancialStatementMappingsQuery query,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(query.CompanyId, cancellationToken);
++
++        var accounts = await _dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .Select(x => new AccountRow(x.Id, x.CompanyId, x.Code, x.Name))
++            .ToListAsync(cancellationToken);
++
++        var mappings = await _dbContext.FinancialStatementMappings
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .Select(x => new MappingRow(
++                x.Id,
++                x.CompanyId,
++                x.FinanceAccountId,
++                x.FinanceAccount.Code,
++                x.FinanceAccount.Name,
++                x.StatementType,
++                x.ReportSection,
++                x.LineClassification,
++                x.IsActive,
++                x.CreatedUtc,
++                x.UpdatedUtc))
++            .ToListAsync(cancellationToken);
++
++        var activeMappings = mappings.Where(x => x.IsActive).ToList();
++        var activeMappingLookup = activeMappings
++            .GroupBy(x => x.AccountId)
++            .ToDictionary(x => x.Key, x => x.ToList());
++
++        var issues = new List<FinancialStatementMappingValidationIssueDto>();
++
++        // Finance accounts do not yet model explicit lifecycle/reportability flags.
++        // Until those fields exist, every company finance account is treated as active and reportable.
++        foreach (var account in accounts)
++        {
++            if (activeMappingLookup.ContainsKey(account.Id))
++            {
++                continue;
++            }
++
++            issues.Add(new FinancialStatementMappingValidationIssueDto(
++                FinancialStatementMappingValidationErrorCodes.UnmappedActiveReportableAccount,
++                $"Finance account '{account.Code}' is active and reportable but has no active financial statement mapping.",
++                account.Id,
++                account.Code,
++                account.Name,
++                null,
++                null));
++        }
++
++        foreach (var duplicateGroup in activeMappings
++                     .GroupBy(x => new { x.AccountId, x.StatementType })
++                     .Where(x => x.Count() > 1))
++        {
++            foreach (var mapping in duplicateGroup
++                         .OrderBy(x => x.CreatedUtc)
++                         .ThenBy(x => x.Id))
++            {
++                issues.Add(new FinancialStatementMappingValidationIssueDto(
++                    FinancialStatementMappingValidationErrorCodes.ConflictDuplicateActive,
++                    $"Finance account '{mapping.AccountCode}' has more than one active mapping for statement type '{mapping.StatementType.ToStorageValue()}'.",
++                    mapping.AccountId,
++                    mapping.AccountCode,
++                    mapping.AccountName,
++                    mapping.Id,
++                    mapping.StatementType.ToStorageValue()));
++            }
++        }
++
++        var orderedIssues = issues
++            .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.AccountName, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.AccountId)
++            .ThenBy(x => x.StatementType ?? string.Empty, StringComparer.Ordinal)
++            .ThenBy(x => x.Code, StringComparer.Ordinal)
++            .ThenBy(x => x.MappingId ?? Guid.Empty)
++            .ToList();
++
++        return new FinancialStatementMappingValidationResultDto(
++            query.CompanyId,
++            accounts.Count,
++            mappings.Count,
++            orderedIssues.Count,
++            orderedIssues.Count(x => x.Code == FinancialStatementMappingValidationErrorCodes.UnmappedActiveReportableAccount),
++            orderedIssues.Count(x => x.Code == FinancialStatementMappingValidationErrorCodes.ConflictDuplicateActive),
++            orderedIssues);
++    }
++
++    private async Task<ValidatedCommand> ValidateCommandAsync(
++        Guid companyId,
++        Guid accountId,
++        string statementTypeValue,
++        string reportSectionValue,
++        string lineClassificationValue,
++        CancellationToken cancellationToken)
++    {
++        var errors = new List<FinancialStatementMappingCommandErrorDto>();
++        var account = await ResolveAccountAsync(accountId, companyId, errors, cancellationToken);
++
++        var hasStatementType = FinancialStatementTypeValues.TryParse(statementTypeValue, out var statementType);
++        if (!hasStatementType)
++        {
++            errors.Add(new FinancialStatementMappingCommandErrorDto(
++                FinancialStatementMappingValidationErrorCodes.InvalidStatementType,
++                nameof(CreateFinancialStatementMappingCommand.StatementType),
++                $"StatementType must be one of: {string.Join(", ", FinancialStatementTypeValues.AllowedValues)}."));
++        }
++
++        var hasReportSection = FinancialStatementReportSectionValues.TryParse(reportSectionValue, out var reportSection);
++        if (!hasReportSection)
++        {
++            errors.Add(new FinancialStatementMappingCommandErrorDto(
++                FinancialStatementMappingValidationErrorCodes.InvalidReportSection,
++                nameof(CreateFinancialStatementMappingCommand.ReportSection),
++                $"ReportSection must be one of: {string.Join(", ", FinancialStatementReportSectionValues.AllowedValues)}."));
++        }
++
++        var hasLineClassification = FinancialStatementLineClassificationValues.TryParse(lineClassificationValue, out var lineClassification);
++        if (!hasLineClassification)
++        {
++            errors.Add(new FinancialStatementMappingCommandErrorDto(
++                FinancialStatementMappingValidationErrorCodes.InvalidLineClassification,
++                nameof(CreateFinancialStatementMappingCommand.LineClassification),
++                $"LineClassification must be one of: {string.Join(", ", FinancialStatementLineClassificationValues.AllowedValues)}."));
++        }
++
++        if (hasStatementType && hasReportSection && !IsSectionCompatible(statementType, reportSection))
++        {
++            errors.Add(new FinancialStatementMappingCommandErrorDto(
++                FinancialStatementMappingValidationErrorCodes.InvalidReportSection,
++                nameof(CreateFinancialStatementMappingCommand.ReportSection),
++                $"ReportSection '{reportSectionValue}' is not valid for statement type '{statementType.ToStorageValue()}'."));
++        }
++
++        if (hasStatementType && hasLineClassification && !IsLineClassificationCompatible(statementType, lineClassification))
++        {
++            errors.Add(new FinancialStatementMappingCommandErrorDto(
++                FinancialStatementMappingValidationErrorCodes.InvalidLineClassification,
++                nameof(CreateFinancialStatementMappingCommand.LineClassification),
++                $"LineClassification '{lineClassificationValue}' is not valid for statement type '{statementType.ToStorageValue()}'."));
++        }
++
++        if (errors.Count > 0 || account is null || !hasStatementType || !hasReportSection || !hasLineClassification)
++        {
++            throw BuildValidationException(errors);
++        }
++
++        return new ValidatedCommand(account, statementType, reportSection, lineClassification);
++    }
++
++    private async Task<AccountRow?> ResolveAccountAsync(
++        Guid accountId,
++        Guid companyId,
++        ICollection<FinancialStatementMappingCommandErrorDto> errors,
++        CancellationToken cancellationToken)
++    {
++        if (accountId == Guid.Empty)
++        {
++            errors.Add(new FinancialStatementMappingCommandErrorDto(
++                FinancialStatementMappingValidationErrorCodes.AccountNotFound,
++                nameof(CreateFinancialStatementMappingCommand.AccountId),
++                "AccountId must reference an existing finance account."));
++            return null;
++        }
++
++        var account = await _dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.Id == accountId)
++            .Select(x => new AccountRow(x.Id, x.CompanyId, x.Code, x.Name))
++            .SingleOrDefaultAsync(cancellationToken);
++
++        if (account is null)
++        {
++            errors.Add(new FinancialStatementMappingCommandErrorDto(
++                FinancialStatementMappingValidationErrorCodes.AccountNotFound,
++                nameof(CreateFinancialStatementMappingCommand.AccountId),
++                "AccountId must reference an existing finance account."));
++            return null;
++        }
++
++        if (account.CompanyId != companyId)
++        {
++            errors.Add(new FinancialStatementMappingCommandErrorDto(
++                FinancialStatementMappingValidationErrorCodes.AccountCompanyMismatch,
++                nameof(CreateFinancialStatementMappingCommand.AccountId),
++                "AccountId must reference a finance account in the requested company."));
++            return null;
++        }
++
++        return account;
++    }
++
++    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (await _membershipContextResolver.ResolveAsync(companyId, cancellationToken) is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++    }
++
++    private static FinancialStatementMappingCommandException BuildValidationException(IEnumerable<FinancialStatementMappingCommandErrorDto> errors)
++    {
++        var materialized = errors.ToList();
++        var code = materialized.Count == 1
++            ? materialized[0].Code
++            : FinancialStatementMappingValidationErrorCodes.ValidationFailed;
++
++        return new FinancialStatementMappingCommandException(
++            StatusCodes.Status400BadRequest,
++            code,
++            "Financial statement mapping validation failed",
++            "The financial statement mapping request contains invalid account references or classification values.",
++            materialized);
++    }
++
++    private static FinancialStatementMappingCommandException BuildConflictException() =>
++        new(
++            StatusCodes.Status409Conflict,
++            FinancialStatementMappingValidationErrorCodes.ConflictDuplicateActive,
++            "Financial statement mapping conflict",
++            "The requested company account already has an active mapping for the selected statement type.",
++            [
++                new FinancialStatementMappingCommandErrorDto(
++                    FinancialStatementMappingValidationErrorCodes.ConflictDuplicateActive,
++                    nameof(CreateFinancialStatementMappingCommand.StatementType),
++                    "Only one active mapping is allowed for the same company account and statement type.")
++            ]);
++
++    private static bool IsDuplicateActiveMappingViolation(DbUpdateException exception)
++    {
++        for (Exception? current = exception; current is not null; current = current.InnerException)
++        {
++            if (current.Message.Contains("IX_financial_statement_mappings_company_id_finance_account_id_statement_type", StringComparison.OrdinalIgnoreCase) ||
++                current.Message.Contains("financial_statement_mappings", StringComparison.OrdinalIgnoreCase) &&
++                current.Message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase))
++            {
++                return true;
++            }
++        }
++
++        return false;
++    }
++
++    private static bool IsSectionCompatible(FinancialStatementType statementType, FinancialStatementReportSection reportSection) =>
++        statementType switch
++        {
++            FinancialStatementType.BalanceSheet => reportSection is FinancialStatementReportSection.BalanceSheetAssets or FinancialStatementReportSection.BalanceSheetLiabilities or FinancialStatementReportSection.BalanceSheetEquity,
++            FinancialStatementType.ProfitAndLoss => reportSection is FinancialStatementReportSection.ProfitAndLossRevenue or FinancialStatementReportSection.ProfitAndLossCostOfSales or FinancialStatementReportSection.ProfitAndLossOperatingExpenses or FinancialStatementReportSection.ProfitAndLossOtherIncomeExpense or FinancialStatementReportSection.ProfitAndLossTaxes,
++            FinancialStatementType.CashFlow => reportSection is FinancialStatementReportSection.CashFlowOperatingActivities or FinancialStatementReportSection.CashFlowInvestingActivities or FinancialStatementReportSection.CashFlowFinancingActivities or FinancialStatementReportSection.CashFlowSupplementalDisclosures,
++            _ => false
++        };
++
++    private static bool IsLineClassificationCompatible(FinancialStatementType statementType, FinancialStatementLineClassification lineClassification) =>
++        statementType switch
++        {
++            FinancialStatementType.BalanceSheet => lineClassification is FinancialStatementLineClassification.CurrentAsset or FinancialStatementLineClassification.NonCurrentAsset or FinancialStatementLineClassification.CurrentLiability or FinancialStatementLineClassification.NonCurrentLiability or FinancialStatementLineClassification.Equity,
++            FinancialStatementType.ProfitAndLoss => lineClassification is FinancialStatementLineClassification.Revenue or FinancialStatementLineClassification.ContraRevenue or FinancialStatementLineClassification.CostOfSales or FinancialStatementLineClassification.OperatingExpense or FinancialStatementLineClassification.NonOperatingIncome or FinancialStatementLineClassification.NonOperatingExpense or FinancialStatementLineClassification.IncomeTax,
++            FinancialStatementType.CashFlow => lineClassification is FinancialStatementLineClassification.DepreciationAndAmortization or FinancialStatementLineClassification.WorkingCapital or FinancialStatementLineClassification.NonCashAdjustment or FinancialStatementLineClassification.CashReceipt or FinancialStatementLineClassification.CashDisbursement or FinancialStatementLineClassification.InvestingCashInflow or FinancialStatementLineClassification.InvestingCashOutflow or FinancialStatementLineClassification.FinancingCashInflow or FinancialStatementLineClassification.FinancingCashOutflow or FinancialStatementLineClassification.SupplementalDisclosure,
++            _ => false
++        };
++
++    private static FinancialStatementMappingDto MapDto(MappingRow row) =>
++        new(
++            row.Id,
++            row.CompanyId,
++            row.AccountId,
++            row.AccountCode,
++            row.AccountName,
++            row.StatementType.ToStorageValue(),
++            row.ReportSection.ToStorageValue(),
++            row.LineClassification.ToStorageValue(),
++            row.IsActive,
++            row.CreatedUtc,
++            row.UpdatedUtc);
++
++    private sealed record AccountRow(
++        Guid Id,
++        Guid CompanyId,
++        string Code,
++        string Name);
++
++    private sealed record MappingRow(
++        Guid Id,
++        Guid CompanyId,
++        Guid AccountId,
++        string AccountCode,
++        string AccountName,
++        FinancialStatementType StatementType,
++        FinancialStatementReportSection ReportSection,
++        FinancialStatementLineClassification LineClassification,
++        bool IsActive,
++        DateTime CreatedUtc,
++        DateTime UpdatedUtc);
++
++    private sealed record ValidatedCommand(
++        AccountRow Account,
++        FinancialStatementType StatementType,
++        FinancialStatementReportSection ReportSection,
++        FinancialStatementLineClassification LineClassification);
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinancialStatementMappingsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancialStatementMappingsIntegrationTests.cs
+new file mode 100644
+index 0000000..6666666
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinancialStatementMappingsIntegrationTests.cs
+@@ -0,0 +1,392 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinancialStatementMappingsIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinancialStatementMappingsIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task List_endpoint_returns_only_requested_company_mappings()
++    {
++        var seed = await SeedAsync();
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.FinancialStatementMappings.AddRange(
++                new FinancialStatementMapping(
++                    Guid.NewGuid(),
++                    seed.CompanyId,
++                    seed.AssetAccountId,
++                    FinancialStatementType.BalanceSheet,
++                    FinancialStatementReportSection.BalanceSheetAssets,
++                    FinancialStatementLineClassification.CurrentAsset),
++                new FinancialStatementMapping(
++                    Guid.NewGuid(),
++                    seed.OtherCompanyId,
++                    seed.OtherCompanyAssetAccountId,
++                    FinancialStatementType.BalanceSheet,
++                    FinancialStatementReportSection.BalanceSheetAssets,
++                    FinancialStatementLineClassification.CurrentAsset));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed);
++
++        var response = await client.GetFromJsonAsync<List<FinancialStatementMappingResponse>>(
++            $"/api/companies/{seed.CompanyId}/financial-statement-mappings");
++
++        Assert.NotNull(response);
++        var item = Assert.Single(response!);
++        Assert.Equal(seed.CompanyId, item.CompanyId);
++        Assert.Equal(seed.AssetAccountId, item.AccountId);
++        Assert.Equal("1000", item.AccountCode);
++    }
++
++    [Fact]
++    public async Task Create_endpoint_persists_valid_mapping()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed);
++
++        var response = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/financial-statement-mappings",
++            new
++            {
++                accountId = seed.AssetAccountId,
++                statementType = "balance_sheet",
++                reportSection = "balance_sheet_assets",
++                lineClassification = "current_asset",
++                isActive = true
++            });
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<FinancialStatementMappingResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!.CompanyId);
++        Assert.Equal(seed.AssetAccountId, payload.AccountId);
++        Assert.Equal("balance_sheet", payload.StatementType);
++        Assert.Equal("balance_sheet_assets", payload.ReportSection);
++        Assert.Equal("current_asset", payload.LineClassification);
++        Assert.True(payload.IsActive);
++
++        var persisted = await _factory.ExecuteDbContextAsync(async dbContext =>
++            await dbContext.FinancialStatementMappings.IgnoreQueryFilters()
++                .SingleAsync(x => x.Id == payload.Id));
++
++        Assert.Equal(seed.CompanyId, persisted.CompanyId);
++        Assert.Equal(seed.AssetAccountId, persisted.FinanceAccountId);
++        Assert.Equal(FinancialStatementType.BalanceSheet, persisted.StatementType);
++    }
++
++    [Fact]
++    public async Task Update_endpoint_modifies_mapping_fields()
++    {
++        var seed = await SeedAsync();
++        var mappingId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.FinancialStatementMappings.Add(
++                new FinancialStatementMapping(
++                    mappingId,
++                    seed.CompanyId,
++                    seed.LiabilityAccountId,
++                    FinancialStatementType.BalanceSheet,
++                    FinancialStatementReportSection.BalanceSheetLiabilities,
++                    FinancialStatementLineClassification.CurrentLiability));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed);
++        var response = await client.PutAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/financial-statement-mappings/{mappingId}",
++            new
++            {
++                accountId = seed.LiabilityAccountId,
++                statementType = "balance_sheet",
++                reportSection = "balance_sheet_liabilities",
++                lineClassification = "non_current_liability",
++                isActive = false
++            });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<FinancialStatementMappingResponse>();
++        Assert.NotNull(payload);
++        Assert.False(payload!.IsActive);
++        Assert.Equal("non_current_liability", payload.LineClassification);
++
++        var persisted = await _factory.ExecuteDbContextAsync(async dbContext =>
++            await dbContext.FinancialStatementMappings.IgnoreQueryFilters()
++                .SingleAsync(x => x.Id == mappingId));
++
++        Assert.False(persisted.IsActive);
++        Assert.Equal(FinancialStatementLineClassification.NonCurrentLiability, persisted.LineClassification);
++    }
++
++    [Fact]
++    public async Task Create_endpoint_rejects_cross_company_account_reference_with_deterministic_code()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed);
++
++        var response = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/financial-statement-mappings",
++            new
++            {
++                accountId = seed.OtherCompanyAssetAccountId,
++                statementType = "balance_sheet",
++                reportSection = "balance_sheet_assets",
++                lineClassification = "current_asset",
++                isActive = true
++            });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<FinancialStatementMappingProblemResponse>();
++        Assert.NotNull(problem);
++        Assert.Equal(FinancialStatementMappingValidationErrorCodes.AccountCompanyMismatch, problem!.Code);
++        var error = Assert.Single(problem.Errors);
++        Assert.Equal(FinancialStatementMappingValidationErrorCodes.AccountCompanyMismatch, error.Code);
++        Assert.Equal("AccountId", error.Field);
++    }
++
++    [Fact]
++    public async Task Create_endpoint_translates_duplicate_active_mapping_conflict()
++    {
++        var seed = await SeedAsync();
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.FinancialStatementMappings.Add(
++                new FinancialStatementMapping(
++                    Guid.NewGuid(),
++                    seed.CompanyId,
++                    seed.AssetAccountId,
++                    FinancialStatementType.BalanceSheet,
++                    FinancialStatementReportSection.BalanceSheetAssets,
++                    FinancialStatementLineClassification.CurrentAsset));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed);
++        var response = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/financial-statement-mappings",
++            new
++            {
++                accountId = seed.AssetAccountId,
++                statementType = "balance_sheet",
++                reportSection = "balance_sheet_assets",
++                lineClassification = "non_current_asset",
++                isActive = true
++            });
++
++        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<FinancialStatementMappingProblemResponse>();
++        Assert.NotNull(problem);
++        Assert.Equal(FinancialStatementMappingValidationErrorCodes.ConflictDuplicateActive, problem!.Code);
++    }
++
++    [Fact]
++    public async Task Validation_endpoint_returns_unmapped_accounts_in_deterministic_order()
++    {
++        var seed = await SeedAsync();
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.FinancialStatementMappings.Add(
++                new FinancialStatementMapping(
++                    Guid.NewGuid(),
++                    seed.CompanyId,
++                    seed.LiabilityAccountId,
++                    FinancialStatementType.BalanceSheet,
++                    FinancialStatementReportSection.BalanceSheetLiabilities,
++                    FinancialStatementLineClassification.CurrentLiability));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed);
++        var response = await client.GetFromJsonAsync<FinancialStatementMappingValidationResponse>(
++            $"/api/companies/{seed.CompanyId}/financial-statement-mappings/validation");
++
++        Assert.NotNull(response);
++        Assert.Equal(seed.CompanyId, response!.CompanyId);
++        Assert.Equal(2, response.UnmappedCount);
++        Assert.Equal(0, response.ConflictCount);
++        Assert.Equal(2, response.IssueCount);
++        Assert.Equal(
++            new[] { "1000", "4000" },
++            response.Issues.Select(x => x.AccountCode).ToArray());
++        Assert.All(
++            response.Issues,
++            issue => Assert.Equal(FinancialStatementMappingValidationErrorCodes.UnmappedActiveReportableAccount, issue.Code));
++    }
++
++    [Fact]
++    public async Task Validation_endpoint_returns_conflicting_active_mappings_deterministically()
++    {
++        var seed = await SeedAsync();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.FinancialStatementMappings.AddRange(
++                new FinancialStatementMapping(
++                    Guid.NewGuid(),
++                    seed.CompanyId,
++                    seed.LiabilityAccountId,
++                    FinancialStatementType.BalanceSheet,
++                    FinancialStatementReportSection.BalanceSheetLiabilities,
++                    FinancialStatementLineClassification.CurrentLiability),
++                new FinancialStatementMapping(
++                    Guid.NewGuid(),
++                    seed.CompanyId,
++                    seed.RevenueAccountId,
++                    FinancialStatementType.ProfitAndLoss,
++                    FinancialStatementReportSection.ProfitAndLossRevenue,
++                    FinancialStatementLineClassification.Revenue));
++            return Task.CompletedTask;
++        });
++
++        await _factory.ExecuteDbContextAsync(async dbContext =>
++        {
++            await dbContext.Database.ExecuteSqlRawAsync(
++                "DROP INDEX IF EXISTS IX_financial_statement_mappings_company_id_finance_account_id_statement_type");
++
++            dbContext.FinancialStatementMappings.AddRange(
++                new FinancialStatementMapping(
++                    Guid.NewGuid(),
++                    seed.CompanyId,
++                    seed.AssetAccountId,
++                    FinancialStatementType.BalanceSheet,
++                    FinancialStatementReportSection.BalanceSheetAssets,
++                    FinancialStatementLineClassification.CurrentAsset,
++                    createdUtc: new DateTime(2026, 4, 20, 8, 0, 0, DateTimeKind.Utc),
++                    updatedUtc: new DateTime(2026, 4, 20, 8, 0, 0, DateTimeKind.Utc)),
++                new FinancialStatementMapping(
++                    Guid.NewGuid(),
++                    seed.CompanyId,
++                    seed.AssetAccountId,
++                    FinancialStatementType.BalanceSheet,
++                    FinancialStatementReportSection.BalanceSheetAssets,
++                    FinancialStatementLineClassification.NonCurrentAsset,
++                    createdUtc: new DateTime(2026, 4, 20, 9, 0, 0, DateTimeKind.Utc),
++                    updatedUtc: new DateTime(2026, 4, 20, 9, 0, 0, DateTimeKind.Utc)));
++
++            await dbContext.SaveChangesAsync();
++            return 0;
++        });
++
++        using var client = CreateAuthenticatedClient(seed);
++        var response = await client.GetFromJsonAsync<FinancialStatementMappingValidationResponse>(
++            $"/api/companies/{seed.CompanyId}/financial-statement-mappings/validation");
++
++        Assert.NotNull(response);
++        Assert.Equal(0, response!.UnmappedCount);
++        Assert.Equal(2, response.ConflictCount);
++        Assert.Equal(2, response.Issues.Count);
++        Assert.All(
++            response.Issues,
++            issue => Assert.Equal(FinancialStatementMappingValidationErrorCodes.ConflictDuplicateActive, issue.Code));
++        Assert.True(response.Issues[0].MappingId != response.Issues[1].MappingId);
++        Assert.True(response.Issues.SequenceEqual(
++            response.Issues.OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
++                .ThenBy(x => x.StatementType, StringComparer.Ordinal)
++                .ThenBy(x => x.MappingId)));
++    }
++
++    private async Task<MappingSeed> SeedAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var assetAccountId = Guid.NewGuid();
++        var liabilityAccountId = Guid.NewGuid();
++        var revenueAccountId = Guid.NewGuid();
++        var otherCompanyAssetAccountId = Guid.NewGuid();
++        var subject = $"mapping-user-{Guid.NewGuid():N}";
++        var email = $"{subject}@example.com";
++        const string displayName = "Mapping User";
++        var openedUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Mapping Company"),
++                new Company(otherCompanyId, "Other Mapping Company"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.FinanceAccounts.AddRange(
++                new FinanceAccount(assetAccountId, companyId, "1000", "Operating Cash", "asset", "USD", 0m, openedUtc),
++                new FinanceAccount(liabilityAccountId, companyId, "2000", "Accounts Payable", "liability", "USD", 0m, openedUtc),
++                new FinanceAccount(revenueAccountId, companyId, "4000", "Product Revenue", "revenue", "USD", 0m, openedUtc),
++                new FinanceAccount(otherCompanyAssetAccountId, otherCompanyId, "1000", "Other Operating Cash", "asset", "USD", 0m, openedUtc));
++            return Task.CompletedTask;
++        });
++
++        return new MappingSeed(
++            companyId,
++            otherCompanyId,
++            assetAccountId,
++            liabilityAccountId,
++            revenueAccountId,
++            otherCompanyAssetAccountId,
++            subject,
++            email,
++            displayName);
++    }
++
++    private HttpClient CreateAuthenticatedClient(MappingSeed seed)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, seed.Subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, seed.Email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, seed.DisplayName);
++        return client;
++    }
++
++    private sealed record MappingSeed(
++        Guid CompanyId,
++        Guid OtherCompanyId,
++        Guid AssetAccountId,
++        Guid LiabilityAccountId,
++        Guid RevenueAccountId,
++        Guid OtherCompanyAssetAccountId,
++        string Subject,
++        string Email,
++        string DisplayName);
++
++    private sealed class FinancialStatementMappingResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CompanyId { get; set; }
++        public Guid AccountId { get; set; }
++        public string AccountCode { get; set; } = string.Empty;
++        public string AccountName { get; set; } = string.Empty;
++        public string StatementType { get; set; } = string.Empty;
++        public string ReportSection { get; set; } = string.Empty;
++        public string LineClassification { get; set; } = string.Empty;
++        public bool IsActive { get; set; }
++        public DateTime CreatedUtc { get; set; }
++        public DateTime UpdatedUtc { get; set; }
++    }
++
++    private sealed class FinancialStatementMappingValidationResponse
++    {
++        public Guid CompanyId { get; set; }
++        public int AccountCount { get; set; }
++        public int MappingCount { get; set; }
++        public int IssueCount { get; set; }
++        public int UnmappedCount { get; set; }
++        public int ConflictCount { get; set; }
++        public List<FinancialStatementMappingValidationIssueResponse> Issues { get; set; } = [];
++    }
++
++    private sealed class FinancialStatementMappingValidationIssueResponse
++    {
++        public string Code { get; set; } = string.Empty;
++        public string Message { get; set; } = string.Empty;
++        public Guid AccountId { get; set; }
++        public string AccountCode { get; set; } = string.Empty;
++        public string AccountName { get; set; } = string.Empty;
++        public Guid? MappingId { get; set; }
++        public string? StatementType { get; set; }
++    }
++
++    private sealed class FinancialStatementMappingProblemResponse
++    {
++        public string Title { get; set; } = string.Empty;
++        public string Detail { get; set; } = string.Empty;
++        public int Status { get; set; }
++        public string Code { get; set; } = string.Empty;
++        public JsonElement Errors { get; set; }
++
++        public IReadOnlyList<FinancialStatementMappingProblemErrorResponse> ErrorsList =>
++            Errors.ValueKind != JsonValueKind.Array
++                ? []
++                : Errors.Deserialize<List<FinancialStatementMappingProblemErrorResponse>>() ?? [];
++
++        public IReadOnlyList<FinancialStatementMappingProblemErrorResponse> Errors =>
++            ErrorsList;
++    }
++
++    private sealed class FinancialStatementMappingProblemErrorResponse
++    {
++        public string Code { get; set; } = string.Empty;
++        public string Field { get; set; } = string.Empty;
++        public string Message { get; set; } = string.Empty;
++    }
++}
+END_OF_PATCH

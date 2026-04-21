@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-27.4.1",
+  "promptPath": ".ai-design/prompts/TASK-27.4.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T20:06:22.107Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T20-06-22-107Z_TASK-27.4.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T20-06-22-107Z_TASK-27.4.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T20:16:38.483Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "Id, new DateTime(2026, 2, 15, 0, 0, 0, DateTimeKind.Utc)),\n+            CancellationToken.None);\n+\n+        Assert.Equal(companyId, result.CompanyId);\n+        Assert.False(string.IsNullOrWhiteSpace(result.Headline));\n+        Assert.False(string.IsNullOrWhiteSpace(result.Summary));\n+        Assert.NotNull(result.DataCoverageNote);\n+        Assert.Equal(\"insufficient_data\", result.RevenueTrend.DirectionLabel);\n+        Assert.Equal(\"insufficient_data\", result.TopExpenses.TrendLabel);\n+        Assert.Equal(\"clear\", result.OverdueCustomerRisk.RiskLabel);\n+        Assert.Equal(\"low\", result.PayablePressure.RiskLabel);\n+    }\n+\n+    [Fact]\n+    public async Task Insights_remain_company_scoped_when_multiple_tenants_exist()\n+    {\n+        var companyA = Guid.NewGuid();\n+        var companyB = Guid.NewGuid();\n+        await using var connection = new SqliteConnection(\"Data Source=:memory:\");\n+        await connection.OpenAsync();\n+        await using var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);\n+        await dbContext.Database.EnsureCreatedAsync();\n+\n+        var companyAEntity = new Company(companyA, \"Tenant A\");\n+        companyAEntity.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);\n+        var companyBEntity = new Company(companyB, \"Tenant B\");\n+        companyBEntity.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);\n+        dbContext.Companies.AddRange(companyAEntity, companyBEntity);\n+        FinanceSeedData.AddMockFinanceData(dbContext, companyA);\n+        FinanceSeedData.AddMockFinanceData(dbContext, companyB);\n+        await dbContext.SaveChangesAsync();\n+\n+        var service = new CompanyFinanceReadService(dbContext);\n+        var result = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyA), CancellationToken.None);\n+        Assert.Equal(companyA, result.CompanyId);\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "6, 2, 15, 0, 0, 0, DateTimeKind.Utc)),\n+            CancellationToken.None);\n+\n+        Assert.Equal(companyId, result.CompanyId);\n+        Assert.False(string.IsNullOrWhiteSpace(result.Headline));\n+        Assert.False(string.IsNullOrWhiteSpace(result.Summary));\n+        Assert.NotNull(result.DataCoverageNote);\n+        Assert.Equal(\"insufficient_data\", result.RevenueTrend.DirectionLabel);\n+        Assert.Equal(\"insufficient_data\", result.TopExpenses.TrendLabel);\n+        Assert.Equal(\"clear\", result.OverdueCustomerRisk.RiskLabel);\n+        Assert.Equal(\"low\", result.PayablePressure.RiskLabel);\n+    }\n+\n+    [Fact]\n+    public async Task Insights_remain_company_scoped_when_multiple_tenants_exist()\n+    {\n+        var companyA = Guid.NewGuid();\n+        var companyB = Guid.NewGuid();\n+        await using var connection = new SqliteConnection(\"Data Source=:memory:\");\n+        await connection.OpenAsync();\n+        await using var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);\n+        await dbContext.Database.EnsureCreatedAsync();\n+\n+        var companyAEntity = new Company(companyA, \"Tenant A\");\n+        companyAEntity.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);\n+        var companyBEntity = new Company(companyB, \"Tenant B\");\n+        companyBEntity.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);\n+        dbContext.Companies.AddRange(companyAEntity, companyBEntity);\n+        FinanceSeedData.AddMockFinanceData(dbContext, companyA);\n+        FinanceSeedData.AddMockFinanceData(dbContext, companyB);\n+        await dbContext.SaveChangesAsync();\n+\n+        var service = new CompanyFinanceReadService(dbContext);\n+        var result = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyA), CancellationToken.None);\n+        Assert.Equal(companyA, result.CompanyId);\n+    }\n+}\nEND_OF_PATCH\ntokens used\n198,533\n",
+  "verbosityMode": "verbose"
+}

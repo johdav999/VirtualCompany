@@ -1,0 +1,298 @@
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+@@ -364,9 +364,10 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
+         decimal amount,
+         string currency,
+         string status,
+         Guid? documentId = null,
+         DateTime? createdUtc = null,
+-        DateTime? updatedUtc = null)
++        DateTime? updatedUtc = null,
++        string? settlementStatus = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+             throw new ArgumentException("CompanyId is required.", nameof(companyId));
+@@ -507,9 +508,10 @@ public sealed class FinanceBill : ICompanyOwnedEntity
+         decimal amount,
+         string currency,
+         string status,
+         Guid? documentId = null,
+         DateTime? createdUtc = null,
+-        DateTime? updatedUtc = null)
++        DateTime? updatedUtc = null,
++        string? settlementStatus = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+             throw new ArgumentException("CompanyId is required.", nameof(companyId));
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+index 3333333..4444444 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -542,24 +542,6 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFin
+             throw new FinanceValidationException(errors);
+         }
+     }
+ 
+-    private static void AddRequired(IDictionary<string, string[]> errors, string field, string? value)
+-    {
+-        if (string.IsNullOrWhiteSpace(value))
+-        {
+-            errors[field] = [$"{field} is required."];
+-        }
+-    }
+-
+-    private static void AddMaxLength(IDictionary<string, string[]> errors, string field, string? value, int maxLength)
+-    {
+-        if (string.IsNullOrWhiteSpace(value))
+-        {
+-            return;
+-        }
+-
+-        if (value.Trim().Length > maxLength)
+-        {
+-            errors[field] = [$"{field} must be {maxLength} characters or fewer."];
+-        }
+-    }
+-
+     private static FinanceInvoiceDto MapInvoice(FinanceInvoice invoice) =>
+         new(
+             invoice.Id,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinancePaymentAllocationService.cs b/src/VirtualCompany.Infrastructure/Finance/FinancePaymentAllocationService.cs
+index 5555555..6666666 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FinancePaymentAllocationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinancePaymentAllocationService.cs
+@@ -203,11 +203,16 @@ internal sealed class FinancePaymentAllocationService
+         var createdAllocationCount = 0;
+         var createdPaymentCount = 0;
+         var remainingAmount = invoice.Amount;
+ 
+-        var payment = await FindExistingPaymentAsync(companyId, PaymentTypes.Incoming, invoice.InvoiceNumber, invoice.Currency, cancellationToken);
+-        if (payment is not null)
++        var payments = await FindExistingPaymentsAsync(companyId, PaymentTypes.Incoming, invoice.InvoiceNumber, invoice.Currency, cancellationToken);
++        foreach (var payment in payments)
+         {
++            if (remainingAmount <= 0m)
++            {
++                break;
++            }
++
+             var created = await CreateBackfillAllocationChunkAsync(companyId, payment, invoice, null, remainingAmount, cancellationToken);
+             createdAllocationCount += created.CreatedAllocationCount;
+             remainingAmount -= created.AllocatedAmount;
+         }
+ 
+@@ -233,11 +238,16 @@ internal sealed class FinancePaymentAllocationService
+         var createdAllocationCount = 0;
+         var createdPaymentCount = 0;
+         var remainingAmount = bill.Amount;
+ 
+-        var payment = await FindExistingPaymentAsync(companyId, PaymentTypes.Outgoing, bill.BillNumber, bill.Currency, cancellationToken);
+-        if (payment is not null)
++        var payments = await FindExistingPaymentsAsync(companyId, PaymentTypes.Outgoing, bill.BillNumber, bill.Currency, cancellationToken);
++        foreach (var payment in payments)
+         {
++            if (remainingAmount <= 0m)
++            {
++                break;
++            }
++
+             var created = await CreateBackfillAllocationChunkAsync(companyId, payment, null, bill, remainingAmount, cancellationToken);
+             createdAllocationCount += created.CreatedAllocationCount;
+             remainingAmount -= created.AllocatedAmount;
+         }
+ 
+@@ -366,24 +376,27 @@ internal sealed class FinancePaymentAllocationService
+         }
+ 
+         var allocatedToPayment = await GetAllocatedToPaymentAsync(companyId, payment.Id, allocationIdToExclude, cancellationToken);
+-        if (allocatedToPayment + amount > payment.Amount)
++        var remainingOnPayment = NormalizeMoney(Math.Max(0m, payment.Amount - allocatedToPayment));
++        if (amount > remainingOnPayment)
+         {
+-            throw CreateValidationException("AllocatedAmount", $"Payment allocations cannot exceed the payment amount of {payment.Amount:0.00}.");
++            throw CreateValidationException("AllocatedAmount", $"Payment allocations cannot exceed the remaining unallocated payment amount of {remainingOnPayment:0.00}.");
+         }
+ 
+         if (invoice is not null)
+         {
+             var allocatedToInvoice = await GetAllocatedToInvoiceAsync(companyId, invoice.Id, allocationIdToExclude, cancellationToken);
+-            if (allocatedToInvoice + amount > invoice.Amount)
++            var remainingOpenAmount = NormalizeMoney(Math.Max(0m, invoice.Amount - allocatedToInvoice));
++            if (amount > remainingOpenAmount)
+             {
+-                throw CreateValidationException("AllocatedAmount", $"Invoice allocations cannot exceed the invoice amount of {invoice.Amount:0.00}.");
++                throw CreateValidationException("AllocatedAmount", $"Invoice allocations cannot exceed the remaining open amount of {remainingOpenAmount:0.00}.");
+             }
+         }
+ 
+         if (bill is not null)
+         {
+             var allocatedToBill = await GetAllocatedToBillAsync(companyId, bill.Id, allocationIdToExclude, cancellationToken);
+-            if (allocatedToBill + amount > bill.Amount)
++            var remainingOpenAmount = NormalizeMoney(Math.Max(0m, bill.Amount - allocatedToBill));
++            if (amount > remainingOpenAmount)
+             {
+-                throw CreateValidationException("AllocatedAmount", $"Bill allocations cannot exceed the bill amount of {bill.Amount:0.00}.");
++                throw CreateValidationException("AllocatedAmount", $"Bill allocations cannot exceed the remaining open amount of {remainingOpenAmount:0.00}.");
+             }
+         }
+     }
+@@ -474,7 +487,7 @@ internal sealed class FinancePaymentAllocationService
+         return bill ?? throw new KeyNotFoundException("Finance bill was not found.");
+     }
+ 
+-    private async Task<Payment?> FindExistingPaymentAsync(
++    private async Task<List<Payment>> FindExistingPaymentsAsync(
+         Guid companyId,
+         string paymentType,
+         string reference,
+@@ -488,10 +501,11 @@ internal sealed class FinancePaymentAllocationService
+                 x.PaymentType == paymentType &&
+                 x.CounterpartyReference == reference &&
+                 x.Currency == currency)
+             .OrderByDescending(x => x.Status == "completed")
+             .ThenBy(x => x.PaymentDate)
+-            .FirstOrDefaultAsync(cancellationToken);
++            .ThenBy(x => x.CreatedUtc)
++            .ToListAsync(cancellationToken);
+ 
+     private static Payment CreateSyntheticPayment(
+         Guid companyId,
+         string paymentType,
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationCommandServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationCommandServiceTests.cs
+index 7777777..8888888 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationCommandServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationCommandServiceTests.cs
+@@ -142,6 +142,52 @@ public sealed class FinancePaymentAllocationCommandServiceTests
+                 new CreateFinancePaymentAllocationDto(seed.IncomingPaymentBId, seed.InvoiceBId, null, 30m, "USD")),
+             CancellationToken.None);
+ 
++        await service.CreateAllocationAsync(
++            new CreateFinancePaymentAllocationCommand(
++                companyId,
++                new CreateFinancePaymentAllocationDto(seed.OutgoingPaymentId, null, seed.BillId, 50m, "USD")),
++            CancellationToken.None);
++
+         Assert.Equal(3, await dbContext.PaymentAllocations.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
+         Assert.Equal(
+             FinanceSettlementStatuses.PartiallyPaid,
+@@ -150,6 +196,43 @@ public sealed class FinancePaymentAllocationCommandServiceTests
+         Assert.Equal(
+             FinanceSettlementStatuses.Paid,
+             await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceBId).Select(x => x.SettlementStatus).SingleAsync());
++        Assert.Equal(
++            FinanceSettlementStatuses.Paid,
++            await dbContext.FinanceBills.IgnoreQueryFilters().Where(x => x.Id == seed.BillId).Select(x => x.SettlementStatus).SingleAsync());
++    }
++
++    [Fact]
++    public async Task Allocation_updates_preserve_exact_partial_amounts_and_recalculate_bill_status()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedAllocationScenario(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++
++        var created = await service.CreateAllocationAsync(
++            new CreateFinancePaymentAllocationCommand(
++                companyId,
++                new CreateFinancePaymentAllocationDto(seed.OutgoingPaymentId, null, seed.BillId, 20.10m, "usd")),
++            CancellationToken.None);
++
++        Assert.Equal(20.10m, created.AllocatedAmount);
++        Assert.Equal(
++            FinanceSettlementStatuses.PartiallyPaid,
++            await dbContext.FinanceBills.IgnoreQueryFilters().Where(x => x.Id == seed.BillId).Select(x => x.SettlementStatus).SingleAsync());
++
++        await service.UpdateAllocationAsync(
++            new UpdateFinancePaymentAllocationCommand(
++                companyId,
++                created.Id,
++                new UpdateFinancePaymentAllocationDto(seed.OutgoingPaymentId, null, seed.BillId, 15.55m, "USD")),
++            CancellationToken.None);
++
++        Assert.Equal(
++            FinanceSettlementStatuses.PartiallyPaid,
++            await dbContext.FinanceBills.IgnoreQueryFilters().Where(x => x.Id == seed.BillId).Select(x => x.SettlementStatus).SingleAsync());
+     }
+ 
+     [Fact]
+@@ -240,6 +323,64 @@ public sealed class FinancePaymentAllocationCommandServiceTests
+         Assert.Equal(
+             FinanceSettlementStatuses.Unpaid,
+             await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == openInvoiceId).Select(x => x.SettlementStatus).SingleAsync());
++    }
++
++    [Fact]
++    public async Task Backfill_uses_multiple_matching_payments_before_synthesizing_missing_payments()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Backfill Multi Payment Company");
++        var counterpartyId = Guid.NewGuid();
++        var paidInvoiceId = Guid.NewGuid();
++
++        dbContext.Companies.Add(company);
++        dbContext.FinanceCounterparties.Add(new FinanceCounterparty(counterpartyId, companyId, "Backfill Counterparty", "customer", "finance@example.com"));
++        dbContext.FinanceInvoices.Add(new FinanceInvoice(
++            paidInvoiceId,
++            companyId,
++            counterpartyId,
++            "INV-BACKFILL-SPLIT-001",
++            new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),
++            125m,
++            "USD",
++            "paid"));
++        dbContext.Payments.AddRange(
++            new Payment(
++                Guid.NewGuid(),
++                companyId,
++                PaymentTypes.Incoming,
++                75m,
++                "USD",
++                new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc),
++                "bank_transfer",
++                "completed",
++                "INV-BACKFILL-SPLIT-001"),
++            new Payment(
++                Guid.NewGuid(),
++                companyId,
++                PaymentTypes.Incoming,
++                50m,
++                "USD",
++                new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc),
++                "bank_transfer",
++                "completed",
++                "INV-BACKFILL-SPLIT-001"));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++
++        var result = await service.BackfillAllocationsAsync(
++            new BackfillFinancePaymentAllocationsCommand(companyId, true),
++            CancellationToken.None);
++
++        Assert.Equal(2, result.CreatedAllocationCount);
++        Assert.Equal(0, result.CreatedPaymentCount);
++        Assert.Equal(125m, await dbContext.PaymentAllocations.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && x.InvoiceId == paidInvoiceId).SumAsync(x => x.AllocatedAmount));
++        Assert.Equal(
++            FinanceSettlementStatuses.Paid,
++            await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == paidInvoiceId).Select(x => x.SettlementStatus).SingleAsync());
+     }
+ 
+     private static AllocationSeed SeedAllocationScenario(VirtualCompanyDbContext dbContext, Guid companyId)
+END_OF_PATCH

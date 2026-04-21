@@ -32,11 +32,11 @@ public static class FinanceSeedData
 
         var counterparties = new[]
         {
-            new FinanceCounterparty(StableId(companyId, "counterparty:northwind-analytics"), companyId, "Northwind Analytics", "customer", "ap@northwind.example"),
-            new FinanceCounterparty(StableId(companyId, "counterparty:contoso-supplies"), companyId, "Contoso Supplies", "vendor", "billing@contoso.example"),
-            new FinanceCounterparty(StableId(companyId, "counterparty:fabrikam-cloud"), companyId, "Fabrikam Cloud", "vendor", "finance@fabrikam.example"),
-            new FinanceCounterparty(StableId(companyId, "counterparty:adventure-works"), companyId, "Adventure Works", "customer", "payables@adventure.example"),
-            new FinanceCounterparty(StableId(companyId, "counterparty:tailspin-logistics"), companyId, "Tailspin Logistics", "vendor", "ar@tailspin.example")
+            new FinanceCounterparty(StableId(companyId, "counterparty:northwind-analytics"), companyId, "Northwind Analytics", "customer", "ap@northwind.example", "Net30", null, 0m, "bank_transfer", "1100"),
+            new FinanceCounterparty(StableId(companyId, "counterparty:contoso-supplies"), companyId, "Contoso Supplies", "vendor", "billing@contoso.example", "Net30", null, 0m, "bank_transfer", "2000"),
+            new FinanceCounterparty(StableId(companyId, "counterparty:fabrikam-cloud"), companyId, "Fabrikam Cloud", "vendor", "finance@fabrikam.example", "Net30", null, 0m, "bank_transfer", "2000"),
+            new FinanceCounterparty(StableId(companyId, "counterparty:adventure-works"), companyId, "Adventure Works", "customer", "payables@adventure.example", "Net30", null, 0m, "bank_transfer", "1100"),
+            new FinanceCounterparty(StableId(companyId, "counterparty:tailspin-logistics"), companyId, "Tailspin Logistics", "vendor", "ar@tailspin.example", "Net30", null, 0m, "bank_transfer", "2000")
         };
 
         var documents = Enumerable.Range(1, 5)
@@ -89,6 +89,61 @@ public static class FinanceSeedData
                 documents[(index + 1) % documents.Length].Id))
             .ToArray();
 
+        var payments = invoices
+            .Select(invoice => new Payment(
+                StableId(companyId, $"payment:invoice:{invoice.InvoiceNumber}"),
+                companyId,
+                PaymentTypes.Incoming,
+                invoice.Amount,
+                invoice.Currency,
+                invoice.IssuedUtc.AddDays(12),
+                "bank_transfer",
+                invoice.Status == "paid" ? "completed" : "pending",
+                invoice.InvoiceNumber))
+            .Concat(bills.Select(bill => new Payment(
+                StableId(companyId, $"payment:bill:{bill.BillNumber}"),
+                companyId,
+                PaymentTypes.Outgoing,
+                bill.Amount,
+                bill.Currency,
+                bill.ReceivedUtc.AddDays(9),
+                "ach",
+                bill.Status == "paid" ? "completed" : "pending",
+                bill.BillNumber)))
+            .OrderBy(x => x.PaymentDate)
+            .ToArray();
+
+        var allocations = invoices
+            .Where(x => string.Equals(x.Status, "paid", StringComparison.OrdinalIgnoreCase))
+            .Select(invoice =>
+            {
+                var payment = payments.Single(x =>
+                    x.PaymentType == PaymentTypes.Incoming &&
+                    string.Equals(x.CounterpartyReference, invoice.InvoiceNumber, StringComparison.Ordinal) &&
+                    string.Equals(x.Status, "completed", StringComparison.OrdinalIgnoreCase));
+
+                return new PaymentAllocation(
+                    StableId(companyId, $"allocation:invoice:{invoice.InvoiceNumber}"),
+                    companyId,
+                    payment.Id,
+                    invoice.Id,
+                    null,
+                    invoice.Amount,
+                    invoice.Currency);
+            })
+            .Concat(bills
+                .Where(x => string.Equals(x.Status, "paid", StringComparison.OrdinalIgnoreCase))
+                .Select(bill =>
+                {
+                    var payment = payments.Single(x =>
+                        x.PaymentType == PaymentTypes.Outgoing &&
+                        string.Equals(x.CounterpartyReference, bill.BillNumber, StringComparison.Ordinal) &&
+                        string.Equals(x.Status, "completed", StringComparison.OrdinalIgnoreCase));
+
+                    return new PaymentAllocation(StableId(companyId, $"allocation:bill:{bill.BillNumber}"), companyId, payment.Id, null, bill.Id, bill.Amount, bill.Currency);
+                }))
+            .ToArray();
+
         var transactions = new List<FinanceTransaction>(capacity: 50);
         for (var index = 0; index < 50; index++)
         {
@@ -134,9 +189,13 @@ public static class FinanceSeedData
         dbContext.FinanceCounterparties.AddRange(counterparties);
         dbContext.CompanyKnowledgeDocuments.AddRange(documents);
         dbContext.FinanceInvoices.AddRange(invoices);
+        FinancialStatementMappingSeedDefaults.Apply(dbContext, companyId, accounts);
         dbContext.FinanceBills.AddRange(bills);
+        dbContext.Payments.AddRange(payments);
+        dbContext.PaymentAllocations.AddRange(allocations);
         dbContext.FinanceTransactions.AddRange(transactions);
         dbContext.FinanceBalances.AddRange(balances);
+        BankTransactionSeedData.AddMockBankingData(dbContext, companyId, anchorUtc);
         dbContext.FinancePolicyConfigurations.Add(policy);
 
         return new FinanceSeedResult(
@@ -147,7 +206,8 @@ public static class FinanceSeedData
             transactions.Select(x => x.Id).ToArray(),
             balances.Select(x => x.Id).ToArray(),
             documents.Select(x => x.Id).ToArray(),
-            policy.Id);
+            policy.Id,
+            payments.Select(x => x.Id).ToArray());
     }
 
     private static Guid StableId(Guid companyId, string name)
@@ -187,4 +247,5 @@ public sealed record FinanceSeedResult(
     IReadOnlyList<Guid> TransactionIds,
     IReadOnlyList<Guid> BalanceIds,
     IReadOnlyList<Guid> DocumentIds,
-    Guid PolicyConfigurationId);
+    Guid PolicyConfigurationId,
+    IReadOnlyList<Guid> PaymentIds);

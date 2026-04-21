@@ -85,6 +85,7 @@ public static class DeterministicFinanceSeedDatasetGenerator
             invoices,
             transactions,
             windowEndUtc);
+        var payments = CreatePayments(companyId, invoices, bills, windowEndUtc);
         var balances = CreateBalances(companyId, accounts, transactions, windowEndUtc);
         var policy = new FinancePolicyConfiguration(
             StableId(companyId, seedValue, "policy:default"),
@@ -100,7 +101,9 @@ public static class DeterministicFinanceSeedDatasetGenerator
 
         dbContext.FinanceAccounts.AddRange(accounts);
         dbContext.FinanceCounterparties.AddRange(counterparties);
+        dbContext.Payments.AddRange(payments);
         dbContext.CompanyKnowledgeDocuments.AddRange(documents);
+        FinancialStatementMappingSeedDefaults.Apply(dbContext, companyId, accounts);
         dbContext.FinanceInvoices.AddRange(invoices);
         dbContext.FinanceBills.AddRange(bills);
         if (includeTransactions)
@@ -111,7 +114,23 @@ public static class DeterministicFinanceSeedDatasetGenerator
         dbContext.FinancePolicyConfigurations.Add(policy);
         dbContext.FinanceSeedAnomalies.AddRange(anomalies);
 
-        var dataset = new FinanceSeedDataset(
+        var validationErrors = FinanceSeedDatasetConsistencyValidator.Validate(
+            new FinanceSeedDatasetValidationInput(
+                companyId,
+                windowStartUtc,
+                windowEndUtc,
+                includeTransactions,
+                allCategoryIds,
+                accounts,
+                counterparties,
+                documents,
+                invoices,
+                bills,
+                recurringExpenses,
+                transactions,
+                balances));
+
+        return new FinanceSeedDataset(
             companyId,
             seedValue,
             windowStartUtc,
@@ -125,25 +144,11 @@ public static class DeterministicFinanceSeedDatasetGenerator
             recurringExpenses,
             transactions.Select(x => x.Id).ToArray(),
             balances.Select(x => x.Id).ToArray(),
+            payments.Select(x => x.Id).ToArray(),
             documents.Select(x => x.Id).ToArray(),
             policy.Id,
-            FinanceSeedDatasetConsistencyValidator.Validate(new FinanceSeedDatasetValidationInput(
-                companyId,
-                windowStartUtc,
-                windowEndUtc,
-                includeTransactions,
-                allCategoryIds,
-                accounts,
-                counterparties,
-                documents,
-                invoices,
-                bills,
-                recurringExpenses,
-                transactions,
-                balances)),
+            validationErrors,
             anomalies);
-
-        return dataset;
     }
 
     private static IReadOnlyList<FinanceAccount> CreateAccounts(Guid companyId, DateTime windowStartUtc) =>
@@ -193,43 +198,78 @@ public static class DeterministicFinanceSeedDatasetGenerator
             companyId,
             "Alpine Studio",
             "customer",
-            "ap@alpine.example"),
+            "ap@alpine.example",
+            paymentTerms: "Net30",
+            taxId: null,
+            creditLimit: 25000m,
+            preferredPaymentMethod: "bank_transfer",
+            defaultAccountMapping: "1100"),
         new(
             StableId(companyId, 0, "counterparty:bluebird-retail"),
             companyId,
             "Bluebird Retail",
             "customer",
-            "finance@bluebird.example"),
+            "finance@bluebird.example",
+            paymentTerms: "Net45",
+            taxId: null,
+            creditLimit: 15000m,
+            preferredPaymentMethod: "bank_transfer",
+            defaultAccountMapping: "1100"),
         new(
             StableId(companyId, 0, "counterparty:contoso-cloud"),
             companyId,
             "Contoso Cloud",
             "supplier",
-            "billing@contoso.example"),
+            "billing@contoso.example",
+            paymentTerms: "Net30",
+            taxId: null,
+            creditLimit: 0m,
+            preferredPaymentMethod: "bank_transfer",
+            defaultAccountMapping: "2000"),
         new(
             StableId(companyId, 0, "counterparty:fabrikam-office"),
             companyId,
             "Fabrikam Office",
             "supplier",
-            "ar@fabrikam.example"),
+            "ar@fabrikam.example",
+            paymentTerms: "Net15",
+            taxId: null,
+            creditLimit: 0m,
+            preferredPaymentMethod: "bank_transfer",
+            defaultAccountMapping: "2000"),
         new(
             StableId(companyId, 0, "counterparty:tailspin-telecom"),
             companyId,
             "Tailspin Telecom",
             "supplier",
-            "billing@tailspin.example"),
+            "billing@tailspin.example",
+            paymentTerms: "Net30",
+            taxId: null,
+            creditLimit: 0m,
+            preferredPaymentMethod: "bank_transfer",
+            defaultAccountMapping: "2000"),
         new(
             StableId(companyId, 0, "counterparty:northwind-insurance"),
             companyId,
             "Northwind Insurance",
             "supplier",
-            "accounts@northwind.example"),
+            "accounts@northwind.example",
+            paymentTerms: "Net30",
+            taxId: null,
+            creditLimit: 0m,
+            preferredPaymentMethod: "bank_transfer",
+            defaultAccountMapping: "2000"),
         new(
             StableId(companyId, 0, "counterparty:wide-world-rentals"),
             companyId,
             "Wide World Rentals",
             "supplier",
-            "rent@wideworld.example")
+            "rent@wideworld.example",
+            paymentTerms: "Net30",
+            taxId: null,
+            creditLimit: 0m,
+            preferredPaymentMethod: "bank_transfer",
+            defaultAccountMapping: "2000")
     ];
 
     private static IReadOnlyList<CompanyKnowledgeDocument> CreateDocuments(Guid companyId) =>
@@ -474,6 +514,45 @@ public static class DeterministicFinanceSeedDatasetGenerator
             .ThenBy(x => x.ExternalReference, StringComparer.Ordinal)
             .ToArray();
     }
+
+    private static IReadOnlyList<Payment> CreatePayments(
+        Guid companyId,
+        IReadOnlyList<FinanceInvoice> invoices,
+        IReadOnlyList<FinanceBill> bills,
+        DateTime windowEndUtc) =>
+        invoices
+            .Select(invoice =>
+            {
+                var paymentDate = invoice.IssuedUtc.AddDays(12);
+                if (paymentDate > windowEndUtc)
+                {
+                    paymentDate = windowEndUtc;
+                }
+
+                return new Payment(
+                    StableId(companyId, 0, $"payment:invoice:{invoice.InvoiceNumber}"),
+                    companyId,
+                    PaymentTypes.Incoming,
+                    invoice.Amount,
+                    invoice.Currency,
+                    paymentDate,
+                    "bank_transfer",
+                    "completed",
+                    invoice.InvoiceNumber);
+            })
+            .Concat(bills.Select(bill => new Payment(
+                StableId(companyId, 0, $"payment:bill:{bill.BillNumber}"),
+                companyId,
+                PaymentTypes.Outgoing,
+                bill.Amount,
+                bill.Currency,
+                bill.ReceivedUtc.AddDays(9) > windowEndUtc ? windowEndUtc : bill.ReceivedUtc.AddDays(9),
+                "ach",
+                "completed",
+                bill.BillNumber)))
+            .OrderBy(x => x.PaymentDate)
+            .OrderBy(x => x.PaymentDate)
+            .ToArray();
 
     private static IReadOnlyList<FinanceSeedAnomaly> CreateAnomalies(
         Guid companyId,
@@ -746,6 +825,7 @@ public sealed record FinanceSeedDataset(
     IReadOnlyList<FinanceRecurringExpenseSeed> RecurringExpenses,
     IReadOnlyList<Guid> TransactionIds,
     IReadOnlyList<Guid> BalanceIds,
+    IReadOnlyList<Guid> PaymentIds,
     IReadOnlyList<Guid> DocumentIds,
     Guid PolicyConfigurationId,
     IReadOnlyList<FinanceSeedValidationError> ValidationErrors,

@@ -1,0 +1,524 @@
+diff --git a/src/VirtualCompany.Api/Controllers/FinanceApprovalsController.cs b/src/VirtualCompany.Api/Controllers/FinanceApprovalsController.cs
+--- a/src/VirtualCompany.Api/Controllers/FinanceApprovalsController.cs
++++ b/src/VirtualCompany.Api/Controllers/FinanceApprovalsController.cs
+@@ -1,3 +1,4 @@
++using Microsoft.AspNetCore.Http;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Authorization;
+@@ -32,4 +33,76 @@ public sealed class FinanceApprovalsController : ControllerBase
+ 
+         var result = await _approvalTaskService.GetPendingTasksAsync(new GetPendingFinanceApprovalTasksQuery(companyId), cancellationToken);
+         return Ok(result);
++    }
++
++    [HttpPost("{id:guid}/approve")]
++    public Task<ActionResult<FinancePendingApprovalTaskDto>> ApproveAsync(
++        Guid id,
++        [FromBody] FinanceApprovalTaskActionRequest? request,
++        CancellationToken cancellationToken) =>
++        ActOnTaskAsync(id, ApprovalTaskStatus.Approved, request, cancellationToken);
++
++    [HttpPost("{id:guid}/reject")]
++    public Task<ActionResult<FinancePendingApprovalTaskDto>> RejectAsync(
++        Guid id,
++        [FromBody] FinanceApprovalTaskActionRequest? request,
++        CancellationToken cancellationToken) =>
++        ActOnTaskAsync(id, ApprovalTaskStatus.Rejected, request, cancellationToken);
++
++    [HttpPost("{id:guid}/escalate")]
++    public Task<ActionResult<FinancePendingApprovalTaskDto>> EscalateAsync(
++        Guid id,
++        [FromBody] FinanceApprovalTaskActionRequest? request,
++        CancellationToken cancellationToken) =>
++        ActOnTaskAsync(id, ApprovalTaskStatus.Escalated, request, cancellationToken);
++
++    private async Task<ActionResult<FinancePendingApprovalTaskDto>> ActOnTaskAsync(
++        Guid id,
++        ApprovalTaskStatus action,
++        FinanceApprovalTaskActionRequest? request,
++        CancellationToken cancellationToken)
++    {
++        if (_companyContextAccessor.CompanyId is not Guid companyId || companyId == Guid.Empty)
++        {
++            return BadRequest(new ProblemDetails
++            {
++                Title = "Invalid company context",
++                Detail = "Company context is required for this endpoint.",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++
++        try
++        {
++            return Ok(await _approvalTaskService.ActOnTaskAsync(
++                new ActOnFinanceApprovalTaskCommand(companyId, id, action, request?.Comment),
++                cancellationToken));
++        }
++        catch (FinanceValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors, StringComparer.OrdinalIgnoreCase))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Conflict(new ProblemDetails
++            {
++                Title = "Finance approval task conflict",
++                Detail = ex.Message,
++                Status = StatusCodes.Status409Conflict
++            });
++        }
+     }
+ }
++
++public sealed record FinanceApprovalTaskActionRequest(string? Comment = null);
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -178,6 +178,12 @@ public sealed record BackfillFinanceApprovalTasksCommand(
+     Guid CompanyId,
+     int BatchSize = 250,
+     string? CorrelationId = null);
++
++public sealed record ActOnFinanceApprovalTaskCommand(
++    Guid CompanyId,
++    Guid ApprovalTaskId,
++    ApprovalTaskStatus Action,
++    string? Comment = null);
+ 
+ public sealed record FinanceApprovalTaskAssigneeDto(Guid? UserId, string? DisplayName);
+ public sealed record FinancePendingApprovalTaskDto(Guid Id, string TargetType, Guid TargetId, FinanceApprovalTaskAssigneeDto? Assignee, DateTime? DueDateUtc, string Status);
+@@ -1465,6 +1471,7 @@ public interface IFinanceApprovalTaskService
+     Task<bool> EnsureTaskAsync(EnsureFinanceApprovalTaskCommand command, CancellationToken cancellationToken);
+     Task<IReadOnlyList<FinancePendingApprovalTaskDto>> GetPendingTasksAsync(GetPendingFinanceApprovalTasksQuery query, CancellationToken cancellationToken);
+     Task<FinanceApprovalTaskBackfillResultDto> BackfillBillApprovalTasksAsync(BackfillFinanceApprovalTasksCommand command, CancellationToken cancellationToken);
++    Task<FinancePendingApprovalTaskDto> ActOnTaskAsync(ActOnFinanceApprovalTaskCommand command, CancellationToken cancellationToken);
+ }
+ 
+ public interface ICompanySimulationService
+diff --git a/src/VirtualCompany.Domain/Entities/ApprovalTask.cs b/src/VirtualCompany.Domain/Entities/ApprovalTask.cs
+--- a/src/VirtualCompany.Domain/Entities/ApprovalTask.cs
++++ b/src/VirtualCompany.Domain/Entities/ApprovalTask.cs
+@@ -61,6 +61,30 @@ public sealed class ApprovalTask : ICompanyOwnedEntity
+     public Company Company { get; private set; } = null!;
+     public User? Assignee { get; private set; }
+ 
++    public void Approve()
++    {
++        EnsureActionable("approved");
++        Status = ApprovalTaskStatus.Approved;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void Reject()
++    {
++        EnsureActionable("rejected");
++        Status = ApprovalTaskStatus.Rejected;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void Escalate(DateTime? dueDate = null)
++    {
++        EnsureActionable("escalated");
++        Status = ApprovalTaskStatus.Escalated;
++        if (dueDate.HasValue)
++        {
++            DueDate = NormalizeOptionalUtc(dueDate, nameof(dueDate));
++        }
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
+     public void Assign(Guid? assigneeId, DateTime? dueDate = null)
+     {
+         if (assigneeId == Guid.Empty)
+@@ -86,6 +110,16 @@ public sealed class ApprovalTask : ICompanyOwnedEntity
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
++    private void EnsureActionable(string action)
++    {
++        if (Status is ApprovalTaskStatus.Pending or ApprovalTaskStatus.Escalated)
++        {
++            return;
++        }
++
++        throw new InvalidOperationException($"Approval task cannot be {action} when status is '{Status.ToStorageValue()}'.");
++    }
++
+     private static DateTime? NormalizeOptionalUtc(DateTime? value, string name)
+     {
+         if (!value.HasValue)
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceApprovalTaskService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceApprovalTaskService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceApprovalTaskService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceApprovalTaskService.cs
+@@ -96,6 +96,37 @@ public sealed class CompanyFinanceApprovalTaskService : IFinanceApprovalTaskServ
+             .ToListAsync(cancellationToken);
+     }
+ 
++    public async Task<FinancePendingApprovalTaskDto> ActOnTaskAsync(
++        ActOnFinanceApprovalTaskCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++
++        if (command.ApprovalTaskId == Guid.Empty)
++        {
++            throw new ArgumentException("Approval task id is required.", nameof(command));
++        }
++
++        ApprovalTaskStatusValues.EnsureSupported(command.Action, nameof(command.Action));
++
++        var task = await _dbContext.ApprovalTasks
++            .IgnoreQueryFilters()
++            .Include(x => x.Assignee)
++            .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.Id == command.ApprovalTaskId, cancellationToken);
++
++        if (task is null)
++        {
++            throw new KeyNotFoundException("Finance approval task was not found.");
++        }
++
++        _ = command.Comment;
++        switch (command.Action)
++        {
++            case ApprovalTaskStatus.Approved: task.Approve(); break;
++            case ApprovalTaskStatus.Rejected: task.Reject(); break;
++            case ApprovalTaskStatus.Escalated: task.Escalate(); break;
++            default: throw new InvalidOperationException($"Unsupported finance approval task action '{command.Action.ToStorageValue()}'.");
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapTask(task);
++    }
++
+     public async Task<FinanceApprovalTaskBackfillResultDto> BackfillBillApprovalTasksAsync(
+         BackfillFinanceApprovalTasksCommand command,
+         CancellationToken cancellationToken)
+@@ -277,6 +308,16 @@ public sealed class CompanyFinanceApprovalTaskService : IFinanceApprovalTaskServ
+             command.DueDateUtc,
+             assignee.UserId.HasValue ? ApprovalTaskStatus.Pending : ApprovalTaskStatus.Escalated);
+ 
++    private static FinancePendingApprovalTaskDto MapTask(ApprovalTask task) =>
++        new(
++            task.Id,
++            task.TargetType.ToStorageValue(),
++            task.TargetId,
++            task.AssigneeId.HasValue
++                ? new FinanceApprovalTaskAssigneeDto(task.AssigneeId, task.Assignee?.DisplayName)
++                : null,
++            task.DueDate,
++            task.Status.ToStorageValue());
++
+     private void EnsureTenant(Guid companyId)
+     {
+         if (companyId == Guid.Empty)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/ApprovalTaskEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/ApprovalTaskEntityConfiguration.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/ApprovalTaskEntityConfiguration.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/ApprovalTaskEntityConfiguration.cs
+@@ -35,6 +35,9 @@ internal sealed class ApprovalTaskEntityConfiguration : IEntityTypeConfiguration<
+         builder.HasCheckConstraint("CK_approval_tasks_target_type", ApprovalTargetTypeValues.BuildCheckConstraintSql("target_type"));
+         builder.HasCheckConstraint("CK_approval_tasks_status", ApprovalTaskStatusValues.BuildCheckConstraintSql("status"));
+ 
++        builder.HasIndex(x => x.AssigneeId);
+         builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.Status);
++        builder.HasIndex(x => x.DueDate);
+         builder.HasIndex(x => new { x.CompanyId, x.AssigneeId, x.Status });
+         builder.HasIndex(x => new { x.CompanyId, x.Status, x.DueDate });
+         // Current workflow keeps one tenant-scoped approval task per target so repeated backfills stay idempotent.
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260422090000_AddApprovalTaskInboxIndexes.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260422090000_AddApprovalTaskInboxIndexes.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260422090000_AddApprovalTaskInboxIndexes.cs
+@@ -0,0 +1,29 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddApprovalTaskInboxIndexes : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateIndex(
++                name: "IX_approval_tasks_due_date",
++                table: "approval_tasks",
++                column: "due_date");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_approval_tasks_status",
++                table: "approval_tasks",
++                column: "status");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropIndex(
++                name: "IX_approval_tasks_due_date",
++                table: "approval_tasks");
++            migrationBuilder.DropIndex(
++                name: "IX_approval_tasks_status",
++                table: "approval_tasks");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceApprovalActionsApiIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceApprovalActionsApiIntegrationTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceApprovalActionsApiIntegrationTests.cs
+@@ -0,0 +1,228 @@
++using System.Net;
++using System.Net.Http.Json;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceApprovalActionsApiIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinanceApprovalActionsApiIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Approve_endpoint_updates_pending_task_status()
++    {
++        var seed = await SeedAsync(ApprovalTaskStatus.Pending);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);
++
++        var response = await client.PostAsJsonAsync($"/api/finance/approvals/{seed.TaskId}/approve", new { comment = "Approved for payment." });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<ApprovalTaskResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("approved", payload!.Status);
++
++        await AssertPersistedStatusAsync(seed.TaskId, ApprovalTaskStatus.Approved);
++    }
++
++    [Fact]
++    public async Task Reject_endpoint_updates_escalated_task_status()
++    {
++        var seed = await SeedAsync(ApprovalTaskStatus.Escalated);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);
++
++        var response = await client.PostAsJsonAsync($"/api/finance/approvals/{seed.TaskId}/reject", new { comment = "Rejected after review." });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<ApprovalTaskResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("rejected", payload!.Status);
++
++        await AssertPersistedStatusAsync(seed.TaskId, ApprovalTaskStatus.Rejected);
++    }
++
++    [Fact]
++    public async Task Escalate_endpoint_updates_pending_task_status()
++    {
++        var seed = await SeedAsync(ApprovalTaskStatus.Pending);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);
++
++        var response = await client.PostAsJsonAsync($"/api/finance/approvals/{seed.TaskId}/escalate", new { comment = "Escalated to finance leadership." });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<ApprovalTaskResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("escalated", payload!.Status);
++
++        await AssertPersistedStatusAsync(seed.TaskId, ApprovalTaskStatus.Escalated);
++    }
++
++    [Fact]
++    public async Task Action_endpoints_do_not_expose_cross_tenant_tasks()
++    {
++        var seed = await SeedAsync(ApprovalTaskStatus.Pending, includeOtherCompanyTask: true);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);
++
++        var response = await client.PostAsJsonAsync($"/api/finance/approvals/{seed.OtherCompanyTaskId}/approve", new { comment = "Should not resolve." });
++
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++        await AssertPersistedStatusAsync(seed.OtherCompanyTaskId, ApprovalTaskStatus.Pending);
++    }
++
++    [Fact]
++    public async Task Action_endpoints_return_conflict_for_terminal_tasks()
++    {
++        var seed = await SeedAsync(ApprovalTaskStatus.Approved);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);
++
++        var response = await client.PostAsJsonAsync($"/api/finance/approvals/{seed.TaskId}/reject", new { comment = "Too late." });
++
++        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
++        await AssertPersistedStatusAsync(seed.TaskId, ApprovalTaskStatus.Approved);
++    }
++
++    private async Task AssertPersistedStatusAsync(Guid taskId, ApprovalTaskStatus expectedStatus)
++    {
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var status = await dbContext.ApprovalTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.Id == taskId)
++            .Select(x => x.Status)
++            .SingleAsync();
++
++        Assert.Equal(expectedStatus, status);
++    }
++
++    private async Task<ApprovalActionSeed> SeedAsync(
++        ApprovalTaskStatus status,
++        bool includeOtherCompanyTask = false)
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++        var otherCompanyTaskId = Guid.NewGuid();
++        var subject = $"finance-approval-actions-{Guid.NewGuid():N}";
++        var email = $"{subject}@example.com";
++        const string displayName = "Finance Approval Reviewer";
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++            dbContext.Companies.Add(new Company(companyId, "Finance approval action company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.FinanceApprover,
++                CompanyMembershipStatus.Active));
++
++            dbContext.ApprovalTasks.Add(new ApprovalTask(
++                taskId,
++                companyId,
++                ApprovalTargetType.Bill,
++                Guid.NewGuid(),
++                userId,
++                new DateTime(2026, 4, 28, 0, 0, 0, DateTimeKind.Utc),
++                status));
++
++            if (includeOtherCompanyTask)
++            {
++                dbContext.Companies.Add(new Company(otherCompanyId, "Other finance approval action company"));
++                dbContext.ApprovalTasks.Add(new ApprovalTask(
++                    otherCompanyTaskId,
++                    otherCompanyId,
++                    ApprovalTargetType.Payment,
++                    Guid.NewGuid(),
++                    userId,
++                    new DateTime(2026, 4, 29, 0, 0, 0, DateTimeKind.Utc),
++                    ApprovalTaskStatus.Pending));
++            }
++
++            return Task.CompletedTask;
++        });
++
++        return new ApprovalActionSeed(
++            companyId,
++            taskId,
++            includeOtherCompanyTask ? otherCompanyTaskId : null,
++            subject,
++            email,
++            displayName);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName, Guid companyId)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        client.DefaultRequestHeaders.Add(CompanyContextResolutionMiddleware.CompanyHeaderName, companyId.ToString());
++        return client;
++    }
++
++    private sealed record ApprovalActionSeed(
++        Guid CompanyId,
++        Guid TaskId,
++        Guid? OtherCompanyTaskId,
++        string Subject,
++        string Email,
++        string DisplayName);
++
++    private sealed class ApprovalTaskResponse
++    {
++        public Guid Id { get; set; }
++        public string Status { get; set; } = string.Empty;
++        public string TargetType { get; set; } = string.Empty;
++        public Guid TargetId { get; set; }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskPersistenceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskPersistenceTests.cs
+@@ -24,7 +24,10 @@ public sealed class FinanceApprovalTaskPersistenceTests
+         var indexes = await ReadIndexesAsync(connection, "approval_tasks");
+         Assert.Contains("IX_approval_tasks_company_id", indexes);
+         Assert.Contains("IX_approval_tasks_company_id_assignee_id_status", indexes);
++        Assert.Contains("IX_approval_tasks_assignee_id", indexes);
++        Assert.Contains("IX_approval_tasks_status", indexes);
++        Assert.Contains("IX_approval_tasks_due_date", indexes);
+         Assert.Contains("IX_approval_tasks_company_id_status_due_date", indexes);
+         Assert.Contains("IX_approval_tasks_company_id_target_type_target_id", indexes);
+ 
+         var company = new Company(Guid.NewGuid(), "Approval Task Persistence Company");
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskWorkflowTests.cs b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskWorkflowTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskWorkflowTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceApprovalTaskWorkflowTests.cs
+@@ -88,6 +88,30 @@ public sealed class FinanceApprovalTaskWorkflowTests
+         Assert.False(created);
+         Assert.Empty(await dbContext.ApprovalTasks.IgnoreQueryFilters().AsNoTracking().ToListAsync());
+     }
++
++    [Fact]
++    public void Approval_task_terminal_transitions_are_guarded_but_escalated_tasks_remain_actionable()
++    {
++        var pendingTask = new ApprovalTask(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            ApprovalTargetType.Bill,
++            Guid.NewGuid(),
++            dueDate: new DateTime(2026, 4, 25, 0, 0, 0, DateTimeKind.Utc));
++
++        pendingTask.Escalate();
++        pendingTask.Approve();
++
++        Assert.Equal(ApprovalTaskStatus.Approved, pendingTask.Status);
++
++        var terminalTask = new ApprovalTask(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            ApprovalTargetType.Payment,
++            Guid.NewGuid(),
++            status: ApprovalTaskStatus.Rejected);
++
++        Assert.Throws<InvalidOperationException>(() => terminalTask.Approve());
++    }
+ 
+     private static async Task<SqliteConnection> OpenConnectionAsync()
+     {
+END_OF_PATCH

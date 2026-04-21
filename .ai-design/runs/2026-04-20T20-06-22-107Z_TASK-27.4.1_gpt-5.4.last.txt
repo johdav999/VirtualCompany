@@ -1,0 +1,1414 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 9b6f653..55c7a17 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -116,6 +116,11 @@ public sealed record GetFinanceBillsQuery(
+ public sealed record GetFinanceBalancesQuery(
+     Guid CompanyId,
+     DateTime? AsOfUtc = null);
++public sealed record GetFinanceInsightsQuery(
++    Guid CompanyId,
++    DateTime? AsOfUtc = null,
++    int ExpenseWindowDays = 90,
++    int TrendWindowDays = 30,
++    int PayableWindowDays = 14);
+ 
+ public sealed record GetFinanceAgentQueryQuery(
+     Guid CompanyId,
+@@ -149,6 +154,11 @@ public sealed record BackfillFinanceApprovalTasksCommand(
+     string? CorrelationId = null,
+     bool IncludePayments = true);
+ 
++public sealed record RerunFinanceBootstrapCommand(
++    Guid CompanyId,
++    int BatchSize = 250,
++    string? CorrelationId = null);
++
+ public sealed record ActOnFinanceApprovalTaskCommand(
+     Guid CompanyId,
+     Guid ApprovalTaskId,
+@@ -160,6 +170,68 @@ public sealed record FinanceApprovalTaskBackfillResultDto(
+     int BillScannedCount,
+     int PaymentScannedCount,
+     int BillCreatedCount,
++    int PaymentCreatedCount);
++public sealed record FinanceBootstrapRerunResultDto(
++    Guid CompanyId,
++    string CorrelationId,
++    FinanceSeedingState SeedState,
++    int PlanningRowsInserted,
++    FinanceApprovalTaskBackfillResultDto ApprovalBackfill,
++    string Summary);
++
++public sealed record FinanceInsightsDto(
++    Guid CompanyId,
++    DateTime GeneratedAt,
++    string Currency,
++    string Headline,
++    string Summary,
++    string? DataCoverageNote,
++    FinanceTopExpensesInsightDto TopExpenses,
++    FinanceRevenueTrendInsightDto RevenueTrend,
++    FinanceBurnRateInsightDto BurnRate,
++    FinanceOverdueCustomerRiskInsightDto OverdueCustomerRisk,
++    FinancePayablePressureInsightDto PayablePressure);
++
++public sealed record FinanceTopExpensesInsightDto(
++    DateTime WindowStartUtc,
++    DateTime WindowEndUtc,
++    decimal TotalExpenses,
++    string Currency,
++    string TrendLabel,
++    string Summary,
++    IReadOnlyList<FinanceTopExpenseItemDto> Items);
++
++public sealed record FinanceTopExpenseItemDto(
++    string Label,
++    decimal Amount,
++    string Currency,
++    int EntryCount,
++    decimal ShareOfExpenses,
++    string Narrative);
++
++public sealed record FinanceRevenueTrendInsightDto(
++    DateTime CurrentPeriodStartUtc,
++    DateTime CurrentPeriodEndUtc,
++    DateTime PreviousPeriodStartUtc,
++    DateTime PreviousPeriodEndUtc,
++    decimal CurrentRevenue,
++    decimal PreviousRevenue,
++    decimal DeltaAmount,
++    decimal? DeltaPercent,
++    string DirectionLabel,
++    string Summary);
++
++public sealed record FinanceBurnRateInsightDto(
++    int LookbackDays,
++    decimal AverageDailyBurn,
++    decimal AverageMonthlyBurn,
++    decimal NetMonthlyBurn,
++    decimal AvailableCash,
++    int? EstimatedRunwayDays,
++    string RiskLabel,
++    string Summary);
++
++public sealed record FinanceOverdueCustomerRiskInsightDto(
++    int OverdueInvoiceCount,
++    int OverdueCustomerCount,
++    decimal TotalOverdueAmount,
++    int MaxDaysOverdue,
++    decimal LargestCustomerConcentrationRatio,
++    string RiskLabel,
++    string Summary,
++    IReadOnlyList<FinanceOverdueCustomerRiskItemDto> Customers);
++
++public sealed record FinanceOverdueCustomerRiskItemDto(
++    Guid CounterpartyId,
++    string CustomerName,
++    decimal OverdueAmount,
++    int OverdueInvoiceCount,
++    int MaxDaysOverdue,
++    decimal ConcentrationRatio,
++    string RiskLabel,
++    string Summary);
++
++public sealed record FinancePayablePressureInsightDto(
++    decimal OverdueAmount,
++    decimal DueSoonAmount,
++    int OverdueBillCount,
++    int DueSoonBillCount,
++    decimal? UpcomingBurdenRatioOfCash,
++    string RiskLabel,
++    string Summary,
++    IReadOnlyList<FinancePayablePressureItemDto> Suppliers);
++
++public sealed record FinancePayablePressureItemDto(
++    Guid CounterpartyId,
++    string SupplierName,
++    decimal DueAmount,
++    int DueBillCount,
++    bool HasOverdueBalance,
++    int MaxUrgencyDays,
++    string RiskLabel,
++    string Summary);
++
++public sealed record FinanceBootstrapRerunRequestDto(
++    int BatchSize = 250,
++    string? CorrelationId = null);
++
++public sealed record FinanceBootstrapRerunRequest(
++    int BatchSize = 250,
+     int PaymentCreatedCount);
+ public sealed record ReviewFinanceInvoiceWorkflowCommand(
+     Guid CompanyId,
+@@ -1572,6 +1644,10 @@ public interface IFinanceReadService
+     Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(
+         GetFinanceBalancesQuery query,
+         CancellationToken cancellationToken);
++
++    Task<FinanceInsightsDto> GetInsightsAsync(
++        GetFinanceInsightsQuery query,
++        CancellationToken cancellationToken);
+ 
+     Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
+         GetFinanceAgentQueryQuery query,
+@@ -1607,6 +1683,12 @@ public interface IFinanceApprovalTaskService
+     Task<FinancePendingApprovalTaskDto> ActOnTaskAsync(ActOnFinanceApprovalTaskCommand command, CancellationToken cancellationToken);
+ }
+ 
++public interface IFinanceBootstrapRerunService
++{
++    Task<FinanceBootstrapRerunResultDto> RerunAsync(
++        RerunFinanceBootstrapCommand command,
++        CancellationToken cancellationToken);
++}
++
+ public interface IPlanningBaselineService
+ {
+     Task<int> EnsureBaselineAsync(Guid companyId, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+index 2e7caf8..5bb353f 100644
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -47,6 +47,7 @@ public sealed partial class InternalFinanceController : ControllerBase
+     private readonly ICompanyToolRegistry _toolRegistry;
+     private readonly IFinanceToolProvider _financeToolProvider;
+     private readonly ISimulationFeatureGate _simulationFeatureGate;
++    private readonly IFinanceBootstrapRerunService _financeBootstrapRerunService;
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly IAuditEventWriter _auditEventWriter;
+     private readonly IOptions<FinanceInitializationOptions> _financeInitializationOptions;
+@@ -69,6 +70,7 @@ public sealed partial class InternalFinanceController : ControllerBase
+         ICompanyToolRegistry toolRegistry,
+         IFinanceToolProvider financeToolProvider,
+         VirtualCompanyDbContext dbContext,
++        IFinanceBootstrapRerunService financeBootstrapRerunService,
+         ISimulationFeatureGate simulationFeatureGate,
+         ICompanySimulationService companySimulationService,
+         IAuditEventWriter auditEventWriter,
+@@ -90,6 +92,7 @@ public sealed partial class InternalFinanceController : ControllerBase
+         _approvalRequestService = approvalRequestService;
+         _anomalyDetectionService = anomalyDetectionService;
+         _dbContext = dbContext;
++        _financeBootstrapRerunService = financeBootstrapRerunService;
+         _simulationFeatureGate = simulationFeatureGate;
+         _cashPositionWorkflowService = cashPositionWorkflowService;
+         _companySimulationService = companySimulationService;
+@@ -922,6 +925,18 @@ public sealed partial class InternalFinanceController : ControllerBase
+                     request.AnomalyScenarioProfile),
+                 cancellationToken));
+ 
++    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++    [HttpPost("bootstrap/rerun")]
++    public async Task<ActionResult<FinanceBootstrapRerunResultDto>> RerunBootstrapAsync(
++        Guid companyId,
++        [FromBody] RerunFinanceBootstrapRequest? request,
++        CancellationToken cancellationToken) =>
++        await ExecuteWriteAsync(
++            () => _financeBootstrapRerunService.RerunAsync(
++                new RerunFinanceBootstrapCommand(
++                    companyId,
++                    request?.BatchSize ?? 250,
++                    request?.CorrelationId),
++                cancellationToken));
++
+     [Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
+     [HttpPost("sandbox-admin/seed-generation")]
+     public async Task<ActionResult<FinanceSandboxSeedGenerationResponse>> GenerateSandboxSeedDatasetAsync(
+@@ -3480,6 +3495,10 @@ public sealed record BootstrapFinanceSeedRequest(
+     DateTime? SeedAnchorUtc = null,
+     bool ReplaceExisting = true,
+     bool InjectAnomalies = false,
++    string? AnomalyScenarioProfile = null);
++
++public sealed record RerunFinanceBootstrapRequest(
++    int BatchSize = 250,
+     string? AnomalyScenarioProfile = null);
+ 
+ public sealed record AdvanceCompanySimulationTimeRequest(
+diff --git a/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs b/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs
+new file mode 100644
+index 0000000..b91c872
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs
+@@ -0,0 +1,42 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/finance/insights")]
++[Authorize(Policy = CompanyPolicies.FinanceView)]
++[RequireCompanyContext]
++public sealed class FinanceInsightsController : ControllerBase
++{
++    private readonly IFinanceReadService _financeReadService;
++
++    public FinanceInsightsController(IFinanceReadService financeReadService)
++    {
++        _financeReadService = financeReadService;
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<FinanceInsightsDto>> GetAsync(
++        Guid companyId,
++        [FromQuery] DateTime? asOfUtc,
++        [FromQuery] int expenseWindowDays = 90,
++        [FromQuery] int trendWindowDays = 30,
++        [FromQuery] int payableWindowDays = 14,
++        CancellationToken cancellationToken = default)
++    {
++        try
++        {
++            var result = await _financeReadService.GetInsightsAsync(
++                new GetFinanceInsightsQuery(companyId, asOfUtc, expenseWindowDays, trendWindowDays, payableWindowDays),
++                cancellationToken);
++            return Ok(result);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index 4f57f96..8cf28ca 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -66,6 +66,8 @@ var applyMigrationsOnStartup =
+     app.Environment.IsDevelopment() ||
+     app.Configuration.GetValue<bool>("DatabaseInitialization:ApplyMigrationsOnStartup");
+ 
++var failFastOnPendingMigrations = app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Testing");
++
+ if (app.Environment.IsDevelopment())
+ {
+     app.UseSwagger();
+@@ -95,6 +97,7 @@ using (var scope = app.Services.CreateScope())
+         workflowDefinitionSeeder,
+         planningBaselineService,
+         applyMigrationsOnStartup,
++        failFastOnPendingMigrations,
+         builder.Configuration.GetValue<bool?>("SimulationStartup:StopRunningSessionsOnStartup") ?? true);
+ }
+ 
+@@ -1897,6 +1900,7 @@ static async Task InitializeDatabaseAsync(
+     CompanyWorkflowDefinitionSeeder workflowDefinitionSeeder,
+     IPlanningBaselineService planningBaselineService,
+     bool applyMigrationsOnStartup,
++    bool failFastOnPendingMigrations,
+     bool stopRunningSimulationSessionsOnStartup)
+ {
+     if (dbContext.Database.IsRelational())
+@@ -1914,7 +1918,7 @@ static async Task InitializeDatabaseAsync(
+             await EnsureSqlServerKnowledgeSchemaAsync(dbContext);
+             await EnsureSqlServerDirectChatSchemaAsync(dbContext);
+             await EnsureSqlServerAuditEventSchemaAsync(dbContext);
+-            await EnsureSqlServerBriefingSchemaAsync(dbContext);
++            await EnsureSqlServerBriefingSchemaAsync(dbContext);
+         }
+-        else
++        else if (failFastOnPendingMigrations)
+         {
+             var pendingMigrations = await dbContext.Database.GetPendingMigrationsAsync(app.Lifetime.ApplicationStopping);
+             if (pendingMigrations.Any())
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index c609481..7d20f76 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -384,6 +384,7 @@ public static class DependencyInjection
+         services.AddScoped<IFinanceSeedBootstrapService, CompanyFinanceSeedBootstrapService>();
+         services.AddSingleton<IFinanceSeedTelemetry, FinanceSeedTelemetry>();
+         services.AddScoped<IDashboardFinanceSnapshotService, CompanyDashboardFinanceSnapshotService>();
++        services.AddScoped<IFinanceBootstrapRerunService, CompanyFinanceBootstrapRerunService>();
+         services.AddScoped<IFinanceSeedingStateService, CompanyFinanceSeedingStateResolver>();
+         services.AddScoped<IFinanceSeedBackfillOrchestrator, FinanceSeedBackfillOrchestrator>();
+         services.AddScoped<IFinanceSeedBackfillQueryService, FinanceSeedBackfillQueryService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBootstrapRerunService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBootstrapRerunService.cs
+new file mode 100644
+index 0000000..19ddab2
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBootstrapRerunService.cs
+@@ -0,0 +1,106 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure.Observability;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyFinanceBootstrapRerunService : IFinanceBootstrapRerunService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IPlanningBaselineService _planningBaselineService;
++    private readonly IFinanceApprovalTaskService _financeApprovalTaskService;
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
++    private readonly ILogger<CompanyFinanceBootstrapRerunService> _logger;
++
++    public CompanyFinanceBootstrapRerunService(
++        VirtualCompanyDbContext dbContext,
++        IPlanningBaselineService planningBaselineService,
++        IFinanceApprovalTaskService financeApprovalTaskService,
++        ICompanyContextAccessor? companyContextAccessor,
++        ILogger<CompanyFinanceBootstrapRerunService> logger)
++    {
++        _dbContext = dbContext;
++        _planningBaselineService = planningBaselineService;
++        _financeApprovalTaskService = financeApprovalTaskService;
++        _companyContextAccessor = companyContextAccessor;
++        _logger = logger;
++    }
++
++    public async Task<FinanceBootstrapRerunResultDto> RerunAsync(
++        RerunFinanceBootstrapCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++
++        var correlationId = string.IsNullOrWhiteSpace(command.CorrelationId)
++            ? $"finance-bootstrap-rerun:{command.CompanyId:N}"
++            : command.CorrelationId.Trim();
++
++        var company = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.Id == command.CompanyId, cancellationToken);
++        if (company is null)
++        {
++            throw new KeyNotFoundException($"Company '{command.CompanyId}' was not found.");
++        }
++
++        FinanceBootstrapRerunResultDto result;
++        var strategy = _dbContext.Database.IsRelational()
++            ? _dbContext.Database.CreateExecutionStrategy()
++            : null;
++
++        if (strategy is null)
++        {
++            result = await ExecuteInternalAsync(command, correlationId, cancellationToken);
++        }
++        else
++        {
++            result = await strategy.ExecuteAsync(async () =>
++            {
++                await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
++                var rerunResult = await ExecuteInternalAsync(command, correlationId, cancellationToken);
++                await transaction.CommitAsync(cancellationToken);
++                return rerunResult;
++            });
++        }
++
++        using var scope = _logger.BeginScope(ExecutionLogScope.ForBackground(correlationId, command.CompanyId));
++        _logger.LogInformation(
++            "Completed finance bootstrap rerun for company {CompanyId}. PlanningRowsInserted={PlanningRowsInserted} ApprovalTasksCreated={ApprovalTasksCreated} ApprovalTasksSkipped={ApprovalTasksSkipped}.",
++            command.CompanyId,
++            result.PlanningRowsInserted,
++            result.ApprovalBackfill.CreatedCount,
++            result.ApprovalBackfill.SkippedExistingCount);
++
++        return result;
++    }
++
++    private async Task<FinanceBootstrapRerunResultDto> ExecuteInternalAsync(
++        RerunFinanceBootstrapCommand command,
++        string correlationId,
++        CancellationToken cancellationToken)
++    {
++        var planningRowsInserted = await _planningBaselineService.EnsureBaselineAsync(command.CompanyId, cancellationToken);
++        var approvalBackfill = await _financeApprovalTaskService.BackfillApprovalTasksAsync(
++            new BackfillFinanceApprovalTasksCommand(command.CompanyId, command.BatchSize, correlationId, IncludePayments: true),
++            cancellationToken);
++        var seedState = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .Where(x => x.Id == command.CompanyId)
++            .Select(x => x.FinanceSeedStatus)
++            .SingleAsync(cancellationToken);
++
++        var summary = $"Inserted {planningRowsInserted} planning baseline rows and created {approvalBackfill.CreatedCount} approval tasks while skipping {approvalBackfill.SkippedExistingCount} existing tasks.";
++        return new FinanceBootstrapRerunResultDto(command.CompanyId, correlationId, seedState, planningRowsInserted, approvalBackfill, summary);
++    }
++
++    private void EnsureTenant(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(companyId));
++        }
++
++        if (_companyContextAccessor?.CompanyId is Guid scopedCompanyId && scopedCompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException("Finance bootstrap reruns are scoped to the active company context.");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Insights.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Insights.cs
+new file mode 100644
+index 0000000..90cf76d
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Insights.cs
+@@ -0,0 +1,485 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed partial class CompanyFinanceReadService
++{
++    public async Task<FinanceInsightsDto> GetInsightsAsync(
++        GetFinanceInsightsQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++
++        var generatedAt = DateTime.UtcNow;
++        var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? generatedAt;
++        var expenseWindowDays = Math.Clamp(query.ExpenseWindowDays <= 0 ? 90 : query.ExpenseWindowDays, 30, 365);
++        var trendWindowDays = Math.Clamp(query.TrendWindowDays <= 0 ? 30 : query.TrendWindowDays, 7, 90);
++        var payableWindowDays = Math.Clamp(query.PayableWindowDays <= 0 ? 14 : query.PayableWindowDays, 7, 60);
++
++        var cashBalance = await GetCashBalanceAsync(new GetFinanceCashBalanceQuery(query.CompanyId, asOfUtc), cancellationToken);
++        var expenseWindowStartUtc = asOfUtc.Date.AddDays(-expenseWindowDays + 1);
++        var trendWindowStartUtc = asOfUtc.Date.AddDays(-trendWindowDays + 1);
++        var previousTrendWindowStartUtc = trendWindowStartUtc.AddDays(-trendWindowDays);
++        var payableWindowEndUtc = asOfUtc.Date.AddDays(payableWindowDays + 1);
++
++        var expenseRows = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == query.CompanyId &&
++                x.TransactionUtc >= expenseWindowStartUtc &&
++                x.TransactionUtc <= asOfUtc &&
++                x.Amount < 0m)
++            .Select(x => new InsightExpenseRow(
++                x.Id,
++                x.TransactionUtc,
++                x.TransactionType,
++                x.Amount,
++                x.Currency,
++                x.Counterparty == null ? null : x.Counterparty.Name))
++            .ToListAsync(cancellationToken);
++
++        var revenueRows = await _dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == query.CompanyId &&
++                x.IssuedUtc >= previousTrendWindowStartUtc &&
++                x.IssuedUtc < payableWindowEndUtc)
++            .Select(x => new InsightRevenueRow(x.Id, x.IssuedUtc, x.Amount, x.Currency))
++            .ToListAsync(cancellationToken);
++
++        var invoiceRows = await _dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .Select(x => new InsightInvoiceRow(
++                x.Id,
++                x.CounterpartyId,
++                x.Counterparty == null ? MissingCounterpartyName : x.Counterparty.Name,
++                x.DueUtc,
++                x.Amount,
++                x.Currency,
++                x.Status,
++                x.SettlementStatus))
++            .ToListAsync(cancellationToken);
++
++        var billRows = await _dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .Select(x => new InsightBillRow(
++                x.Id,
++                x.CounterpartyId,
++                x.Counterparty == null ? MissingCounterpartyName : x.Counterparty.Name,
++                x.DueUtc,
++                x.Amount,
++                x.Currency,
++                x.Status,
++                x.SettlementStatus))
++            .ToListAsync(cancellationToken);
++
++        var completedIncomingByInvoice = await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == query.CompanyId &&
++                x.InvoiceId.HasValue &&
++                x.Payment.Status == PaymentStatuses.Completed &&
++                x.Payment.PaymentType == PaymentTypes.Incoming &&
++                x.Payment.PaymentDate <= asOfUtc)
++            .GroupBy(x => x.InvoiceId!.Value)
++            .Select(x => new InsightAllocationRow(x.Key, x.Sum(allocation => allocation.AllocatedAmount)))
++            .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
++
++        var completedOutgoingByBill = await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == query.CompanyId &&
++                x.BillId.HasValue &&
++                x.Payment.Status == PaymentStatuses.Completed &&
++                x.Payment.PaymentType == PaymentTypes.Outgoing &&
++                x.Payment.PaymentDate <= asOfUtc)
++            .GroupBy(x => x.BillId!.Value)
++            .Select(x => new InsightAllocationRow(x.Key, x.Sum(allocation => allocation.AllocatedAmount)))
++            .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
++
++        var currency = ResolveCurrency(
++            expenseRows.Select(x => new FinanceAmountRow(x.Amount, x.Currency))
++                .Concat(revenueRows.Select(x => new FinanceAmountRow(x.Amount, x.Currency))));
++
++        var topExpenses = BuildTopExpensesInsight(expenseRows, expenseWindowStartUtc, asOfUtc, currency);
++        var revenueTrend = BuildRevenueTrendInsight(revenueRows, previousTrendWindowStartUtc, trendWindowStartUtc, asOfUtc, currency, trendWindowDays);
++        var burnRate = BuildBurnRateInsight(expenseRows, revenueRows, expenseWindowDays, cashBalance.Amount, currency, trendWindowStartUtc, asOfUtc);
++        var overdueCustomerRisk = BuildOverdueCustomerRiskInsight(invoiceRows, completedIncomingByInvoice, asOfUtc, currency);
++        var payablePressure = BuildPayablePressureInsight(billRows, completedOutgoingByBill, asOfUtc, payableWindowEndUtc, payableWindowDays, cashBalance.Amount, currency);
++        var dataCoverageNote = BuildCoverageNote(expenseRows.Count, revenueRows.Count, invoiceRows.Count, billRows.Count);
++
++        return new FinanceInsightsDto(
++            query.CompanyId,
++            generatedAt,
++            string.Equals(currency, "USD", StringComparison.OrdinalIgnoreCase) ? cashBalance.Currency : currency,
++            BuildHeadline(revenueTrend, burnRate, overdueCustomerRisk, payablePressure),
++            BuildSummary(topExpenses, revenueTrend, burnRate, overdueCustomerRisk, payablePressure),
++            dataCoverageNote,
++            topExpenses,
++            revenueTrend,
++            burnRate,
++            overdueCustomerRisk,
++            payablePressure);
++    }
++
++    private static FinanceTopExpensesInsightDto BuildTopExpensesInsight(
++        IReadOnlyList<InsightExpenseRow> expenseRows,
++        DateTime windowStartUtc,
++        DateTime windowEndUtc,
++        string currency)
++    {
++        var totalExpenses = Math.Round(expenseRows.Sum(x => Math.Abs(x.Amount)), 2, MidpointRounding.AwayFromZero);
++        if (expenseRows.Count == 0 || totalExpenses <= 0m)
++        {
++            return new FinanceTopExpensesInsightDto(
++                windowStartUtc,
++                windowEndUtc,
++                0m,
++                currency,
++                "insufficient_data",
++                $"No expense outflows were posted between {windowStartUtc:yyyy-MM-dd} and {windowEndUtc:yyyy-MM-dd}.",
++                []);
++        }
++
++        var items = expenseRows
++            .GroupBy(x => NormalizeCategory(x.TransactionType), StringComparer.OrdinalIgnoreCase)
++            .Select(group =>
++            {
++                var amount = Math.Round(group.Sum(x => Math.Abs(x.Amount)), 2, MidpointRounding.AwayFromZero);
++                var share = Math.Round(amount / totalExpenses, 4, MidpointRounding.AwayFromZero);
++                var topCounterparty = group
++                    .Select(x => NormalizeOptionalText(x.CounterpartyName))
++                    .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
++                var narrative = topCounterparty is null
++                    ? $"{group.Key} contributed {amount:0.00} of the {totalExpenses:0.00} expense window."
++                    : $"{group.Key} contributed {amount:0.00}; the most visible counterparty was {topCounterparty}.";
++                return new FinanceTopExpenseItemDto(group.Key, amount, currency, group.Count(), share, narrative);
++            })
++            .OrderByDescending(x => x.Amount)
++            .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)
++            .Take(5)
++            .ToList();
++
++        var leadingShare = items.Count == 0 ? 0m : items[0].ShareOfExpenses;
++        var trendLabel = leadingShare >= 0.4m ? "concentrated" : "distributed";
++        var summary = $"{items[0].Label} is the largest expense driver at {items[0].Amount:0.00} across the latest {Math.Max(1, (windowEndUtc.Date - windowStartUtc.Date).Days + 1)} day window.";
++        return new FinanceTopExpensesInsightDto(windowStartUtc, windowEndUtc, totalExpenses, currency, trendLabel, summary, items);
++    }
++
++    private static FinanceRevenueTrendInsightDto BuildRevenueTrendInsight(
++        IReadOnlyList<InsightRevenueRow> revenueRows,
++        DateTime previousStartUtc,
++        DateTime currentStartUtc,
++        DateTime asOfUtc,
++        string currency,
++        int trendWindowDays)
++    {
++        var currentRevenue = Math.Round(
++            revenueRows.Where(x => x.IssuedUtc >= currentStartUtc && x.IssuedUtc <= asOfUtc).Sum(x => x.Amount),
++            2,
++            MidpointRounding.AwayFromZero);
++        var previousRevenue = Math.Round(
++            revenueRows.Where(x => x.IssuedUtc >= previousStartUtc && x.IssuedUtc < currentStartUtc).Sum(x => x.Amount),
++            2,
++            MidpointRounding.AwayFromZero);
++        var deltaAmount = Math.Round(currentRevenue - previousRevenue, 2, MidpointRounding.AwayFromZero);
++        var deltaPercent = previousRevenue <= 0m
++            ? null
++            : Math.Round(deltaAmount / previousRevenue, 4, MidpointRounding.AwayFromZero);
++
++        var directionLabel = deltaAmount switch
++        {
++            > 0m => "up",
++            < 0m => "down",
++            _ => currentRevenue == 0m && previousRevenue == 0m ? "insufficient_data" : "flat"
++        };
++
++        var summary = directionLabel switch
++        {
++            "up" => $"Revenue improved by {deltaAmount:0.00} versus the prior {trendWindowDays} day comparison window.",
++            "down" => $"Revenue declined by {Math.Abs(deltaAmount):0.00} versus the prior {trendWindowDays} day comparison window.",
++            "flat" => $"Revenue held flat across the last two {trendWindowDays} day windows.",
++            _ => "Revenue trend is based on sparse invoice activity."
++        };
++
++        return new FinanceRevenueTrendInsightDto(
++            currentStartUtc,
++            asOfUtc,
++            previousStartUtc,
++            currentStartUtc.AddTicks(-1),
++            currentRevenue,
++            previousRevenue,
++            deltaAmount,
++            deltaPercent,
++            directionLabel,
++            summary);
++    }
++
++    private static FinanceBurnRateInsightDto BuildBurnRateInsight(
++        IReadOnlyList<InsightExpenseRow> expenseRows,
++        IReadOnlyList<InsightRevenueRow> revenueRows,
++        int expenseWindowDays,
++        decimal availableCash,
++        string currency,
++        DateTime netBurnRevenueWindowStartUtc,
++        DateTime asOfUtc)
++    {
++        var grossBurn = Math.Round(expenseRows.Sum(x => Math.Abs(x.Amount)), 2, MidpointRounding.AwayFromZero);
++        var averageDailyBurn = Math.Round(grossBurn / expenseWindowDays, 2, MidpointRounding.AwayFromZero);
++        var averageMonthlyBurn = Math.Round(averageDailyBurn * 30m, 2, MidpointRounding.AwayFromZero);
++        var recentRevenue = Math.Round(
++            revenueRows.Where(x => x.IssuedUtc >= netBurnRevenueWindowStartUtc && x.IssuedUtc <= asOfUtc).Sum(x => x.Amount),
++            2,
++            MidpointRounding.AwayFromZero);
++
++        // Net burn uses the same recent window as the latest revenue trend so the runway signal
++        // stays tied to posted outflows instead of fabricating forecast revenue.
++        var netMonthlyBurn = Math.Round(Math.Max(averageMonthlyBurn - recentRevenue, 0m), 2, MidpointRounding.AwayFromZero);
++        var runwayDenominator = netMonthlyBurn > 0m ? netMonthlyBurn : averageMonthlyBurn;
++        var estimatedRunwayDays = runwayDenominator <= 0m
++            ? null
++            : Math.Max(0, (int)Math.Floor(availableCash / runwayDenominator * 30m));
++
++        var riskLabel = estimatedRunwayDays switch
++        {
++            null when averageMonthlyBurn == 0m => "insufficient_data",
++            <= 30 => "critical",
++            <= 90 => "watch",
++            _ => "stable"
++        };
++
++        var summary = riskLabel switch
++        {
++            "critical" => $"Runway is approximately {estimatedRunwayDays} days at the current burn profile.",
++            "watch" => $"Runway is approximately {estimatedRunwayDays} days and should be monitored.",
++            "stable" => $"Runway is approximately {estimatedRunwayDays} days with current outflow levels.",
++            _ => "Burn rate is based on limited expense history."
++        };
++
++        return new FinanceBurnRateInsightDto(
++            expenseWindowDays,
++            averageDailyBurn,
++            averageMonthlyBurn,
++            netMonthlyBurn,
++            Math.Round(availableCash, 2, MidpointRounding.AwayFromZero),
++            estimatedRunwayDays,
++            riskLabel,
++            summary);
++    }
++
++    private static FinanceOverdueCustomerRiskInsightDto BuildOverdueCustomerRiskInsight(
++        IReadOnlyList<InsightInvoiceRow> invoiceRows,
++        IReadOnlyDictionary<Guid, decimal> completedIncomingByInvoice,
++        DateTime asOfUtc,
++        string currency)
++    {
++        var overdueInvoices = invoiceRows
++            .Where(x => IsOpenReceivable(x.Status, x.SettlementStatus))
++            .Select(x => new
++            {
++                Invoice = x,
++                RemainingAmount = Math.Round(Math.Max(x.Amount - completedIncomingByInvoice.GetValueOrDefault(x.Id), 0m), 2, MidpointRounding.AwayFromZero),
++                DaysOverdue = Math.Max(0, (int)Math.Floor((asOfUtc.Date - x.DueUtc.Date).TotalDays))
++            })
++            .Where(x => x.RemainingAmount > 0m && x.Invoice.DueUtc < asOfUtc)
++            .ToList();
++
++        var totalOverdueAmount = Math.Round(overdueInvoices.Sum(x => x.RemainingAmount), 2, MidpointRounding.AwayFromZero);
++        if (overdueInvoices.Count == 0 || totalOverdueAmount <= 0m)
++        {
++            return new FinanceOverdueCustomerRiskInsightDto(0, 0, 0m, 0, 0m, "clear", "No overdue customer balance is currently open.", []);
++        }
++
++        var customers = overdueInvoices
++            .GroupBy(x => new { x.Invoice.CounterpartyId, x.Invoice.CounterpartyName })
++            .Select(group =>
++            {
++                var overdueAmount = Math.Round(group.Sum(x => x.RemainingAmount), 2, MidpointRounding.AwayFromZero);
++                var maxDaysOverdue = group.Max(x => x.DaysOverdue);
++                var concentrationRatio = Math.Round(overdueAmount / totalOverdueAmount, 4, MidpointRounding.AwayFromZero);
++                var riskLabel = maxDaysOverdue >= 60 || concentrationRatio >= 0.5m ? "high" : maxDaysOverdue >= 30 ? "medium" : "low";
++                var summary = $"{group.Key.CounterpartyName} carries {overdueAmount:0.00} overdue across {group.Count()} invoice(s).";
++                return new FinanceOverdueCustomerRiskItemDto(
++                    group.Key.CounterpartyId,
++                    group.Key.CounterpartyName,
++                    overdueAmount,
++                    group.Count(),
++                    maxDaysOverdue,
++                    concentrationRatio,
++                    riskLabel,
++                    summary);
++            })
++            .OrderByDescending(x => x.OverdueAmount)
++            .ThenBy(x => x.CustomerName, StringComparer.OrdinalIgnoreCase)
++            .Take(5)
++            .ToList();
++
++        var maxDays = customers.Max(x => x.MaxDaysOverdue);
++        var largestConcentration = customers.Max(x => x.ConcentrationRatio);
++        var aggregateRisk = maxDays >= 60 || largestConcentration >= 0.5m ? "high" : maxDays >= 30 ? "medium" : "low";
++        var summaryText = $"{overdueInvoices.Count} overdue invoice(s) total {totalOverdueAmount:0.00}; the largest customer concentration is {largestConcentration:P0}.";
++
++        return new FinanceOverdueCustomerRiskInsightDto(
++            overdueInvoices.Count,
++            customers.Count,
++            totalOverdueAmount,
++            maxDays,
++            largestConcentration,
++            aggregateRisk,
++            summaryText,
++            customers);
++    }
++
++    private static FinancePayablePressureInsightDto BuildPayablePressureInsight(
++        IReadOnlyList<InsightBillRow> billRows,
++        IReadOnlyDictionary<Guid, decimal> completedOutgoingByBill,
++        DateTime asOfUtc,
++        DateTime payableWindowEndUtc,
++        int payableWindowDays,
++        decimal availableCash,
++        string currency)
++    {
++        var openBills = billRows
++            .Where(x => IsOpenPayable(x.Status, x.SettlementStatus))
++            .Select(x => new
++            {
++                Bill = x,
++                RemainingAmount = Math.Round(Math.Max(x.Amount - completedOutgoingByBill.GetValueOrDefault(x.Id), 0m), 2, MidpointRounding.AwayFromZero),
++                UrgencyDays = (int)Math.Floor((x.DueUtc.Date - asOfUtc.Date).TotalDays)
++            })
++            .Where(x => x.RemainingAmount > 0m)
++            .ToList();
++
++        var overdueBills = openBills.Where(x => x.Bill.DueUtc < asOfUtc).ToList();
++        var dueSoonBills = openBills.Where(x => x.Bill.DueUtc >= asOfUtc && x.Bill.DueUtc < payableWindowEndUtc).ToList();
++        var overdueAmount = Math.Round(overdueBills.Sum(x => x.RemainingAmount), 2, MidpointRounding.AwayFromZero);
++        var dueSoonAmount = Math.Round(dueSoonBills.Sum(x => x.RemainingAmount), 2, MidpointRounding.AwayFromZero);
++        var totalPressuredAmount = overdueAmount + dueSoonAmount;
++        var burdenRatio = availableCash <= 0m
++            ? totalPressuredAmount > 0m ? 1m : (decimal?)null
++            : Math.Round(totalPressuredAmount / availableCash, 4, MidpointRounding.AwayFromZero);
++
++        var supplierItems = openBills
++            .Where(x => x.Bill.DueUtc < payableWindowEndUtc)
++            .GroupBy(x => new { x.Bill.CounterpartyId, x.Bill.CounterpartyName })
++            .Select(group =>
++            {
++                var amount = Math.Round(group.Sum(x => x.RemainingAmount), 2, MidpointRounding.AwayFromZero);
++                var hasOverdue = group.Any(x => x.Bill.DueUtc < asOfUtc);
++                var maxUrgencyDays = group.Min(x => x.UrgencyDays);
++                var riskLabel = hasOverdue ? "high" : maxUrgencyDays <= 3 ? "medium" : "low";
++                var summary = $"{group.Key.CounterpartyName} has {amount:0.00} due within the next {payableWindowDays} days.";
++                return new FinancePayablePressureItemDto(
++                    group.Key.CounterpartyId,
++                    group.Key.CounterpartyName,
++                    amount,
++                    group.Count(),
++                    hasOverdue,
++                    maxUrgencyDays,
++                    riskLabel,
++                    summary);
++            })
++            .OrderByDescending(x => x.DueAmount)
++            .ThenBy(x => x.SupplierName, StringComparer.OrdinalIgnoreCase)
++            .Take(5)
++            .ToList();
++
++        var riskLabel = overdueAmount > 0m || burdenRatio >= 0.8m ? "high" : dueSoonAmount > 0m || burdenRatio >= 0.4m ? "medium" : "low";
++        var summary = totalPressuredAmount <= 0m
++            ? "No overdue or near-term payables are currently pressuring cash."
++            : $"{totalPressuredAmount:0.00} is overdue or due inside the next {payableWindowDays} days.";
++
++        return new FinancePayablePressureInsightDto(
++            overdueAmount,
++            dueSoonAmount,
++            overdueBills.Count,
++            dueSoonBills.Count,
++            burdenRatio,
++            riskLabel,
++            summary,
++            supplierItems);
++    }
++
++    private static string BuildHeadline(
++        FinanceRevenueTrendInsightDto revenueTrend,
++        FinanceBurnRateInsightDto burnRate,
++        FinanceOverdueCustomerRiskInsightDto overdueCustomerRisk,
++        FinancePayablePressureInsightDto payablePressure)
++    {
++        if (string.Equals(overdueCustomerRisk.RiskLabel, "high", StringComparison.OrdinalIgnoreCase))
++        {
++            return "Customer collections risk is elevated.";
++        }
++
++        if (string.Equals(payablePressure.RiskLabel, "high", StringComparison.OrdinalIgnoreCase))
++        {
++            return "Near-term payables are putting pressure on cash.";
++        }
++
++        if (string.Equals(burnRate.RiskLabel, "critical", StringComparison.OrdinalIgnoreCase))
++        {
++            return "Cash runway needs immediate attention.";
++        }
++
++        if (string.Equals(revenueTrend.DirectionLabel, "down", StringComparison.OrdinalIgnoreCase))
++        {
++            return "Revenue softened in the latest comparison window.";
++        }
++
++        return "Finance posture is stable based on the current dataset.";
++    }
++
++    private static string BuildSummary(
++        FinanceTopExpensesInsightDto topExpenses,
++        FinanceRevenueTrendInsightDto revenueTrend,
++        FinanceBurnRateInsightDto burnRate,
++        FinanceOverdueCustomerRiskInsightDto overdueCustomerRisk,
++        FinancePayablePressureInsightDto payablePressure) =>
++        $"{revenueTrend.Summary} {burnRate.Summary} {overdueCustomerRisk.Summary} {payablePressure.Summary}";
++
++    private static string? BuildCoverageNote(int expenseCount, int revenueCount, int invoiceCount, int billCount)
++    {
++        var sparseSignals = new List<string>(4);
++        if (expenseCount < 3)
++        {
++            sparseSignals.Add("expense history");
++        }
++
++        if (revenueCount < 2)
++        {
++            sparseSignals.Add("revenue history");
++        }
++
++        if (invoiceCount == 0)
++        {
++            sparseSignals.Add("receivables");
++        }
++
++        if (billCount == 0)
++        {
++            sparseSignals.Add("payables");
++        }
++
++        return sparseSignals.Count == 0
++            ? null
++            : $"Sparse coverage for {string.Join(", ", sparseSignals)} can reduce confidence in trend-oriented sections.";
++    }
++
++    private static bool IsOpenReceivable(string status, string settlementStatus)
++    {
++        var normalizedStatus = NormalizeOptionalText(status)?.ToLowerInvariant() ?? string.Empty;
++        var normalizedSettlement = NormalizeOptionalText(settlementStatus)?.ToLowerInvariant() ?? string.Empty;
++        return normalizedSettlement != FinanceSettlementStatuses.Paid &&
++               normalizedStatus is not ("paid" or "rejected" or "void");
++    }
++
++    private static bool IsOpenPayable(string status, string settlementStatus)
++    {
++        var normalizedStatus = NormalizeOptionalText(status)?.ToLowerInvariant() ?? string.Empty;
++        var normalizedSettlement = NormalizeOptionalText(settlementStatus)?.ToLowerInvariant() ?? string.Empty;
++        return normalizedSettlement != FinanceSettlementStatuses.Paid &&
++               normalizedStatus is not ("paid" or "void" or "cancelled");
++    }
++
++    private sealed record InsightExpenseRow(
++        Guid Id,
++        DateTime TransactionUtc,
++        string TransactionType,
++        decimal Amount,
++        string Currency,
++        string? CounterpartyName);
++
++    private sealed record InsightRevenueRow(
++        Guid Id,
++        DateTime IssuedUtc,
++        decimal Amount,
++        string Currency);
++
++    private sealed record InsightInvoiceRow(
++        Guid Id,
++        Guid CounterpartyId,
++        string CounterpartyName,
++        DateTime DueUtc,
++        decimal Amount,
++        string Currency,
++        string Status,
++        string SettlementStatus);
++
++    private sealed record InsightBillRow(
++        Guid Id,
++        Guid CounterpartyId,
++        string CounterpartyName,
++        DateTime DueUtc,
++        decimal Amount,
++        string Currency,
++        string Status,
++        string SettlementStatus);
++
++    private sealed record InsightAllocationRow(Guid DocumentId, decimal Amount);
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightMigrationCompatibilityTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightMigrationCompatibilityTests.cs
+new file mode 100644
+index 0000000..2030dca
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceInsightMigrationCompatibilityTests.cs
+@@ -0,0 +1,149 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging.Abstractions;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceInsightMigrationCompatibilityTests
++{
++    [Fact]
++    public async Task Clean_database_schema_supports_finance_insight_aggregation()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Insight Company");
++        company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++        dbContext.Companies.Add(company);
++        FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceReadService(dbContext, new TestCompanyContextAccessor(companyId));
++        var result = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyId), CancellationToken.None);
++
++        Assert.Equal(companyId, result.CompanyId);
++        Assert.True(result.GeneratedAt > DateTime.MinValue);
++        Assert.NotNull(result.TopExpenses);
++        Assert.NotNull(result.RevenueTrend);
++        Assert.NotNull(result.BurnRate);
++        Assert.NotNull(result.OverdueCustomerRisk);
++        Assert.NotNull(result.PayablePressure);
++    }
++
++    [Fact]
++    public async Task Existing_mock_finance_state_bootstrap_rerun_is_idempotent()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Existing Mock Finance Company");
++        company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++        dbContext.Companies.Add(company);
++        var approver = new User(Guid.NewGuid(), "owner@example.com", "Owner", "dev-header", "owner");
++        dbContext.Users.Add(approver);
++        dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, approver.Id, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++        FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = CreateBootstrapRerunService(dbContext, companyId);
++        var first = await service.RerunAsync(new RerunFinanceBootstrapCommand(companyId, 250, "finance-bootstrap-rerun-001"), CancellationToken.None);
++        var second = await service.RerunAsync(new RerunFinanceBootstrapCommand(companyId, 250, "finance-bootstrap-rerun-001"), CancellationToken.None);
++
++        Assert.True(first.ApprovalBackfill.CreatedCount >= 0);
++        Assert.Equal(0, second.PlanningRowsInserted);
++        Assert.Equal(0, second.ApprovalBackfill.CreatedCount);
++
++        var budgetCount = await dbContext.Budgets.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId);
++        var forecastCount = await dbContext.Forecasts.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId);
++        var approvalTaskCount = await dbContext.ApprovalTasks.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId);
++        Assert.True(budgetCount > 0);
++        Assert.True(forecastCount > 0);
++        Assert.Equal(first.ApprovalBackfill.CreatedCount, approvalTaskCount);
++    }
++
++    [Fact]
++    public async Task Partially_seeded_company_rerun_backfills_missing_planning_without_duplicate_tasks()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Partial Finance Company");
++        company.SetFinanceSeedStatus(FinanceSeedingState.Seeding, DateTime.UtcNow);
++        dbContext.Companies.Add(company);
++        var approver = new User(Guid.NewGuid(), "partial-owner@example.com", "Owner", "dev-header", "partial-owner");
++        dbContext.Users.Add(approver);
++        dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, approver.Id, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++        FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        dbContext.Budgets.RemoveRange(await dbContext.Budgets.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
++        dbContext.Forecasts.RemoveRange(await dbContext.Forecasts.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
++        await dbContext.SaveChangesAsync();
++
++        var service = CreateBootstrapRerunService(dbContext, companyId);
++        var result = await service.RerunAsync(new RerunFinanceBootstrapCommand(companyId, 250, "finance-bootstrap-rerun-partial"), CancellationToken.None);
++
++        Assert.True(result.PlanningRowsInserted > 0);
++        Assert.True(await dbContext.Budgets.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId));
++        Assert.True(await dbContext.Forecasts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId));
++
++        var duplicateTargets = await dbContext.ApprovalTasks
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .GroupBy(x => new { x.TargetType, x.TargetId })
++            .CountAsync(x => x.Count() > 1);
++        Assert.Equal(0, duplicateTargets);
++    }
++
++    private static CompanyFinanceBootstrapRerunService CreateBootstrapRerunService(VirtualCompanyDbContext dbContext, Guid companyId)
++    {
++        var accessor = new TestCompanyContextAccessor(companyId);
++        var approvalTaskService = new CompanyFinanceApprovalTaskService(dbContext, accessor, NullLogger<CompanyFinanceApprovalTaskService>.Instance);
++        return new CompanyFinanceBootstrapRerunService(
++            dbContext,
++            new PlanningBaselineService(dbContext),
++            approvalTaskService,
++            accessor,
++            NullLogger<CompanyFinanceBootstrapRerunService>.Instance);
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);
++
++    private sealed class TestCompanyContextAccessor : ICompanyContextAccessor
++    {
++        public TestCompanyContextAccessor(Guid companyId)
++        {
++            CompanyId = companyId;
++        }
++
++        public Guid? CompanyId { get; private set; }
++        public Guid? UserId => null;
++        public bool IsResolved => CompanyId.HasValue;
++        public ResolvedCompanyMembershipContext? Membership => null;
++
++        public void SetCompanyId(Guid? companyId) => CompanyId = companyId;
++
++        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext) => CompanyId = companyContext?.CompanyId;
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs
+new file mode 100644
+index 0000000..1bf08f0
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs
+@@ -0,0 +1,179 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceInsightsIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinanceInsightsIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Finance_insights_endpoint_returns_narrative_ready_company_scoped_payload()
++    {
++        var seed = await SeedCompanyAsync(includeOtherCompanyMembership: false);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/finance/insights");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<JsonObject>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!["companyId"]!.GetValue<Guid>());
++        Assert.True(payload["generatedAt"]!.GetValue<DateTime>() > DateTime.MinValue);
++        Assert.False(string.IsNullOrWhiteSpace(payload["headline"]!.GetValue<string>()));
++        Assert.False(string.IsNullOrWhiteSpace(payload["summary"]!.GetValue<string>()));
++        Assert.NotNull(payload["topExpenses"]);
++        Assert.NotNull(payload["revenueTrend"]);
++        Assert.NotNull(payload["burnRate"]);
++        Assert.NotNull(payload["overdueCustomerRisk"]);
++        Assert.NotNull(payload["payablePressure"]);
++        Assert.True(payload["topExpenses"]!["items"]!.AsArray().Count > 0);
++        Assert.NotNull(payload["revenueTrend"]!["directionLabel"]);
++        Assert.NotNull(payload["burnRate"]!["riskLabel"]);
++        Assert.NotNull(payload["overdueCustomerRisk"]!["riskLabel"]);
++        Assert.NotNull(payload["payablePressure"]!["riskLabel"]);
++    }
++
++    [Fact]
++    public async Task Finance_insights_endpoint_is_tenant_scoped()
++    {
++        var seed = await SeedCompanyAsync(includeOtherCompanyMembership: false);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/api/companies/{seed.OtherCompanyId}/finance/insights");
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Finance_bootstrap_rerun_endpoint_is_idempotent_for_existing_company()
++    {
++        var seed = await SeedCompanyAsync(includeOtherCompanyMembership: true);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var firstResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/bootstrap/rerun",
++            new { batchSize = 250, correlationId = "finance-bootstrap-rerun-api-001" });
++        var secondResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/bootstrap/rerun",
++            new { batchSize = 250, correlationId = "finance-bootstrap-rerun-api-001" });
++
++        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
++
++        var first = await firstResponse.Content.ReadFromJsonAsync<JsonObject>();
++        var second = await secondResponse.Content.ReadFromJsonAsync<JsonObject>();
++        Assert.NotNull(first);
++        Assert.NotNull(second);
++        Assert.Equal(seed.CompanyId, first!["companyId"]!.GetValue<Guid>());
++        Assert.True(first["approvalBackfill"]!["createdCount"]!.GetValue<int>() >= 0);
++        Assert.Equal(0, second!["planningRowsInserted"]!.GetValue<int>());
++        Assert.Equal(0, second["approvalBackfill"]!["createdCount"]!.GetValue<int>());
++
++        var duplicateTargets = await _factory.ExecuteDbContextAsync(async dbContext =>
++            await dbContext.ApprovalTasks
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyId)
++                .GroupBy(x => new { x.TargetType, x.TargetId })
++                .CountAsync(x => x.Count() > 1));
++        Assert.Equal(0, duplicateTargets);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.SubjectHeaderName, subject);
++        client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.EmailHeaderName, email);
++        client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.DisplayNameHeaderName, displayName);
++        client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.ProviderHeaderName, "dev-header");
++        return client;
++    }
++
++    private async Task<SeedContext> SeedCompanyAsync(bool includeOtherCompanyMembership)
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        const string subject = "finance-insight-owner";
++        const string email = "finance.owner@example.com";
++        const string displayName = "Finance Owner";
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            var primaryCompany = new Company(companyId, "Finance Insight Company");
++            primaryCompany.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++            var otherCompany = new Company(otherCompanyId, "Other Finance Insight Company");
++            otherCompany.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++
++            dbContext.Companies.AddRange(primaryCompany, otherCompany);
++            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            if (includeOtherCompanyMembership)
++            {
++                dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            }
++
++            FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++            FinanceSeedData.AddMockFinanceData(dbContext, otherCompanyId);
++
++            var primaryPolicy = dbContext.FinancePolicyConfigurations.Local.Single(x => x.CompanyId == companyId);
++            primaryPolicy.Update(
++                primaryPolicy.ApprovalCurrency,
++                primaryPolicy.InvoiceApprovalThreshold,
++                1000m,
++                primaryPolicy.RequireCounterpartyForTransactions,
++                primaryPolicy.AnomalyDetectionLowerBound,
++                primaryPolicy.AnomalyDetectionUpperBound,
++                primaryPolicy.CashRunwayWarningThresholdDays,
++                primaryPolicy.CashRunwayCriticalThresholdDays);
++
++            var otherPolicy = dbContext.FinancePolicyConfigurations.Local.Single(x => x.CompanyId == otherCompanyId);
++            otherPolicy.Update(
++                otherPolicy.ApprovalCurrency,
++                otherPolicy.InvoiceApprovalThreshold,
++                1000m,
++                otherPolicy.RequireCounterpartyForTransactions,
++                otherPolicy.AnomalyDetectionLowerBound,
++                otherPolicy.AnomalyDetectionUpperBound,
++                otherPolicy.CashRunwayWarningThresholdDays,
++                otherPolicy.CashRunwayCriticalThresholdDays);
++
++            await Task.CompletedTask;
++        });
++
++        return new SeedContext(companyId, otherCompanyId, subject, email, displayName);
++    }
++
++    private sealed record SeedContext(
++        Guid CompanyId,
++        Guid OtherCompanyId,
++        string Subject,
++        string Email,
++        string DisplayName);
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs
+new file mode 100644
+index 0000000..ed5c227
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs
+@@ -0,0 +1,93 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceInsightsServiceTests
++{
++    [Fact]
++    public async Task Insights_handle_sparse_data_without_throwing_and_emit_deterministic_narrative()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Sparse Finance Company");
++        company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++        dbContext.Companies.Add(company);
++
++        var accountId = Guid.NewGuid();
++        var supplierId = Guid.NewGuid();
++        dbContext.FinanceAccounts.Add(new FinanceAccount(
++            accountId,
++            companyId,
++            "1000",
++            "Operating Cash",
++            "asset",
++            "USD",
++            5000m,
++            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.FinanceCounterparties.Add(new FinanceCounterparty(
++            supplierId,
++            companyId,
++            "Sparse Supplier",
++            "supplier",
++            "supplier@example.com"));
++        dbContext.FinanceTransactions.Add(new FinanceTransaction(
++            Guid.NewGuid(),
++            companyId,
++            accountId,
++            supplierId,
++            null,
++            null,
++            new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),
++            "software",
++            -250m,
++            "USD",
++            "Software renewal",
++            "SPARSE-001"));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceReadService(dbContext);
++        var result = await service.GetInsightsAsync(
++            new GetFinanceInsightsQuery(companyId, new DateTime(2026, 2, 15, 0, 0, 0, DateTimeKind.Utc)),
++            CancellationToken.None);
++
++        Assert.Equal(companyId, result.CompanyId);
++        Assert.False(string.IsNullOrWhiteSpace(result.Headline));
++        Assert.False(string.IsNullOrWhiteSpace(result.Summary));
++        Assert.NotNull(result.DataCoverageNote);
++        Assert.Equal("insufficient_data", result.RevenueTrend.DirectionLabel);
++        Assert.Equal("insufficient_data", result.TopExpenses.TrendLabel);
++        Assert.Equal("clear", result.OverdueCustomerRisk.RiskLabel);
++        Assert.Equal("low", result.PayablePressure.RiskLabel);
++    }
++
++    [Fact]
++    public async Task Insights_remain_company_scoped_when_multiple_tenants_exist()
++    {
++        var companyA = Guid.NewGuid();
++        var companyB = Guid.NewGuid();
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var companyAEntity = new Company(companyA, "Tenant A");
++        companyAEntity.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++        var companyBEntity = new Company(companyB, "Tenant B");
++        companyBEntity.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++        dbContext.Companies.AddRange(companyAEntity, companyBEntity);
++        FinanceSeedData.AddMockFinanceData(dbContext, companyA);
++        FinanceSeedData.AddMockFinanceData(dbContext, companyB);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceReadService(dbContext);
++        var result = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyA), CancellationToken.None);
++        Assert.Equal(companyA, result.CompanyId);
++    }
++}
+END_OF_PATCH

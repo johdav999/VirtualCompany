@@ -1,0 +1,524 @@
+diff --git a/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs b/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
+index 4d8ce8c..6ce59a0 100644
+--- a/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/LedgerReportingEntities.cs
+@@ -38,7 +38,9 @@ public sealed class FiscalPeriod : ICompanyOwnedEntity
+         DateTime? reportingUnlockedUtc = null,
+         Guid? reportingUnlockedByUserId = null,
+         DateTime? createdUtc = null,
+-        DateTime? updatedUtc = null)
++        DateTime? updatedUtc = null,
++        DateTime? lastCloseValidatedUtc = null,
++        Guid? lastCloseValidatedByUserId = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -61,6 +63,8 @@ public sealed class FiscalPeriod : ICompanyOwnedEntity
+         ReportingLockedByUserId = reportingLockedByUserId == Guid.Empty ? null : reportingLockedByUserId;
+         ReportingUnlockedUtc = reportingUnlockedUtc.HasValue ? EntityTimestampNormalizer.NormalizeUtc(reportingUnlockedUtc.Value, nameof(reportingUnlockedUtc)) : null;
+         ReportingUnlockedByUserId = reportingUnlockedByUserId == Guid.Empty ? null : reportingUnlockedByUserId;
++        LastCloseValidatedUtc = lastCloseValidatedUtc.HasValue ? EntityTimestampNormalizer.NormalizeUtc(lastCloseValidatedUtc.Value, nameof(lastCloseValidatedUtc)) : null;
++        LastCloseValidatedByUserId = lastCloseValidatedByUserId == Guid.Empty ? null : lastCloseValidatedByUserId;
+         ClosedUtc = isClosed && closedUtc.HasValue
+             ? EntityTimestampNormalizer.NormalizeUtc(closedUtc.Value, nameof(closedUtc))
+             : isClosed
+@@ -86,9 +90,22 @@ public sealed class FiscalPeriod : ICompanyOwnedEntity
+     public DateTime? ReportingLockedUtc { get; private set; }
+     public Guid? ReportingLockedByUserId { get; private set; }
+     public DateTime? ReportingUnlockedUtc { get; private set; }
+     public Guid? ReportingUnlockedByUserId { get; private set; }
++    public DateTime? LastCloseValidatedUtc { get; private set; }
++    public Guid? LastCloseValidatedByUserId { get; private set; }
+     public DateTime? ClosedUtc { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
++    public void RecordCloseValidation(Guid? actorUserId, DateTime? validatedUtc = null)
++    {
++        if (actorUserId == Guid.Empty)
++        {
++            throw new ArgumentException("Actor user id cannot be empty.", nameof(actorUserId));
++        }
++
++        LastCloseValidatedUtc = EntityTimestampNormalizer.NormalizeUtc(validatedUtc ?? DateTime.UtcNow, nameof(validatedUtc));
++        LastCloseValidatedByUserId = actorUserId;
++        UpdatedUtc = LastCloseValidatedUtc.Value;
++    }
++
+     public void Close(DateTime? closedUtc = null)
+     {
+         IsClosed = true;
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 7c6de37..435bb66 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -428,6 +428,8 @@ public sealed record ReportingPeriodLockStateDto(
+     DateTime? ReportingLockedAtUtc,
+     Guid? ReportingLockedByUserId,
+     DateTime? ReportingUnlockedAtUtc,
+     Guid? ReportingUnlockedByUserId,
++    DateTime? LastCloseValidatedAtUtc,
++    Guid? LastCloseValidatedByUserId,
+     DateTime UpdatedAtUtc);
+ 
+ public sealed record ReportingPeriodCloseValidationResultDto(
+@@ -436,6 +438,8 @@ public sealed record ReportingPeriodCloseValidationResultDto(
+     string FiscalPeriodName,
+     DateTime ExecutedAtUtc,
+     string ExecutedByActorType,
+     Guid? ExecutedByActorId,
++    Guid ExecutedByMembershipId,
++    string ExecutedByMembershipRole,
+     bool IsReadyToClose,
+     bool IsClosed,
+     bool IsReportingLocked,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs
+index 1fdca4b..2d49156 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyReportingPeriodCloseService.cs
+@@ -5,6 +5,7 @@ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Shared;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+@@ -29,16 +30,21 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+     public async Task<ReportingPeriodCloseValidationResultDto> ValidateAsync(
+         ValidateReportingPeriodCloseQuery query,
+         CancellationToken cancellationToken)
+     {
+-        await RequireMembershipAsync(query.CompanyId, cancellationToken);
++        var membership = await RequireMembershipAsync(query.CompanyId, cancellationToken);
++        EnsureFinanceViewPermission(membership);
+         var actor = RequireUserActor();
+-        var period = await LoadFiscalPeriodAsync(query.CompanyId, query.FiscalPeriodId, track: false, cancellationToken);
++        var period = await LoadFiscalPeriodAsync(query.CompanyId, query.FiscalPeriodId, track: true, cancellationToken);
+         var issues = await BuildBlockingIssuesAsync(query.CompanyId, period.Id, cancellationToken);
+         var executedAtUtc = DateTime.UtcNow;
++        period.RecordCloseValidation(actor.ActorId, executedAtUtc);
+         var result = new ReportingPeriodCloseValidationResultDto(
+             query.CompanyId,
+             period.Id,
+             period.Name,
+             executedAtUtc,
+             actor.ActorType,
+             actor.ActorId,
++            membership.MembershipId,
++            membership.MembershipRole.ToStorageValue(),
+             issues.Count == 0,
+             period.IsClosed,
+             period.IsReportingLocked,
+@@ -57,6 +63,10 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+                 Metadata: new Dictionary<string, string?>
+                 {
+                     ["fiscalPeriodName"] = period.Name,
++                    ["actorMembershipId"] = membership.MembershipId.ToString("D"),
++                    ["actorMembershipRole"] = membership.MembershipRole.ToStorageValue(),
++                    ["validatedByUserId"] = actor.ActorId?.ToString("D"),
++                    ["blockingIssueCodes"] = issues.Count == 0 ? string.Empty : string.Join(",", issues.Select(x => x.Code)),
+                     ["isReadyToClose"] = result.IsReadyToClose ? "true" : "false",
+                     ["issueCount"] = issues.Count.ToString(),
+                     ["isClosed"] = period.IsClosed ? "true" : "false",
+@@ -72,20 +82,27 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+     public async Task<ReportingPeriodLockStateDto> LockAsync(
+         LockReportingPeriodCommand command,
+         CancellationToken cancellationToken)
+     {
+-        await RequireMembershipAsync(command.CompanyId, cancellationToken);
++        var membership = await RequireMembershipAsync(command.CompanyId, cancellationToken);
++        EnsureFinanceEditPermission(membership);
+         var actor = RequireUserActor();
+         var period = await LoadFiscalPeriodAsync(command.CompanyId, command.FiscalPeriodId, track: true, cancellationToken);
+ 
+         EnsureClosed(period);
+         if (!period.IsReportingLocked)
+         {
+-            period.LockReporting(actor.ActorId, DateTime.UtcNow);
++            var lockedAtUtc = DateTime.UtcNow;
++            period.LockReporting(actor.ActorId, lockedAtUtc);
++
++            await _auditEventWriter.WriteAsync(
++                new AuditEventWriteRequest(
++                    command.CompanyId,
++                    actor.ActorType,
++                    actor.ActorId,
++                    AuditEventActions.ReportingPeriodLockApplied,
++                    AuditTargetTypes.FiscalPeriod,
++                    period.Id.ToString("D"),
++                    AuditEventOutcomes.Succeeded,
++                    $"Applied reporting lock for closed fiscal period '{period.Name}'.",
++                    Metadata: new Dictionary<string, string?>
++                    {
++                        ["fiscalPeriodName"] = period.Name,
++                        ["actorMembershipId"] = membership.MembershipId.ToString("D"),
++                        ["actorMembershipRole"] = membership.MembershipRole.ToStorageValue(),
++                        ["isClosed"] = period.IsClosed ? "true" : "false",
++                        ["isReportingLocked"] = period.IsReportingLocked ? "true" : "false",
++                        ["reportingLockedAtUtc"] = period.ReportingLockedUtc?.ToString("O"),
++                        ["reportingLockedByUserId"] = period.ReportingLockedByUserId?.ToString("D")
++                    },
++                    OccurredUtc: period.ReportingLockedUtc ?? lockedAtUtc),
++                cancellationToken);
+         }
+-
+-        await _auditEventWriter.WriteAsync(
+-            new AuditEventWriteRequest(
+-                command.CompanyId,
+-                actor.ActorType,
+-                actor.ActorId,
+-                AuditEventActions.ReportingPeriodLockApplied,
+-                AuditTargetTypes.FiscalPeriod,
+-                period.Id.ToString("D"),
+-                AuditEventOutcomes.Succeeded,
+-                $"Applied reporting lock for closed fiscal period '{period.Name}'.",
+-                Metadata: new Dictionary<string, string?>
+-                {
+-                    ["fiscalPeriodName"] = period.Name,
+-                    ["isClosed"] = period.IsClosed ? "true" : "false",
+-                    ["isReportingLocked"] = period.IsReportingLocked ? "true" : "false",
+-                    ["reportingLockedAtUtc"] = period.ReportingLockedUtc?.ToString("O")
+-                },
+-                OccurredUtc: DateTime.UtcNow),
+-            cancellationToken);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return MapLockState(period);
+     }
+@@ -94,9 +111,9 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+     public async Task<ReportingPeriodLockStateDto> UnlockAsync(
+         UnlockReportingPeriodCommand command,
+         CancellationToken cancellationToken)
+     {
+-        var membership = await RequireMembershipAsync(command.CompanyId, cancellationToken);
++        var membership = await RequireMembershipAsync(command.CompanyId, cancellationToken);
+         if (membership.MembershipRole is not (CompanyMembershipRole.Owner or CompanyMembershipRole.Admin))
+         {
+             throw new UnauthorizedAccessException("Only company owners or admins can unlock reporting for a fiscal period.");
+         }
+@@ -104,23 +121,30 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+         var actor = RequireUserActor();
+         var period = await LoadFiscalPeriodAsync(command.CompanyId, command.FiscalPeriodId, track: true, cancellationToken);
+ 
+         if (period.IsReportingLocked)
+         {
+-            period.UnlockReporting(actor.ActorId, DateTime.UtcNow);
++            var unlockedAtUtc = DateTime.UtcNow;
++            period.UnlockReporting(actor.ActorId, unlockedAtUtc);
++
++            await _auditEventWriter.WriteAsync(
++                new AuditEventWriteRequest(
++                    command.CompanyId,
++                    actor.ActorType,
++                    actor.ActorId,
++                    AuditEventActions.ReportingPeriodLockRemoved,
++                    AuditTargetTypes.FiscalPeriod,
++                    period.Id.ToString("D"),
++                    AuditEventOutcomes.Succeeded,
++                    $"Removed reporting lock for fiscal period '{period.Name}'.",
++                    Metadata: new Dictionary<string, string?>
++                    {
++                        ["fiscalPeriodName"] = period.Name,
++                        ["actorMembershipId"] = membership.MembershipId.ToString("D"),
++                        ["actorMembershipRole"] = membership.MembershipRole.ToStorageValue(),
++                        ["isClosed"] = period.IsClosed ? "true" : "false",
++                        ["isReportingLocked"] = period.IsReportingLocked ? "true" : "false",
++                        ["reportingUnlockedAtUtc"] = period.ReportingUnlockedUtc?.ToString("O"),
++                        ["reportingUnlockedByUserId"] = period.ReportingUnlockedByUserId?.ToString("D")
++                    },
++                    OccurredUtc: period.ReportingUnlockedUtc ?? unlockedAtUtc),
++                cancellationToken);
+         }
+-
+-        await _auditEventWriter.WriteAsync(
+-            new AuditEventWriteRequest(
+-                command.CompanyId,
+-                actor.ActorType,
+-                actor.ActorId,
+-                AuditEventActions.ReportingPeriodLockRemoved,
+-                AuditTargetTypes.FiscalPeriod,
+-                period.Id.ToString("D"),
+-                AuditEventOutcomes.Succeeded,
+-                $"Removed reporting lock for fiscal period '{period.Name}'.",
+-                Metadata: new Dictionary<string, string?>
+-                {
+-                    ["fiscalPeriodName"] = period.Name,
+-                    ["isClosed"] = period.IsClosed ? "true" : "false",
+-                    ["isReportingLocked"] = period.IsReportingLocked ? "true" : "false",
+-                    ["reportingUnlockedAtUtc"] = period.ReportingUnlockedUtc?.ToString("O")
+-                },
+-                OccurredUtc: DateTime.UtcNow),
+-            cancellationToken);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return MapLockState(period);
+     }
+@@ -129,12 +153,13 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+     public async Task<ReportingPeriodRegenerationRequestResultDto> RegenerateStoredStatementsAsync(
+         RegenerateStoredReportingStatementsCommand command,
+         CancellationToken cancellationToken)
+     {
+-        await RequireMembershipAsync(command.CompanyId, cancellationToken);
++        var membership = await RequireMembershipAsync(command.CompanyId, cancellationToken);
++        EnsureFinanceEditPermission(membership);
+         var actor = RequireUserActor();
+         var period = await LoadFiscalPeriodAsync(command.CompanyId, command.FiscalPeriodId, track: !command.RunInBackground, cancellationToken);
+ 
+         EnsureClosed(period);
+-        await EnsureRegenerationAllowedAsync(period, actor, cancellationToken);
++        await EnsureRegenerationAllowedAsync(period, actor, membership, cancellationToken);
+ 
+         if (command.RunInBackground)
+         {
+@@ -175,7 +200,7 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+         string? correlationId,
+         CancellationToken cancellationToken)
+     {
+         var period = await LoadFiscalPeriodAsync(companyId, fiscalPeriodId, track: true, cancellationToken);
+         EnsureClosed(period);
+-        await EnsureRegenerationAllowedAsync(period, SystemActor(correlationId), cancellationToken);
++        await EnsureRegenerationAllowedAsync(period, SystemActor(correlationId), null, cancellationToken);
+         var regeneratedAtUtc = DateTime.UtcNow;
+         return await RegenerateSnapshotsAsync(period, regeneratedAtUtc, cancellationToken);
+     }
+@@ -209,8 +234,24 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+                 $"Fiscal period '{period.Name}' must be closed before reporting can be locked or regenerated.");
+         }
+     }
+ 
++    private static void EnsureFinanceViewPermission(ResolvedCompanyMembershipContext membership)
++    {
++        if (!FinanceAccess.CanView(membership.MembershipRole.ToStorageValue()))
++        {
++            throw new UnauthorizedAccessException("The current user is not allowed to validate reporting close for the requested company.");
++        }
++    }
++
++    private static void EnsureFinanceEditPermission(ResolvedCompanyMembershipContext membership)
++    {
++        if (!FinanceAccess.CanEdit(membership.MembershipRole.ToStorageValue()))
++        {
++            throw new UnauthorizedAccessException("The current user is not allowed to change reporting lock state or regenerate stored statements for the requested company.");
++        }
++    }
++
+     private async Task EnsureRegenerationAllowedAsync(
+         FiscalPeriod period,
+         ActorContext actor,
++        ResolvedCompanyMembershipContext? membership,
+         CancellationToken cancellationToken)
+     {
+         if (!period.IsReportingLocked)
+@@ -229,8 +270,11 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+                 Metadata: new Dictionary<string, string?>
+                 {
+                     ["fiscalPeriodName"] = period.Name,
+                     ["isReportingLocked"] = "true",
++                    ["requestedByUserId"] = actor.ActorId?.ToString("D"),
++                    ["requestedByMembershipId"] = membership is null ? null : membership.MembershipId.ToString("D"),
++                    ["requestedByMembershipRole"] = membership is null ? null : membership.MembershipRole.ToStorageValue(),
+                     ["reportingLockedAtUtc"] = period.ReportingLockedUtc?.ToString("O"),
++                    ["reportingLockedByUserId"] = period.ReportingLockedByUserId?.ToString("D"),
+                     ["correlationId"] = actor.CorrelationId
+                 },
+                 CorrelationId: actor.CorrelationId,
+@@ -283,6 +327,8 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
+             period.ReportingLockedUtc,
+             period.ReportingLockedByUserId,
+             period.ReportingUnlockedUtc,
+             period.ReportingUnlockedByUserId,
++            period.LastCloseValidatedUtc,
++            period.LastCloseValidatedByUserId,
+             period.UpdatedUtc);
+ 
+     private static FinancialStatementType? ResolveRequiredStatementType(string accountType)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index f2df9de..c7606e9 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -3032,6 +3032,8 @@ internal sealed class FiscalPeriodConfiguration : IEntityTypeConfiguration<Fisca
+         builder.Property(x => x.ReportingLockedUtc).HasColumnName("reporting_locked_at");
+         builder.Property(x => x.ReportingLockedByUserId).HasColumnName("reporting_locked_by_user_id");
+         builder.Property(x => x.ReportingUnlockedUtc).HasColumnName("reporting_unlocked_at");
+         builder.Property(x => x.ReportingUnlockedByUserId).HasColumnName("reporting_unlocked_by_user_id");
++        builder.Property(x => x.LastCloseValidatedUtc).HasColumnName("last_close_validated_at");
++        builder.Property(x => x.LastCloseValidatedByUserId).HasColumnName("last_close_validated_by_user_id");
+         builder.Property(x => x.ClosedUtc).HasColumnName("closed_at");
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420173000_AddReportingPeriodCloseValidationAuditFields.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420173000_AddReportingPeriodCloseValidationAuditFields.cs
+new file mode 100644
+index 0000000..a7d6869
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260420173000_AddReportingPeriodCloseValidationAuditFields.cs
+@@ -0,0 +1,43 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddReportingPeriodCloseValidationAuditFields : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++
++            migrationBuilder.AddColumn<DateTime>(
++                name: "last_close_validated_at",
++                table: "finance_fiscal_periods",
++                type: dateTimeType,
++                nullable: true);
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "last_close_validated_by_user_id",
++                table: "finance_fiscal_periods",
++                type: guidType,
++                nullable: true);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropColumn(
++                name: "last_close_validated_at",
++                table: "finance_fiscal_periods");
++
++            migrationBuilder.DropColumn(
++                name: "last_close_validated_by_user_id",
++                table: "finance_fiscal_periods");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ReportingPeriodCloseIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ReportingPeriodCloseIntegrationTests.cs
+index 6f37d51..3fd33c0 100644
+--- a/tests/VirtualCompany.Api.Tests/ReportingPeriodCloseIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ReportingPeriodCloseIntegrationTests.cs
+@@ -51,6 +51,24 @@ public sealed class ReportingPeriodCloseIntegrationTests : IClassFixture<TestWeb
+         Assert.Equal(ReportingPeriodErrorCodes.ReportingPeriodNotClosed, problem!.Code);
+     }
+ 
++    [Fact]
++    public async Task Employee_membership_cannot_validate_lock_or_regenerate_reporting_period_operations()
++    {
++        var seed = await SeedClosedBalancedScenarioAsync();
++        using var employeeClient = CreateAuthenticatedClient(seed.EmployeeSubject, seed.EmployeeEmail, "Finance Employee");
++
++        var validationResponse = await employeeClient.PostAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/validation", null);
++        Assert.Equal(HttpStatusCode.Forbidden, validationResponse.StatusCode);
++
++        var lockResponse = await employeeClient.PostAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/lock", null);
++        Assert.Equal(HttpStatusCode.Forbidden, lockResponse.StatusCode);
++
++        var regenerateResponse = await employeeClient.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/stored-statements/regenerate",
++            new { runInBackground = false });
++        Assert.Equal(HttpStatusCode.Forbidden, regenerateResponse.StatusCode);
++    }
++
+     [Fact]
+     public async Task Unlock_endpoint_requires_owner_or_admin_authorization()
+     {
+@@ -85,6 +103,15 @@ public sealed class ReportingPeriodCloseIntegrationTests : IClassFixture<TestWeb
+         Assert.NotNull(blockedProblem);
+         Assert.Equal(ReportingPeriodErrorCodes.ReportingPeriodLocked, blockedProblem!.Code);
+ 
++        var blockedAudit = await _factory.ExecuteDbContextAsync(dbContext =>
++            dbContext.AuditEvents.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyId && x.Action == AuditEventActions.ReportingPeriodRegenerationBlocked)
++                .OrderByDescending(x => x.OccurredUtc)
++                .Select(x => new { x.ActorId, x.ActorType, x.Outcome })
++                .FirstAsync());
++        Assert.Equal(seed.OwnerUserId, blockedAudit.ActorId);
++        Assert.Equal(AuditActorTypes.User, blockedAudit.ActorType);
++        Assert.Equal(AuditEventOutcomes.Denied, blockedAudit.Outcome);
++
+         var unlockResponse = await ownerClient.PostAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.ClosedPeriodId:D}/reporting/unlock", null);
+         Assert.Equal(HttpStatusCode.OK, unlockResponse.StatusCode);
+ 
+@@ -177,10 +204,31 @@ public sealed class ReportingPeriodCloseIntegrationTests : IClassFixture<TestWeb
+         Assert.Contains(auditEvents, x => x.Action == AuditEventActions.ReportingPeriodLockRemoved && x.ActorType == AuditActorTypes.User && x.ActorId == seed.OwnerUserId);
+         Assert.All(auditEvents, x => Assert.Equal(seed.ClosedPeriodId.ToString("D"), x.TargetId));
+         Assert.All(auditEvents, x => Assert.True(x.OccurredUtc > DateTime.UtcNow.AddMinutes(-5)));
++
++        var periodAuditState = await _factory.ExecuteDbContextAsync(dbContext =>
++            dbContext.FiscalPeriods.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyId && x.Id == seed.ClosedPeriodId)
++                .Select(x => new
++                {
++                    x.LastCloseValidatedUtc,
++                    x.LastCloseValidatedByUserId,
++                    x.ReportingLockedUtc,
++                    x.ReportingLockedByUserId,
++                    x.ReportingUnlockedUtc,
++                    x.ReportingUnlockedByUserId
++                })
++                .SingleAsync());
++
++        Assert.NotNull(periodAuditState.LastCloseValidatedUtc);
++        Assert.Equal(seed.OwnerUserId, periodAuditState.LastCloseValidatedByUserId);
++        Assert.NotNull(periodAuditState.ReportingLockedUtc);
++        Assert.Equal(seed.OwnerUserId, periodAuditState.ReportingLockedByUserId);
++        Assert.NotNull(periodAuditState.ReportingUnlockedUtc);
++        Assert.Equal(seed.OwnerUserId, periodAuditState.ReportingUnlockedByUserId);
+     }
+ 
+     private async Task<SeedContext> SeedValidationScenarioAsync()
+     {
+         var seed = CreateSeedContext();
+         await _factory.SeedAsync(dbContext =>
+@@ -300,12 +348,14 @@ public sealed class ReportingPeriodCloseIntegrationTests : IClassFixture<TestWeb
+         dbContext.Users.AddRange(
+             new User(seed.OwnerUserId, seed.OwnerEmail, "Finance Owner", "dev-header", seed.OwnerSubject),
+-            new User(seed.ManagerUserId, seed.ManagerEmail, "Finance Manager", "dev-header", seed.ManagerSubject));
++            new User(seed.ManagerUserId, seed.ManagerEmail, "Finance Manager", "dev-header", seed.ManagerSubject),
++            new User(seed.EmployeeUserId, seed.EmployeeEmail, "Finance Employee", "dev-header", seed.EmployeeSubject));
+         dbContext.Companies.Add(new Company(seed.CompanyId, "Reporting Close Company"));
+         dbContext.CompanyMemberships.AddRange(
+             new CompanyMembership(Guid.NewGuid(), seed.CompanyId, seed.OwnerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
+-            new CompanyMembership(Guid.NewGuid(), seed.CompanyId, seed.ManagerUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++            new CompanyMembership(Guid.NewGuid(), seed.CompanyId, seed.ManagerUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active),
++            new CompanyMembership(Guid.NewGuid(), seed.CompanyId, seed.EmployeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
+ 
+         var cashAccountId = Guid.NewGuid();
+         var equityAccountId = Guid.NewGuid();
+         var revenueAccountId = Guid.NewGuid();
+@@ -377,22 +427,28 @@ public sealed class ReportingPeriodCloseIntegrationTests : IClassFixture<TestWeb
+     {
+         var companyId = Guid.NewGuid();
+         var ownerSubject = $"reporting-owner-{Guid.NewGuid():N}";
+         var managerSubject = $"reporting-manager-{Guid.NewGuid():N}";
++        var employeeSubject = $"reporting-employee-{Guid.NewGuid():N}";
+         return new SeedContext(
+             companyId,
+             Guid.NewGuid(),
+             Guid.NewGuid(),
++            Guid.NewGuid(),
+             ownerSubject,
+             $"{ownerSubject}@example.com",
+             managerSubject,
+             $"{managerSubject}@example.com",
++            employeeSubject,
++            $"{employeeSubject}@example.com",
+             Guid.NewGuid(),
+             Guid.NewGuid());
+     }
+ 
+     private sealed record SeedContext(
+         Guid CompanyId,
+         Guid OwnerUserId,
+         Guid ManagerUserId,
++        Guid EmployeeUserId,
+         string OwnerSubject,
+         string OwnerEmail,
+         string ManagerSubject,
+         string ManagerEmail,
++        string EmployeeSubject,
++        string EmployeeEmail,
+         Guid OpenPeriodId,
+         Guid ClosedPeriodId);
+ END_OF_PATCH

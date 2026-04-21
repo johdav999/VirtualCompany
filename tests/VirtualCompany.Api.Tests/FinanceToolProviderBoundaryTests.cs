@@ -14,6 +14,7 @@ public sealed class FinanceToolProviderBoundaryTests
     private static readonly IReadOnlyDictionary<string, string> RegisteredFinanceToolProviderOperations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["get_cash_balance"] = nameof(IFinanceToolProvider.GetCashBalanceAsync),
+        ["resolve_finance_agent_query"] = nameof(IFinanceToolProvider.ResolveAgentQueryAsync),
         ["list_transactions"] = nameof(IFinanceToolProvider.GetTransactionsAsync),
         ["list_uncategorized_transactions"] = nameof(IFinanceToolProvider.GetTransactionsAsync),
         ["list_invoices_awaiting_approval"] = nameof(IFinanceToolProvider.GetInvoicesAsync),
@@ -125,6 +126,13 @@ public sealed class FinanceToolProviderBoundaryTests
         Assert.True(cashBalance.Amount > 0);
         Assert.False(string.IsNullOrWhiteSpace(cashBalance.Currency));
         Assert.NotEmpty(cashBalance.Accounts);
+
+        var agentQueryResult = await provider.ResolveAgentQueryAsync(
+            new GetFinanceAgentQueryQuery(companyId, "what should i pay this week", new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc)),
+            CancellationToken.None);
+        Assert.Equal(companyId, agentQueryResult.CompanyId);
+        Assert.Equal(FinanceAgentQueryIntents.WhatShouldIPayThisWeek, agentQueryResult.Intent);
+        Assert.NotEmpty(agentQueryResult.Items);
 
         var transactions = await provider.GetTransactionsAsync(
             new GetFinanceTransactionsQuery(companyId, Limit: 25),

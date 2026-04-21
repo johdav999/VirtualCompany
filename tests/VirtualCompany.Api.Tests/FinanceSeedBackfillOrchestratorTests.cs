@@ -372,8 +372,157 @@ public sealed class FinanceSeedBackfillOrchestratorTests
         Assert.Equal(healthySnapshotAfterFirstRun, healthySnapshotAfterSecondRun);
         Assert.True(recoveredSnapshot.AccountCount > 1);
         Assert.True(recoveredSnapshot.TransactionCount > 0);
+        Assert.True(recoveredSnapshot.BankAccountCount > 0);
+        Assert.True(recoveredSnapshot.BankTransactionCount > 0);
         Assert.Equal(1, await recoveryVerificationContext.BackgroundExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == healthyCompanyId));
         Assert.Equal(2, await recoveryVerificationContext.BackgroundExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == partialCompanyId));
+    }
+
+    [Fact]
+    public async Task Backfill_upgrades_seeded_company_missing_bank_accounts_and_transactions_without_replacing_finance_data()
+    {
+        await using var connection = await OpenConnectionAsync();
+        var services = CreateSchedulerServices(connection);
+
+        var companyId = Guid.NewGuid();
+        var financeAccountId = Guid.NewGuid();
+        var financeTransactionId = Guid.NewGuid();
+
+        await using (var setupScope = services.CreateAsyncScope())
+        {
+            var setupContext = setupScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+            await setupContext.Database.EnsureCreatedAsync();
+
+            var company = new Company(companyId, "Banking Upgrade Company");
+            company.SetFinanceSeedStatus(
+                FinanceSeedingState.Seeded,
+                new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
+                new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc));
+            setupContext.Companies.Add(company);
+
+            setupContext.FinanceAccounts.Add(new FinanceAccount(
+                financeAccountId,
+                companyId,
+                "1000",
+                "Operating Cash",
+                "asset",
+                "USD",
+                5000m,
+                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+            setupContext.FinanceCounterparties.Add(new FinanceCounterparty(
+                Guid.NewGuid(),
+                companyId,
+                "Northwind Analytics",
+                "customer",
+                "ap@northwind.example",
+                "Net30",
+                null,
+                0m,
+                "bank_transfer",
+                "1100"));
+            setupContext.FinanceTransactions.Add(new FinanceTransaction(
+                financeTransactionId,
+                companyId,
+                financeAccountId,
+                null,
+                null,
+                null,
+                new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc),
+                "customer_payment",
+                1500m,
+                "USD",
+                "Seeded finance transaction",
+                $"seeded-finance:{companyId:N}",
+                null));
+            setupContext.FinanceBalances.Add(new FinanceBalance(
+                Guid.NewGuid(),
+                companyId,
+                financeAccountId,
+                new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
+                6500m,
+                "USD"));
+            setupContext.FinancePolicyConfigurations.Add(new FinancePolicyConfiguration(
+                Guid.NewGuid(),
+                companyId,
+                "USD",
+                10000m,
+                5000m,
+                true,
+                -10000m,
+                10000m,
+                90,
+                30));
+            await setupContext.SaveChangesAsync();
+        }
+
+        await using (var orchestratorScope = services.CreateAsyncScope())
+        {
+            var orchestrator = orchestratorScope.ServiceProvider.GetRequiredService<IFinanceSeedBackfillOrchestrator>();
+            var run = await orchestrator.RunAsync(CancellationToken.None);
+            Assert.Equal(1, run.QueuedCount);
+            Assert.Equal(0, run.SkippedCount);
+        }
+
+        await using (var runnerContext = CreateContext(connection))
+        {
+            var runner = CreateRunner(runnerContext);
+            var handled = await runner.RunDueAsync(CancellationToken.None);
+            Assert.Equal(1, handled);
+        }
+
+        await using var verificationContext = CreateContext(connection);
+        Assert.Equal(1, await verificationContext.FinanceTransactions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
+        Assert.NotNull(await verificationContext.FinanceTransactions.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == financeTransactionId));
+        Assert.True(await verificationContext.CompanyBankAccounts.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId));
+        Assert.True(await verificationContext.BankTransactions.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId));
+    }
+
+    [Fact]
+    public async Task Backfill_seeded_counterparties_include_finance_master_data_defaults()
+    {
+        await using var connection = await OpenConnectionAsync();
+        var services = CreateSchedulerServices(connection);
+
+        var companyId = Guid.NewGuid();
+
+        await using (var setupScope = services.CreateAsyncScope())
+        {
+            var setupContext = setupScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+            await setupContext.Database.EnsureCreatedAsync();
+            setupContext.Companies.Add(new Company(companyId, "Counterparty Backfill Company"));
+            await setupContext.SaveChangesAsync();
+        }
+
+        await using (var orchestratorScope = services.CreateAsyncScope())
+        {
+            var orchestrator = orchestratorScope.ServiceProvider.GetRequiredService<IFinanceSeedBackfillOrchestrator>();
+            await orchestrator.RunAsync(CancellationToken.None);
+        }
+
+        await using (var runnerContext = CreateContext(connection))
+        {
+            var runner = CreateRunner(runnerContext);
+            var handled = await runner.RunDueAsync(CancellationToken.None);
+            Assert.Equal(1, handled);
+        }
+
+        await using var verificationContext = CreateContext(connection);
+        var counterparties = await verificationContext.FinanceCounterparties
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId)
+            .OrderBy(x => x.Name)
+            .ToListAsync();
+
+        Assert.NotEmpty(counterparties);
+        Assert.All(counterparties, counterparty =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(counterparty.PaymentTerms));
+            Assert.NotNull(counterparty.CreditLimit);
+            Assert.False(string.IsNullOrWhiteSpace(counterparty.PreferredPaymentMethod));
+            Assert.False(string.IsNullOrWhiteSpace(counterparty.DefaultAccountMapping));
+        });
+        Assert.Contains(counterparties, x => x.CounterpartyType == "customer" && x.DefaultAccountMapping == "1100");
+        Assert.Contains(counterparties, x => (x.CounterpartyType == "supplier" || x.CounterpartyType == "vendor") && x.DefaultAccountMapping == "2000");
     }
 
     [Fact]
@@ -596,6 +745,8 @@ public sealed class FinanceSeedBackfillOrchestratorTests
             await dbContext.FinanceInvoices.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
             await dbContext.FinanceBills.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
             await dbContext.FinancePolicyConfigurations.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
+            await dbContext.CompanyBankAccounts.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
+            await dbContext.BankTransactions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
             await dbContext.FinanceSeedAnomalies.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
             await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().CountAsync(x =>
                 x.CompanyId == companyId &&
@@ -723,6 +874,8 @@ public sealed class FinanceSeedBackfillOrchestratorTests
         int InvoiceCount,
         int BillCount,
         int PolicyConfigurationCount,
+        int BankAccountCount,
+        int BankTransactionCount,
         int AnomalyCount,
         int SeedDocumentCount);
 

@@ -1,0 +1,127 @@
+diff --git a/tests/VirtualCompany.Api.Tests/ReconciliationSuggestionApiIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ReconciliationSuggestionApiIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/ReconciliationSuggestionApiIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ReconciliationSuggestionApiIntegrationTests.cs
+@@ -84,19 +84,39 @@ public sealed class ReconciliationSuggestionApiIntegrationTests : IClassFixture<
+     [Fact]
+-    public async Task Endpoints_enforce_finance_authorization()
++    public async Task Endpoints_require_authentication()
++    {
++        var seed = await SeedAsync();
++        using var client = _factory.CreateClient();
++
++        var listResponse = await client.GetAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/reconciliation-suggestions?page=1&pageSize=10");
++        var acceptResponse = await client.PostAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/reconciliation-suggestions/{seed.OpenHighestSuggestionId:D}/accept",
++            null);
++        var rejectResponse = await client.PostAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/reconciliation-suggestions/{seed.OpenHighestSuggestionId:D}/reject",
++            null);
++
++        Assert.Equal(HttpStatusCode.Unauthorized, listResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.Unauthorized, acceptResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.Unauthorized, rejectResponse.StatusCode);
++    }
++
++    [Fact]
++    public async Task Endpoints_enforce_finance_authorization_for_authenticated_users_without_required_role()
+     {
+         var seed = await SeedAsync();
+         using var client = CreateAuthenticatedClient(seed.EmployeeSubject, seed.EmployeeEmail, "Employee");
+ 
+         var listResponse = await client.GetAsync(
+             $"/internal/companies/{seed.CompanyId:D}/finance/reconciliation-suggestions?page=1&pageSize=10");
++
+         var acceptResponse = await client.PostAsync(
+             $"/internal/companies/{seed.CompanyId:D}/finance/reconciliation-suggestions/{seed.OpenHighestSuggestionId:D}/accept",
+             null);
++
+         var rejectResponse = await client.PostAsync(
+             $"/internal/companies/{seed.CompanyId:D}/finance/reconciliation-suggestions/{seed.OpenHighestSuggestionId:D}/reject",
+             null);
+ 
+         Assert.Equal(HttpStatusCode.Forbidden, listResponse.StatusCode);
+         Assert.Equal(HttpStatusCode.Forbidden, acceptResponse.StatusCode);
+         Assert.Equal(HttpStatusCode.Forbidden, rejectResponse.StatusCode);
+@@ -114,11 +134,17 @@ public sealed class ReconciliationSuggestionApiIntegrationTests : IClassFixture<
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+         var payload = await response.Content.ReadFromJsonAsync<AcceptedReconciliationSuggestionDto>();
+         Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!.Suggestion.CompanyId);
+         Assert.Equal(seed.OpenHighestSuggestionId, payload!.Suggestion.Id);
+         Assert.Equal(ReconciliationSuggestionStatuses.Accepted, payload.Suggestion.Status);
++        Assert.NotNull(payload.Suggestion.AcceptedUtc);
++        Assert.Null(payload.Suggestion.RejectedUtc);
++        Assert.Equal(seed.CompanyId, payload.Result.CompanyId);
++        Assert.NotEqual(Guid.Empty, payload.Result.Id);
+         Assert.Equal(seed.OpenHighestSuggestionId, payload.Result.AcceptedSuggestionId);
+         Assert.Equal(ReconciliationRecordTypes.Payment, payload.Result.SourceRecordType);
+         Assert.Equal(seed.IncomingPaymentId, payload.Result.SourceRecordId);
+         Assert.Equal(ReconciliationRecordTypes.BankTransaction, payload.Result.TargetRecordType);
+         Assert.Equal(seed.BankTransactionId, payload.Result.TargetRecordId);
++        Assert.NotEmpty(payload.Result.RuleBreakdown);
+         Assert.Equal(0, payload.SupersededSuggestionCount);
+ 
+         var persisted = await _factory.ExecuteDbContextAsync(async dbContext =>
+@@ -166,6 +192,8 @@ public sealed class ReconciliationSuggestionApiIntegrationTests : IClassFixture<
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+         var payload = await response.Content.ReadFromJsonAsync<ReconciliationSuggestionRecordDto>();
+         Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!.CompanyId);
+         Assert.Equal(seed.OpenMidSuggestionId, payload!.Id);
+         Assert.Equal(ReconciliationSuggestionStatuses.Rejected, payload.Status);
++        Assert.Null(payload.AcceptedUtc);
+         Assert.NotNull(payload.RejectedUtc);
+ 
+         var persistedStatus = await _factory.ExecuteDbContextAsync(dbContext =>
+@@ -245,41 +273,41 @@ public sealed class ReconciliationSuggestionApiIntegrationTests : IClassFixture<
+     [Fact]
+     public async Task Accept_endpoint_does_not_expose_suggestions_from_other_companies()
+     {
+         var seed = await SeedAsync();
+         using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, "Owner");
+-    public async Task Reject_endpoint_does_not_expose_suggestions_from_other_companies()
+-    {
+-        var seed = await SeedAsync();
+-        using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, "Owner");
+ 
+         var response = await client.PostAsync(
+-            $"/internal/companies/{seed.CompanyId:D}/finance/reconciliation-suggestions/{seed.OtherCompanySuggestionId:D}/reject",
++            $"/internal/companies/{seed.CompanyId:D}/finance/reconciliation-suggestions/{seed.OtherCompanySuggestionId:D}/accept",
+             null);
+ 
+         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+         var status = await _factory.ExecuteDbContextAsync(dbContext =>
+             dbContext.ReconciliationSuggestionRecords
+                 .IgnoreQueryFilters()
+                 .Where(x => x.CompanyId == seed.OtherCompanyId && x.Id == seed.OtherCompanySuggestionId)
+                 .Select(x => x.Status)
+                 .SingleAsync());
+ 
+         Assert.Equal(ReconciliationSuggestionStatuses.Open, status);
+     }
+ 
+     [Fact]
+-
++    public async Task Reject_endpoint_does_not_expose_suggestions_from_other_companies()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, "Owner");
++
+         var response = await client.PostAsync(
+-            $"/internal/companies/{seed.CompanyId:D}/finance/reconciliation-suggestions/{seed.OtherCompanySuggestionId:D}/accept",
++            $"/internal/companies/{seed.CompanyId:D}/finance/reconciliation-suggestions/{seed.OtherCompanySuggestionId:D}/reject",
+             null);
+ 
+         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+         var status = await _factory.ExecuteDbContextAsync(dbContext =>
+             dbContext.ReconciliationSuggestionRecords
+                 .IgnoreQueryFilters()
+                 .Where(x => x.CompanyId == seed.OtherCompanyId && x.Id == seed.OtherCompanySuggestionId)
+                 .Select(x => x.Status)
+                 .SingleAsync());
+ 
+         Assert.Equal(ReconciliationSuggestionStatuses.Open, status);
+     }
+ 
+END_OF_PATCH

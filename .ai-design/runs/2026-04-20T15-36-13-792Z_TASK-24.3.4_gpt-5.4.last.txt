@@ -1,0 +1,289 @@
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationCommandServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationCommandServiceTests.cs
+index 3f3db4c..fed2f73 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationCommandServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationCommandServiceTests.cs
+@@ -135,14 +135,63 @@ public sealed class FinancePaymentAllocationCommandServiceTests
+                 new CreateFinancePaymentAllocationDto(seed.OutgoingPaymentId, null, seed.BillId, 50m, "USD")),
+             CancellationToken.None);
+ 
+-        Assert.Equal(3, await dbContext.PaymentAllocations.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
++        Assert.Equal(4, await dbContext.PaymentAllocations.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
+         Assert.Equal(
+-            FinanceSettlementStatuses.PartiallyPaid,
++            FinanceSettlementStatuses.Paid,
+             await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceAId).Select(x => x.SettlementStatus).SingleAsync());
+         Assert.Equal(
+             FinanceSettlementStatuses.Paid,
+             await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceBId).Select(x => x.SettlementStatus).SingleAsync());
+         Assert.Equal(
++            FinanceSettlementStatuses.Paid,
++            await dbContext.FinanceBills.IgnoreQueryFilters().Where(x => x.Id == seed.BillId).Select(x => x.SettlementStatus).SingleAsync());
++    }
++
++    [Fact]
++    public async Task Partial_allocations_persist_exact_amounts_when_reloaded()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedAllocationScenario(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++
++        var invoiceAllocation = await service.CreateAllocationAsync(
++            new CreateFinancePaymentAllocationCommand(
++                companyId,
++                new CreateFinancePaymentAllocationDto(seed.IncomingPaymentId, seed.InvoiceAId, null, 40.25m, "usd")),
++            CancellationToken.None);
++
++        var billAllocation = await service.CreateAllocationAsync(
++            new CreateFinancePaymentAllocationCommand(
++                companyId,
++                new CreateFinancePaymentAllocationDto(seed.OutgoingPaymentId, null, seed.BillId, 20.10m, "usd")),
++            CancellationToken.None);
++
++        dbContext.ChangeTracker.Clear();
++
++        var persistedAllocations = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .ToListAsync();
++
++        Assert.Contains(
++            persistedAllocations,
++            allocation => allocation.Id == invoiceAllocation.Id &&
++                          allocation.InvoiceId == seed.InvoiceAId &&
++                          allocation.BillId is null &&
++                          allocation.AllocatedAmount == 40.25m &&
++                          allocation.Currency == "USD");
++        Assert.Contains(
++            persistedAllocations,
++            allocation => allocation.Id == billAllocation.Id &&
++                          allocation.BillId == seed.BillId &&
++                          allocation.InvoiceId is null &&
++                          allocation.AllocatedAmount == 20.10m &&
++                          allocation.Currency == "USD");
++        Assert.Equal(
++            FinanceSettlementStatuses.PartiallyPaid,
++            await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceAId).Select(x => x.SettlementStatus).SingleAsync());
++        Assert.Equal(
+             FinanceSettlementStatuses.Paid,
+             await dbContext.FinanceBills.IgnoreQueryFilters().Where(x => x.Id == seed.BillId).Select(x => x.SettlementStatus).SingleAsync());
+     }
+@@ -177,6 +226,45 @@ public sealed class FinancePaymentAllocationCommandServiceTests
+                 new UpdateFinancePaymentAllocationDto(seed.OutgoingPaymentId, null, seed.BillId, 15.55m, "USD")),
+             CancellationToken.None);
+ 
++        dbContext.ChangeTracker.Clear();
++
++        var persisted = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleAsync(x => x.Id == created.Id);
++
++        Assert.Equal(15.55m, persisted.AllocatedAmount);
++        Assert.Equal("USD", persisted.Currency);
++        Assert.Equal(seed.BillId, persisted.BillId);
++        Assert.Null(persisted.InvoiceId);
++        Assert.Equal(
++            FinanceSettlementStatuses.PartiallyPaid,
++            await dbContext.FinanceBills.IgnoreQueryFilters().Where(x => x.Id == seed.BillId).Select(x => x.SettlementStatus).SingleAsync());
++    }
++
++    [Fact]
++    public async Task Updating_allocation_target_recalculates_previous_and_new_document_statuses()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++        var seed = SeedAllocationScenario(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceCommandService(dbContext, accessor);
++
++        await service.CreateAllocationAsync(
++            new CreateFinancePaymentAllocationCommand(
++                companyId,
++                new CreateFinancePaymentAllocationDto(seed.IncomingPaymentBId, seed.InvoiceAId, null, 30m, "USD")),
++            CancellationToken.None);
++
++        var movedAllocation = await service.CreateAllocationAsync(
++            new CreateFinancePaymentAllocationCommand(
++                companyId,
++                new CreateFinancePaymentAllocationDto(seed.IncomingPaymentId, seed.InvoiceBId, null, 40m, "USD")),
++            CancellationToken.None);
++
+         Assert.Equal(
+             FinanceSettlementStatuses.PartiallyPaid,
+             await dbContext.FinanceBills.IgnoreQueryFilters().Where(x => x.Id == seed.BillId).Select(x => x.SettlementStatus).SingleAsync());
+@@ -184,6 +272,34 @@ public sealed class FinancePaymentAllocationCommandServiceTests
+         Assert.Equal(
+             FinanceSettlementStatuses.PartiallyPaid,
+             await dbContext.FinanceBills.IgnoreQueryFilters().Where(x => x.Id == seed.BillId).Select(x => x.SettlementStatus).SingleAsync());
++
++        await service.UpdateAllocationAsync(
++            new UpdateFinancePaymentAllocationCommand(
++                companyId,
++                movedAllocation.Id,
++                new UpdateFinancePaymentAllocationDto(seed.IncomingPaymentId, seed.InvoiceAId, null, 40m, "usd")),
++            CancellationToken.None);
++
++        dbContext.ChangeTracker.Clear();
++
++        var persistedMovedAllocation = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleAsync(x => x.Id == movedAllocation.Id);
++
++        Assert.Equal(seed.InvoiceAId, persistedMovedAllocation.InvoiceId);
++        Assert.Null(persistedMovedAllocation.BillId);
++        Assert.Equal(40m, persistedMovedAllocation.AllocatedAmount);
++        Assert.Equal("USD", persistedMovedAllocation.Currency);
++        Assert.Equal(
++            FinanceSettlementStatuses.Paid,
++            await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceAId).Select(x => x.SettlementStatus).SingleAsync());
++        Assert.Equal(
++            FinanceSettlementStatuses.Unpaid,
++            await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceBId).Select(x => x.SettlementStatus).SingleAsync());
++        Assert.Equal(
++            70m,
++            await dbContext.PaymentAllocations.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && x.InvoiceId == seed.InvoiceAId).SumAsync(x => x.AllocatedAmount));
++        Assert.Equal(
++            0m,
++            await dbContext.PaymentAllocations.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && x.InvoiceId == seed.InvoiceBId).SumAsync(x => x.AllocatedAmount));
+     }
+ 
+     [Fact]
+@@ -238,6 +354,29 @@ public sealed class FinancePaymentAllocationCommandServiceTests
+         Assert.Equal(1, first.CreatedPaymentCount);
+         Assert.Equal(0, second.CreatedAllocationCount);
+         Assert.Equal(0, second.CreatedPaymentCount);
++
++        var allocations = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync();
++        var invoiceAllocation = Assert.Single(allocations.Where(x => x.InvoiceId == paidInvoiceId));
++        var billAllocation = Assert.Single(allocations.Where(x => x.BillId == paidBillId));
++        var payments = await dbContext.Payments
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync();
++        var synthesizedPayment = Assert.Single(payments.Where(x => x.Id != matchedPaymentId));
++
++        Assert.Equal(matchedPaymentId, invoiceAllocation.PaymentId);
++        Assert.Equal(125m, invoiceAllocation.AllocatedAmount);
++        Assert.Equal("USD", invoiceAllocation.Currency);
++        Assert.Equal(synthesizedPayment.Id, billAllocation.PaymentId);
++        Assert.Equal(80m, billAllocation.AllocatedAmount);
++        Assert.Equal("USD", billAllocation.Currency);
++        Assert.Equal(PaymentTypes.Outgoing, synthesizedPayment.PaymentType);
++        Assert.Equal(80m, synthesizedPayment.Amount);
++        Assert.Equal("BILL-BACKFILL-001", synthesizedPayment.CounterpartyReference);
+         Assert.Equal(2, await dbContext.PaymentAllocations.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
+         Assert.Equal(2, await dbContext.Payments.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
+         Assert.Equal(
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationsIntegrationTests.cs
+index e1b2b17..7451e82 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationsIntegrationTests.cs
+@@ -102,6 +102,18 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IClassFixture<Te
+         Assert.Single(billAllocations!);
+         Assert.Equal(billAllocation.Id, billAllocations[0].Id);
+ 
++        var persistedAllocations = await _factory.ExecuteDbContextAsync(async dbContext =>
++            await dbContext.PaymentAllocations
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyId)
++                .Select(x => new PersistedAllocationRow(x.Id, x.PaymentId, x.InvoiceId, x.BillId, x.AllocatedAmount, x.Currency))
++                .ToListAsync());
++
++        Assert.Equal(4, persistedAllocations.Count);
++        Assert.Contains(persistedAllocations, allocation => allocation.Id == invoiceAPartial.Id && allocation.AllocatedAmount == 40.25m && allocation.Currency == "USD");
++        Assert.Contains(persistedAllocations, allocation => allocation.Id == invoiceARemaining!.Id && allocation.AllocatedAmount == 29.75m && allocation.Currency == "USD");
++        Assert.Contains(persistedAllocations, allocation => allocation.Id == invoiceBAllocation!.Id && allocation.AllocatedAmount == 30m && allocation.Currency == "USD");
++        Assert.Contains(persistedAllocations, allocation => allocation.Id == billAllocation.Id && allocation.AllocatedAmount == 50m && allocation.Currency == "USD");
++
+         var snapshot = await _factory.ExecuteDbContextAsync(async dbContext =>
+         {
+             var invoiceASettlementStatus = await dbContext.FinanceInvoices
+@@ -158,6 +170,48 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IClassFixture<Te
+         Assert.NotNull(problem);
+         Assert.Contains("AllocatedAmount", problem!.Errors.Keys);
+ 
++        var documentOverAllocationResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments/{seed.IncomingPaymentBId}/allocations",
++            new AllocationCreateRequest
++            {
++                InvoiceId = seed.InvoiceBId,
++                AllocatedAmount = 0.50m,
++                Currency = "USD"
++            });
++
++        Assert.Equal(HttpStatusCode.BadRequest, documentOverAllocationResponse.StatusCode);
++        var documentOverAllocationProblem = await documentOverAllocationResponse.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(documentOverAllocationProblem);
++        Assert.Contains("AllocatedAmount", documentOverAllocationProblem!.Errors.Keys);
++
++        var currencyMismatchResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments/{seed.OutgoingPaymentId}/allocations",
++            new AllocationCreateRequest
++            {
++                BillId = seed.BillId,
++                AllocatedAmount = 10m,
++                Currency = "EUR"
++            });
++
++        Assert.Equal(HttpStatusCode.BadRequest, currencyMismatchResponse.StatusCode);
++        var currencyMismatchProblem = await currencyMismatchResponse.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(currencyMismatchProblem);
++        Assert.Contains("Currency", currencyMismatchProblem!.Errors.Keys);
++
++        var validationSnapshot = await _factory.ExecuteDbContextAsync(async dbContext =>
++        {
++            var invoiceBAllocated = await dbContext.PaymentAllocations
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyId && x.InvoiceId == seed.InvoiceBId)
++                .SumAsync(x => (decimal?)x.AllocatedAmount) ?? 0m;
++            var billAllocated = await dbContext.PaymentAllocations
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyId && x.BillId == seed.BillId)
++                .SumAsync(x => (decimal?)x.AllocatedAmount) ?? 0m;
++
++            return new ValidationSnapshot(invoiceBAllocated, billAllocated);
++        });
++
++        Assert.Equal(60m, validationSnapshot.InvoiceBAllocatedAmount);
++        Assert.Equal(0m, validationSnapshot.BillAllocatedAmount);
++
+         var foreignPaymentResponse = await client.GetAsync(
+             $"/internal/companies/{seed.CompanyId}/finance/payments/{seed.OtherCompanyPaymentId}/allocations");
+         Assert.Equal(HttpStatusCode.NotFound, foreignPaymentResponse.StatusCode);
+@@ -256,6 +310,15 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IClassFixture<Te
+         string BillSettlementStatus,
+         decimal AllocatedOnPrimaryPayment);
+ 
++    private sealed record ValidationSnapshot(
++        decimal InvoiceBAllocatedAmount,
++        decimal BillAllocatedAmount);
++
++    private sealed record PersistedAllocationRow(
++        Guid Id,
++        Guid PaymentId,
++        Guid? InvoiceId,
++        Guid? BillId,
++        decimal AllocatedAmount,
++        string Currency);
++
+     private sealed class FinancePaymentAllocationResponse
+     {
+         public Guid Id { get; set; }
+ END_OF_PATCH

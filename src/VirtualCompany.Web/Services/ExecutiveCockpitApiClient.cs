@@ -383,13 +383,19 @@ public sealed class ExecutiveCockpitApiClient
         new()
         {
             CompanyId = companyId,
+            CurrentCashBalance = 0m,
+            ExpectedIncomingCash = 0m,
+            ExpectedOutgoingCash = 0m,
+            OverdueReceivables = 0m,
+            UpcomingPayables = 0m,
+            Currency = "USD",
+            AsOfUtc = DateTime.UtcNow,
+            UpcomingWindowDays = 30,
             Cash = 0m,
             BurnRate = 0m,
             RunwayDays = null,
             RiskLevel = "missing",
-            HasFinanceData = false,
-            Currency = "USD",
-            AsOfUtc = DateTime.UtcNow
+            HasFinanceData = false
         };
 
     private sealed class ApiProblemResponse
@@ -504,13 +510,19 @@ public sealed class ExecutiveCockpitSummaryKpiViewModel
 public sealed class DashboardFinanceSnapshotViewModel
 {
     public Guid CompanyId { get; set; }
+    public decimal CurrentCashBalance { get; set; }
+    public decimal ExpectedIncomingCash { get; set; }
+    public decimal ExpectedOutgoingCash { get; set; }
+    public decimal OverdueReceivables { get; set; }
+    public decimal UpcomingPayables { get; set; }
+    public string Currency { get; set; } = "USD";
+    public DateTime AsOfUtc { get; set; }
+    public int UpcomingWindowDays { get; set; } = 30;
     public decimal Cash { get; set; }
     public decimal BurnRate { get; set; }
     public int? RunwayDays { get; set; }
     public string RiskLevel { get; set; } = string.Empty;
     public bool HasFinanceData { get; set; }
-    public string Currency { get; set; } = "USD";
-    public DateTime AsOfUtc { get; set; }
 }
 
 public sealed class ExecutiveCockpitFinanceViewModel

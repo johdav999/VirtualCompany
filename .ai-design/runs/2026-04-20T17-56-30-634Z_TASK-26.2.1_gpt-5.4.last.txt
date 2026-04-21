@@ -1,0 +1,300 @@
+diff --git a/src/VirtualCompany.Domain/Enums/BankTransactionValues.cs b/src/VirtualCompany.Domain/Enums/BankTransactionValues.cs
+index 0d2d2b1..d9fda8d 100644
+--- a/src/VirtualCompany.Domain/Enums/BankTransactionValues.cs
++++ b/src/VirtualCompany.Domain/Enums/BankTransactionValues.cs
+@@ -57,11 +57,13 @@ public static class BankTransactionMatchingStatuses
+ {
+     public const string Unknown = "unknown";
+     public const string Matched = "matched";
++    public const string ManuallyClassified = "manually_classified";
+     public const string Unmatched = "unmatched";
+ 
+     private static readonly string[] AllowedValuesInternal =
+     [
+         Unknown,
++        ManuallyClassified,
+         Matched,
+         Unmatched
+     ];
+@@ -85,7 +87,15 @@ public static class BankTransactionMatchingStatuses
+             throw new ArgumentException("Column name is required.", nameof(columnName));
+         }
+ 
+-        return $"{columnName} IN ('{Unknown}', '{Matched}', '{Unmatched}')";
++        return $"{columnName} IN ('{Unknown}', '{Matched}', '{ManuallyClassified}', '{Unmatched}')";
++    }
++
++    public static bool AllowsSettlementPosting(string? value)
++    {
++        var normalized = Normalize(value ?? string.Empty);
++        return string.Equals(normalized, Matched, StringComparison.OrdinalIgnoreCase) ||
++               string.Equals(normalized, ManuallyClassified, StringComparison.OrdinalIgnoreCase);
+     }
+ }
+ 
+@@ -127,6 +137,16 @@ public static class BankTransactionPostingStates
+         return $"{columnName} IN ('{Pending}', '{Posted}', '{SkippedUnmatched}', '{Conflict}')";
+     }
+ 
++    public static string Resolve(string matchingStatus, bool hasLedgerEntry, bool hasConflict) =>
++        hasConflict
++            ? Conflict
++            : hasLedgerEntry
++                ? Posted
++                : BankTransactionMatchingStatuses.AllowsSettlementPosting(matchingStatus)
++                    ? Pending
++                    : SkippedUnmatched;
++
+     public static string Resolve(bool hasPaymentLinks, bool hasLedgerEntry, bool hasConflict) =>
+-        hasConflict
+-            ? Conflict
+-            : hasLedgerEntry
+-                ? Posted
+-                : hasPaymentLinks
+-                    ? Pending
+-                    : SkippedUnmatched;
++        Resolve(
++            hasPaymentLinks ? BankTransactionMatchingStatuses.Matched : BankTransactionMatchingStatuses.Unmatched,
++            hasLedgerEntry,
++            hasConflict);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
+index 9147c69..aaf5991 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyBankTransactionService.cs
+@@ -531,9 +531,9 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
+         var evaluatedAtUtc = DateTime.UtcNow;
+         var matchingStatus = hasPaymentLinks
+             ? BankTransactionMatchingStatuses.Matched
+             : BankTransactionMatchingStatuses.Unmatched;
+-        var postingState = BankTransactionPostingStates.Resolve(hasPaymentLinks, hasLedgerEntry, !string.IsNullOrWhiteSpace(conflictCode));
++        var postingState = BankTransactionPostingStates.Resolve(matchingStatus, hasLedgerEntry, !string.IsNullOrWhiteSpace(conflictCode));
+ 
+         var record = await _dbContext.BankTransactionPostingStateRecords
+             .IgnoreQueryFilters()
+             .SingleOrDefaultAsync(
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyCashPostingTraceabilityBackfillService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyCashPostingTraceabilityBackfillService.cs
+index 3dd7c50..cc0a3d8 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyCashPostingTraceabilityBackfillService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyCashPostingTraceabilityBackfillService.cs
+@@ -167,8 +167,14 @@ public sealed class CompanyCashPostingTraceabilityBackfillService : ICashPosting
+                 }
+                 else
+                 {
+-                    var matchingStatus = linksForTransaction.Count > 0 ? BankTransactionMatchingStatuses.Matched : BankTransactionMatchingStatuses.Unmatched;
+-                    var desiredPostingState = BankTransactionPostingStates.Resolve(linksForTransaction.Count > 0, ledgerEntryId.HasValue, !string.IsNullOrWhiteSpace(conflictCode));
++                    var matchingStatus = linksForTransaction.Count > 0
++                        ? BankTransactionMatchingStatuses.Matched
++                        : string.Equals(postingState.MatchingStatus, BankTransactionMatchingStatuses.ManuallyClassified, StringComparison.OrdinalIgnoreCase)
++                            ? BankTransactionMatchingStatuses.ManuallyClassified
++                            : BankTransactionMatchingStatuses.Unmatched;
++                    var desiredPostingState = BankTransactionPostingStates.Resolve(
++                        matchingStatus,
++                        ledgerEntryId.HasValue,
++                        !string.IsNullOrWhiteSpace(conflictCode));
+                     var desiredUnmatchedReason = linksForTransaction.Count > 0 ? null : "no_payment_match";
+ 
+                     if (postingState.MatchingStatus != matchingStatus ||
+@@ -176,7 +182,7 @@ public sealed class CompanyCashPostingTraceabilityBackfillService : ICashPosting
+                         postingState.LinkedPaymentCount != linksForTransaction.Count ||
+                         !string.Equals(postingState.UnmatchedReason, desiredUnmatchedReason, StringComparison.Ordinal) ||
+                         !string.Equals(postingState.ConflictCode, conflictCode, StringComparison.Ordinal) ||
+-                        !string.Equals(postingState.ConflictDetails, conflictDetails, StringComparison.Ordinal))
++                        !string.Equals(postingState.ConflictDetails, conflictDetails, StringComparison.Ordinal))
+                     {
+                         postingState.SyncSnapshot(
+                             matchingStatus,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs
+index 37f0d1d..ff89e3b 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyCashSettlementPostingService.cs
+@@ -316,8 +316,8 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
+                 cancellationToken);
+ 
+         if (state is not null &&
+-            string.Equals(state.MatchingStatus, BankTransactionMatchingStatuses.Unmatched, StringComparison.OrdinalIgnoreCase))
++            !BankTransactionMatchingStatuses.AllowsSettlementPosting(state.MatchingStatus))
+         {
+             throw CreateValidationException(nameof(PostCashSettlementCommand.SourceId), "Unmatched bank transactions cannot create AR/AP settlement journal entries.");
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421153000_AddManualClassificationCashPostingStatus.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421153000_AddManualClassificationCashPostingStatus.cs
+new file mode 100644
+index 0000000..4580ad0
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421153000_AddManualClassificationCashPostingStatus.cs
+@@ -0,0 +1,34 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddManualClassificationCashPostingStatus : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropCheckConstraint(
++                name: "CK_bank_transaction_posting_states_matching_status",
++                table: "bank_transaction_posting_states");
++
++            migrationBuilder.AddCheckConstraint(
++                name: "CK_bank_transaction_posting_states_matching_status",
++                table: "bank_transaction_posting_states",
++                sql: "matching_status IN ('unknown', 'matched', 'manually_classified', 'unmatched')");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropCheckConstraint(
++                name: "CK_bank_transaction_posting_states_matching_status",
++                table: "bank_transaction_posting_states");
++
++            migrationBuilder.AddCheckConstraint(
++                name: "CK_bank_transaction_posting_states_matching_status",
++                table: "bank_transaction_posting_states",
++                sql: "matching_status IN ('unknown', 'matched', 'unmatched')");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CashPostingTraceabilityBackfillServiceTests.cs b/tests/VirtualCompany.Api.Tests/CashPostingTraceabilityBackfillServiceTests.cs
+index 33b4bf5..697b32d 100644
+--- a/tests/VirtualCompany.Api.Tests/CashPostingTraceabilityBackfillServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CashPostingTraceabilityBackfillServiceTests.cs
+@@ -72,6 +72,55 @@ public sealed class CashPostingTraceabilityBackfillServiceTests
+         Assert.Equal("backfill-run-001", AssertScopeValue(entry.Scope, "CorrelationId"));
+     }
+ 
++    [Fact]
++    public async Task Backfill_preserves_manually_classified_state_and_counts_conflicts_per_company()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        var logger = new ScopeCapturingLogger<CompanyCashPostingTraceabilityBackfillService>();
++
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var seed = await SeedLegacyScenarioAsync(dbContext, companyId);
++        var fiscalPeriodId = await dbContext.FiscalPeriods.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).Select(x => x.Id).SingleAsync();
++        var conflictingLedgerEntryId = Guid.NewGuid();
++
++        dbContext.LedgerEntries.Add(new LedgerEntry(
++            conflictingLedgerEntryId,
++            companyId,
++            fiscalPeriodId,
++            "BTX-CONFLICT-001",
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            LedgerEntryStatuses.Posted,
++            "Conflicting legacy bank transaction posting",
++            createdUtc: new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++            updatedUtc: new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.BankTransactionCashLedgerLinks.Add(new BankTransactionCashLedgerLink(
++            Guid.NewGuid(),
++            companyId,
++            seed.MatchedBankTransactionId,
++            conflictingLedgerEntryId,
++            "bank-transaction-ledger-conflict",
++            new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc)));
++        dbContext.BankTransactionPostingStateRecords.Add(new BankTransactionPostingStateRecord(
++            Guid.NewGuid(),
++            companyId,
++            seed.UnmatchedBankTransactionId,
++            BankTransactionMatchingStatuses.ManuallyClassified,
++            BankTransactionPostingStates.Pending,
++            0,
++            new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc),
++            createdUtc: new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc),
++            updatedUtc: new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc)));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyCashPostingTraceabilityBackfillService(dbContext, accessor, logger);
++        var result = await service.BackfillAsync(
++            new BackfillCashPostingTraceabilityCommand(companyId, BatchSize: 10, CorrelationId: "backfill-run-conflict"),
++            CancellationToken.None);
++
++        Assert.Equal(1, result.ConflictCount);
++
++        var conflictedState = await dbContext.BankTransactionPostingStateRecords.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == companyId && x.BankTransactionId == seed.MatchedBankTransactionId);
++        Assert.Equal(BankTransactionPostingStates.Conflict, conflictedState.PostingState);
++        Assert.Equal("conflicting_cash_posting_traceability", conflictedState.ConflictCode);
++
++        var manuallyClassifiedState = await dbContext.BankTransactionPostingStateRecords.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == companyId && x.BankTransactionId == seed.UnmatchedBankTransactionId);
++        Assert.Equal(BankTransactionMatchingStatuses.ManuallyClassified, manuallyClassifiedState.MatchingStatus);
++        Assert.Equal(BankTransactionPostingStates.Pending, manuallyClassifiedState.PostingState);
++        Assert.Null(manuallyClassifiedState.UnmatchedReason);
++
++        var entry = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Completed cash posting traceability backfill", StringComparison.Ordinal) && x.Message.Contains("Conflicts=1", StringComparison.Ordinal)));
++        Assert.Equal(companyId, AssertScopeValue(entry.Scope, "CompanyId"));
++        Assert.Equal("backfill-run-conflict", AssertScopeValue(entry.Scope, "CorrelationId"));
++    }
++
+     private static async Task<LegacyBackfillSeed> SeedLegacyScenarioAsync(VirtualCompanyDbContext dbContext, Guid companyId)
+     {
+         var cashAccountId = Guid.NewGuid();
+diff --git a/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs b/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs
+index e3f31ec..c3fe338 100644
+--- a/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CashSettlementPostingServiceTests.cs
+@@ -379,6 +379,55 @@ public sealed class CashSettlementPostingServiceTests
+             new PostCashSettlementCommand(companyId, FinanceCashPostingSourceTypes.BankTransaction, bankTransactionId.ToString("D"), seed.IncomingPaymentId, 100m, new DateTime(2026, 4, 24, 1, 0, 0, DateTimeKind.Utc)),
+             CancellationToken.None));
+     }
++
++    [Fact]
++    public async Task Manually_classified_bank_transaction_source_can_create_cash_settlement_journal_entry()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = await OpenConnectionAsync();
++        var accessor = new TestCompanyContextAccessor(companyId);
++        await using var dbContext = CreateContext(connection, accessor);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var seed = await SeedPostingScenarioAsync(dbContext, companyId);
++        var bankAccountId = await dbContext.CompanyBankAccounts
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => x.Id)
++            .SingleAsync();
++        var bankTransactionId = Guid.NewGuid();
++        dbContext.BankTransactions.Add(new BankTransaction(
++            bankTransactionId,
++            companyId,
++            bankAccountId,
++            new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc),
++            25m,
++            "USD",
++            "Manually classified remittance",
++            "Unknown counterparty"));
++        await dbContext.SaveChangesAsync();
++
++        var state = await dbContext.BankTransactionPostingStateRecords
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.BankTransactionId == bankTransactionId);
++        state.SyncSnapshot(
++            BankTransactionMatchingStatuses.ManuallyClassified,
++            BankTransactionPostingStates.Pending,
++            0,
++            new DateTime(2026, 4, 24, 0, 30, 0, DateTimeKind.Utc));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyCashSettlementPostingService(dbContext, accessor);
++        var result = await service.PostCashSettlementAsync(
++            new PostCashSettlementCommand(
++                companyId,
++                FinanceCashPostingSourceTypes.BankTransaction,
++                bankTransactionId.ToString("D"),
++                seed.IncomingPaymentId,
++                25m,
++                new DateTime(2026, 4, 24, 1, 0, 0, DateTimeKind.Utc)),
++            CancellationToken.None);
++
++        Assert.True(result.Created);
++        Assert.Equal(FinanceCashPostingSourceTypes.BankTransaction, result.SourceType);
++        Assert.Equal(bankTransactionId.ToString("D"), result.SourceId);
++    }
+ 
+     [Fact]
+     public async Task Ensure_created_maps_traceability_columns_unique_source_index_and_source_mapping_table()
+ END_OF_PATCH

@@ -1,8 +1,8 @@
 using System.Collections.ObjectModel;
 using System.Text.Json.Nodes;
 using VirtualCompany.Application.Auditing;
-using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Entities;
 using VirtualCompany.Application.Agents;
 
 namespace VirtualCompany.Application.Finance;
@@ -15,6 +15,41 @@ public sealed record GetFinanceMonthlyProfitAndLossQuery(
     Guid CompanyId,
     int Year,
     int Month);
+
+public sealed record GetFinanceProfitAndLossReportQuery(
+    Guid CompanyId,
+    Guid FiscalPeriodId);
+
+public sealed record GetFinancialStatementDrilldownQuery(
+    Guid CompanyId,
+    Guid? FiscalPeriodId,
+    FinancialStatementType? StatementType,
+    string LineCode,
+    int? SnapshotVersionNumber = null,
+    Guid? SnapshotId = null);
+
+public sealed record ListFinancialStatementSnapshotsQuery(
+    Guid CompanyId,
+    Guid? FiscalPeriodId = null,
+    FinancialStatementType? StatementType = null);
+
+public sealed record GetFinancialStatementSnapshotQuery(
+    Guid CompanyId,
+    Guid SnapshotId);
+public sealed record GetFinanceBalanceSheetReportQuery(Guid CompanyId, Guid FiscalPeriodId);
+public sealed record ValidateReportingPeriodCloseQuery(Guid CompanyId, Guid FiscalPeriodId);
+public sealed record LockReportingPeriodCommand(Guid CompanyId, Guid FiscalPeriodId);
+public sealed record UnlockReportingPeriodCommand(Guid CompanyId, Guid FiscalPeriodId);
+public sealed record RegenerateStoredReportingStatementsCommand(
+    Guid CompanyId,
+    Guid FiscalPeriodId,
+    bool RunInBackground = false);
+
+public sealed record ReportingPeriodBlockingIssueDto(
+    string Code,
+    string Message,
+    int Count,
+    IReadOnlyList<string> SampleReferences);
 
 public sealed record GetFinanceCashPositionQuery(
     Guid CompanyId,
@@ -45,9 +80,31 @@ public sealed record GetFinanceInvoicesQuery(
     DateTime? EndUtc = null,
     int Limit = 100);
 
+public sealed record GetFinanceCounterpartiesQuery(
+    Guid CompanyId,
+    string CounterpartyType,
+    DateTime? EndUtc = null,
+    int Limit = 100);
+
 public sealed record GetFinanceInvoiceDetailQuery(
     Guid CompanyId,
     Guid InvoiceId);
+
+public sealed record GetFinanceCounterpartyQuery(
+    Guid CompanyId,
+    Guid CounterpartyId,
+    string CounterpartyType);
+
+public sealed record CreateFinanceCounterpartyCommand(
+    Guid CompanyId,
+    string CounterpartyType,
+    FinanceCounterpartyUpsertDto Counterparty);
+
+public sealed record UpdateFinanceCounterpartyCommand(
+    Guid CompanyId,
+    Guid CounterpartyId,
+    string CounterpartyType,
+    FinanceCounterpartyUpsertDto Counterparty);
 
 public sealed record GetFinanceSeedAnomaliesQuery(
     Guid CompanyId,
@@ -84,6 +141,45 @@ public sealed record GetFinanceBillsQuery(
 public sealed record GetFinanceBalancesQuery(
     Guid CompanyId,
     DateTime? AsOfUtc = null);
+public sealed record GetFinanceInsightsQuery(
+    Guid CompanyId,
+    DateTime? AsOfUtc = null,
+    int ExpenseWindowDays = 90,
+    int TrendWindowDays = 30,
+    int PayableWindowDays = 14,
+    bool PreferSnapshot = true);
+
+public sealed record RefreshFinanceInsightsSnapshotCommand(
+    Guid CompanyId,
+    DateTime? AsOfUtc = null,
+    int ExpenseWindowDays = 90,
+    int TrendWindowDays = 30,
+    int PayableWindowDays = 14,
+    string SnapshotKey = FinanceInsightSnapshotKeys.Default,
+    TimeSpan? Retention = null);
+
+public sealed record QueueFinanceInsightsSnapshotRefreshCommand(
+    Guid CompanyId,
+    DateTime? AsOfUtc = null,
+    int ExpenseWindowDays = 90,
+    int TrendWindowDays = 30,
+    int PayableWindowDays = 14,
+    string SnapshotKey = FinanceInsightSnapshotKeys.Default,
+    int RetentionMinutes = 360,
+    bool ResetAttempts = false,
+    string? CorrelationId = null);
+
+public static class FinanceInsightSnapshotKeys
+{
+    public const string Default = "default";
+
+    public static string Normalize(string? value) => string.IsNullOrWhiteSpace(value) ? Default : value.Trim().ToLowerInvariant();
+}
+
+public sealed record GetFinanceAgentQueryQuery(
+    Guid CompanyId,
+    string QueryText,
+    DateTime? AsOfUtc = null);
 
 public sealed record UpdateFinanceInvoiceApprovalStatusCommand(
     Guid CompanyId,
@@ -102,6 +198,177 @@ public sealed record UpsertFinancePolicyConfigurationCommand(
     Guid CompanyId,
     FinancePolicyConfigurationDto Configuration);
 
+public sealed record EnsureFinanceApprovalTaskCommand(
+    Guid CompanyId,
+    ApprovalTargetType TargetType,
+    Guid TargetId,
+    decimal Amount,
+    string Currency,
+    DateTime? DueDateUtc = null);
+
+public sealed record GetPendingFinanceApprovalTasksQuery(Guid CompanyId);
+
+public sealed record BackfillFinanceApprovalTasksCommand(
+    Guid CompanyId,
+    int BatchSize = 250,
+    string? CorrelationId = null,
+    bool IncludePayments = true);
+
+public sealed record RerunFinanceBootstrapCommand(
+    Guid CompanyId,
+    bool RerunPlanningBackfill = true,
+    bool RerunApprovalBackfill = true,
+    int BatchSize = 250,
+    string? CorrelationId = null);
+
+public sealed record ActOnFinanceApprovalTaskCommand(
+    Guid CompanyId,
+    Guid ApprovalTaskId,
+    ApprovalTaskStatus Action,
+    string? Comment = null);
+
+public sealed record FinanceApprovalTaskAssigneeDto(Guid? UserId, string? DisplayName);
+public sealed record FinancePendingApprovalTaskDto(Guid Id, string TargetType, Guid TargetId, FinanceApprovalTaskAssigneeDto? Assignee, DateTime? DueDateUtc, string Status);
+public sealed record FinanceApprovalTaskBackfillResultDto(
+    Guid CompanyId,
+    string CorrelationId,
+    int ScannedCount,
+    int MatchedCount,
+    int CreatedCount,
+    int SkippedExistingCount,
+    int BillScannedCount,
+    int PaymentScannedCount,
+    int BillCreatedCount,
+    int PaymentCreatedCount);
+public sealed record FinanceBootstrapRerunResultDto(
+    Guid CompanyId,
+    string CorrelationId,
+    FinanceSeedingState SeedState,
+    bool PlanningBackfillRan,
+    bool ApprovalBackfillRan,
+    int PlanningRowsInserted,
+    FinanceApprovalTaskBackfillResultDto ApprovalBackfill,
+    DateTime CompletedAtUtc,
+    string Summary);
+
+public sealed record FinanceInsightsDto(
+    Guid CompanyId,
+    DateTime GeneratedAt,
+    string Currency,
+    string Headline,
+    string Summary,
+    string? DataCoverageNote,
+    bool FromSnapshot,
+    DateTime? SnapshotExpiresAtUtc,
+    IReadOnlyList<string> Highlights,
+    IReadOnlyList<FinanceNarrativeHintDto> NarrativeHints,
+    FinanceTopExpensesInsightDto TopExpenses,
+    FinanceRevenueTrendInsightDto RevenueTrend,
+    FinanceBurnRateInsightDto BurnRate,
+    FinanceOverdueCustomerRiskInsightDto OverdueCustomerRisk,
+    FinancePayablePressureInsightDto PayablePressure);
+
+public sealed record FinanceNarrativeHintDto(
+    string Section,
+    string Tone,
+    string Summary,
+    string SuggestedPromptFragment);
+
+public sealed record FinanceInsightsSnapshotRefreshResultDto(
+    Guid CompanyId,
+    string SnapshotKey,
+    string CacheKey,
+    DateTime RequestedAtUtc,
+    string CorrelationId,
+    bool Queued,
+    bool Refreshed,
+    DateTime? ExpiresAtUtc,
+    FinanceInsightsDto? Insights);
+
+public sealed record FinanceTopExpensesInsightDto(
+    DateTime WindowStartUtc,
+    DateTime WindowEndUtc,
+    decimal TotalExpenses,
+    string Currency,
+    string TrendLabel,
+    string Summary,
+    IReadOnlyList<FinanceTopExpenseItemDto> Items);
+
+public sealed record FinanceTopExpenseItemDto(
+    string Label,
+    decimal Amount,
+    string Currency,
+    int EntryCount,
+    decimal ShareOfExpenses,
+    string Narrative);
+
+public sealed record FinanceRevenueTrendInsightDto(
+    DateTime CurrentPeriodStartUtc,
+    DateTime CurrentPeriodEndUtc,
+    DateTime PreviousPeriodStartUtc,
+    DateTime PreviousPeriodEndUtc,
+    decimal CurrentRevenue,
+    decimal PreviousRevenue,
+    decimal DeltaAmount,
+    decimal? DeltaPercent,
+    string DirectionLabel,
+    string Summary);
+
+public sealed record FinanceBurnRateInsightDto(
+    int LookbackDays,
+    decimal AverageDailyBurn,
+    decimal AverageMonthlyBurn,
+    decimal NetMonthlyBurn,
+    decimal AvailableCash,
+    int? EstimatedRunwayDays,
+    string RiskLabel,
+    string Summary);
+
+public sealed record FinanceOverdueCustomerRiskInsightDto(
+    int OverdueInvoiceCount,
+    int OverdueCustomerCount,
+    decimal TotalOverdueAmount,
+    int MaxDaysOverdue,
+    decimal LargestCustomerConcentrationRatio,
+    string RiskLabel,
+    string Summary,
+    IReadOnlyList<FinanceOverdueCustomerRiskItemDto> Customers);
+
+public sealed record FinanceOverdueCustomerRiskItemDto(
+    Guid CounterpartyId,
+    string CustomerName,
+    decimal OverdueAmount,
+    int OverdueInvoiceCount,
+    int MaxDaysOverdue,
+    decimal ConcentrationRatio,
+    string RiskLabel,
+    string Summary);
+
+public sealed record FinancePayablePressureInsightDto(
+    decimal OverdueAmount,
+    decimal DueSoonAmount,
+    int OverdueBillCount,
+    int DueSoonBillCount,
+    decimal? UpcomingBurdenRatioOfCash,
+    string RiskLabel,
+    string Summary,
+    IReadOnlyList<FinancePayablePressureItemDto> Suppliers);
+
+public sealed record FinancePayablePressureItemDto(
+    Guid CounterpartyId,
+    string SupplierName,
+    decimal DueAmount,
+    int DueBillCount,
+    bool HasOverdueBalance,
+    int MaxUrgencyDays,
+    string RiskLabel,
+    string Summary);
+
+public sealed record FinanceBootstrapRerunRequestDto(
+    bool RerunPlanningBackfill = true,
+    bool RerunApprovalBackfill = true,
+    int BatchSize = 250,
+    string? CorrelationId = null);
 public sealed record ReviewFinanceInvoiceWorkflowCommand(
     Guid CompanyId,
     Guid InvoiceId,
@@ -166,6 +433,31 @@ public sealed record GenerateCompanySimulationFinanceCommand(
     int Seed,
     string? DeterministicConfigurationJson);
 
+public sealed record FinancePlanningEntryUpsertDto(
+    Guid FinanceAccountId,
+    DateTime PeriodStartUtc,
+    string Version,
+    decimal Amount,
+    string? Currency = null,
+    Guid? CostCenterId = null);
+
+public sealed record CreateFinanceBudgetCommand(
+    Guid CompanyId,
+    FinancePlanningEntryUpsertDto Budget);
+
+public sealed record UpdateFinanceBudgetCommand(
+    Guid CompanyId,
+    Guid BudgetId,
+    FinancePlanningEntryUpsertDto Budget);
+
+public sealed record GetFinanceBudgetsQuery(
+    Guid CompanyId,
+    DateTime PeriodStartUtc,
+    DateTime? PeriodEndUtc = null,
+    string? Version = null,
+    Guid? FinanceAccountId = null,
+    Guid? CostCenterId = null);
+
 public sealed record CompanySimulationFinanceGenerationDayLogDto(
     DateTime SimulatedDateUtc,
     int TransactionsCreated,
@@ -215,6 +507,21 @@ public sealed record FinanceAnomalySchedule(
     int? AnomalyIndex,
     int TargetTransactionIndex);
 
+public sealed record GetFinanceForecastsQuery(
+    Guid CompanyId,
+    DateTime PeriodStartUtc,
+    DateTime PeriodEndUtc,
+    Guid? FinanceAccountId = null,
+    string? Version = null);
+
+public sealed record GetFinanceVarianceQuery(
+    Guid CompanyId,
+    DateTime PeriodStartUtc,
+    string ComparisonType,
+    DateTime? PeriodEndUtc = null,
+    string? Version = null,
+    Guid? FinanceAccountId = null,
+    Guid? CostCenterId = null);
 public interface IFinanceGenerationPolicy
 {
     Task<CompanySimulationFinanceGenerationResultDto> GenerateAsync(
@@ -359,6 +666,159 @@ public sealed record FinanceMonthlyProfitAndLossDto(
     decimal NetResult,
     string Currency);
 
+public sealed record FinanceStatementLineDto(
+    Guid? AccountId,
+    string AccountCode,
+    string AccountName,
+    string ReportSection,
+    string LineClassification,
+    decimal Amount,
+    string Currency);
+
+public sealed record ProfitAndLossReportDto(
+    Guid CompanyId,
+    Guid FiscalPeriodId,
+    string FiscalPeriodName,
+    DateTime StartUtc,
+    DateTime EndUtc,
+    bool IsClosed,
+    bool UsedSnapshot,
+    string Currency,
+    IReadOnlyList<FinanceStatementLineDto> RevenueLines,
+    IReadOnlyList<FinanceStatementLineDto> ExpenseLines,
+    decimal TotalRevenue,
+    decimal TotalExpenses,
+    decimal NetIncome,
+    FinancialStatementSnapshotMetadataDto? Snapshot);
+
+public sealed record BalanceSheetReportDto(
+    Guid CompanyId,
+    Guid FiscalPeriodId,
+    string FiscalPeriodName,
+    DateTime StartUtc,
+    DateTime EndUtc,
+    bool IsClosed,
+    bool UsedSnapshot,
+    string Currency,
+    IReadOnlyList<FinanceStatementLineDto> AssetLines,
+    IReadOnlyList<FinanceStatementLineDto> LiabilityLines,
+    IReadOnlyList<FinanceStatementLineDto> EquityLines,
+    decimal TotalAssets,
+    decimal TotalLiabilities,
+    decimal TotalEquity,
+    bool IsBalanced,
+    FinancialStatementSnapshotMetadataDto? Snapshot);
+
+public sealed record FinancialStatementSnapshotMetadataDto(
+    Guid SnapshotId,
+    int VersionNumber,
+    string BalancesChecksum,
+    DateTime GeneratedAtUtc,
+    DateTime SourcePeriodStartUtc,
+    DateTime SourcePeriodEndUtc,
+    string Currency);
+
+public sealed record FinancialStatementSnapshotSummaryDto(
+    Guid SnapshotId,
+    Guid CompanyId,
+    Guid FiscalPeriodId,
+    string FiscalPeriodName,
+    string StatementType,
+    int VersionNumber,
+    string BalancesChecksum,
+    DateTime GeneratedAtUtc,
+    DateTime SourcePeriodStartUtc,
+    DateTime SourcePeriodEndUtc,
+    string Currency,
+    int LineCount);
+
+public sealed record FinancialStatementSnapshotDetailDto(
+    Guid SnapshotId,
+    FinancialStatementSnapshotSummaryDto Summary,
+    IReadOnlyList<FinanceStatementLineDto> Lines);
+
+public sealed record FinancialStatementDrilldownDto(
+    Guid CompanyId,
+    Guid FiscalPeriodId,
+    string FiscalPeriodName,
+    string StatementType,
+    string SourceMode,
+    FinancialStatementSnapshotMetadataDto? Snapshot,
+    FinancialStatementDrilldownLineDto SelectedLine,
+    decimal OpeningBalanceAdjustment,
+    decimal JournalLineTotal,
+    decimal ReconciliationTotal,
+    decimal ReconciliationDelta,
+    IReadOnlyList<FinancialStatementDrilldownJournalEntryDto> JournalEntries);
+
+public sealed record FinancialStatementDrilldownLineDto(
+    string LineCode,
+    string LineName,
+    string ReportSection,
+    string LineClassification,
+    decimal Amount,
+    string Currency);
+
+public sealed record FinancialStatementDrilldownJournalEntryDto(
+    Guid EntryId,
+    string EntryNumber,
+    DateTime EntryUtc,
+    string? Description,
+    decimal TotalContributionAmount,
+    IReadOnlyList<FinancialStatementDrilldownJournalLineDto> Lines);
+
+public sealed record FinancialStatementDrilldownJournalLineDto(
+    Guid JournalLineId,
+    Guid FinanceAccountId,
+    string AccountCode,
+    string AccountName,
+    decimal DebitAmount,
+    decimal CreditAmount,
+    decimal ContributionAmount,
+    string Currency,
+    string? Description);
+
+public sealed record ReportingPeriodLockStateDto(
+    Guid CompanyId,
+    Guid FiscalPeriodId,
+    string FiscalPeriodName,
+    bool IsClosed,
+    bool IsReportingLocked,
+    DateTime? ReportingLockedAtUtc,
+    Guid? ReportingLockedByUserId,
+    DateTime? ReportingUnlockedAtUtc,
+    Guid? ReportingUnlockedByUserId,
+    DateTime? LastCloseValidatedAtUtc,
+    Guid? LastCloseValidatedByUserId,
+    DateTime UpdatedAtUtc);
+
+public sealed record ReportingPeriodCloseValidationResultDto(
+    Guid CompanyId,
+    Guid FiscalPeriodId,
+    string FiscalPeriodName,
+    DateTime ExecutedAtUtc,
+    string ExecutedByActorType,
+    Guid? ExecutedByActorId,
+    Guid ExecutedByMembershipId,
+    string ExecutedByMembershipRole,
+    bool IsReadyToClose,
+    bool IsClosed,
+    bool IsReportingLocked,
+    IReadOnlyList<ReportingPeriodBlockingIssueDto> BlockingIssues);
+
+public sealed record ReportingPeriodRegenerationRequestResultDto(
+    Guid CompanyId,
+    Guid FiscalPeriodId,
+    bool Queued,
+    Guid? BackgroundExecutionId,
+    int SnapshotCount,
+    string Status,
+    DateTime RequestedAtUtc,
+    DateTime? CompletedAtUtc,
+    string RequestedByActorType,
+    Guid? RequestedByActorId,
+    ReportingPeriodLockStateDto LockState);
+
 public sealed record FinanceExpenseBreakdownDto(
     Guid CompanyId,
     DateTime StartUtc,
@@ -470,6 +930,94 @@ public sealed record FinanceCashPositionDto(
     public string SourceWorkflow => WorkflowOutput.SourceWorkflow;
 }
 
+public static class FinanceAgentQueryIntents
+{
+    public const string WhatShouldIPayThisWeek = "what_should_i_pay_this_week";
+    public const string WhichCustomersAreOverdue = "which_customers_are_overdue";
+    public const string WhyIsCashDownThisMonth = "why_is_cash_down_this_month";
+}
+
+public static class FinanceAgentQueryRouting
+{
+    public const string WhatShouldIPayThisWeekPhrase = "what should i pay this week";
+    public const string WhichCustomersAreOverduePhrase = "which customers are overdue";
+    public const string WhyIsCashDownThisMonthPhrase = "why is cash down this month";
+
+    public static IReadOnlyList<string> SupportedPhrases { get; } =
+    [
+        WhatShouldIPayThisWeekPhrase,
+        WhichCustomersAreOverduePhrase,
+        WhyIsCashDownThisMonthPhrase
+    ];
+
+    public static string NormalizeQueryText(string? value) =>
+        string.Join(
+            ' ',
+            (value ?? string.Empty)
+                .Trim()
+                .Replace("?", string.Empty, StringComparison.Ordinal)
+                .ToLowerInvariant()
+                .Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries));
+
+    public static bool TryResolveIntent(string? queryText, out string intent)
+    {
+        intent = NormalizeQueryText(queryText) switch
+        {
+            WhatShouldIPayThisWeekPhrase => FinanceAgentQueryIntents.WhatShouldIPayThisWeek,
+            WhichCustomersAreOverduePhrase => FinanceAgentQueryIntents.WhichCustomersAreOverdue,
+            WhyIsCashDownThisMonthPhrase => FinanceAgentQueryIntents.WhyIsCashDownThisMonth,
+            _ => string.Empty
+        };
+
+        return !string.IsNullOrWhiteSpace(intent);
+    }
+}
+
+public sealed record FinanceAgentQueryPeriodDto(
+    DateTime AsOfUtc,
+    DateTime? WindowStartUtc,
+    DateTime? WindowEndUtc,
+    DateTime? ComparisonStartUtc,
+    DateTime? ComparisonEndUtc,
+    string TimeZoneId);
+
+public sealed record FinanceAgentMetricComponentDto(
+    string ComponentKey,
+    string Label,
+    decimal CurrentValue,
+    decimal? PreviousValue,
+    decimal Delta,
+    string Currency,
+    IReadOnlyList<Guid> SourceRecordIds);
+
+public sealed record FinanceAgentQueryItemDto(
+    Guid? RecordId,
+    string RecordType,
+    Guid? CounterpartyId,
+    string? CounterpartyName,
+    string? Reference,
+    DateTime? DueUtc,
+    decimal Amount,
+    string Currency,
+    string Reason,
+    int SortOrder,
+    int? DaysOverdue,
+    string? AgingBucket,
+    IReadOnlyList<Guid> SourceRecordIds,
+    IReadOnlyList<FinanceAgentMetricComponentDto> MetricComponents);
+
+public sealed record FinanceAgentQueryResultDto(
+    Guid CompanyId,
+    string Intent,
+    string QueryText,
+    string Summary,
+    string Currency,
+    DateTime AsOfUtc,
+    FinanceAgentQueryPeriodDto Period,
+    IReadOnlyList<FinanceAgentQueryItemDto> Items,
+    IReadOnlyList<FinanceAgentMetricComponentDto> MetricComponents,
+    IReadOnlyList<Guid> SourceRecordIds);
+
 public sealed record FinanceTransactionDto(
     Guid Id,
     Guid AccountId,
@@ -487,6 +1035,12 @@ public sealed record FinanceTransactionDto(
     FinanceLinkedDocumentDto? LinkedDocument,
     bool IsFlagged = false,
     string AnomalyState = "clear");
+
+public sealed record FinanceLinkedDocumentDto(
+    Guid Id,
+    string Title,
+    string? OriginalFileName,
+    string ContentType);
 
 public sealed record FinanceInvoiceDto(
     Guid Id,
@@ -512,22 +1066,28 @@ public sealed record FinanceBillDto(
     string Status,
     FinanceLinkedDocumentDto? LinkedDocument);
 
-public sealed record FinanceLinkedDocumentDto(
+public sealed record FinanceCounterpartyDto(
     Guid Id,
-    string Title,
-    string OriginalFileName,
-    string ContentType);
+    Guid CompanyId,
+    string CounterpartyType,
+    string Name,
+    string? Email,
+    string? PaymentTerms,
+    string? TaxId,
+    decimal? CreditLimit,
+    string? PreferredPaymentMethod,
+    string? DefaultAccountMapping,
+    DateTime CreatedUtc,
+    DateTime UpdatedUtc);
 
-public sealed record FinanceLinkedDocumentAccessDto(
-    string Availability,
-    string Message,
-    bool CanNavigate,
-    FinanceLinkedDocumentDto? Document);
-
-public sealed record FinanceActionPermissionsDto(
-    bool CanEditTransactionCategory,
-    bool CanChangeInvoiceApprovalStatus,
-    bool CanManagePolicyConfiguration);
+public sealed record FinanceCounterpartyUpsertDto(
+    string Name,
+    string? Email,
+    string? PaymentTerms,
+    string? TaxId,
+    decimal? CreditLimit,
+    string? PreferredPaymentMethod,
+    string? DefaultAccountMapping);
 
 public sealed record FinanceTransactionDetailDto(
     Guid Id,
@@ -548,6 +1108,17 @@ public sealed record FinanceTransactionDetailDto(
     IReadOnlyList<string> Flags,
     FinanceActionPermissionsDto Permissions,
     FinanceLinkedDocumentAccessDto LinkedDocument);
+
+public sealed record FinanceActionPermissionsDto(
+    bool CanChangeTransactionCategory,
+    bool CanChangeInvoiceApprovalStatus,
+    bool CanManagePolicies);
+
+public sealed record FinanceLinkedDocumentAccessDto(
+    string AccessState,
+    string Message,
+    bool CanOpen,
+    FinanceLinkedDocumentDto? Document);
 
 public sealed record FinanceInvoiceWorkflowContextDto(
     Guid? WorkflowInstanceId,
@@ -665,11 +1236,83 @@ public sealed record FinanceSeedBootstrapResultDto(
     int RecurringExpenseCount,
     int TransactionCount,
     int BalanceCount,
+    int PaymentCount,
     int DocumentCount,
     Guid PolicyConfigurationId,
     IReadOnlyList<FinanceSeedRecurringExpenseDto> RecurringExpenses,
     IReadOnlyList<FinanceSeedValidationErrorDto> ValidationErrors,
     IReadOnlyList<FinanceSeedAnomalyDto> Anomalies);
+
+public sealed record FinanceBudgetDto(
+    Guid Id,
+    Guid CompanyId,
+    Guid FinanceAccountId,
+    string AccountCode,
+    string AccountName,
+    DateTime PeriodStartUtc,
+    string Version,
+    Guid? CostCenterId,
+    decimal Amount,
+    string Currency,
+    DateTime CreatedUtc,
+    DateTime UpdatedUtc);
+
+public sealed record FinanceForecastDto(
+    Guid Id,
+    Guid CompanyId,
+    Guid FinanceAccountId,
+    string AccountCode,
+    string AccountName,
+    DateTime PeriodStartUtc,
+    string Version,
+    Guid? CostCenterId,
+    decimal Amount,
+    string Currency,
+    DateTime CreatedUtc,
+    DateTime UpdatedUtc);
+
+public sealed record FinanceVarianceResultDto(
+    Guid CompanyId,
+    string ComparisonType,
+    DateTime PeriodStartUtc,
+    DateTime PeriodEndUtc,
+    string? Version,
+    bool IncludesCostCenters,
+    IReadOnlyList<FinanceVarianceRowDto> Rows);
+
+public sealed record FinanceVarianceRowDto(
+    DateTime PeriodStartUtc,
+    Guid FinanceAccountId,
+    string AccountCode,
+    string AccountName,
+    string CategoryKey,
+    string CategoryName,
+    Guid? CostCenterId,
+    string? CostCenterCode,
+    string? CostCenterName,
+    decimal ActualAmount,
+    decimal ComparisonAmount,
+    decimal VarianceAmount,
+    decimal? VariancePercentage,
+    string Currency);
+
+public static class FinanceVarianceComparisonTypes
+{
+    public const string Budget = "budget";
+    public const string Forecast = "forecast";
+    public const string ActualVsBudget = "actual_vs_budget";
+    public const string ActualVsForecast = "actual_vs_forecast";
+
+    public static string Normalize(string value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? throw new ArgumentException("Comparison type is required.", nameof(value))
+            : value.Trim().Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant() switch
+            {
+                Budget or ActualVsBudget => Budget,
+                Forecast or ActualVsForecast => Forecast,
+                _ => throw new ArgumentOutOfRangeException(nameof(value), "Comparison type must be budget or forecast.")
+            };
+}
 
 public sealed record FinanceSeedAnomalyDto(
     Guid Id,
@@ -822,6 +1465,7 @@ public sealed record FinanceSeedBackfillAttemptDto(
     FinanceSeedingState SeedStateBefore,
     FinanceSeedingState? SeedStateAfter);
 
+
 public sealed record FinanceEntryStateDto(
     Guid CompanyId,
     string InitializationStatus,
@@ -913,6 +1557,68 @@ public sealed class FinanceValidationException : Exception
     public IReadOnlyDictionary<string, string[]> Errors { get; }
 }
 
+public class ReportingPeriodOperationException : InvalidOperationException
+{
+    public ReportingPeriodOperationException(string code, string title, string message)
+        : base(message)
+    {
+        Code = code;
+        Title = title;
+    }
+
+    public string Code { get; }
+    public string Title { get; }
+}
+
+public sealed class ReportingPeriodLockedException : ReportingPeriodOperationException
+{
+    public ReportingPeriodLockedException(Guid fiscalPeriodId, string fiscalPeriodName)
+        : base(
+            ReportingPeriodErrorCodes.ReportingPeriodLocked,
+            "Reporting period is locked.",
+            $"Fiscal period '{fiscalPeriodName}' is locked for stored reporting regeneration.")
+    {
+        FiscalPeriodId = fiscalPeriodId;
+        FiscalPeriodName = fiscalPeriodName;
+    }
+
+    public Guid FiscalPeriodId { get; }
+    public string FiscalPeriodName { get; }
+}
+
+public static class ReportingPeriodErrorCodes
+{
+    public const string ReportingPeriodLocked = "reporting_period_locked";
+    public const string ReportingPeriodNotClosed = "reporting_period_not_closed";
+    public const string ReportingPeriodInvalidState = "reporting_period_invalid_state";
+}
+
+public static class ReportingPeriodBlockingIssueCodes
+{
+    public const string UnpostedSourceDocuments = "unposted_source_documents";
+    public const string UnbalancedJournalEntries = "unbalanced_journal_entries";
+    public const string MissingStatementMappings = "missing_statement_mappings";
+}
+
+public interface IReportingPeriodCloseService
+{
+    Task<ReportingPeriodCloseValidationResultDto> ValidateAsync(ValidateReportingPeriodCloseQuery query, CancellationToken cancellationToken);
+    Task<ReportingPeriodLockStateDto> LockAsync(LockReportingPeriodCommand command, CancellationToken cancellationToken);
+    Task<ReportingPeriodLockStateDto> UnlockAsync(UnlockReportingPeriodCommand command, CancellationToken cancellationToken);
+    Task<ReportingPeriodRegenerationRequestResultDto> RegenerateStoredStatementsAsync(RegenerateStoredReportingStatementsCommand command, CancellationToken cancellationToken);
+    Task<int> RunBackgroundRegenerationAsync(Guid companyId, Guid fiscalPeriodId, string? correlationId, CancellationToken cancellationToken);
+}
+
+public interface IReportingPeriodRegenerationJobRunner
+{
+    Task<int> RunDueAsync(CancellationToken cancellationToken);
+}
+
+public interface IFinanceApprovalTaskBackfillJobRunner
+{
+    Task<int> RunDueAsync(CancellationToken cancellationToken);
+}
+
 public interface IFinanceEntryService
 {
     Task<FinanceEntryStateDto> GetEntryStateAsync(GetFinanceEntryStateQuery query, CancellationToken cancellationToken);
@@ -978,6 +1684,8 @@ public interface IFinanceToolProvider
 
     Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(GetFinanceBalancesQuery query, CancellationToken cancellationToken);
 
+    Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(GetFinanceAgentQueryQuery query, CancellationToken cancellationToken);
+
     Task<FinanceTransactionCategoryRecommendationDto> RecommendTransactionCategoryAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken);
 
     Task<FinanceInvoiceApprovalRecommendationDto> RecommendInvoiceApprovalDecisionAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken);
@@ -996,6 +1704,22 @@ public interface IFinanceCommandService
     Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(
         UpdateFinanceTransactionCategoryCommand command,
         CancellationToken cancellationToken);
+
+    Task<FinanceCounterpartyDto> CreateCounterpartyAsync(
+        CreateFinanceCounterpartyCommand command,
+        CancellationToken cancellationToken);
+
+    Task<FinanceCounterpartyDto> UpdateCounterpartyAsync(
+        UpdateFinanceCounterpartyCommand command,
+        CancellationToken cancellationToken);
+
+    Task<FinanceBudgetDto> CreateBudgetAsync(
+        CreateFinanceBudgetCommand command,
+        CancellationToken cancellationToken);
+
+    Task<FinanceBudgetDto> UpdateBudgetAsync(
+        UpdateFinanceBudgetCommand command,
+        CancellationToken cancellationToken);
 }
 
 public interface IFinanceReadService
@@ -1006,6 +1730,26 @@ public interface IFinanceReadService
 
     Task<FinanceCashPositionDto> GetCashPositionAsync(
         GetFinanceCashPositionQuery query,
+        CancellationToken cancellationToken);
+
+    Task<ProfitAndLossReportDto> GetProfitAndLossReportAsync(
+        GetFinanceProfitAndLossReportQuery query,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<FinancialStatementSnapshotSummaryDto>> ListFinancialStatementSnapshotsAsync(
+        ListFinancialStatementSnapshotsQuery query,
+        CancellationToken cancellationToken);
+
+    Task<FinancialStatementSnapshotDetailDto?> GetFinancialStatementSnapshotAsync(
+        GetFinancialStatementSnapshotQuery query,
+        CancellationToken cancellationToken);
+
+    Task<FinancialStatementDrilldownDto> GetFinancialStatementDrilldownAsync(
+        GetFinancialStatementDrilldownQuery query,
+        CancellationToken cancellationToken);
+
+    Task<BalanceSheetReportDto> GetBalanceSheetReportAsync(
+        GetFinanceBalanceSheetReportQuery query,
         CancellationToken cancellationToken);
 
     Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(
@@ -1032,6 +1776,14 @@ public interface IFinanceReadService
         GetFinanceInvoiceDetailQuery query,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<FinanceCounterpartyDto>> GetCounterpartiesAsync(
+        GetFinanceCounterpartiesQuery query,
+        CancellationToken cancellationToken);
+
+    Task<FinanceCounterpartyDto?> GetCounterpartyAsync(
+        GetFinanceCounterpartyQuery query,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyList<FinanceSeedAnomalyDto>> GetSeedAnomaliesAsync(
         GetFinanceSeedAnomaliesQuery query,
         CancellationToken cancellationToken);
@@ -1055,6 +1807,34 @@ public interface IFinanceReadService
     Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(
         GetFinanceBalancesQuery query,
         CancellationToken cancellationToken);
+
+    Task<FinanceInsightsDto> GetInsightsAsync(
+        GetFinanceInsightsQuery query,
+        CancellationToken cancellationToken);
+
+    Task<FinanceInsightsSnapshotRefreshResultDto> RefreshInsightsSnapshotAsync(
+        RefreshFinanceInsightsSnapshotCommand command,
+        CancellationToken cancellationToken);
+
+    Task<FinanceInsightsSnapshotRefreshResultDto> QueueInsightsSnapshotRefreshAsync(
+        QueueFinanceInsightsSnapshotRefreshCommand command,
+        CancellationToken cancellationToken);
+
+    Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
+        GetFinanceAgentQueryQuery query,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<FinanceBudgetDto>> GetBudgetsAsync(
+        GetFinanceBudgetsQuery query,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<FinanceForecastDto>> GetForecastsAsync(
+        GetFinanceForecastsQuery query,
+        CancellationToken cancellationToken);
+
+    Task<FinanceVarianceResultDto> GetVarianceAsync(
+        GetFinanceVarianceQuery query,
+        CancellationToken cancellationToken);
 }
 
 public interface IFinancePolicyConfigurationService
@@ -1066,6 +1846,32 @@ public interface IFinancePolicyConfigurationService
     Task<FinancePolicyConfigurationDto> UpsertPolicyConfigurationAsync(
         UpsertFinancePolicyConfigurationCommand command,
         CancellationToken cancellationToken);
+}
+
+public interface IFinanceApprovalTaskService
+{
+    Task<bool> EnsureTaskAsync(EnsureFinanceApprovalTaskCommand command, CancellationToken cancellationToken);
+    Task<IReadOnlyList<FinancePendingApprovalTaskDto>> GetPendingTasksAsync(GetPendingFinanceApprovalTasksQuery query, CancellationToken cancellationToken);
+    Task<FinanceApprovalTaskBackfillResultDto> BackfillApprovalTasksAsync(BackfillFinanceApprovalTasksCommand command, CancellationToken cancellationToken);
+    Task<FinancePendingApprovalTaskDto> ActOnTaskAsync(ActOnFinanceApprovalTaskCommand command, CancellationToken cancellationToken);
+}
+
+public interface IFinanceBootstrapRerunService
+{
+    Task<FinanceBootstrapRerunResultDto> RerunAsync(
+        RerunFinanceBootstrapCommand command,
+        CancellationToken cancellationToken);
+}
+
+public interface IFinanceInsightsSnapshotJobRunner
+{
+    Task<int> RunDueAsync(CancellationToken cancellationToken);
+}
+
+public interface IPlanningBaselineService
+{
+    Task<int> EnsureBaselineAsync(Guid companyId, CancellationToken cancellationToken);
+    Task<int> BackfillAllCompaniesAsync(CancellationToken cancellationToken);
 }
 
 public interface ICompanySimulationService

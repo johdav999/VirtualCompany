@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Finance;
@@ -64,6 +65,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
     private readonly IFinanceAnomalyScheduleFactory _anomalyScheduleFactory;
     private readonly ISimulationFeatureGate? _featureGate;
     private readonly ICompanyOutboxEnqueuer? _outboxEnqueuer;
+    private readonly IFinanceApprovalTaskService _financeApprovalTaskService;
 
     public CompanySimulationFinanceGenerationService(
         VirtualCompanyDbContext dbContext,
@@ -75,6 +77,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             logger,
             new DefaultFinanceScenarioFactory(new Sha256FinanceDeterministicValueSource()),
             new PeriodicFinanceAnomalyScheduleFactory(new Sha256FinanceDeterministicValueSource()),
+            null,
             null,
             null)
     {
@@ -92,6 +95,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             new DefaultFinanceScenarioFactory(new Sha256FinanceDeterministicValueSource()),
             new PeriodicFinanceAnomalyScheduleFactory(new Sha256FinanceDeterministicValueSource()),
             null,
+            null,
             outboxEnqueuer)
     {
     }
@@ -103,6 +107,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
         IFinanceScenarioFactory scenarioFactory,
         IFinanceAnomalyScheduleFactory anomalyScheduleFactory,
         ISimulationFeatureGate? featureGate,
+        IFinanceApprovalTaskService? financeApprovalTaskService,
         ICompanyOutboxEnqueuer? outboxEnqueuer)
     {
         _dbContext = dbContext;
@@ -112,6 +117,8 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
         _anomalyScheduleFactory = anomalyScheduleFactory;
         _featureGate = featureGate;
         _outboxEnqueuer = outboxEnqueuer;
+        _financeApprovalTaskService = financeApprovalTaskService ??
+            new CompanyFinanceApprovalTaskService(dbContext, null, NullLogger<CompanyFinanceApprovalTaskService>.Instance);
     }
 
     public async Task<CompanySimulationFinanceGenerationResultDto> GenerateAsync(
@@ -291,6 +298,17 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                 updatedUtc: plan.ReceivedUtc);
             _dbContext.FinanceBills.Add(bill);
             billsCreated++;
+            if (plan.BillApprovalRequired)
+            {
+                await _financeApprovalTaskService.EnsureTaskAsync(
+                    new EnsureFinanceApprovalTaskCommand(
+                        company.Id,
+                        ApprovalTargetType.Bill,
+                        bill.Id,
+                        bill.Amount,
+                        bill.Currency,
+                        bill.DueUtc), cancellationToken);
+            }
             recurringExpenseInstancesCreated++;
 
             if (await EnsureAuditEventAsync(

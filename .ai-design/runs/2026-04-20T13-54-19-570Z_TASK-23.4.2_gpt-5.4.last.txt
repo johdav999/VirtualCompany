@@ -1,0 +1,472 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -21,10 +21,19 @@ public sealed record GetFinanceProfitAndLossReportQuery(
+ public sealed record GetFinancialStatementDrilldownQuery(
+     Guid CompanyId,
+     Guid FiscalPeriodId,
+     FinancialStatementType StatementType,
+     string LineCode,
+     int? SnapshotVersionNumber = null);
++
++public sealed record ListFinancialStatementSnapshotsQuery(
++    Guid CompanyId,
++    Guid? FiscalPeriodId = null,
++    FinancialStatementType? StatementType = null);
++
++public sealed record GetFinancialStatementSnapshotQuery(
++    Guid CompanyId,
++    Guid SnapshotId);
+ public sealed record GetFinanceBalanceSheetReportQuery(Guid CompanyId, Guid FiscalPeriodId);
+ public sealed record ValidateReportingPeriodCloseQuery(Guid CompanyId, Guid FiscalPeriodId);
+ public sealed record LockReportingPeriodCommand(Guid CompanyId, Guid FiscalPeriodId);
+ public sealed record UnlockReportingPeriodCommand(Guid CompanyId, Guid FiscalPeriodId);
+ public sealed record RegenerateStoredReportingStatementsCommand(
+@@ -436,6 +445,27 @@ public sealed record FinancialStatementSnapshotMetadataDto(
+     DateTime SourcePeriodEndUtc,
+     string Currency);
+ 
++public sealed record FinancialStatementSnapshotSummaryDto(
++    Guid SnapshotId,
++    Guid CompanyId,
++    Guid FiscalPeriodId,
++    string FiscalPeriodName,
++    string StatementType,
++    int VersionNumber,
++    string BalancesChecksum,
++    DateTime GeneratedAtUtc,
++    DateTime SourcePeriodStartUtc,
++    DateTime SourcePeriodEndUtc,
++    string Currency,
++    int LineCount);
++
++public sealed record FinancialStatementSnapshotDetailDto(
++    Guid SnapshotId,
++    FinancialStatementSnapshotSummaryDto Summary,
++    IReadOnlyList<FinanceStatementLineDto> Lines);
++
+ public sealed record FinancialStatementDrilldownDto(
+     Guid CompanyId,
+     Guid FiscalPeriodId,
+     string FiscalPeriodName,
+     string StatementType,
+@@ -1201,6 +1231,14 @@ public interface IFinanceReadService
+     Task<ProfitAndLossReportDto> GetProfitAndLossReportAsync(
+         GetFinanceProfitAndLossReportQuery query,
+         CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<FinancialStatementSnapshotSummaryDto>> ListFinancialStatementSnapshotsAsync(
++        ListFinancialStatementSnapshotsQuery query,
++        CancellationToken cancellationToken);
++
++    Task<FinancialStatementSnapshotDetailDto?> GetFinancialStatementSnapshotAsync(
++        GetFinancialStatementSnapshotQuery query,
++        CancellationToken cancellationToken);
+ 
+     Task<FinancialStatementDrilldownDto> GetFinancialStatementDrilldownAsync(
+         GetFinancialStatementDrilldownQuery query,
+         CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -208,6 +208,66 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+         return BuildProfitAndLossReport(period, lines, snapshotRows.Count > 0, null);
+     }
+ 
++    public async Task<IReadOnlyList<FinancialStatementSnapshotSummaryDto>> ListFinancialStatementSnapshotsAsync(
++        ListFinancialStatementSnapshotsQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++
++        var snapshots = _dbContext.FinancialStatementSnapshots
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId);
++
++        if (query.FiscalPeriodId.HasValue)
++        {
++            snapshots = snapshots.Where(x => x.FiscalPeriodId == query.FiscalPeriodId.Value);
++        }
++
++        if (query.StatementType.HasValue)
++        {
++            snapshots = snapshots.Where(x => x.StatementType == query.StatementType.Value);
++        }
++
++        return await snapshots
++            .OrderByDescending(x => x.GeneratedAtUtc)
++            .ThenByDescending(x => x.VersionNumber)
++            .Select(x => new FinancialStatementSnapshotSummaryDto(
++                x.Id,
++                x.CompanyId,
++                x.FiscalPeriodId,
++                x.FiscalPeriod.Name,
++                x.StatementType.ToStorageValue(),
++                x.VersionNumber,
++                x.BalancesChecksum,
++                x.GeneratedAtUtc,
++                x.SourcePeriodStartUtc,
++                x.SourcePeriodEndUtc,
++                x.Currency,
++                x.Lines.Count))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<FinancialStatementSnapshotDetailDto?> GetFinancialStatementSnapshotAsync(
++        GetFinancialStatementSnapshotQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++
++        var summary = await _dbContext.FinancialStatementSnapshots
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.SnapshotId)
++            .Select(x => new FinancialStatementSnapshotSummaryDto(
++                x.Id,
++                x.CompanyId,
++                x.FiscalPeriodId,
++                x.FiscalPeriod.Name,
++                x.StatementType.ToStorageValue(),
++                x.VersionNumber,
++                x.BalancesChecksum,
++                x.GeneratedAtUtc,
++                x.SourcePeriodStartUtc,
++                x.SourcePeriodEndUtc,
++                x.Currency,
++                x.Lines.Count))
++            .SingleOrDefaultAsync(cancellationToken);
++
++        return summary is null
++            ? null
++            : new FinancialStatementSnapshotDetailDto(summary.SnapshotId, summary, await LoadFinancialStatementSnapshotLinesAsync(summary.SnapshotId, cancellationToken));
++    }
++
+     public async Task<FinancialStatementDrilldownDto> GetFinancialStatementDrilldownAsync(
+         GetFinancialStatementDrilldownQuery query,
+         CancellationToken cancellationToken)
+@@ -283,8 +343,6 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     private static FinancialStatementSnapshotMetadataDto MapSnapshotMetadata(FinancialStatementSnapshotHeaderRow row) =>
+         new(row.SnapshotId, row.VersionNumber, row.BalancesChecksum, row.GeneratedAtUtc, row.SourcePeriodStartUtc, row.SourcePeriodEndUtc, row.Currency);
+ 
+-    }
+-
+     public async Task<FinanceMonthlyProfitAndLossDto> GetMonthlyProfitAndLossAsync(
+         GetFinanceMonthlyProfitAndLossQuery query,
+         CancellationToken cancellationToken)
+@@ -1043,13 +1101,13 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             .ThenBy(x => x.LineCode)
+             .Select(x => new FinanceStatementLineDto(
+                 x.FinanceAccountId,
+                 x.LineCode,
+                 x.LineName,
+                 x.ReportSection.ToStorageValue(),
+-                x.LineClassification))
+-            .Select(x => new FinanceStatementLineDto(
+-                x.AccountId,
+-                x.AccountCode,
+-                x.AccountName,
+-                x.ReportSection,
+-                x.LineClassification,
+-                0m,
+-                string.Empty))
++                x.LineClassification.ToStorageValue(),
++                x.Amount,
++                x.Currency))
+             .ToListAsync(cancellationToken);
+@@ -1545,24 +1603,27 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+     private async Task<List<ContributionRule>> LoadCurrentEarningsContributionRulesAsync(
+         Guid companyId,
+-        CancellationToken cancellationToken) =>
+-        await _dbContext.FinancialStatementMappings
+-            .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.IsActive && x.StatementType == FinancialStatementType.ProfitAndLoss)
+-            .Select(x => new ContributionRule(
+-                x.FinanceAccountId,
++        CancellationToken cancellationToken)
++    {
++        var mappings = await LoadStatementMappingLookupAsync(companyId, FinancialStatementType.ProfitAndLoss, cancellationToken);
++        return mappings.Values
++            .OrderBy(x => x.AccountCode, StringComparer.OrdinalIgnoreCase)
++            .Select(x => new ContributionRule(
++                x.FinanceAccountId,
+                 "current_earnings",
+                 "Current Earnings",
+-                x.FinanceAccount.Code,
+-                x.FinanceAccount.Name,
++                x.AccountCode,
++                x.AccountName,
+                 x.ReportSection,
+                 x.LineClassification,
+                 ResolveContributionFactor(x.ReportSection, x.LineClassification),
+-                x.FinanceAccount.OpeningBalance,
+-                x.FinanceAccount.Currency))
+-            .ToListAsync(cancellationToken);
++                x.OpeningBalance,
++                x.Currency))
++            .ToList();
++    }
+ 
+     private static decimal CalculateOpeningBalanceAdjustment(IEnumerable<ContributionRule> rules) =>
+         Math.Round(rules.Sum(x => x.OpeningBalance * x.ContributionFactor), 2, MidpointRounding.AwayFromZero);
+@@ -1660,10 +1721,6 @@ public sealed class CompanyFinanceReadService : IFinanceReadService
+             FinancialStatementReportSection.ProfitAndLossOtherIncomeExpense => 1m,
+             _ => 1m
+         };
+-
+-    private static bool IsProfitAndLossRevenueLine(string reportSection, string lineClassification) =>
+-        string.Equals(reportSection, FinancialStatementReportSection.ProfitAndLossRevenue.ToStorageValue(), StringComparison.Ordinal) ||
+-        string.Equals(lineClassification, FinancialStatementLineClassification.NonOperatingIncome.ToStorageValue(), StringComparison.Ordinal);
+ 
+     private async Task<List<FinanceAccountBalanceDto>> BuildAccountBalancesAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Api/Controllers/FinancialStatementSnapshotsController.cs b/src/VirtualCompany.Api/Controllers/FinancialStatementSnapshotsController.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/FinancialStatementSnapshotsController.cs
+@@ -0,0 +1,127 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Http;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/financial-statements")]
++[Authorize(Policy = CompanyPolicies.FinanceView)]
++[RequireCompanyContext]
++public sealed class FinancialStatementSnapshotsController : ControllerBase
++{
++    private readonly IFinanceReadService _financeReadService;
++
++    public FinancialStatementSnapshotsController(IFinanceReadService financeReadService)
++    {
++        _financeReadService = financeReadService;
++    }
++
++    [HttpGet("snapshots")]
++    public async Task<ActionResult<IReadOnlyList<FinancialStatementSnapshotSummaryDto>>> ListSnapshotsAsync(
++        Guid companyId,
++        [FromQuery] Guid? fiscalPeriodId,
++        [FromQuery] string? statementType,
++        CancellationToken cancellationToken)
++    {
++        if (!TryParseStatementType(statementType, required: false, out var parsedStatementType, out var validationError))
++        {
++            return BadRequest(CreateProblemDetails(validationError!, "Invalid financial statement request.", StatusCodes.Status400BadRequest));
++        }
++
++        try
++        {
++            return Ok(await _financeReadService.ListFinancialStatementSnapshotsAsync(
++                new ListFinancialStatementSnapshotsQuery(companyId, fiscalPeriodId, parsedStatementType),
++                cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("snapshots/{snapshotId:guid}")]
++    public async Task<ActionResult<FinancialStatementSnapshotDetailDto>> GetSnapshotAsync(
++        Guid companyId,
++        Guid snapshotId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var snapshot = await _financeReadService.GetFinancialStatementSnapshotAsync(
++                new GetFinancialStatementSnapshotQuery(companyId, snapshotId),
++                cancellationToken);
++
++            return snapshot is null
++                ? NotFound(CreateProblemDetails("Financial statement snapshot was not found.", "Financial statement snapshot was not found.", StatusCodes.Status404NotFound))
++                : Ok(snapshot);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("drilldown")]
++    public async Task<ActionResult<FinancialStatementDrilldownDto>> GetDrilldownAsync(
++        Guid companyId,
++        [FromQuery] Guid fiscalPeriodId,
++        [FromQuery] string statementType,
++        [FromQuery] string lineCode,
++        [FromQuery] int? snapshotVersionNumber,
++        CancellationToken cancellationToken)
++    {
++        if (!TryParseStatementType(statementType, required: true, out var parsedStatementType, out var validationError))
++        {
++            return BadRequest(CreateProblemDetails(validationError!, "Invalid financial statement request.", StatusCodes.Status400BadRequest));
++        }
++
++        if (string.IsNullOrWhiteSpace(lineCode))
++        {
++            return BadRequest(CreateProblemDetails("LineCode is required.", "Invalid financial statement request.", StatusCodes.Status400BadRequest));
++        }
++
++        try
++        {
++            return Ok(await _financeReadService.GetFinancialStatementDrilldownAsync(
++                new GetFinancialStatementDrilldownQuery(companyId, fiscalPeriodId, parsedStatementType!.Value, lineCode.Trim(), snapshotVersionNumber),
++                cancellationToken));
++        }
++        catch (KeyNotFoundException ex)
++        {
++            return NotFound(CreateProblemDetails(ex.Message, "Financial statement resource was not found.", StatusCodes.Status404NotFound));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    private static bool TryParseStatementType(string? value, bool required, out FinancialStatementType? statementType, out string? validationError)
++    {
++        statementType = null;
++        validationError = null;
++
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            if (required)
++            {
++                validationError = $"StatementType is required. Allowed values: {string.Join(", ", FinancialStatementTypeValues.AllowedValues)}.";
++                return false;
++            }
++
++            return true;
++        }
++
++        if (!FinancialStatementTypeValues.TryParse(value, out var parsed))
++        {
++            validationError = $"StatementType must be one of: {string.Join(", ", FinancialStatementTypeValues.AllowedValues)}.";
++            return false;
++        }
++
++        statementType = parsed;
++        return true;
++    }
++
++    private ProblemDetails CreateProblemDetails(string detail, string title, int status) =>
++        new()
++        {
++            Title = title,
++            Detail = detail,
++            Status = status,
++            Instance = HttpContext.Request.Path
++        };
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinancialStatementSnapshotDrilldownIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancialStatementSnapshotDrilldownIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinancialStatementSnapshotDrilldownIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancialStatementSnapshotDrilldownIntegrationTests.cs
+@@ -54,9 +54,15 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass
+         Assert.Equal(4, snapshots.Count);
+         Assert.Equal([1, 2], snapshots.Where(x => x.StatementType == FinancialStatementType.BalanceSheet).Select(x => x.VersionNumber).ToArray());
+         Assert.Equal([1, 2], snapshots.Where(x => x.StatementType == FinancialStatementType.ProfitAndLoss).Select(x => x.VersionNumber).ToArray());
++        Assert.Single(
++            snapshots.Where(x => x.StatementType == FinancialStatementType.BalanceSheet).Select(x => x.BalancesChecksum).Distinct(StringComparer.OrdinalIgnoreCase));
++        Assert.Single(
++            snapshots.Where(x => x.StatementType == FinancialStatementType.ProfitAndLoss).Select(x => x.BalancesChecksum).Distinct(StringComparer.OrdinalIgnoreCase));
+         Assert.All(snapshots, snapshot =>
+         {
+             Assert.False(string.IsNullOrWhiteSpace(snapshot.BalancesChecksum));
++            Assert.Equal(64, snapshot.BalancesChecksum.Length);
++            Assert.Matches("^[0-9a-f]+$", snapshot.BalancesChecksum);
+             Assert.True(snapshot.GeneratedAtUtc > DateTime.UtcNow.AddMinutes(-5));
+             Assert.Equal(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), snapshot.SourcePeriodStartUtc);
+             Assert.Equal(new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc), snapshot.SourcePeriodEndUtc);
+@@ -64,6 +70,41 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass
+         });
+     }
+ 
++    [Fact]
++    public async Task Snapshot_history_endpoints_return_versioned_snapshot_headers_and_lines()
++    {
++        var seed = await SeedScenarioAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.JanuaryPeriodId:D}/reporting/stored-statements/regenerate",
++            new { runInBackground = false });
++        await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.JanuaryPeriodId:D}/reporting/stored-statements/regenerate",
++            new { runInBackground = false });
++
++        var listResponse = await client.GetAsync(
++            $"/api/companies/{seed.CompanyId:D}/financial-statements/snapshots?fiscalPeriodId={seed.JanuaryPeriodId:D}&statementType=profit_and_loss");
++        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
++        var summaries = await listResponse.Content.ReadFromJsonAsync<List<FinancialStatementSnapshotSummaryResponse>>();
++
++        Assert.NotNull(summaries);
++        Assert.Equal([2, 1], summaries!.Select(x => x.VersionNumber).ToArray());
++        Assert.All(summaries, summary =>
++        {
++            Assert.Equal(seed.CompanyId, summary.CompanyId);
++            Assert.Equal(seed.JanuaryPeriodId, summary.FiscalPeriodId);
++            Assert.Equal("profit_and_loss", summary.StatementType);
++            Assert.True(summary.LineCount > 0);
++        });
++
++        var detailResponse = await client.GetAsync($"/api/companies/{seed.CompanyId:D}/financial-statements/snapshots/{summaries[0].SnapshotId:D}");
++        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
++        var detail = await detailResponse.Content.ReadFromJsonAsync<FinancialStatementSnapshotDetailResponse>();
++
++        Assert.NotNull(detail);
++        Assert.Equal(summaries[0].SnapshotId, detail!.SnapshotId);
++        Assert.Contains(detail.Lines, line => line.AccountCode == "4000" && line.Amount == 900m);
++    }
++
+     [Fact]
+     public async Task Snapshot_and_live_drilldown_reconcile_to_selected_report_line_amounts()
+     {
+@@ -295,6 +336,29 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass
+         public List<DrilldownEntryResponse> JournalEntries { get; set; } = [];
+     }
+ 
++    private sealed class FinancialStatementSnapshotSummaryResponse
++    {
++        public Guid SnapshotId { get; set; }
++        public Guid CompanyId { get; set; }
++        public Guid FiscalPeriodId { get; set; }
++        public string FiscalPeriodName { get; set; } = string.Empty;
++        public string StatementType { get; set; } = string.Empty;
++        public int VersionNumber { get; set; }
++        public string BalancesChecksum { get; set; } = string.Empty;
++        public DateTime GeneratedAtUtc { get; set; }
++        public DateTime SourcePeriodStartUtc { get; set; }
++        public DateTime SourcePeriodEndUtc { get; set; }
++        public string Currency { get; set; } = string.Empty;
++        public int LineCount { get; set; }
++    }
++
++    private sealed class FinancialStatementSnapshotDetailResponse
++    {
++        public Guid SnapshotId { get; set; }
++        public FinancialStatementSnapshotSummaryResponse Summary { get; set; } = new();
++        public List<DrilldownLineResponse> Lines { get; set; } = [];
++    }
++
+     private sealed class SnapshotMetadataResponse
+     {
+         public Guid SnapshotId { get; set; }
+@@ -307,6 +371,7 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass
+ 
+     private sealed class DrilldownLineResponse
+     {
++        public Guid? AccountId { get; set; }
+         public string LineCode { get; set; } = string.Empty;
+         public string LineName { get; set; } = string.Empty;
+         public string ReportSection { get; set; } = string.Empty;
+END_OF_PATCH

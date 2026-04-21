@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-23.4.2",
+  "promptPath": ".ai-design/prompts/TASK-23.4.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-20T13:54:19.570Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-20T13-54-19-570Z_TASK-23.4.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-20T13-54-19-570Z_TASK-23.4.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-20T13:59:26.999Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "shotId, detail!.SnapshotId);\n+        Assert.Contains(detail.Lines, line => line.AccountCode == \"4000\" && line.Amount == 900m);\n+    }\n+\n     [Fact]\n     public async Task Snapshot_and_live_drilldown_reconcile_to_selected_report_line_amounts()\n     {\n@@ -295,6 +336,29 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass\n         public List<DrilldownEntryResponse> JournalEntries { get; set; } = [];\n     }\n \n+    private sealed class FinancialStatementSnapshotSummaryResponse\n+    {\n+        public Guid SnapshotId { get; set; }\n+        public Guid CompanyId { get; set; }\n+        public Guid FiscalPeriodId { get; set; }\n+        public string FiscalPeriodName { get; set; } = string.Empty;\n+        public string StatementType { get; set; } = string.Empty;\n+        public int VersionNumber { get; set; }\n+        public string BalancesChecksum { get; set; } = string.Empty;\n+        public DateTime GeneratedAtUtc { get; set; }\n+        public DateTime SourcePeriodStartUtc { get; set; }\n+        public DateTime SourcePeriodEndUtc { get; set; }\n+        public string Currency { get; set; } = string.Empty;\n+        public int LineCount { get; set; }\n+    }\n+\n+    private sealed class FinancialStatementSnapshotDetailResponse\n+    {\n+        public Guid SnapshotId { get; set; }\n+        public FinancialStatementSnapshotSummaryResponse Summary { get; set; } = new();\n+        public List<DrilldownLineResponse> Lines { get; set; } = [];\n+    }\n+\n     private sealed class SnapshotMetadataResponse\n     {\n         public Guid SnapshotId { get; set; }\n@@ -307,6 +371,7 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass\n \n     private sealed class DrilldownLineResponse\n     {\n+        public Guid? AccountId { get; set; }\n         public string LineCode { get; set; } = string.Empty;\n         public string LineName { get; set; } = string.Empty;\n         public string ReportSection { get; set; } = string.Empty;\nEND_OF_PATCH\n",
+  "stderrTail": "shotId);\n+        Assert.Contains(detail.Lines, line => line.AccountCode == \"4000\" && line.Amount == 900m);\n+    }\n+\n     [Fact]\n     public async Task Snapshot_and_live_drilldown_reconcile_to_selected_report_line_amounts()\n     {\n@@ -295,6 +336,29 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass\n         public List<DrilldownEntryResponse> JournalEntries { get; set; } = [];\n     }\n \n+    private sealed class FinancialStatementSnapshotSummaryResponse\n+    {\n+        public Guid SnapshotId { get; set; }\n+        public Guid CompanyId { get; set; }\n+        public Guid FiscalPeriodId { get; set; }\n+        public string FiscalPeriodName { get; set; } = string.Empty;\n+        public string StatementType { get; set; } = string.Empty;\n+        public int VersionNumber { get; set; }\n+        public string BalancesChecksum { get; set; } = string.Empty;\n+        public DateTime GeneratedAtUtc { get; set; }\n+        public DateTime SourcePeriodStartUtc { get; set; }\n+        public DateTime SourcePeriodEndUtc { get; set; }\n+        public string Currency { get; set; } = string.Empty;\n+        public int LineCount { get; set; }\n+    }\n+\n+    private sealed class FinancialStatementSnapshotDetailResponse\n+    {\n+        public Guid SnapshotId { get; set; }\n+        public FinancialStatementSnapshotSummaryResponse Summary { get; set; } = new();\n+        public List<DrilldownLineResponse> Lines { get; set; } = [];\n+    }\n+\n     private sealed class SnapshotMetadataResponse\n     {\n         public Guid SnapshotId { get; set; }\n@@ -307,6 +371,7 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass\n \n     private sealed class DrilldownLineResponse\n     {\n+        public Guid? AccountId { get; set; }\n         public string LineCode { get; set; } = string.Empty;\n         public string LineName { get; set; } = string.Empty;\n         public string ReportSection { get; set; } = string.Empty;\nEND_OF_PATCH\ntokens used\n153,823\n",
+  "verbosityMode": "verbose"
+}

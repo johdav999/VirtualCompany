@@ -370,6 +370,40 @@ public sealed class FinanceApiClient
             ? Task.FromResult<FinanceTransactionDetailResponse?>(null)
             : GetAsync<FinanceTransactionDetailResponse>(companyId, $"internal/companies/{companyId}/finance/transactions/{transactionId}", allowNotFound: true, cancellationToken);
 
+    public Task<IReadOnlyList<FinancePaymentResponse>> GetPaymentsAsync(
+        Guid companyId,
+        string? paymentType = null,
+        int limit = 100,
+        CancellationToken cancellationToken = default)
+    {
+        if (_useOfflineMode)
+        {
+            return Task.FromResult<IReadOnlyList<FinancePaymentResponse>>([]);
+        }
+
+        var uri = $"internal/companies/{companyId}/finance/payments{BuildQuery(("type", paymentType), ("limit", limit.ToString(CultureInfo.InvariantCulture)))}";
+        return GetListAsync<FinancePaymentResponse>(companyId, uri, cancellationToken);
+    }
+
+    public Task<FinancePaymentResponse?> GetPaymentDetailAsync(Guid companyId, Guid paymentId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult<FinancePaymentResponse?>(null)
+            : GetAsync<FinancePaymentResponse>(companyId, $"internal/companies/{companyId}/finance/payments/{paymentId}", allowNotFound: true, cancellationToken);
+
+    public Task<FinancePaymentResponse> CreatePaymentAsync(
+        Guid companyId,
+        CreateFinancePaymentRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureOnlineMutation();
+        return SendCompanyScopedAsync<CreateFinancePaymentRequest, FinancePaymentResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/payments",
+            request,
+            cancellationToken);
+    }
+
     public Task<IReadOnlyList<FinanceInvoiceResponse>> GetInvoicesAsync(Guid companyId, DateTime? startUtc = null, DateTime? endUtc = null, int limit = 100, CancellationToken cancellationToken = default)
     {
         if (_useOfflineMode)
@@ -380,6 +414,44 @@ public sealed class FinanceApiClient
         var uri = $"internal/companies/{companyId}/finance/invoices{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("limit", limit.ToString()))}";
         return GetListAsync<FinanceInvoiceResponse>(companyId, uri, cancellationToken);
     }
+
+    public Task<IReadOnlyList<FinanceCounterpartyResponse>> GetCustomersAsync(Guid companyId, int limit = 200, CancellationToken cancellationToken = default)
+    {
+        if (_useOfflineMode)
+        {
+            return Task.FromResult<IReadOnlyList<FinanceCounterpartyResponse>>([]);
+        }
+
+        return GetListAsync<FinanceCounterpartyResponse>(companyId, $"internal/companies/{companyId}/finance/customers?limit={limit}", cancellationToken);
+    }
+
+    public Task<IReadOnlyList<FinanceCounterpartyResponse>> GetSuppliersAsync(Guid companyId, int limit = 200, CancellationToken cancellationToken = default)
+    {
+        if (_useOfflineMode)
+        {
+            return Task.FromResult<IReadOnlyList<FinanceCounterpartyResponse>>([]);
+        }
+
+        return GetListAsync<FinanceCounterpartyResponse>(companyId, $"internal/companies/{companyId}/finance/suppliers?limit={limit}", cancellationToken);
+    }
+
+    public Task<FinanceCounterpartyResponse?> GetCustomerAsync(Guid companyId, Guid counterpartyId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode ? Task.FromResult<FinanceCounterpartyResponse?>(null) : GetAsync<FinanceCounterpartyResponse>(companyId, $"internal/companies/{companyId}/finance/customers/{counterpartyId}", allowNotFound: true, cancellationToken);
+
+    public Task<FinanceCounterpartyResponse?> GetSupplierAsync(Guid companyId, Guid counterpartyId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode ? Task.FromResult<FinanceCounterpartyResponse?>(null) : GetAsync<FinanceCounterpartyResponse>(companyId, $"internal/companies/{companyId}/finance/suppliers/{counterpartyId}", allowNotFound: true, cancellationToken);
+
+    public Task<FinanceCounterpartyResponse> CreateCustomerAsync(Guid companyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/customers", request, cancellationToken);
+
+    public Task<FinanceCounterpartyResponse> UpdateCustomerAsync(Guid companyId, Guid counterpartyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Put, $"internal/companies/{companyId}/finance/customers/{counterpartyId}", request, cancellationToken);
+
+    public Task<FinanceCounterpartyResponse> CreateSupplierAsync(Guid companyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/suppliers", request, cancellationToken);
+
+    public Task<FinanceCounterpartyResponse> UpdateSupplierAsync(Guid companyId, Guid counterpartyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Put, $"internal/companies/{companyId}/finance/suppliers/{counterpartyId}", request, cancellationToken);
 
     public Task<FinanceInvoiceDetailResponse?> GetInvoiceDetailAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default) =>
         _useOfflineMode
@@ -860,6 +932,21 @@ public sealed class FinanceTransactionResponse
     public string AnomalyState { get; set; } = string.Empty;
 }
 
+public sealed class FinancePaymentResponse
+{
+    public Guid Id { get; set; }
+    public Guid CompanyId { get; set; }
+    public string PaymentType { get; set; } = string.Empty;
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = string.Empty;
+    public DateTime PaymentDate { get; set; }
+    public string Method { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string CounterpartyReference { get; set; } = string.Empty;
+    public DateTime CreatedUtc { get; set; }
+    public DateTime UpdatedUtc { get; set; }
+}
+
 public sealed class FinanceTransactionDetailResponse
 {
     public Guid Id { get; set; }
@@ -894,6 +981,22 @@ public sealed class FinanceInvoiceResponse
     public string Currency { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public FinanceLinkedDocumentResponse? LinkedDocument { get; set; }
+}
+
+public sealed class FinanceCounterpartyResponse
+{
+    public Guid Id { get; set; }
+    public Guid CompanyId { get; set; }
+    public string CounterpartyType { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string? Email { get; set; }
+    public string? PaymentTerms { get; set; }
+    public string? TaxId { get; set; }
+    public decimal? CreditLimit { get; set; }
+    public string? PreferredPaymentMethod { get; set; }
+    public string? DefaultAccountMapping { get; set; }
+    public DateTime CreatedUtc { get; set; }
+    public DateTime UpdatedUtc { get; set; }
 }
 
 public sealed class FinanceInvoiceDetailResponse
@@ -1121,4 +1224,26 @@ public sealed class UpdateFinanceTransactionCategoryRequest
 public sealed class UpdateFinanceInvoiceApprovalStatusRequest
 {
     public string Status { get; set; } = string.Empty;
+}
+
+public sealed class CreateFinancePaymentRequest
+{
+    public string PaymentType { get; set; } = string.Empty;
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = string.Empty;
+    public DateTime PaymentDate { get; set; }
+    public string Method { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string CounterpartyReference { get; set; } = string.Empty;
+}
+
+public sealed class UpsertFinanceCounterpartyRequest
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Email { get; set; }
+    public string? PaymentTerms { get; set; }
+    public string? TaxId { get; set; }
+    public decimal? CreditLimit { get; set; }
+    public string? PreferredPaymentMethod { get; set; }
+    public string? DefaultAccountMapping { get; set; }
 }

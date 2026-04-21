@@ -64,6 +64,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
                 "knowledge.search" => await ExecuteKnowledgeSearchAsync(request, cancellationToken),
                 "get_cash_balance" => await ExecuteGetCashBalanceAsync(request, cancellationToken),
                 "list_transactions" => await ExecuteListTransactionsAsync(request, cancellationToken),
+                "resolve_finance_agent_query" => await ExecuteResolveFinanceAgentQueryAsync(request, cancellationToken),
                 "list_uncategorized_transactions" => await ExecuteListUncategorizedTransactionsAsync(request, cancellationToken),
                 "list_invoices_awaiting_approval" => await ExecuteListInvoicesAwaitingApprovalAsync(request, cancellationToken),
                 "get_profit_and_loss_summary" => await ExecuteGetProfitAndLossSummaryAsync(request, cancellationToken),
@@ -325,6 +326,34 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
                 ["amount"] = JsonValue.Create(balance.Amount),
                 ["currency"] = JsonValue.Create(balance.Currency),
                 ["asOfUtc"] = JsonValue.Create(balance.AsOfUtc)
+            },
+            Metadata(request, "finance_tool_provider"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteResolveFinanceAgentQueryAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var queryText = ReadString(request.Payload, "queryText");
+        if (string.IsNullOrWhiteSpace(queryText))
+        {
+            return Failed("finance_agent_query_required", "A supported finance agent query is required.");
+        }
+
+        var result = await _financeToolProvider.ResolveAgentQueryAsync(
+            new GetFinanceAgentQueryQuery(request.CompanyId, queryText, ReadDateTime(request.Payload, "asOfUtc")),
+            cancellationToken);
+
+        return InternalToolExecutionResponse.Succeeded(
+            result.Summary,
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["result"] = Serialize(result)
             },
             Metadata(request, "finance_tool_provider"));
     }

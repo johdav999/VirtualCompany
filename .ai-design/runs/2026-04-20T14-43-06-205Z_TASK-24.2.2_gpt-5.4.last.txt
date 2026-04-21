@@ -1,0 +1,427 @@
+diff --git a/src/VirtualCompany.Domain/Entities/Payment.cs b/src/VirtualCompany.Domain/Entities/Payment.cs
+--- a/src/VirtualCompany.Domain/Entities/Payment.cs
++++ b/src/VirtualCompany.Domain/Entities/Payment.cs
+@@ -35,6 +35,11 @@ public sealed class Payment : ICompanyOwnedEntity
+ 
+         Amount = decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
+         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
++        if (Currency.Length != 3 || !Currency.All(char.IsLetter))
++        {
++            throw new ArgumentOutOfRangeException(nameof(currency), "Currency must be a three-letter ISO code.");
++        }
++
+         PaymentDate = EntityTimestampNormalizer.NormalizeUtc(paymentDate, nameof(paymentDate));
+         Method = PaymentMethods.Normalize(method);
+         if (!PaymentMethods.IsSupported(Method))
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -869,6 +869,7 @@ public sealed record FinanceSeedBootstrapResultDto(
+     int RecurringExpenseCount,
+     int TransactionCount,
+     int BalanceCount,
++    int PaymentCount,
+     int DocumentCount,
+     Guid PolicyConfigurationId,
+     IReadOnlyList<FinanceSeedRecurringExpenseDto> RecurringExpenses,
+diff --git a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+--- a/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
++++ b/src/VirtualCompany.Api/Controllers/InternalFinanceController.cs
+@@ -1193,6 +1193,7 @@ public sealed class InternalFinanceController : ControllerBase
+         result.RecurringExpenseCount +
+         result.TransactionCount +
+         result.BalanceCount +
++        result.PaymentCount +
+         result.DocumentCount +
+         result.Anomalies.Count +
+         1;
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -469,17 +469,25 @@ public sealed class CompanyFinanceCommandService : IFinanceCommandService, IFina
+         AddRequired(errors, nameof(CreateFinancePaymentDto.Status), payment.Status);
+         AddRequired(errors, nameof(CreateFinancePaymentDto.CounterpartyReference), payment.CounterpartyReference);
+         AddMaxLength(errors, nameof(CreateFinancePaymentDto.CounterpartyReference), payment.CounterpartyReference, 200);
++        if (!string.IsNullOrWhiteSpace(payment.Currency))
++        {
++            var normalizedCurrency = payment.Currency.Trim();
++            if (normalizedCurrency.Length != 3 || !normalizedCurrency.All(char.IsLetter))
++            {
++                errors[nameof(CreateFinancePaymentDto.Currency)] = ["Currency must be a three-letter ISO code."];
++            }
++        }
+ 
+-        if (!PaymentTypes.IsSupported(payment.PaymentType))
++        if (!string.IsNullOrWhiteSpace(payment.PaymentType) && !PaymentTypes.IsSupported(payment.PaymentType))
+         {
+             errors[nameof(CreateFinancePaymentDto.PaymentType)] = [$"Unsupported payment type '{payment.PaymentType}'. Allowed values: {string.Join(", ", PaymentTypes.AllowedValues)}."];
+         }
+ 
+-        if (!PaymentMethods.IsSupported(payment.Method))
++        if (!string.IsNullOrWhiteSpace(payment.Method) && !PaymentMethods.IsSupported(payment.Method))
+         {
+             errors[nameof(CreateFinancePaymentDto.Method)] = [$"Unsupported payment method '{payment.Method}'. Allowed values: {string.Join(", ", PaymentMethods.AllowedValues)}."];
+         }
+ 
+-        if (!PaymentStatuses.IsSupported(payment.Status))
++        if (!string.IsNullOrWhiteSpace(payment.Status) && !PaymentStatuses.IsSupported(payment.Status))
+         {
+             errors[nameof(CreateFinancePaymentDto.Status)] = [$"Unsupported payment status '{payment.Status}'. Allowed values: {string.Join(", ", PaymentStatuses.AllowedValues)}."];
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+@@ -262,6 +262,7 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+             dataset.RecurringExpenses.Count,
+             dataset.TransactionIds.Count,
+             dataset.BalanceIds.Count,
++            dataset.PaymentIds.Count,
+             dataset.DocumentIds.Count,
+             dataset.PolicyConfigurationId,
+             dataset.RecurringExpenses
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs b/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/DeterministicFinanceSeedDatasetGenerator.cs
+@@ -87,39 +87,40 @@ public static class DeterministicFinanceSeedDatasetGenerator
+         var policy = new FinancePolicyConfiguration(
+             StableId(companyId, seedValue, "policy:default"),
+             companyId,
+@@ -94,33 +95,33 @@ public static class DeterministicFinanceSeedDatasetGenerator
+             90,
+             30);
+ 
+-        var payments = invoices
+-            .Select(invoice => new Payment(
+-                StableId(companyId, $"payment:invoice:{invoice.InvoiceNumber}"),
+-                companyId,
+-                PaymentTypes.Incoming,
+-                invoice.Amount,
+-                invoice.Currency,
+-                invoice.IssuedUtc.AddDays(12),
+-                "bank_transfer",
+-                invoice.Status == "paid" ? "completed" : "pending",
+-                $"{invoice.CounterpartyId:D}:{invoice.InvoiceNumber}"))
+-            .Concat(bills.Select(bill => new Payment(
+-                StableId(companyId, $"payment:bill:{bill.BillNumber}"),
+-                companyId,
+-                PaymentTypes.Outgoing,
+-                bill.Amount,
+-                bill.Currency,
+-                bill.ReceivedUtc.AddDays(9),
+-                "ach",
+-                bill.Status == "paid" ? "completed" : "pending",
+-                $"{bill.CounterpartyId:D}:{bill.BillNumber}")))
+-            .OrderBy(x => x.PaymentDate)
+-            .ToArray();
+-
+         dbContext.FinanceAccounts.AddRange(accounts);
+         dbContext.FinanceCounterparties.AddRange(counterparties);
+         dbContext.CompanyKnowledgeDocuments.AddRange(documents);
+-        dbContext.Payments.AddRange(payments);
+         FinancialStatementMappingSeedDefaults.Apply(dbContext, companyId, accounts);
+         dbContext.FinanceInvoices.AddRange(invoices);
+         dbContext.FinanceBills.AddRange(bills);
++        dbContext.Payments.AddRange(payments);
+         if (includeTransactions)
+         {
+             dbContext.FinanceTransactions.AddRange(transactions);
+         }
+-        dbContext.Payments.AddRange(payments);
+         dbContext.FinanceBalances.AddRange(balances);
+         dbContext.FinancePolicyConfigurations.Add(policy);
+         dbContext.FinanceSeedAnomalies.AddRange(anomalies);
+ 
+-        var dataset = new FinanceSeedDataset(
++        var validationErrors = FinanceSeedDatasetConsistencyValidator.Validate(
++            new FinanceSeedDatasetValidationInput(
++                companyId,
++                windowStartUtc,
++                windowEndUtc,
++                includeTransactions,
++                allCategoryIds,
++                accounts,
++                counterparties,
++                documents,
++                invoices,
++                bills,
++                recurringExpenses,
++                transactions,
++                balances));
++
++        return new FinanceSeedDataset(
+             companyId,
+             seedValue,
+             windowStartUtc,
+@@ -136,9 +137,10 @@ public static class DeterministicFinanceSeedDatasetGenerator
+             balances.Select(x => x.Id).ToArray(),
+             payments.Select(x => x.Id).ToArray(),
+             documents.Select(x => x.Id).ToArray(),
+             policy.Id,
+-            payments.Select(x => x.Id).ToArray());
++            validationErrors,
++            anomalies);
+     }
+ 
+     private static IReadOnlyList<FinanceAccount> CreateAccounts(Guid companyId, DateTime windowStartUtc) =>
+     [
+@@ -833,10 +835,9 @@ public sealed record FinanceSeedDataset(
+     IReadOnlyList<Guid> TransactionIds,
+     IReadOnlyList<Guid> BalanceIds,
+     IReadOnlyList<Guid> PaymentIds,
+     IReadOnlyList<Guid> DocumentIds,
+     Guid PolicyConfigurationId,
+-    IReadOnlyList<Guid>? PaymentIds = null);
+     IReadOnlyList<FinanceSeedValidationError> ValidationErrors,
+     IReadOnlyList<FinanceSeedAnomaly> Anomalies);
+ 
+ public sealed record FinanceAnomalyInjectionOptions(bool Enabled, string ScenarioProfile = "baseline")
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSeedData.cs
+@@ -86,6 +86,25 @@ public static class FinanceSeedData
+                 documents[(index + 1) % documents.Length].Id))
+             .ToArray();
+ 
++        var payments = invoices
++            .Select(invoice => new Payment(
++                StableId(companyId, $"payment:invoice:{invoice.InvoiceNumber}"),
++                companyId,
++                PaymentTypes.Incoming,
++                invoice.Amount,
++                invoice.Currency,
++                invoice.IssuedUtc.AddDays(12),
++                "bank_transfer",
++                invoice.Status == "paid" ? "completed" : "pending",
++                invoice.InvoiceNumber))
++            .Concat(bills.Select(bill => new Payment(
++                StableId(companyId, $"payment:bill:{bill.BillNumber}"),
++                companyId,
++                PaymentTypes.Outgoing,
++                bill.Amount,
++                bill.Currency,
++                bill.ReceivedUtc.AddDays(9),
++                "ach",
++                bill.Status == "paid" ? "completed" : "pending",
++                bill.BillNumber)))
++            .OrderBy(x => x.PaymentDate)
++            .ToArray();
++
+         var transactions = new List<FinanceTransaction>(capacity: 50);
+         for (var index = 0; index < 50; index++)
+         {
+@@ -139,6 +158,7 @@ public static class FinanceSeedData
+         dbContext.CompanyKnowledgeDocuments.AddRange(documents);
+         dbContext.FinanceInvoices.AddRange(invoices);
+         FinancialStatementMappingSeedDefaults.Apply(dbContext, companyId, accounts);
+         dbContext.FinanceBills.AddRange(bills);
++        dbContext.Payments.AddRange(payments);
+         dbContext.FinanceTransactions.AddRange(transactions);
+         dbContext.FinanceBalances.AddRange(balances);
+         dbContext.FinancePolicyConfigurations.Add(policy);
+@@ -151,7 +171,8 @@ public static class FinanceSeedData
+             transactions.Select(x => x.Id).ToArray(),
+             balances.Select(x => x.Id).ToArray(),
+             documents.Select(x => x.Id).ToArray(),
+-            policy.Id);
++            policy.Id,
++            payments.Select(x => x.Id).ToArray());
+     }
+ 
+     private static Guid StableId(Guid companyId, string name)
+@@ -185,4 +206,5 @@ public sealed record FinanceSeedResult(
+     IReadOnlyList<Guid> TransactionIds,
+     IReadOnlyList<Guid> BalanceIds,
+     IReadOnlyList<Guid> DocumentIds,
+-    Guid PolicyConfigurationId);
++    Guid PolicyConfigurationId,
++    IReadOnlyList<Guid> PaymentIds);
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePaymentsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinancePaymentsIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinancePaymentsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePaymentsIntegrationTests.cs
+@@ -19,7 +19,7 @@ public sealed class FinancePaymentsIntegrationTests : IClassFixture<TestWebAppli
+     }
+ 
+     [Fact]
+-    public async Task Payment_endpoints_create_list_and_isolate_records_by_company()
++    public async Task Payment_endpoints_create_list_both_directions_and_isolate_records_by_company()
+     {
+         var seed = await SeedAsync();
+         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+@@ -35,29 +35,52 @@ public sealed class FinancePaymentsIntegrationTests : IClassFixture<TestWebAppli
+             });
+ 
+         Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+-        var created = await createResponse.Content.ReadFromJsonAsync<FinancePaymentResponse>();
+-        Assert.NotNull(created);
+-        Assert.Equal(seed.CompanyId, created!.CompanyId);
+-        Assert.Equal("incoming", created.PaymentType);
+-        Assert.Equal("USD", created.Currency);
+-        Assert.Equal("bank_transfer", created.Method);
++        var incomingPayment = await createResponse.Content.ReadFromJsonAsync<FinancePaymentResponse>();
++        Assert.NotNull(incomingPayment);
++        Assert.Equal(seed.CompanyId, incomingPayment!.CompanyId);
++        Assert.Equal("incoming", incomingPayment.PaymentType);
++        Assert.Equal("USD", incomingPayment.Currency);
++        Assert.Equal("bank_transfer", incomingPayment.Method);
+ 
+-        var listResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/payments?type=incoming&limit=50");
++        var outgoingCreateResponse = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/finance/payments",
++            new CreateFinancePaymentRequest
++            {
++                PaymentType = "outgoing",
++                Amount = 640.10m,
++                Currency = "eur",
++                PaymentDate = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc),
++                Method = "ach",
++                Status = "pending",
++                CounterpartyReference = "VENDOR-PAYOUT-12"
++            });
++
++        Assert.Equal(HttpStatusCode.OK, outgoingCreateResponse.StatusCode);
++        var outgoingPayment = await outgoingCreateResponse.Content.ReadFromJsonAsync<FinancePaymentResponse>();
++        Assert.NotNull(outgoingPayment);
++        Assert.Equal("outgoing", outgoingPayment!.PaymentType);
++        Assert.Equal("EUR", outgoingPayment.Currency);
++
++        var listResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/payments?limit=50");
+         Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+         var payments = await listResponse.Content.ReadFromJsonAsync<List<FinancePaymentResponse>>();
+         Assert.NotNull(payments);
+-        Assert.Contains(payments!, payment => payment.Id == created.Id);
+-        Assert.All(payments!, payment => Assert.Equal("incoming", payment.PaymentType));
++        Assert.Contains(payments!, payment => payment.Id == incomingPayment.Id);
++        Assert.Contains(payments!, payment => payment.Id == outgoingPayment.Id);
++        Assert.Contains(payments!, payment => payment.PaymentType == "incoming");
++        Assert.Contains(payments!, payment => payment.PaymentType == "outgoing");
+ 
+-        var detailResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/payments/{created.Id}");
++        var outgoingOnlyResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/payments?type=outgoing&limit=50");
++        Assert.Equal(HttpStatusCode.OK, outgoingOnlyResponse.StatusCode);
++        var outgoingPayments = await outgoingOnlyResponse.Content.ReadFromJsonAsync<List<FinancePaymentResponse>>();
++        Assert.NotNull(outgoingPayments);
++        Assert.Contains(outgoingPayments!, payment => payment.Id == outgoingPayment.Id);
++        Assert.All(outgoingPayments!, payment => Assert.Equal("outgoing", payment.PaymentType));
++
++        var detailResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/payments/{outgoingPayment.Id}");
+         Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
+         var detail = await detailResponse.Content.ReadFromJsonAsync<FinancePaymentResponse>();
+         Assert.NotNull(detail);
+-        Assert.Equal(created.Id, detail!.Id);
+-        Assert.Equal(created.CounterpartyReference, detail.CounterpartyReference);
++        Assert.Equal(outgoingPayment.Id, detail!.Id);
++        Assert.Equal(outgoingPayment.CounterpartyReference, detail.CounterpartyReference);
+ 
+         var crossTenantResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/payments/{seed.OtherCompanyPaymentId}");
+         Assert.Equal(HttpStatusCode.NotFound, crossTenantResponse.StatusCode);
+@@ -75,7 +98,7 @@ public sealed class FinancePaymentsIntegrationTests : IClassFixture<TestWebAppli
+             {
+                 PaymentType = "sideways",
+                 Amount = 0m,
+-                Currency = "USD",
++                Currency = "US1",
+                 PaymentDate = new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
+                 Method = "bank_transfer",
+                 Status = "completed",
+@@ -87,6 +110,7 @@ public sealed class FinancePaymentsIntegrationTests : IClassFixture<TestWebAppli
+         Assert.NotNull(problem);
+         Assert.Contains(nameof(CreateFinancePaymentRequest.PaymentType), problem!.Errors.Keys);
+         Assert.Contains(nameof(CreateFinancePaymentRequest.Amount), problem.Errors.Keys);
++        Assert.Contains(nameof(CreateFinancePaymentRequest.Currency), problem.Errors.Keys);
+     }
+ 
+     private async Task<PaymentEndpointSeed> SeedAsync()
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSeedDatasetGeneratorTests.cs
+@@ -30,6 +30,7 @@ public sealed class FinanceSeedDatasetGeneratorTests
+         Assert.NotEmpty(dataset.SupplierIds);
+         Assert.NotEmpty(dataset.RecurringExpenses);
+         Assert.NotEmpty(dataset.CategoryIds);
++        Assert.NotEmpty(dataset.PaymentIds);
+         Assert.InRange(dataset.CategoryIds.Count, 10, int.MaxValue);
+ 
+         var transactions = await dbContext.FinanceTransactions
+@@ -38,6 +39,12 @@ public sealed class FinanceSeedDatasetGeneratorTests
+             .Where(x => x.CompanyId == companyId)
+             .ToArrayAsync();
+ 
++        var payments = await dbContext.Payments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .ToArrayAsync();
++
+         Assert.All(transactions, transaction =>
+         {
+             Assert.InRange(transaction.TransactionUtc, dataset.WindowStartUtc, dataset.WindowEndUtc);
+@@ -45,6 +52,10 @@ public sealed class FinanceSeedDatasetGeneratorTests
+             Assert.Contains(transaction.TransactionType, dataset.CategoryIds);
+         });
++
++        Assert.Equal(dataset.PaymentIds.OrderBy(x => x), payments.Select(x => x.Id).OrderBy(x => x));
++        Assert.Contains(payments, payment => payment.PaymentType == "incoming");
++        Assert.Contains(payments, payment => payment.PaymentType == "outgoing");
+     }
+ 
+     [Fact]
+diff --git a/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancialStatementMappingPersistenceTests.cs
+@@ -127,9 +127,12 @@ public sealed class FinancialStatementMappingPersistenceTests
+         await dbContext.SaveChangesAsync();
+ 
+         var service = new CompanyFinanceSeedBootstrapService(dbContext);
+-        await service.GenerateAsync(new FinanceSeedBootstrapCommand(companyId, 42), CancellationToken.None);
++        var firstResult = await service.GenerateAsync(new FinanceSeedBootstrapCommand(companyId, 42), CancellationToken.None);
+ 
+         var firstPass = await ReadSeededMappingsAsync(dbContext, companyId);
++        var firstPaymentIds = await ReadSeededPaymentIdsAsync(dbContext, companyId);
++
++        Assert.True(firstResult.PaymentCount > 0);
+         Assert.Equal(
+             [
+                 "1000|balance_sheet|balance_sheet_assets|current_asset|True",
+@@ -141,15 +144,25 @@ public sealed class FinancialStatementMappingPersistenceTests
+                 "6100|cash_flow|cash_flow_operating_activities|cash_disbursement|True",
+                 "6100|profit_and_loss|profit_and_loss_operating_expenses|operating_expense|True"
+             ],
+             firstPass);
++        Assert.Equal(firstResult.PaymentCount, firstPaymentIds.Length);
+ 
+-        await service.GenerateAsync(
++        var secondResult = await service.GenerateAsync(
+             new FinanceSeedBootstrapCommand(companyId, 42, ReplaceExisting: true),
+             CancellationToken.None);
+ 
+         var secondPass = await ReadSeededMappingsAsync(dbContext, companyId);
++        var secondPaymentIds = await ReadSeededPaymentIdsAsync(dbContext, companyId);
++
+         Assert.Equal(firstPass, secondPass);
++        Assert.Equal(firstResult.PaymentCount, secondResult.PaymentCount);
++        Assert.Equal(firstPaymentIds, secondPaymentIds);
+         Assert.Equal(secondPass.Length, secondPass.Distinct(StringComparer.Ordinal).Count());
++        Assert.Equal(secondPaymentIds.Length, secondPaymentIds.Distinct().Count());
+     }
+ 
+     private static async Task<string[]> ReadSeededMappingsAsync(VirtualCompanyDbContext dbContext, Guid companyId) =>
+         await dbContext.FinancialStatementMappings
+             .IgnoreQueryFilters()
+@@ -164,6 +177,15 @@ public sealed class FinancialStatementMappingPersistenceTests
+                 "|",
+                 x.IsActive))
+             .ToArrayAsync();
++
++    private static async Task<Guid[]> ReadSeededPaymentIdsAsync(VirtualCompanyDbContext dbContext, Guid companyId) =>
++        await dbContext.Payments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.PaymentDate)
++            .ThenBy(x => x.Id)
++            .Select(x => x.Id)
++            .ToArrayAsync();
+ 
+     private static async Task<HashSet<string>> ReadColumnsAsync(SqliteConnection connection, string tableName)
+     {
+END_OF_PATCH
