@@ -1,0 +1,86 @@
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceProgressionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceProgressionIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceProgressionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceProgressionIntegrationTests.cs
+@@ -101,6 +101,29 @@ public sealed class FinanceProgressionIntegrationTests
+         Assert.Contains(afterCashAssetPayment.RecentAssetPurchases, asset => asset.ReferenceNumber == snapshot.CashAsset.ReferenceNumber);
+     }
+ 
++    [Fact]
++    public async Task Simulation_progression_exposes_identical_summary_projection_for_ui_agent_and_debug_routes()
++    {
++        using var factory = new TestWebApplicationFactory();
++        var seed = await SeedSimulationCompanyAsync(factory, Guid.NewGuid(), "finance-progression-shared-summary");
++        using var client = CreateAuthenticatedClient(factory, seed);
++
++        await StartPausedSimulationAsync(client, seed.CompanyId);
++        var finalState = await StepForwardDaysAsync(client, seed.CompanyId, ProgressionDays);
++
++        var query = $"asOfUtc={Uri.EscapeDataString(finalState.CurrentSimulatedDateTime!.Value.ToString("O"))}&recentAssetPurchaseLimit=20&includeConsistencyCheck=true";
++
++        var canonical = await GetFinanceSummaryFromRouteAsync(client, $"/api/companies/{seed.CompanyId:D}/finance-summary?{query}");
++        var dashboard = await GetFinanceSummaryFromRouteAsync(client, $"/api/companies/{seed.CompanyId:D}/finance/dashboard/summary?{query}");
++        var agent = await GetFinanceSummaryFromRouteAsync(client, $"/api/companies/{seed.CompanyId:D}/finance/agent-context/summary?{query}");
++        var debug = await GetFinanceSummaryFromRouteAsync(client, $"/internal/companies/{seed.CompanyId:D}/finance/debug/summary?{query}");
++
++        Assert.True(canonical.HasFinanceData);
++        Assert.NotEmpty(canonical.RecentAssetPurchases);
++        Assert.NotNull(canonical.ConsistencyCheck);
++        Assert.True(canonical.ConsistencyCheck!.IsConsistent);
++        Assert.Equivalent(canonical, dashboard);
++        Assert.Equivalent(canonical, agent);
++        Assert.Equivalent(canonical, debug);
++    }
++
+     [Fact]
+     public async Task Same_seed_profile_and_start_date_replay_produces_identical_finance_timeline_and_summary()
+     {
+@@ -179,6 +202,17 @@ public sealed class FinanceProgressionIntegrationTests
+         return summary!;
+     }
+ 
++    private static async Task<FinanceSummaryResponse> GetFinanceSummaryFromRouteAsync(HttpClient client, string requestUri)
++    {
++        var response = await client.GetAsync(requestUri);
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var summary = await response.Content.ReadFromJsonAsync<FinanceSummaryResponse>();
++        Assert.NotNull(summary);
++
++        return summary!;
++    }
++
+     private static async Task<FinanceProgressionSnapshot> CaptureProgressionSnapshotAsync(TestWebApplicationFactory factory, Guid companyId)
+     {
+         return await factory.ExecuteDbContextAsync(async dbContext =>
+@@ -350,6 +384,7 @@ public sealed class FinanceProgressionIntegrationTests
+         public int RecentAssetPurchaseCount { get; set; }
+         public decimal RecentAssetPurchaseTotalAmount { get; set; }
+         public List<FinanceSummaryAssetPurchaseResponse> RecentAssetPurchases { get; set; } = [];
++        public FinanceSummaryConsistencyResponse? ConsistencyCheck { get; set; }
+     }
+ 
+     private sealed class FinanceSummaryAssetPurchaseResponse
+@@ -366,4 +401,19 @@ public sealed class FinanceProgressionIntegrationTests
+         public string FundingBehavior { get; set; } = string.Empty;
+         public string FundingSettlementStatus { get; set; } = string.Empty;
+     }
++
++    private sealed class FinanceSummaryConsistencyResponse
++    {
++        public Guid CompanyId { get; set; }
++        public DateTime AsOfUtc { get; set; }
++        public bool IsConsistent { get; set; }
++        public int SourceRecordCount { get; set; }
++        public List<FinanceSummaryConsistencyMetricResponse> Metrics { get; set; } = [];
++    }
++
++    private sealed class FinanceSummaryConsistencyMetricResponse
++    {
++        public string MetricKey { get; set; } = string.Empty;
++        public decimal ExpectedValue { get; set; }
++        public decimal ActualValue { get; set; }
++        public bool IsMatch { get; set; }
++    }
+ }
+END_OF_PATCH

@@ -1,0 +1,106 @@
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceProgressionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceProgressionIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceProgressionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceProgressionIntegrationTests.cs
+@@ -31,6 +31,7 @@ public sealed class FinanceProgressionIntegrationTests
+ 
+         var beforeInvoiceIssue = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.InvoiceWithPayment.IssuedUtc.AddMinutes(-1));
+         var afterInvoiceIssue = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.InvoiceWithPayment.IssuedUtc.AddMinutes(1));
++        Assert.Equal(beforeInvoiceIssue.CurrentCash, afterInvoiceIssue.CurrentCash);
+         Assert.Equal(beforeInvoiceIssue.AccountsReceivable + snapshot.InvoiceWithPayment.Amount, afterInvoiceIssue.AccountsReceivable);
+ 
+         var beforeInvoicePayment = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.InvoiceWithPayment.PaymentDate.AddMinutes(-1));
+@@ -48,6 +49,7 @@ public sealed class FinanceProgressionIntegrationTests
+ 
+         var beforeBillReceipt = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.BillWithPayment.ReceivedUtc.AddMinutes(-1));
+         var afterBillReceipt = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.BillWithPayment.ReceivedUtc.AddMinutes(1));
++        Assert.Equal(beforeBillReceipt.CurrentCash, afterBillReceipt.CurrentCash);
+         Assert.Equal(beforeBillReceipt.AccountsPayable + snapshot.BillWithPayment.Amount, afterBillReceipt.AccountsPayable);
+ 
+         var beforeBillPayment = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.BillWithPayment.PaymentDate.AddMinutes(-1));
+@@ -78,16 +80,23 @@ public sealed class FinanceProgressionIntegrationTests
+ 
+         var beforeRecurringReceipt = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.RecurringBill.ReceivedUtc.AddMinutes(-1));
+         var afterRecurringReceipt = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.RecurringBill.ReceivedUtc.AddMinutes(1));
++        Assert.Equal(beforeRecurringReceipt.CurrentCash, afterRecurringReceipt.CurrentCash);
+         Assert.Equal(beforeRecurringReceipt.AccountsPayable + snapshot.RecurringBill.Amount, afterRecurringReceipt.AccountsPayable);
+ 
+         var beforePayableAsset = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.PayableAsset.PurchasedUtc.AddMinutes(-1));
+         var afterPayableAsset = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.PayableAsset.PurchasedUtc.AddMinutes(1));
++        Assert.Equal(beforePayableAsset.CurrentCash, afterPayableAsset.CurrentCash);
+         Assert.Equal(beforePayableAsset.AccountsPayable + snapshot.PayableAsset.Amount, afterPayableAsset.AccountsPayable);
+         Assert.Equal(beforePayableAsset.RecentAssetPurchaseCount + 1, afterPayableAsset.RecentAssetPurchaseCount);
+         Assert.Contains(afterPayableAsset.RecentAssetPurchases, asset => asset.ReferenceNumber == snapshot.PayableAsset.ReferenceNumber);
+ 
+         Assert.NotNull(snapshot.CashAsset.CashMovementUtc);
+         var beforeCashAssetPayment = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.CashAsset.CashMovementUtc!.Value.AddMinutes(-1));
+         var afterCashAssetPayment = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.CashAsset.CashMovementUtc.Value.AddMinutes(1));
++        Assert.Equal(beforeCashAssetPayment.AccountsPayable, afterCashAssetPayment.AccountsPayable);
+         Assert.Equal(beforeCashAssetPayment.CurrentCash - snapshot.CashAsset.Amount, afterCashAssetPayment.CurrentCash);
+         Assert.Contains(afterCashAssetPayment.RecentAssetPurchases, asset => asset.ReferenceNumber == snapshot.CashAsset.ReferenceNumber);
+     }
+@@ -110,9 +119,16 @@ public sealed class FinanceProgressionIntegrationTests
+         await StartPausedSimulationAsync(secondClient, secondSeed.CompanyId);
+         var secondState = await StepForwardDaysAsync(secondClient, secondSeed.CompanyId, ProgressionDays);
+         var secondSnapshot = await CaptureReplaySnapshotAsync(secondFactory, secondClient, secondSeed.CompanyId, secondState.CurrentSimulatedDateTime!.Value);
+ 
+-        Assert.Equivalent(firstSnapshot, secondSnapshot);
++        AssertReplaySnapshotEqual(firstSnapshot, secondSnapshot);
+         Assert.NotEmpty(firstSnapshot.Timeline);
+         Assert.True(firstSnapshot.Summary.HasFinanceData);
+         Assert.True(firstSnapshot.Summary.RecentAssetPurchaseCount > 0);
++        Assert.All(firstSnapshot.Timeline, item => Assert.Equal(SimulationSeed, item.Seed));
++        Assert.All(firstSnapshot.Timeline, item => Assert.Equal(SimulationStartUtc, item.StartSimulatedUtc));
++        Assert.Contains(firstSnapshot.Timeline, item => string.Equals(item.EventType, "finance.invoice.generated", StringComparison.Ordinal));
++        Assert.Contains(firstSnapshot.Timeline, item => string.Equals(item.EventType, "finance.bill.generated", StringComparison.Ordinal));
++        Assert.Contains(firstSnapshot.Timeline, item => string.Equals(item.EventType, "finance.cash_movement.generated", StringComparison.Ordinal));
++        Assert.Contains(firstSnapshot.Timeline, item => string.Equals(item.EventType, "finance.asset_purchase.generated", StringComparison.Ordinal));
+     }
+@@ -342,6 +358,8 @@ public sealed class FinanceProgressionIntegrationTests
+                 })
+                 .OfType<OverdueBillFlow>()
+                 .OrderBy(x => x.DueUtc)
+                 .FirstOrDefault();
+ 
+             var recurringBill = bills
++                .Where(bill => bill.BillNumber != billWithPayment?.BillNumber)
++                .Where(bill => bill.BillNumber != overdueBill?.BillNumber)
+                 .Select(bill => new RecurringCostFlow(bill.BillNumber, bill.ReceivedUtc, bill.Amount))
+                 .FirstOrDefault();
+ 
+@@ -442,6 +460,29 @@ public sealed class FinanceProgressionIntegrationTests
+                 summary.RecentAssetPurchases
+                     .Select(x => new FinanceSummaryAssetPurchaseSnapshot(
+                         x.AssetId,
+                         x.CompanyId,
+                         x.ReferenceNumber,
+@@ -456,6 +497,28 @@ public sealed class FinanceProgressionIntegrationTests
+                     .ToList()),
+             timeline);
+     }
++
++    private static void AssertReplaySnapshotEqual(ReplaySnapshot expected, ReplaySnapshot actual)
++    {
++        Assert.Equal(expected.Summary.CompanyId, actual.Summary.CompanyId);
++        Assert.Equal(expected.Summary.AsOfUtc, actual.Summary.AsOfUtc);
++        Assert.Equal(expected.Summary.CurrentCash, actual.Summary.CurrentCash);
++        Assert.Equal(expected.Summary.AccountsReceivable, actual.Summary.AccountsReceivable);
++        Assert.Equal(expected.Summary.OverdueReceivables, actual.Summary.OverdueReceivables);
++        Assert.Equal(expected.Summary.AccountsPayable, actual.Summary.AccountsPayable);
++        Assert.Equal(expected.Summary.OverduePayables, actual.Summary.OverduePayables);
++        Assert.Equal(expected.Summary.MonthlyRevenue, actual.Summary.MonthlyRevenue);
++        Assert.Equal(expected.Summary.MonthlyCosts, actual.Summary.MonthlyCosts);
++        Assert.Equal(expected.Summary.Currency, actual.Summary.Currency);
++        Assert.Equal(expected.Summary.HasFinanceData, actual.Summary.HasFinanceData);
++        Assert.Equal(expected.Summary.RecentAssetPurchaseCount, actual.Summary.RecentAssetPurchaseCount);
++        Assert.Equal(expected.Summary.RecentAssetPurchaseTotalAmount, actual.Summary.RecentAssetPurchaseTotalAmount);
++        Assert.Equal(expected.Summary.RecentAssetPurchases, actual.Summary.RecentAssetPurchases);
++
++        // Ordered comparisons catch replay drift caused by unstable event sequencing.
++        Assert.Equal(expected.Timeline, actual.Timeline);
++    }
+ 
+     private sealed record SeededSimulationCompany(
+         Guid CompanyId,
+         string Subject,
+         string Email,
+END_OF_PATCH

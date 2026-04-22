@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-04-20T12:34:53.507Z",
+  "generatedAt": "2026-04-21T20:29:30.493Z",
   "epics": [
     {
       "id": "EP-1",
@@ -6013,6 +6013,192 @@
             "Automated migration tests cover clean database migration, migration from the current mock finance schema, and migration of a partially seeded company.",
             "Startup validation in dev and test environments fails fast when pending migrations exist.",
             "A safe admin-triggered bootstrap operation can rerun planning and approval backfills for an existing company without duplicating seeded records."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-28",
+      "title": "EPIC-28 — Lean Financial Simulation Consistency Layer and Deterministic Operational Finance Scenarios",
+      "stories": [
+        {
+          "id": "US-28.1",
+          "title": "Implement simulation event causality and object linkage across invoices, bills, payments, assets, and cash",
+          "tasks": [
+            {
+              "id": "TASK-28.1.1",
+              "title": "Add SimulationEventRecord persistence model with deterministic event identity and source metadata",
+              "tags": [
+                "backend",
+                "schema",
+                "simulation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-28.1.2",
+              "title": "Extend finance entities with source event references and causal linkage fields",
+              "tags": [
+                "backend",
+                "schema",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-28.1.3",
+              "title": "Persist cash delta records with before and after values during event execution",
+              "tags": [
+                "backend",
+                "cash",
+                "events"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Every simulated invoice, bill, payment, asset, and cash-affecting transaction stores a source simulation event reference.",
+            "For any payment allocation, the system can resolve the linked payment, target document, and originating simulation event in a single query path.",
+            "Cash-affecting events persist before/after cash values and the delta amount for the affected company and simulation date.",
+            "Replaying the same company seed and start date produces the same event identifiers, object references, and causal links."
+          ]
+        },
+        {
+          "id": "US-28.2",
+          "title": "Build deterministic operational finance scenario generation for receivables, payables, recurring costs, and asset purchases",
+          "tasks": [
+            {
+              "id": "TASK-28.2.1",
+              "title": "Implement seeded scenario generator for customer invoice issuance and collection behavior",
+              "tags": [
+                "backend",
+                "simulation",
+                "revenue"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-28.2.2",
+              "title": "Implement seeded recurring cost and supplier bill generation rules by company profile",
+              "tags": [
+                "backend",
+                "simulation",
+                "costs"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-28.2.3",
+              "title": "Implement seeded asset purchase event generation with cash and payable funding modes",
+              "tags": [
+                "backend",
+                "simulation",
+                "assets"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A seeded simulation run generates invoices, bills, recurring costs, and asset purchases with deterministic dates, amounts, counterparties, and statuses.",
+            "Generated invoices create receivable exposure until settled by incoming payments.",
+            "Generated bills create payable exposure until settled by outgoing payments.",
+            "Asset purchase events always create an asset record and either reduce cash immediately or create a payable based on configured funding behavior."
+          ]
+        },
+        {
+          "id": "US-28.3",
+          "title": "Expose derived operational finance state for dashboards, agents, and debug workflows",
+          "tasks": [
+            {
+              "id": "TASK-28.3.1",
+              "title": "Implement finance summary projection service from invoices, bills, payments, assets, and cash snapshots",
+              "tags": [
+                "backend",
+                "projections",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-28.3.2",
+              "title": "Add application queries or API endpoints for dashboard, agent context, and simulation debug finance summaries",
+              "tags": [
+                "api",
+                "backend",
+                "queries"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-28.3.3",
+              "title": "Add consistency checks validating projection totals against source simulation records",
+              "tags": [
+                "testing",
+                "validation",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The application exposes queryable metrics for current cash, accounts receivable, overdue receivables, accounts payable, overdue payables, monthly revenue, monthly costs, and recent asset purchases.",
+            "Derived metrics match the underlying simulated document, payment, and cash state for the same company and point in time.",
+            "Point-in-time finance summary queries return consistent results for repeated reads against the same simulation state.",
+            "Finance summary queries complete within agreed service thresholds for seeded companies in local and test environments."
+          ]
+        },
+        {
+          "id": "US-28.4",
+          "title": "Add deterministic regression coverage for core financial cause-effect flows and replayability",
+          "tasks": [
+            {
+              "id": "TASK-28.4.1",
+              "title": "Add integration tests for invoice, bill, payment, cash, and overdue progression flows",
+              "tags": [
+                "testing",
+                "integration",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-28.4.2",
+              "title": "Add deterministic replay tests for seeded scenario generation and event execution",
+              "tags": [
+                "testing",
+                "determinism",
+                "simulation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-28.4.3",
+              "title": "Add projection regression tests for finance summary outputs used by UI and agents",
+              "tags": [
+                "testing",
+                "projections",
+                "api"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Automated tests verify invoice issuance increases receivables, invoice payment increases cash and reduces receivables, bill receipt increases payables, and bill payment decreases cash and reduces payables.",
+            "Automated tests verify overdue invoice and bill states emerge from due dates and unpaid balances after time progression.",
+            "Automated tests verify recurring costs and asset purchases produce expected payable or cash effects.",
+            "Automated tests verify the same seed, profile, and start date produce identical event timelines and derived finance summaries."
           ]
         }
       ]

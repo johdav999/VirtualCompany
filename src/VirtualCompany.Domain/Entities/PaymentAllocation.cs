@@ -17,7 +17,10 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
         decimal allocatedAmount,
         string currency,
         DateTime? createdUtc = null,
-        DateTime? updatedUtc = null)
+        DateTime? updatedUtc = null,
+        Guid? sourceSimulationEventRecordId = null,
+        Guid? paymentSourceSimulationEventRecordId = null,
+        Guid? targetSourceSimulationEventRecordId = null)
     {
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
@@ -29,6 +32,24 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
         Currency = NormalizeCurrency(currency, nameof(currency));
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
+        if (sourceSimulationEventRecordId == Guid.Empty)
+        {
+            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
+        }
+
+        if (paymentSourceSimulationEventRecordId == Guid.Empty)
+        {
+            throw new ArgumentException("PaymentSourceSimulationEventRecordId cannot be empty.", nameof(paymentSourceSimulationEventRecordId));
+        }
+
+        if (targetSourceSimulationEventRecordId == Guid.Empty)
+        {
+            throw new ArgumentException("TargetSourceSimulationEventRecordId cannot be empty.", nameof(targetSourceSimulationEventRecordId));
+        }
+
+        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
+        PaymentSourceSimulationEventRecordId = paymentSourceSimulationEventRecordId;
+        TargetSourceSimulationEventRecordId = targetSourceSimulationEventRecordId;
     }
 
     public Guid Id { get; private set; }
@@ -40,10 +61,16 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
     public string Currency { get; private set; } = null!;
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
+    public Guid? SourceSimulationEventRecordId { get; private set; }
+    public Guid? PaymentSourceSimulationEventRecordId { get; private set; }
+    public Guid? TargetSourceSimulationEventRecordId { get; private set; }
     public Company Company { get; private set; } = null!;
     public Payment Payment { get; private set; } = null!;
     public FinanceInvoice? Invoice { get; private set; }
     public FinanceBill? Bill { get; private set; }
+    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
+    public SimulationEventRecord? PaymentSourceSimulationEventRecord { get; private set; }
+    public SimulationEventRecord? TargetSourceSimulationEventRecord { get; private set; }
 
     public void Update(
         Guid paymentId,
@@ -51,7 +78,10 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
         Guid? billId,
         decimal allocatedAmount,
         string currency,
-        DateTime? updatedUtc = null)
+        DateTime? updatedUtc = null,
+        Guid? sourceSimulationEventRecordId = null,
+        Guid? paymentSourceSimulationEventRecordId = null,
+        Guid? targetSourceSimulationEventRecordId = null)
     {
         PaymentId = paymentId == Guid.Empty
             ? throw new ArgumentException("PaymentId is required.", nameof(paymentId))
@@ -62,6 +92,24 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
         AllocatedAmount = NormalizeAmount(allocatedAmount, nameof(allocatedAmount));
         Currency = NormalizeCurrency(currency, nameof(currency));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
+        if (sourceSimulationEventRecordId == Guid.Empty)
+        {
+            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
+        }
+
+        if (paymentSourceSimulationEventRecordId == Guid.Empty)
+        {
+            throw new ArgumentException("PaymentSourceSimulationEventRecordId cannot be empty.", nameof(paymentSourceSimulationEventRecordId));
+        }
+
+        if (targetSourceSimulationEventRecordId == Guid.Empty)
+        {
+            throw new ArgumentException("TargetSourceSimulationEventRecordId cannot be empty.", nameof(targetSourceSimulationEventRecordId));
+        }
+
+        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
+        PaymentSourceSimulationEventRecordId = paymentSourceSimulationEventRecordId;
+        TargetSourceSimulationEventRecordId = targetSourceSimulationEventRecordId;
     }
 
     private static decimal NormalizeAmount(decimal value, string name)

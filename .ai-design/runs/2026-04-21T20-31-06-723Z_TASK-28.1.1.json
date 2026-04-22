@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-28.1.1",
+  "promptPath": ".ai-design/prompts/TASK-28.1.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-21T20:31:06.723Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-21T20-31-06-723Z_TASK-28.1.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-21T20-31-06-723Z_TASK-28.1.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-21T20:45:42.121Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "yId, 73, startUtc, simulationDateUtc, \"finance.invoice.generated\", \"finance_invoice\", sourceEntityId, 1, \"\"\"{\"b\":2,\"a\":1}\"\"\");\n+        var rightKey = SimulationEventDeterministicIdentity.CreateDeterministicKey(companyId, 73, startUtc, simulationDateUtc, \"finance.invoice.generated\", \"finance_invoice\", sourceEntityId, 1, \"\"\"{\"a\":1,\"b\":2}\"\"\");\n+\n+        Assert.Equal(leftId, rightId);\n+        Assert.Equal(leftKey, rightKey);\n+    }\n+\n+    [Fact]\n+    public void Changing_seed_or_sequence_changes_the_event_identity()\n+    {\n+        var companyId = Guid.Parse(\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\");\n+        var startUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);\n+        var simulationDateUtc = new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc);\n+        var sourceEntityId = Guid.Parse(\"11111111-2222-3333-4444-555555555555\");\n+\n+        var baseline = SimulationEventDeterministicIdentity.CreateEventId(companyId, 73, startUtc, simulationDateUtc, \"finance.invoice.generated\", \"finance_invoice\", sourceEntityId, 1);\n+        var changedSeed = SimulationEventDeterministicIdentity.CreateEventId(companyId, 74, startUtc, simulationDateUtc, \"finance.invoice.generated\", \"finance_invoice\", sourceEntityId, 1);\n+        var changedSequence = SimulationEventDeterministicIdentity.CreateEventId(companyId, 73, startUtc, simulationDateUtc, \"finance.invoice.generated\", \"finance_invoice\", sourceEntityId, 2);\n+\n+        Assert.NotEqual(baseline, changedSeed);\n+        Assert.NotEqual(baseline, changedSequence);\n+    }\n+\n+    [Fact]\n+    public void Cash_snapshot_requires_before_delta_and_after_to_match()\n+    {\n+        Assert.Throws<ArgumentException>(() => new SimulationEventRecord(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 73, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc), \"finance.cash_movement.generated\", \"finance_payment\", Guid.NewGuid(), \"PAY-001\", null, 1, \"key\", 100m, 10m, 109m));\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "imulationDateUtc, \"finance.invoice.generated\", \"finance_invoice\", sourceEntityId, 1, \"\"\"{\"b\":2,\"a\":1}\"\"\");\n+        var rightKey = SimulationEventDeterministicIdentity.CreateDeterministicKey(companyId, 73, startUtc, simulationDateUtc, \"finance.invoice.generated\", \"finance_invoice\", sourceEntityId, 1, \"\"\"{\"a\":1,\"b\":2}\"\"\");\n+\n+        Assert.Equal(leftId, rightId);\n+        Assert.Equal(leftKey, rightKey);\n+    }\n+\n+    [Fact]\n+    public void Changing_seed_or_sequence_changes_the_event_identity()\n+    {\n+        var companyId = Guid.Parse(\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\");\n+        var startUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);\n+        var simulationDateUtc = new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc);\n+        var sourceEntityId = Guid.Parse(\"11111111-2222-3333-4444-555555555555\");\n+\n+        var baseline = SimulationEventDeterministicIdentity.CreateEventId(companyId, 73, startUtc, simulationDateUtc, \"finance.invoice.generated\", \"finance_invoice\", sourceEntityId, 1);\n+        var changedSeed = SimulationEventDeterministicIdentity.CreateEventId(companyId, 74, startUtc, simulationDateUtc, \"finance.invoice.generated\", \"finance_invoice\", sourceEntityId, 1);\n+        var changedSequence = SimulationEventDeterministicIdentity.CreateEventId(companyId, 73, startUtc, simulationDateUtc, \"finance.invoice.generated\", \"finance_invoice\", sourceEntityId, 2);\n+\n+        Assert.NotEqual(baseline, changedSeed);\n+        Assert.NotEqual(baseline, changedSequence);\n+    }\n+\n+    [Fact]\n+    public void Cash_snapshot_requires_before_delta_and_after_to_match()\n+    {\n+        Assert.Throws<ArgumentException>(() => new SimulationEventRecord(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 73, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc), \"finance.cash_movement.generated\", \"finance_payment\", Guid.NewGuid(), \"PAY-001\", null, 1, \"key\", 100m, 10m, 109m));\n+    }\n+}\nEND_OF_PATCH\ntokens used\n215,789\n",
+  "verbosityMode": "summary"
+}

@@ -11,6 +11,14 @@ internal sealed class ReconciliationSuggestionRecordEntityConfiguration : IEntit
     public void Configure(EntityTypeBuilder<ReconciliationSuggestionRecord> builder)
     {
         builder.ToTable("finance_reconciliation_suggestions");
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_finance_reconciliation_suggestions_source_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("source_record_type"));
+            t.HasCheckConstraint("CK_finance_reconciliation_suggestions_target_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("target_record_type"));
+            t.HasCheckConstraint("CK_finance_reconciliation_suggestions_match_type", ReconciliationMatchTypes.BuildCheckConstraintSql("match_type"));
+            t.HasCheckConstraint("CK_finance_reconciliation_suggestions_status", ReconciliationSuggestionStatuses.BuildCheckConstraintSql("status"));
+            t.HasCheckConstraint("CK_finance_reconciliation_suggestions_confidence_score", "confidence_score >= 0 AND confidence_score <= 1");
+        });
 
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -35,12 +43,6 @@ internal sealed class ReconciliationSuggestionRecordEntityConfiguration : IEntit
         builder.Property(x => x.RejectedUtc).HasColumnName("rejected_at");
         builder.Property(x => x.SupersededUtc).HasColumnName("superseded_at");
 
-        builder.HasCheckConstraint("CK_finance_reconciliation_suggestions_source_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("source_record_type"));
-        builder.HasCheckConstraint("CK_finance_reconciliation_suggestions_target_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("target_record_type"));
-        builder.HasCheckConstraint("CK_finance_reconciliation_suggestions_match_type", ReconciliationMatchTypes.BuildCheckConstraintSql("match_type"));
-        builder.HasCheckConstraint("CK_finance_reconciliation_suggestions_status", ReconciliationSuggestionStatuses.BuildCheckConstraintSql("status"));
-        builder.HasCheckConstraint("CK_finance_reconciliation_suggestions_confidence_score", "confidence_score >= 0 AND confidence_score <= 1");
-
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.SourceRecordType, x.SourceRecordId, x.Status });
         builder.HasIndex(x => new { x.CompanyId, x.TargetRecordType, x.TargetRecordId, x.Status });
@@ -60,6 +62,13 @@ internal sealed class ReconciliationResultRecordEntityConfiguration : IEntityTyp
     public void Configure(EntityTypeBuilder<ReconciliationResultRecord> builder)
     {
         builder.ToTable("finance_reconciliation_results");
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_finance_reconciliation_results_source_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("source_record_type"));
+            t.HasCheckConstraint("CK_finance_reconciliation_results_target_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("target_record_type"));
+            t.HasCheckConstraint("CK_finance_reconciliation_results_match_type", ReconciliationMatchTypes.BuildCheckConstraintSql("match_type"));
+            t.HasCheckConstraint("CK_finance_reconciliation_results_confidence_score", "confidence_score >= 0 AND confidence_score <= 1");
+        });
 
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -80,11 +89,6 @@ internal sealed class ReconciliationResultRecordEntityConfiguration : IEntityTyp
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
         builder.Property(x => x.UpdatedByUserId).HasColumnName("updated_by_user_id").IsRequired();
-
-        builder.HasCheckConstraint("CK_finance_reconciliation_results_source_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("source_record_type"));
-        builder.HasCheckConstraint("CK_finance_reconciliation_results_target_record_type", ReconciliationRecordTypes.BuildCheckConstraintSql("target_record_type"));
-        builder.HasCheckConstraint("CK_finance_reconciliation_results_match_type", ReconciliationMatchTypes.BuildCheckConstraintSql("match_type"));
-        builder.HasCheckConstraint("CK_finance_reconciliation_results_confidence_score", "confidence_score >= 0 AND confidence_score <= 1");
 
         builder.HasIndex(x => new { x.CompanyId, x.AcceptedSuggestionId }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.SourceRecordType, x.SourceRecordId });

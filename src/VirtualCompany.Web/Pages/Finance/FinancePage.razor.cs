@@ -914,6 +914,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
             TransactionsGenerated = dayLog.TransactionsGenerated,
             InvoicesGenerated = dayLog.InvoicesGenerated,
             BillsGenerated = dayLog.BillsGenerated,
+            AssetPurchasesGenerated = dayLog.AssetPurchasesGenerated,
             RecurringExpenseInstancesGenerated = dayLog.RecurringExpenseInstancesGenerated,
             AlertsGenerated = dayLog.AlertsGenerated,
             InjectedAnomalies = dayLog.InjectedAnomalies.ToList(),

@@ -392,6 +392,7 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
             TransactionsGenerated = response.TransactionsGenerated,
             InvoicesGenerated = response.InvoicesGenerated,
             BillsGenerated = response.BillsGenerated,
+            AssetPurchasesGenerated = response.AssetPurchasesGenerated,
             RecurringExpenseInstancesGenerated = response.RecurringExpenseInstancesGenerated,
             AlertsGenerated = response.AlertsGenerated,
             InjectedAnomalies = response.InjectedAnomalies.ToArray(),
@@ -636,12 +637,14 @@ public sealed class FinanceSandboxSimulationDayLogViewModel
     public int TransactionsGenerated { get; set; }
     public int InvoicesGenerated { get; set; }
     public int BillsGenerated { get; set; }
+    public int AssetPurchasesGenerated { get; set; }
     public int RecurringExpenseInstancesGenerated { get; set; }
     public int AlertsGenerated { get; set; }
     public IReadOnlyList<string> InjectedAnomalies { get; set; } = [];
     public IReadOnlyList<string> Warnings { get; set; } = [];
     public IReadOnlyList<string> Errors { get; set; } = [];
-    public int GeneratedRecordCount => TransactionsGenerated + InvoicesGenerated + BillsGenerated + RecurringExpenseInstancesGenerated;
+    public int GeneratedRecordCount =>
+        TransactionsGenerated + InvoicesGenerated + BillsGenerated + AssetPurchasesGenerated + RecurringExpenseInstancesGenerated;
 }
 
 public sealed class FinanceSandboxProgressionRunViewModel

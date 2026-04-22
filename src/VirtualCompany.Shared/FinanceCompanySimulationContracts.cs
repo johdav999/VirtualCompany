@@ -21,12 +21,14 @@ public sealed class FinanceCompanySimulationDayLogResponse
     public int TransactionsGenerated { get; set; }
     public int InvoicesGenerated { get; set; }
     public int BillsGenerated { get; set; }
+    public int AssetPurchasesGenerated { get; set; }
     public int RecurringExpenseInstancesGenerated { get; set; }
     public int AlertsGenerated { get; set; }
     public List<string> InjectedAnomalies { get; set; } = [];
     public List<string> Warnings { get; set; } = [];
     public List<string> Errors { get; set; } = [];
-    public int GeneratedRecordCount => TransactionsGenerated + InvoicesGenerated + BillsGenerated + RecurringExpenseInstancesGenerated;
+    public int GeneratedRecordCount =>
+        TransactionsGenerated + InvoicesGenerated + BillsGenerated + AssetPurchasesGenerated + RecurringExpenseInstancesGenerated;
 }
 
 public sealed class FinanceCompanySimulationRunHistoryResponse

@@ -338,6 +338,7 @@ public sealed class CompanySimulationRunHistory : ICompanyOwnedEntity
         DateTime simulatedDateUtc,
         int transactionsCreated,
         int invoicesCreated,
+        int assetPurchasesCreated,
         int billsCreated,
         int recurringExpenseInstancesCreated,
         int alertsCreated,
@@ -359,6 +360,7 @@ public sealed class CompanySimulationRunHistory : ICompanyOwnedEntity
                 normalizedSimulatedDateUtc,
                 transactionsCreated,
                 invoicesCreated,
+                assetPurchasesCreated,
                 billsCreated,
                 recurringExpenseInstancesCreated,
                 alertsCreated,
@@ -372,6 +374,7 @@ public sealed class CompanySimulationRunHistory : ICompanyOwnedEntity
             existing.Update(
                 transactionsCreated,
                 invoicesCreated,
+                assetPurchasesCreated,
                 billsCreated,
                 recurringExpenseInstancesCreated,
                 alertsCreated,
@@ -462,6 +465,7 @@ public sealed class CompanySimulationRunDayLog : ICompanyOwnedEntity
         DateTime simulatedDateUtc,
         int transactionsGenerated,
         int invoicesGenerated,
+        int assetPurchasesGenerated,
         int billsGenerated,
         int recurringExpenseInstancesGenerated,
         int alertsGenerated,
@@ -475,7 +479,7 @@ public sealed class CompanySimulationRunDayLog : ICompanyOwnedEntity
         RunHistoryId = runHistoryId;
         SessionId = sessionId;
         SimulatedDateUtc = EntityTimestampNormalizer.NormalizeUtc(simulatedDateUtc, nameof(simulatedDateUtc));
-        Update(transactionsGenerated, invoicesGenerated, billsGenerated, recurringExpenseInstancesGenerated, alertsGenerated, injectedAnomalies, warnings, errors, createdUtc);
+        Update(transactionsGenerated, invoicesGenerated, assetPurchasesGenerated, billsGenerated, recurringExpenseInstancesGenerated, alertsGenerated, injectedAnomalies, warnings, errors, createdUtc);
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
     }
 
@@ -486,6 +490,7 @@ public sealed class CompanySimulationRunDayLog : ICompanyOwnedEntity
     public DateTime SimulatedDateUtc { get; private set; }
     public int TransactionsGenerated { get; private set; }
     public int InvoicesGenerated { get; private set; }
+    public int AssetPurchasesGenerated { get; private set; }
     public int BillsGenerated { get; private set; }
     public int RecurringExpenseInstancesGenerated { get; private set; }
     public int AlertsGenerated { get; private set; }
@@ -499,6 +504,7 @@ public sealed class CompanySimulationRunDayLog : ICompanyOwnedEntity
     public void Update(
         int transactionsGenerated,
         int invoicesGenerated,
+        int assetPurchasesGenerated,
         int billsGenerated,
         int recurringExpenseInstancesGenerated,
         int alertsGenerated,
@@ -509,6 +515,7 @@ public sealed class CompanySimulationRunDayLog : ICompanyOwnedEntity
     {
         TransactionsGenerated = Math.Max(0, transactionsGenerated);
         InvoicesGenerated = Math.Max(0, invoicesGenerated);
+        AssetPurchasesGenerated = Math.Max(0, assetPurchasesGenerated);
         BillsGenerated = Math.Max(0, billsGenerated);
         RecurringExpenseInstancesGenerated = Math.Max(0, recurringExpenseInstancesGenerated);
         AlertsGenerated = Math.Max(0, alertsGenerated);

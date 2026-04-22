@@ -256,7 +256,8 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
         string description,
         string externalReference,
         Guid? documentId = null,
-        DateTime? createdUtc = null)
+        DateTime? createdUtc = null,
+        Guid? sourceSimulationEventRecordId = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -302,6 +303,12 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
         Description = NormalizeRequired(description, nameof(description), 500);
         ExternalReference = NormalizeRequired(externalReference, nameof(externalReference), 100);
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? TransactionUtc, nameof(createdUtc));
+        if (sourceSimulationEventRecordId == Guid.Empty)
+        {
+            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
+        }
+
+        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
     }
 
     public Guid Id { get; private set; }
@@ -318,6 +325,8 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
     public string Description { get; private set; } = null!;
     public string ExternalReference { get; private set; } = null!;
     public DateTime CreatedUtc { get; private set; }
+    public Guid? SourceSimulationEventRecordId { get; private set; }
+    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
     public Company Company { get; private set; } = null!;
     public FinanceAccount Account { get; private set; } = null!;
     public FinanceCounterparty? Counterparty { get; private set; }
@@ -366,7 +375,8 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         Guid? documentId = null,
         DateTime? createdUtc = null,
         DateTime? updatedUtc = null,
-        string? settlementStatus = null)
+        string? settlementStatus = null,
+        Guid? sourceSimulationEventRecordId = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -396,6 +406,12 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         DocumentId = documentId;
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? IssuedUtc, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
+        if (sourceSimulationEventRecordId == Guid.Empty)
+        {
+            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
+        }
+
+        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
     }
 
     public Guid Id { get; private set; }
@@ -411,6 +427,8 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
     public Guid? DocumentId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
+    public Guid? SourceSimulationEventRecordId { get; private set; }
+    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
     public Company Company { get; private set; } = null!;
     public FinanceCounterparty Counterparty { get; private set; } = null!;
     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
@@ -510,7 +528,8 @@ public sealed class FinanceBill : ICompanyOwnedEntity
         Guid? documentId = null,
         DateTime? createdUtc = null,
         DateTime? updatedUtc = null,
-        string? settlementStatus = null)
+        string? settlementStatus = null,
+        Guid? sourceSimulationEventRecordId = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -540,6 +559,12 @@ public sealed class FinanceBill : ICompanyOwnedEntity
         DocumentId = documentId;
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? ReceivedUtc, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
+        if (sourceSimulationEventRecordId == Guid.Empty)
+        {
+            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
+        }
+
+        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
     }
 
     public Guid Id { get; private set; }
@@ -555,6 +580,8 @@ public sealed class FinanceBill : ICompanyOwnedEntity
     public Guid? DocumentId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
+    public Guid? SourceSimulationEventRecordId { get; private set; }
+    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
     public Company Company { get; private set; } = null!;
     public FinanceCounterparty Counterparty { get; private set; } = null!;
     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
@@ -608,7 +635,7 @@ public sealed class FinanceBalance : ICompanyOwnedEntity
     }
 
     public FinanceBalance(Guid id, Guid companyId, Guid accountId, DateTime asOfUtc, decimal amount, string currency,
-        DateTime? createdUtc = null)
+        DateTime? createdUtc = null, Guid? sourceSimulationEventRecordId = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -627,6 +654,12 @@ public sealed class FinanceBalance : ICompanyOwnedEntity
         Amount = amount;
         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? AsOfUtc, nameof(createdUtc));
+        if (sourceSimulationEventRecordId == Guid.Empty)
+        {
+            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
+        }
+
+        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
     }
 
     public Guid Id { get; private set; }
@@ -636,6 +669,8 @@ public sealed class FinanceBalance : ICompanyOwnedEntity
     public decimal Amount { get; private set; }
     public string Currency { get; private set; } = null!;
     public DateTime CreatedUtc { get; private set; }
+    public Guid? SourceSimulationEventRecordId { get; private set; }
+    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
     public Company Company { get; private set; } = null!;
     public FinanceAccount Account { get; private set; } = null!;
 

@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-28.1.3",
+  "promptPath": ".ai-design/prompts/TASK-28.1.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-21T20:53:52.574Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-21T20-53-52-574Z_TASK-28.1.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-21T20-53-52-574Z_TASK-28.1.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-21T20:58:54.115Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "_at\", cashDeltaColumns);\n+        Assert.Contains(\"source_entity_type\", cashDeltaColumns);\n+        Assert.Contains(\"source_entity_id\", cashDeltaColumns);\n+        Assert.Contains(\"cash_before\", cashDeltaColumns);\n+        Assert.Contains(\"cash_delta\", cashDeltaColumns);\n+        Assert.Contains(\"cash_after\", cashDeltaColumns);\n+\n+        var cashDeltaIndexes = await ReadIndexesAsync(connection, \"simulation_cash_delta_records\");\n+        Assert.Contains(\"IX_simulation_cash_delta_records_company_id_simulation_date_at\", cashDeltaIndexes);\n+        Assert.Contains(\"IX_simulation_cash_delta_records_company_id_simulation_event_record_id\", cashDeltaIndexes);\n+        Assert.Contains(\"IX_simulation_cash_delta_records_company_id_source_entity_type_source_entity_id\", cashDeltaIndexes);\n     }\n \n     [Fact]\ndiff --git a/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs b/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs\nindex ddddddd..eeeeeee 100644\n--- a/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs\n@@ -38,6 +38,19 @@ public sealed class SimulationEventDeterministicIdentityTests\n         Assert.NotEqual(baseline, changedSequence);\n     }\n \n+    [Fact]\n+    public void Deterministic_scoped_guid_generation_is_stable_for_replay_artifacts()\n+    {\n+        var companyId = Guid.Parse(\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\");\n+\n+        var left = FinanceSimulationDeterministicIdentity.CreateCashDeltaRecordId(\n+            companyId,\n+            Guid.Parse(\"11111111-2222-3333-4444-555555555555\"));\n+        var right = FinanceSimulationDeterministicIdentity.CreateCashDeltaRecordId(\n+            companyId,\n+            Guid.Parse(\"11111111-2222-3333-4444-555555555555\"));\n+\n+        Assert.Equal(left, right);\n+    }\n+\n     [Fact]\n     public void Cash_snapshot_requires_before_delta_and_after_to_match()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "ns);\n+        Assert.Contains(\"source_entity_type\", cashDeltaColumns);\n+        Assert.Contains(\"source_entity_id\", cashDeltaColumns);\n+        Assert.Contains(\"cash_before\", cashDeltaColumns);\n+        Assert.Contains(\"cash_delta\", cashDeltaColumns);\n+        Assert.Contains(\"cash_after\", cashDeltaColumns);\n+\n+        var cashDeltaIndexes = await ReadIndexesAsync(connection, \"simulation_cash_delta_records\");\n+        Assert.Contains(\"IX_simulation_cash_delta_records_company_id_simulation_date_at\", cashDeltaIndexes);\n+        Assert.Contains(\"IX_simulation_cash_delta_records_company_id_simulation_event_record_id\", cashDeltaIndexes);\n+        Assert.Contains(\"IX_simulation_cash_delta_records_company_id_source_entity_type_source_entity_id\", cashDeltaIndexes);\n     }\n \n     [Fact]\ndiff --git a/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs b/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs\nindex ddddddd..eeeeeee 100644\n--- a/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs\n@@ -38,6 +38,19 @@ public sealed class SimulationEventDeterministicIdentityTests\n         Assert.NotEqual(baseline, changedSequence);\n     }\n \n+    [Fact]\n+    public void Deterministic_scoped_guid_generation_is_stable_for_replay_artifacts()\n+    {\n+        var companyId = Guid.Parse(\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\");\n+\n+        var left = FinanceSimulationDeterministicIdentity.CreateCashDeltaRecordId(\n+            companyId,\n+            Guid.Parse(\"11111111-2222-3333-4444-555555555555\"));\n+        var right = FinanceSimulationDeterministicIdentity.CreateCashDeltaRecordId(\n+            companyId,\n+            Guid.Parse(\"11111111-2222-3333-4444-555555555555\"));\n+\n+        Assert.Equal(left, right);\n+    }\n+\n     [Fact]\n     public void Cash_snapshot_requires_before_delta_and_after_to_match()\n     {\nEND_OF_PATCH\ntokens used\n114,648\n",
+  "verbosityMode": "summary"
+}

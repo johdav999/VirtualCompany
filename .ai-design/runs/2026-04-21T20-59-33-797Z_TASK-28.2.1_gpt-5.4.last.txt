@@ -1,0 +1,1130 @@
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceAsset.cs b/src/VirtualCompany.Domain/Entities/FinanceAsset.cs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/FinanceAsset.cs
+@@ -0,0 +1,124 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class FinanceAsset : ICompanyOwnedEntity
++{
++    private FinanceAsset()
++    {
++    }
++
++    public FinanceAsset(
++        Guid id,
++        Guid companyId,
++        Guid counterpartyId,
++        string referenceNumber,
++        string name,
++        string category,
++        DateTime purchasedUtc,
++        decimal amount,
++        string currency,
++        string fundingBehavior,
++        string fundingSettlementStatus,
++        string status,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null,
++        Guid? sourceSimulationEventRecordId = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (counterpartyId == Guid.Empty)
++        {
++            throw new ArgumentException("CounterpartyId is required.", nameof(counterpartyId));
++        }
++
++        if (amount <= 0m)
++        {
++            throw new ArgumentOutOfRangeException(nameof(amount), "Amount must be greater than zero.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        CounterpartyId = counterpartyId;
++        ReferenceNumber = NormalizeRequired(referenceNumber, nameof(referenceNumber), 64);
++        Name = NormalizeRequired(name, nameof(name), 160);
++        Category = NormalizeRequired(category, nameof(category), 64);
++        PurchasedUtc = EntityTimestampNormalizer.NormalizeUtc(purchasedUtc, nameof(purchasedUtc));
++        Amount = decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
++        Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
++        FundingBehavior = NormalizeFundingBehavior(fundingBehavior);
++        FundingSettlementStatus = NormalizeFundingSettlementStatus(fundingSettlementStatus);
++        Status = NormalizeStatus(status);
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? PurchasedUtc, nameof(createdUtc));
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++        if (sourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
++        }
++
++        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid CounterpartyId { get; private set; }
++    public string ReferenceNumber { get; private set; } = null!;
++    public string Name { get; private set; } = null!;
++    public string Category { get; private set; } = null!;
++    public DateTime PurchasedUtc { get; private set; }
++    public decimal Amount { get; private set; }
++    public string Currency { get; private set; } = null!;
++    public string FundingBehavior { get; private set; } = null!;
++    public string FundingSettlementStatus { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Guid? SourceSimulationEventRecordId { get; private set; }
++    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FinanceCounterparty Counterparty { get; private set; } = null!;
++
++    public bool HasPayableExposure =>
++        string.Equals(FundingBehavior, FinanceAssetFundingBehaviors.Payable, StringComparison.Ordinal) &&
++        !string.Equals(FinanceSettlementStatuses.Normalize(FundingSettlementStatus), FinanceSettlementStatuses.Paid, StringComparison.Ordinal) &&
++        string.Equals(Status, FinanceAssetStatuses.Active, StringComparison.Ordinal);
++
++    public void ApplyFundingSettlementStatus(string fundingSettlementStatus)
++    {
++        FundingSettlementStatus = NormalizeFundingSettlementStatus(fundingSettlementStatus);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string NormalizeFundingBehavior(string value)
++    {
++        var normalized = FinanceAssetFundingBehaviors.Normalize(value);
++        return FinanceAssetFundingBehaviors.IsSupported(normalized)
++            ? normalized
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported asset funding behavior.");
++    }
++
++    private static string NormalizeFundingSettlementStatus(string value)
++    {
++        var normalized = FinanceSettlementStatuses.Normalize(value);
++        return FinanceSettlementStatuses.IsSupported(normalized)
++            ? normalized
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported funding settlement status.");
++    }
++
++    private static string NormalizeStatus(string value)
++    {
++        var normalized = FinanceAssetStatuses.Normalize(value);
++        return FinanceAssetStatuses.IsSupported(normalized)
++            ? normalized
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported asset status.");
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Enums/FinanceAssetValues.cs b/src/VirtualCompany.Domain/Enums/FinanceAssetValues.cs
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/FinanceAssetValues.cs
+@@ -0,0 +1,61 @@
++namespace VirtualCompany.Domain.Enums;
++
++public static class FinanceAssetFundingBehaviors
++{
++    public const string Cash = "cash";
++    public const string Payable = "payable";
++
++    private static readonly string[] AllowedValuesInternal =
++    [
++        Cash,
++        Payable
++    ];
++
++    private static readonly HashSet<string> AllowedValueSet = new(AllowedValuesInternal, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues => AllowedValuesInternal;
++
++    public static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    public static bool IsSupported(string? value) =>
++        !string.IsNullOrWhiteSpace(value) &&
++        AllowedValueSet.Contains(Normalize(value));
++
++    public static string BuildCheckConstraintSql(string columnName)
++    {
++        if (string.IsNullOrWhiteSpace(columnName))
++        {
++            throw new ArgumentException("Column name is required.", nameof(columnName));
++        }
++
++        return $"{columnName} IN ('{Cash}', '{Payable}')";
++    }
++}
++
++public static class FinanceAssetStatuses
++{
++    public const string Active = "active";
++    public const string Disposed = "disposed";
++
++    private static readonly string[] AllowedValuesInternal =
++    [
++        Active,
++        Disposed
++    ];
++
++    private static readonly HashSet<string> AllowedValueSet = new(AllowedValuesInternal, StringComparer.OrdinalIgnoreCase);
++
++    public static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    public static bool IsSupported(string? value) =>
++        !string.IsNullOrWhiteSpace(value) &&
++        AllowedValueSet.Contains(Normalize(value));
++
++    public static string BuildCheckConstraintSql(string columnName)
++    {
++        ArgumentException.ThrowIfNullOrWhiteSpace(columnName);
++        return $"{columnName} IN ('{Active}', '{Disposed}')";
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+index 3333333..4444444 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+@@ -166,6 +166,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                 company,
+                 command,
+                 policy,
++                config,
+                 plan,
+                 account,
+                 financeActorId,
+@@ -219,6 +220,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         Company company,
+         GenerateCompanySimulationFinanceCommand command,
+         FinancePolicyConfigurationDto policy,
++        FinanceGenerationConfiguration config,
+         FinanceDayPlan plan,
+         FinanceAccount account,
+         Guid financeActorId,
+@@ -379,6 +381,135 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             }
+         }
+ 
++        var dayIndex = (int)(plan.DateUtc.Date - command.StartSimulatedUtc.Date).TotalDays;
++        if (ShouldGenerateAssetPurchase(dayIndex, config))
++        {
++            var assetFundingBehavior = ResolveAssetFundingBehavior(config.AssetFundingBehavior, dayIndex);
++            var assetReference = $"SIM-AST-{plan.DateUtc:yyyyMMdd}-{dayIndex:000}";
++            var assetId = DeterministicGuid(company.Id, $"asset:{assetReference}");
++            var asset = await _dbContext.FinanceAssets
++                .IgnoreQueryFilters()
++                .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.ReferenceNumber == assetReference, cancellationToken);
++
++            if (asset is null)
++            {
++                var assetAmount = ResolveAssetPurchaseAmount(dayIndex, policy.BillApprovalThreshold);
++                var assetCategory = ResolveAssetCategory(dayIndex);
++                var assetName = ResolveAssetName(plan.DateUtc, dayIndex, assetCategory);
++                var assetPurchasedUtc = plan.DateUtc.Date.AddHours(11);
++                var assetEventId = SimulationEventDeterministicIdentity.CreateEventId(
++                    company.Id,
++                    command.Seed,
++                    command.StartSimulatedUtc,
++                    plan.DateUtc,
++                    "finance.asset_purchase.generated",
++                    "finance_asset",
++                    assetId,
++                    ++dayEventSequence,
++                    command.DeterministicConfigurationJson);
++
++                asset = new FinanceAsset(
++                    assetId,
++                    company.Id,
++                    plan.SupplierId,
++                    assetReference,
++                    assetName,
++                    assetCategory,
++                    assetPurchasedUtc,
++                    assetAmount,
++                    policy.ApprovalCurrency,
++                    assetFundingBehavior,
++                    string.Equals(assetFundingBehavior, FinanceAssetFundingBehaviors.Cash, StringComparison.Ordinal)
++                        ? FinanceSettlementStatuses.Paid
++                        : FinanceSettlementStatuses.Unpaid,
++                    FinanceAssetStatuses.Active,
++                    createdUtc: assetPurchasedUtc,
++                    updatedUtc: assetPurchasedUtc,
++                    sourceSimulationEventRecordId: assetEventId);
++                _dbContext.FinanceAssets.Add(asset);
++                _dbContext.SimulationEventRecords.Add(new SimulationEventRecord(
++                    assetEventId,
++                    company.Id,
++                    command.ActiveSessionId,
++                    command.Seed,
++                    command.StartSimulatedUtc,
++                    plan.DateUtc,
++                    "finance.asset_purchase.generated",
++                    "finance_asset",
++                    asset.Id,
++                    asset.ReferenceNumber,
++                    null,
++                    dayEventSequence,
++                    SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.asset_purchase.generated", "finance_asset", asset.Id, dayEventSequence, command.DeterministicConfigurationJson),
++                    null,
++                    null,
++                    null,
++                    assetPurchasedUtc));
++
++                if (await EnsureAuditEventAsync(
++                        company.Id,
++                        DeterministicGuid(company.Id, $"audit:asset:{asset.ReferenceNumber}"),
++                        "finance.asset_purchase.generated",
++                        "finance_asset",
++                        asset.Id.ToString("N"),
++                        BuildDayCorrelationId(company.Id, plan.DateUtc),
++                        assetPurchasedUtc,
++                        financeActorId,
++                        new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                        {
++                            ["assetReference"] = asset.ReferenceNumber,
++                            ["assetCategory"] = asset.Category,
++                            ["supplier"] = plan.SupplierName,
++                            ["fundingBehavior"] = asset.FundingBehavior,
++                            ["fundingSettlementStatus"] = asset.FundingSettlementStatus
++                        },
++                        cancellationToken))
++                {
++                    auditEventsCreated++;
++                }
++
++                if (string.Equals(assetFundingBehavior, FinanceAssetFundingBehaviors.Cash, StringComparison.Ordinal))
++                {
++                    var assetCashReference = $"{asset.ReferenceNumber}-PAY";
++                    await CreateCashMovementAsync(
++                        company,
++                        command,
++                        account,
++                        plan,
++                        financeActorId,
++                        asset.Id,
++                        asset.SourceSimulationEventRecordId,
++                        plan.SupplierId,
++                        null,
++                        null,
++                        assetPurchasedUtc.AddHours(2),
++                        -asset.Amount,
++                        asset.Currency,
++                        "asset_purchase",
++                        assetCashReference,
++                        $"Simulated asset purchase for {asset.Name}",
++                        asset.ReferenceNumber,
++                        ref dayEventSequence,
++                        ref runningCashBalance,
++                        ref transactionsCreated,
++                        ref auditEventsCreated,
++                        cancellationToken);
++                }
++            }
++        }
++
+         foreach (var payment in plan.Transactions)
+         {
+             var transaction = await _dbContext.FinanceTransactions
+@@ -482,6 +613,92 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         }
+     }
+ 
++    private async Task CreateCashMovementAsync(
++        Company company,
++        GenerateCompanySimulationFinanceCommand command,
++        FinanceAccount account,
++        FinanceDayPlan plan,
++        Guid financeActorId,
++        Guid sourceEntityId,
++        Guid? parentEventId,
++        Guid counterpartyId,
++        Guid? invoiceId,
++        Guid? billId,
++        DateTime transactionUtc,
++        decimal amount,
++        string currency,
++        string category,
++        string externalReference,
++        string description,
++        string counterpartyReference,
++        ref int dayEventSequence,
++        ref decimal runningCashBalance,
++        ref int transactionsCreated,
++        ref int auditEventsCreated,
++        CancellationToken cancellationToken)
++    {
++        var paymentId = DeterministicGuid(company.Id, $"payment:{externalReference}");
++        var paymentEventId = SimulationEventDeterministicIdentity.CreateEventId(
++            company.Id,
++            command.Seed,
++            command.StartSimulatedUtc,
++            plan.DateUtc,
++            "finance.cash_movement.generated",
++            "finance_payment",
++            paymentId,
++            ++dayEventSequence,
++            command.DeterministicConfigurationJson);
++
++        var paymentEvent = await _dbContext.SimulationEventRecords
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.Id == paymentEventId, cancellationToken);
++        if (paymentEvent is null)
++        {
++            paymentEvent = new SimulationEventRecord(
++                paymentEventId,
++                company.Id,
++                command.ActiveSessionId,
++                command.Seed,
++                command.StartSimulatedUtc,
++                plan.DateUtc,
++                "finance.cash_movement.generated",
++                "finance_payment",
++                paymentId,
++                externalReference,
++                parentEventId,
++                dayEventSequence,
++                SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.cash_movement.generated", "finance_payment", paymentId, dayEventSequence, command.DeterministicConfigurationJson),
++                runningCashBalance,
++                amount,
++                decimal.Round(runningCashBalance + amount, 2, MidpointRounding.AwayFromZero),
++                transactionUtc);
++            _dbContext.SimulationEventRecords.Add(paymentEvent);
++        }
++
++        await EnsureSimulationCashDeltaRecordAsync(company.Id, paymentEvent, cancellationToken);
++
++        var payment = await _dbContext.Payments
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.Id == paymentId, cancellationToken);
++        if (payment is null)
++        {
++            payment = new Payment(
++                paymentId,
++                company.Id,
++                amount >= 0m ? PaymentTypes.Incoming : PaymentTypes.Outgoing,
++                Math.Abs(amount),
++                currency,
++                transactionUtc,
++                amount >= 0m ? "bank_transfer" : "ach",
++                PaymentStatuses.Completed,
++                counterpartyReference,
++                createdUtc: transactionUtc,
++                updatedUtc: transactionUtc,
++                sourceSimulationEventRecordId: paymentEvent.Id);
++            _dbContext.Payments.Add(payment);
++        }
++
++        var transaction = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.ExternalReference == externalReference, cancellationToken);
++        if (transaction is not null)
++        {
++            runningCashBalance = paymentEvent.CashAfter ?? runningCashBalance;
++            return;
++        }
++
++        transaction = new FinanceTransaction(
++            DeterministicGuid(company.Id, $"transaction:{externalReference}"),
++            company.Id,
++            account.Id,
++            counterpartyId,
++            invoiceId,
++            billId,
++            transactionUtc,
++            category,
++            amount,
++            currency,
++            description,
++            externalReference,
++            createdUtc: transactionUtc,
++            sourceSimulationEventRecordId: paymentEvent.Id);
++        _dbContext.FinanceTransactions.Add(transaction);
++        FinanceDomainEvents.EnqueueTransactionCreated(_outboxEnqueuer, transaction, BuildDayCorrelationId(company.Id, plan.DateUtc));
++        transactionsCreated++;
++        runningCashBalance = paymentEvent.CashAfter ?? runningCashBalance;
++
++        var invoice = invoiceId.HasValue ? await _dbContext.FinanceInvoices.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == company.Id && x.Id == invoiceId.Value, cancellationToken) : null;
++        var bill = billId.HasValue ? await _dbContext.FinanceBills.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == company.Id && x.Id == billId.Value, cancellationToken) : null;
++        await EnsurePaymentAllocationAsync(company.Id, payment, invoice, bill, transactionUtc, cancellationToken);
++
++        if (await EnsureAuditEventAsync(
++                company.Id,
++                DeterministicGuid(company.Id, $"audit:transaction:{externalReference}"),
++                "finance.transaction.generated",
++                "finance_transaction",
++                transaction.Id.ToString("N"),
++                BuildDayCorrelationId(company.Id, plan.DateUtc),
++                transactionUtc,
++                financeActorId,
++                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["externalReference"] = externalReference,
++                    ["scenario"] = plan.InvoiceScenarioToken,
++                    ["amount"] = amount.ToString("0.00"),
++                    ["currency"] = currency
++                },
++                cancellationToken))
++        {
++            auditEventsCreated++;
++        }
++    }
++
+@@ -1287,14 +1504,19 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         {
+             results.Clear();
+         }
+ 
+-        results.Add(new PlannedTransaction(
+-            "recurring_expense",
+-            -billAmount,
+-            simulatedDateUtc.Date.AddHours(10),
+-            billCurrency,
+-            $"SIM-TXN-BILL-{simulatedDateUtc:yyyyMMdd}-{ToToken(thresholdCase)}",
+-            $"Simulated recurring expense for {billNumber}",
+-            supplier.Id,
+-            null,
+-            billId));
++        if (ShouldSettleBillImmediately(thresholdCase))
++        {
++            results.Add(new PlannedTransaction(
++                "recurring_expense",
++                -billAmount,
++                simulatedDateUtc.Date.AddHours(10),
++                billCurrency,
++                $"SIM-TXN-BILL-{simulatedDateUtc:yyyyMMdd}-{ToToken(thresholdCase)}",
++                $"Simulated recurring expense for {billNumber}",
++                supplier.Id,
++                null,
++                billId));
++        }
+ 
+         return results;
+     }
+@@ -1422,13 +1644,50 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             _ => FinanceSettlementStatuses.Unpaid
+         };
+ 
+     private static string ResolveBillStatus(ThresholdCase thresholdCase) =>
+         thresholdCase switch
+         {
+             ThresholdCase.JustAbove => "pending_approval",
+             ThresholdCase.HumanApprovalRequired => "pending_approval",
+-            ThresholdCase.AlreadyApprovedOrNotActionable => "paid",
++            ThresholdCase.EligibleWithoutEscalation => "paid",
++            ThresholdCase.AlreadyApprovedOrNotActionable => "paid",
+             _ => "open"
+         };
++
++    private static bool ShouldSettleBillImmediately(ThresholdCase thresholdCase) =>
++        thresholdCase is ThresholdCase.EligibleWithoutEscalation or ThresholdCase.AlreadyApprovedOrNotActionable;
++
++    private static bool ShouldGenerateAssetPurchase(int dayIndex, FinanceGenerationConfiguration config)
++    {
++        var cadence = Math.Max(1, config.AssetPurchaseCadenceDays);
++        return ((dayIndex + config.AssetPurchaseOffsetDays) % cadence) == 0;
++    }
++
++    private static string ResolveAssetFundingBehavior(string configuredBehavior, int dayIndex)
++    {
++        var normalized = NormalizeAssetFundingBehavior(configuredBehavior);
++        return normalized switch
++        {
++            FinanceAssetFundingBehaviors.Cash => FinanceAssetFundingBehaviors.Cash,
++            FinanceAssetFundingBehaviors.Payable => FinanceAssetFundingBehaviors.Payable,
++            _ => dayIndex % 2 == 0 ? FinanceAssetFundingBehaviors.Cash : FinanceAssetFundingBehaviors.Payable
++        };
++    }
++
++    private static decimal ResolveAssetPurchaseAmount(int dayIndex, decimal billThreshold)
++    {
++        var multiplier = 2.10m + ((dayIndex % 4) * 0.35m);
++        return decimal.Round(Math.Max(750m, billThreshold * multiplier), 2, MidpointRounding.AwayFromZero);
++    }
++
++    private static string ResolveAssetCategory(int dayIndex) =>
++        dayIndex % 4 switch
++        {
++            0 => "equipment",
++            1 => "vehicle",
++            2 => "infrastructure",
++            _ => "software"
++        };
++
++    private static string ResolveAssetName(DateTime simulatedDateUtc, int dayIndex, string category) =>
++        $"{category}-{simulatedDateUtc:yyyyMMdd}-{(dayIndex % 7) + 1:00}";
+ 
+     private static string ResolveAlternateCurrency(string approvalCurrency) =>
+         string.Equals(approvalCurrency, "USD", StringComparison.OrdinalIgnoreCase)
+@@ -1646,6 +1905,9 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+     {
+         public int AnomalyCadenceDays { get; init; } = 3;
+         public int AnomalyOffsetDays { get; init; }
++        public int AssetPurchaseCadenceDays { get; init; } = 4;
++        public int AssetPurchaseOffsetDays { get; init; } = 1;
++        public string AssetFundingBehavior { get; init; } = "alternate";
+ 
+         public static FinanceGenerationConfiguration Parse(string? deterministicConfigurationJson)
+         {
+@@ -1659,7 +1921,10 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                 return new FinanceGenerationConfiguration
+                 {
+                     AnomalyCadenceDays = Math.Max(1, financeNode?["anomalyCadenceDays"]?.GetValue<int>() ?? 3),
+-                    AnomalyOffsetDays = Math.Max(0, financeNode?["anomalyOffsetDays"]?.GetValue<int>() ?? 0)
++                    AnomalyOffsetDays = Math.Max(0, financeNode?["anomalyOffsetDays"]?.GetValue<int>() ?? 0),
++                    AssetPurchaseCadenceDays = Math.Max(1, financeNode?["assetPurchaseCadenceDays"]?.GetValue<int>() ?? 4),
++                    AssetPurchaseOffsetDays = Math.Max(0, financeNode?["assetPurchaseOffsetDays"]?.GetValue<int>() ?? 1),
++                    AssetFundingBehavior = NormalizeAssetFundingBehavior(financeNode?["assetFundingBehavior"]?.GetValue<string>() ?? "alternate")
+                 };
+             }
+             catch (JsonException)
+@@ -1668,6 +1933,15 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                 return new FinanceGenerationConfiguration();
+             }
+         }
++
++        private static string NormalizeAssetFundingBehavior(string value) =>
++            value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++    }
++
++    private static string NormalizeAssetFundingBehavior(string value)
++    {
++        var normalized = string.IsNullOrWhiteSpace(value) ? "alternate" : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++        return normalized is FinanceAssetFundingBehaviors.Cash or FinanceAssetFundingBehaviors.Payable or "alternate" ? normalized : "alternate";
+     }
+ 
+     private enum InvoiceScenario
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceAssetEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceAssetEntityConfiguration.cs
+new file mode 100644
+index 0000000..5555555
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceAssetEntityConfiguration.cs
+@@ -0,0 +1,45 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class FinanceAssetEntityConfiguration : IEntityTypeConfiguration<FinanceAsset>
++{
++    public void Configure(EntityTypeBuilder<FinanceAsset> builder)
++    {
++        builder.ToTable("finance_assets");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.CounterpartyId).HasColumnName("counterparty_id").IsRequired();
++        builder.Property(x => x.ReferenceNumber).HasColumnName("reference_number").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(160).IsRequired();
++        builder.Property(x => x.Category).HasColumnName("category").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.PurchasedUtc).HasColumnName("purchased_at").IsRequired();
++        builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
++        builder.Property(x => x.FundingBehavior).HasColumnName("funding_behavior").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.FundingSettlementStatus).HasColumnName("funding_settlement_status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasCheckConstraint("CK_finance_assets_amount_positive", "amount > 0");
++        builder.HasCheckConstraint("CK_finance_assets_funding_behavior", FinanceAssetFundingBehaviors.BuildCheckConstraintSql("funding_behavior"));
++        builder.HasCheckConstraint("CK_finance_assets_funding_settlement_status", FinanceSettlementStatuses.BuildCheckConstraintSql("funding_settlement_status"));
++        builder.HasCheckConstraint("CK_finance_assets_status", FinanceAssetStatuses.BuildCheckConstraintSql("status"));
++
++        builder.HasIndex(x => new { x.CompanyId, x.ReferenceNumber }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.PurchasedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.FundingBehavior, x.FundingSettlementStatus });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Counterparty)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.CounterpartyId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSimulationEventLinkConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSimulationEventLinkConfigurations.cs
+index 6666666..7777777 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceSimulationEventLinkConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSimulationEventLinkConfigurations.cs
+@@ -101,3 +101,17 @@ internal sealed class BankTransactionSimulationEventLinkConfiguration : IEntityT
+             .OnDelete(DeleteBehavior.Restrict);
+     }
+ }
++
++internal sealed class FinanceAssetSimulationEventLinkConfiguration : IEntityTypeConfiguration<FinanceAsset>
++{
++    public void Configure(EntityTypeBuilder<FinanceAsset> builder)
++    {
++        builder.Property(x => x.SourceSimulationEventRecordId).HasColumnName("source_simulation_event_record_id");
++        builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
++        builder.HasOne(x => x.SourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.SourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421110000_AddFinanceAssets.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421110000_AddFinanceAssets.cs
+new file mode 100644
+index 0000000..8888888
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421110000_AddFinanceAssets.cs
+@@ -0,0 +1,111 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddFinanceAssets : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var decimalType = isPostgres ? "numeric(18,2)" : "decimal(18,2)";
++            var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var string160Type = isPostgres ? "character varying(160)" : "nvarchar(160)";
++
++            migrationBuilder.CreateTable(
++                name: "finance_assets",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    counterparty_id = table.Column<Guid>(type: guidType, nullable: false),
++                    reference_number = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    name = table.Column<string>(type: string160Type, maxLength: 160, nullable: false),
++                    category = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    purchased_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    amount = table.Column<decimal>(type: decimalType, nullable: false),
++                    currency = table.Column<string>(type: isPostgres ? "character varying(3)" : "nvarchar(3)", maxLength: 3, nullable: false),
++                    funding_behavior = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    funding_settlement_status = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    status = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    source_simulation_event_record_id = table.Column<Guid>(type: guidType, nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_assets", x => x.id);
++                    table.UniqueConstraint("AK_finance_assets_company_id_id", x => new { x.company_id, x.id });
++                    table.CheckConstraint("CK_finance_assets_amount_positive", "amount > 0");
++                    table.CheckConstraint("CK_finance_assets_funding_behavior", "funding_behavior IN ('cash', 'payable')");
++                    table.CheckConstraint("CK_finance_assets_funding_settlement_status", "funding_settlement_status IN ('unpaid', 'partially_paid', 'paid')");
++                    table.CheckConstraint("CK_finance_assets_status", "status IN ('active', 'disposed')");
++                    table.ForeignKey(
++                        name: "FK_finance_assets_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_finance_assets_finance_counterparties_company_id_counterparty_id",
++                        columns: x => new { x.company_id, x.counterparty_id },
++                        principalTable: "finance_counterparties",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(
++                        name: "FK_finance_assets_simulation_event_records_company_id_source_simulation_event_record_id",
++                        columns: x => new { x.company_id, x.source_simulation_event_record_id },
++                        principalTable: "simulation_event_records",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_assets_company_id_reference_number",
++                table: "finance_assets",
++                columns: new[] { "company_id", "reference_number" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_assets_company_id_purchased_at",
++                table: "finance_assets",
++                columns: new[] { "company_id", "purchased_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_assets_company_id_funding_behavior_funding_settlement_status",
++                table: "finance_assets",
++                columns: new[] { "company_id", "funding_behavior", "funding_settlement_status" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_assets_company_id_counterparty_id",
++                table: "finance_assets",
++                columns: new[] { "company_id", "counterparty_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_assets_company_id_source_simulation_event_record_id",
++                table: "finance_assets",
++                columns: new[] { "company_id", "source_simulation_event_record_id" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "finance_assets");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 9999999..aaaaaaa 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -91,6 +91,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();
+     public DbSet<FinanceCounterparty> FinanceCounterparties => Set<FinanceCounterparty>();
+     public DbSet<FinanceBill> FinanceBills => Set<FinanceBill>();
++    public DbSet<FinanceAsset> FinanceAssets => Set<FinanceAsset>();
+     public DbSet<FinanceBalance> FinanceBalances => Set<FinanceBalance>();
+     public DbSet<FinancePolicyConfiguration> FinancePolicyConfigurations => Set<FinancePolicyConfiguration>();
+     public DbSet<FinanceSeedAnomaly> FinanceSeedAnomalies => Set<FinanceSeedAnomaly>();
+@@ -222,6 +223,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is FinanceTransaction ||
+                 entry.Entity is FinanceInvoice ||
+                 entry.Entity is FinanceBill ||
++                entry.Entity is FinanceAsset ||
+                 entry.Entity is FinanceBalance ||
+                 entry.Entity is FinanceCounterparty ||
+                 entry.Entity is FinancePolicyConfiguration ||
+@@ -446,6 +448,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FinanceBill>()
+             .HasQueryFilter(bill =>
+                 CurrentCompanyId.HasValue && bill.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceAsset>()
++            .HasQueryFilter(asset =>
++                CurrentCompanyId.HasValue && asset.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<FinanceBalance>()
+             .HasQueryFilter(balance =>
+                 CurrentCompanyId.HasValue && balance.CompanyId == CurrentCompanyId.Value);
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceExposureTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceExposureTests.cs
+new file mode 100644
+index 0000000..bbbbbbb
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceExposureTests.cs
+@@ -0,0 +1,242 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging.Abstractions;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class CompanySimulationFinanceExposureTests
++{
++    [Fact]
++    public async Task Generated_invoices_bills_and_assets_preserve_exposure_until_settlement()
++    {
++        var companyId = Guid.Parse("1de78357-4d8f-48b5-9aa8-050086f2c001");
++        var provider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero));
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(companyId, "Exposure Company"));
++        dbContext.FinancePolicyConfigurations.Add(new FinancePolicyConfiguration(
++            Guid.NewGuid(),
++            companyId,
++            "USD",
++            1000m,
++            500m,
++            true,
++            -2000m,
++            2000m,
++            60,
++            20));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        var generationService = new CompanySimulationFinanceGenerationService(
++            dbContext,
++            provider,
++            NullLogger<CompanySimulationFinanceGenerationService>.Instance);
++        var stateService = new CompanySimulationStateService(
++            repository,
++            provider,
++            companyContextAccessor: null,
++            distributedLockProvider: null,
++            financeGenerationPolicy: generationService,
++            logger: NullLogger<CompanySimulationStateService>.Instance);
++
++        await stateService.StartAsync(
++            new StartCompanySimulationCommand(
++                companyId,
++                new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                true,
++                73,
++                """{"financeGeneration":{"assetPurchaseCadenceDays":4,"assetPurchaseOffsetDays":1,"assetFundingBehavior":"alternate"}}"""),
++            CancellationToken.None);
++
++        provider.Advance(TimeSpan.FromSeconds(160));
++        _ = await stateService.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
++
++        var fullInvoice = await dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.InvoiceNumber.EndsWith("-FULL", StringComparison.OrdinalIgnoreCase));
++        var partialInvoice = await dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.InvoiceNumber.EndsWith("-PART", StringComparison.OrdinalIgnoreCase));
++        var unpaidInvoice = await dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.SettlementStatus == FinanceSettlementStatuses.Unpaid);
++
++        var fullInvoiceAllocated = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.InvoiceId == fullInvoice.Id)
++            .SumAsync(x => (decimal?)x.Amount) ?? 0m;
++        var partialInvoiceAllocated = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.InvoiceId == partialInvoice.Id)
++            .SumAsync(x => (decimal?)x.Amount) ?? 0m;
++        var unpaidInvoiceAllocated = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.InvoiceId == unpaidInvoice.Id)
++            .SumAsync(x => (decimal?)x.Amount) ?? 0m;
++
++        Assert.Equal(FinanceSettlementStatuses.Paid, fullInvoice.SettlementStatus);
++        Assert.Equal(fullInvoice.Amount, fullInvoiceAllocated);
++        Assert.Equal(FinanceSettlementStatuses.PartiallyPaid, partialInvoice.SettlementStatus);
++        Assert.Equal(Math.Round(partialInvoice.Amount * 0.50m, 2, MidpointRounding.AwayFromZero), partialInvoiceAllocated);
++        Assert.Equal(FinanceSettlementStatuses.Unpaid, unpaidInvoice.SettlementStatus);
++        Assert.Equal(0m, unpaidInvoiceAllocated);
++
++        var settledBill = await dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.SettlementStatus == FinanceSettlementStatuses.Paid);
++        var openBill = await dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.SettlementStatus == FinanceSettlementStatuses.Unpaid);
++
++        var settledBillAllocated = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.BillId == settledBill.Id)
++            .SumAsync(x => (decimal?)x.Amount) ?? 0m;
++        var openBillAllocated = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.BillId == openBill.Id)
++            .SumAsync(x => (decimal?)x.Amount) ?? 0m;
++
++        Assert.Equal(settledBill.Amount, settledBillAllocated);
++        Assert.Equal(0m, openBillAllocated);
++
++        var cashFundedAsset = await dbContext.FinanceAssets
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.FundingBehavior == FinanceAssetFundingBehaviors.Cash);
++        var payableFundedAsset = await dbContext.FinanceAssets
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.FundingBehavior == FinanceAssetFundingBehaviors.Payable);
++
++        var cashAssetPaymentExists = await dbContext.Payments
++            .IgnoreQueryFilters()
++            .AnyAsync(x => x.CompanyId == companyId && x.CounterpartyReference == cashFundedAsset.ReferenceNumber && x.PaymentType == PaymentTypes.Outgoing);
++        var cashAssetTransaction = await dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.ExternalReference == $"{cashFundedAsset.ReferenceNumber}-PAY");
++        var payableAssetPaymentExists = await dbContext.Payments
++            .IgnoreQueryFilters()
++            .AnyAsync(x => x.CompanyId == companyId && x.CounterpartyReference == payableFundedAsset.ReferenceNumber);
++
++        Assert.Equal(FinanceSettlementStatuses.Paid, cashFundedAsset.FundingSettlementStatus);
++        Assert.True(cashAssetPaymentExists);
++        Assert.True(cashAssetTransaction.Amount < 0m);
++        Assert.Equal(FinanceSettlementStatuses.Unpaid, payableFundedAsset.FundingSettlementStatus);
++        Assert.True(payableFundedAsset.HasPayableExposure);
++        Assert.False(payableAssetPaymentExists);
++    }
++
++    [Fact]
++    public async Task Fixed_seed_replays_asset_purchase_dates_amounts_counterparties_and_funding_behavior()
++    {
++        var companyId = Guid.Parse("a2238870-5e95-4e38-aa9d-a4d583228e01");
++        var first = await RunAssetSnapshotAsync(companyId, 73);
++        var second = await RunAssetSnapshotAsync(companyId, 73);
++
++        Assert.Equal(first, second);
++        Assert.NotEmpty(first);
++    }
++
++    private static async Task<IReadOnlyList<AssetSnapshot>> RunAssetSnapshotAsync(Guid companyId, int seed)
++    {
++        var provider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero));
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(companyId, "Asset Replay Company"));
++        dbContext.FinancePolicyConfigurations.Add(new FinancePolicyConfiguration(
++            Guid.NewGuid(),
++            companyId,
++            "USD",
++            1000m,
++            500m,
++            true,
++            -2000m,
++            2000m,
++            60,
++            20));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        var generationService = new CompanySimulationFinanceGenerationService(
++            dbContext,
++            provider,
++            NullLogger<CompanySimulationFinanceGenerationService>.Instance);
++        var stateService = new CompanySimulationStateService(
++            repository,
++            provider,
++            companyContextAccessor: null,
++            distributedLockProvider: null,
++            financeGenerationPolicy: generationService,
++            logger: NullLogger<CompanySimulationStateService>.Instance);
++
++        await stateService.StartAsync(
++            new StartCompanySimulationCommand(
++                companyId,
++                new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                true,
++                seed,
++                """{"financeGeneration":{"assetPurchaseCadenceDays":4,"assetPurchaseOffsetDays":1,"assetFundingBehavior":"alternate"}}"""),
++            CancellationToken.None);
++
++        provider.Advance(TimeSpan.FromSeconds(160));
++        _ = await stateService.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
++
++        return await dbContext.FinanceAssets
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.ReferenceNumber)
++            .Select(x => new AssetSnapshot(
++                x.ReferenceNumber,
++                x.Name,
++                x.Category,
++                x.PurchasedUtc,
++                x.Amount,
++                x.Currency,
++                x.FundingBehavior,
++                x.FundingSettlementStatus,
++                x.Status,
++                x.CounterpartyId))
++            .ToListAsync();
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static async Task<VirtualCompanyDbContext> CreateDbContextAsync(SqliteConnection connection)
++    {
++        var context = new VirtualCompanyDbContext(
++            new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++                .UseSqlite(connection)
++                .Options);
++        await context.Database.EnsureCreatedAsync();
++        return context;
++    }
++
++    private sealed record AssetSnapshot(
++        string ReferenceNumber,
++        string Name,
++        string Category,
++        DateTime PurchasedUtc,
++        decimal Amount,
++        string Currency,
++        string FundingBehavior,
++        string FundingSettlementStatus,
++        string Status,
++        Guid CounterpartyId);
++
++    private sealed class MutableTimeProvider : TimeProvider
++    {
++        private DateTimeOffset _utcNow;
++
++        public MutableTimeProvider(DateTimeOffset utcNow)
++        {
++            _utcNow = utcNow;
++        }
++
++        public override DateTimeOffset GetUtcNow() => _utcNow;
++
++        public void Advance(TimeSpan duration)
++        {
++            _utcNow = _utcNow.Add(duration);
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceGenerationTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceGenerationTests.cs
+index ccccccc..ddddddd 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceGenerationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceGenerationTests.cs
+@@ -67,6 +67,11 @@ public sealed class CompanySimulationFinanceGenerationTests
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+             .ToListAsync();
++        var assets = await dbContext.FinanceAssets
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.ReferenceNumber)
++            .ToListAsync();
+         var tasks = await dbContext.WorkTasks
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+@@ -110,12 +115,16 @@ public sealed class CompanySimulationFinanceGenerationTests
+ 
+         Assert.Equal(16, invoices.Count);
+         Assert.Equal(16, bills.Count);
+-        Assert.True(transactions.Count >= 24);
++        Assert.True(transactions.Count >= 12);
+         Assert.Equal(16, balances.Count);
+         Assert.True(tasks.Count >= 24);
+         Assert.True(approvals.Count >= 6);
+         Assert.True(audits.Count >= 40);
+         Assert.Equal(16, activity.Count);
++        Assert.True(assets.Count >= 4);
++        Assert.Contains(assets, x => x.FundingBehavior == FinanceAssetFundingBehaviors.Cash);
++        Assert.Contains(assets, x => x.FundingBehavior == FinanceAssetFundingBehaviors.Payable);
++        Assert.All(assets, x => Assert.Equal(FinanceAssetStatuses.Active, x.Status));
+         Assert.Equal(8, seedAnomalies.Count);
+         Assert.Equal(8, alerts.Count);
+ END_OF_PATCH

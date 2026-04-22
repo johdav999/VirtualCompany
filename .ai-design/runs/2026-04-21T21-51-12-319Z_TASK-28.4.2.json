@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-28.4.2",
+  "promptPath": ".ai-design/prompts/TASK-28.4.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-21T21:51:12.319Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-21T21-51-12-319Z_TASK-28.4.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-21T21-51-12-319Z_TASK-28.4.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-21T21:53:29.394Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "chases\n                     .Select(x => new FinanceSummaryAssetPurchaseSnapshot(\n                         x.AssetId,\n                         x.CompanyId,\n                         x.ReferenceNumber,\n@@ -456,6 +497,28 @@ public sealed class FinanceProgressionIntegrationTests\n                     .ToList()),\n             timeline);\n     }\n+\n+    private static void AssertReplaySnapshotEqual(ReplaySnapshot expected, ReplaySnapshot actual)\n+    {\n+        Assert.Equal(expected.Summary.CompanyId, actual.Summary.CompanyId);\n+        Assert.Equal(expected.Summary.AsOfUtc, actual.Summary.AsOfUtc);\n+        Assert.Equal(expected.Summary.CurrentCash, actual.Summary.CurrentCash);\n+        Assert.Equal(expected.Summary.AccountsReceivable, actual.Summary.AccountsReceivable);\n+        Assert.Equal(expected.Summary.OverdueReceivables, actual.Summary.OverdueReceivables);\n+        Assert.Equal(expected.Summary.AccountsPayable, actual.Summary.AccountsPayable);\n+        Assert.Equal(expected.Summary.OverduePayables, actual.Summary.OverduePayables);\n+        Assert.Equal(expected.Summary.MonthlyRevenue, actual.Summary.MonthlyRevenue);\n+        Assert.Equal(expected.Summary.MonthlyCosts, actual.Summary.MonthlyCosts);\n+        Assert.Equal(expected.Summary.Currency, actual.Summary.Currency);\n+        Assert.Equal(expected.Summary.HasFinanceData, actual.Summary.HasFinanceData);\n+        Assert.Equal(expected.Summary.RecentAssetPurchaseCount, actual.Summary.RecentAssetPurchaseCount);\n+        Assert.Equal(expected.Summary.RecentAssetPurchaseTotalAmount, actual.Summary.RecentAssetPurchaseTotalAmount);\n+        Assert.Equal(expected.Summary.RecentAssetPurchases, actual.Summary.RecentAssetPurchases);\n+\n+        // Ordered comparisons catch replay drift caused by unstable event sequencing.\n+        Assert.Equal(expected.Timeline, actual.Timeline);\n+    }\n \n     private sealed record SeededSimulationCompany(\n         Guid CompanyId,\n         string Subject,\n         string Email,\nEND_OF_PATCH\n",
+  "stderrTail": "         .Select(x => new FinanceSummaryAssetPurchaseSnapshot(\n                         x.AssetId,\n                         x.CompanyId,\n                         x.ReferenceNumber,\n@@ -456,6 +497,28 @@ public sealed class FinanceProgressionIntegrationTests\n                     .ToList()),\n             timeline);\n     }\n+\n+    private static void AssertReplaySnapshotEqual(ReplaySnapshot expected, ReplaySnapshot actual)\n+    {\n+        Assert.Equal(expected.Summary.CompanyId, actual.Summary.CompanyId);\n+        Assert.Equal(expected.Summary.AsOfUtc, actual.Summary.AsOfUtc);\n+        Assert.Equal(expected.Summary.CurrentCash, actual.Summary.CurrentCash);\n+        Assert.Equal(expected.Summary.AccountsReceivable, actual.Summary.AccountsReceivable);\n+        Assert.Equal(expected.Summary.OverdueReceivables, actual.Summary.OverdueReceivables);\n+        Assert.Equal(expected.Summary.AccountsPayable, actual.Summary.AccountsPayable);\n+        Assert.Equal(expected.Summary.OverduePayables, actual.Summary.OverduePayables);\n+        Assert.Equal(expected.Summary.MonthlyRevenue, actual.Summary.MonthlyRevenue);\n+        Assert.Equal(expected.Summary.MonthlyCosts, actual.Summary.MonthlyCosts);\n+        Assert.Equal(expected.Summary.Currency, actual.Summary.Currency);\n+        Assert.Equal(expected.Summary.HasFinanceData, actual.Summary.HasFinanceData);\n+        Assert.Equal(expected.Summary.RecentAssetPurchaseCount, actual.Summary.RecentAssetPurchaseCount);\n+        Assert.Equal(expected.Summary.RecentAssetPurchaseTotalAmount, actual.Summary.RecentAssetPurchaseTotalAmount);\n+        Assert.Equal(expected.Summary.RecentAssetPurchases, actual.Summary.RecentAssetPurchases);\n+\n+        // Ordered comparisons catch replay drift caused by unstable event sequencing.\n+        Assert.Equal(expected.Timeline, actual.Timeline);\n+    }\n \n     private sealed record SeededSimulationCompany(\n         Guid CompanyId,\n         string Subject,\n         string Email,\nEND_OF_PATCH\ntokens used\n62,190\n",
+  "verbosityMode": "summary"
+}

@@ -226,6 +226,7 @@ public sealed class CompanySimulationStateRepositoryTests
                 2,
                 0,
                 1,
+                1,
                 0,
                 0,
                 0,
@@ -235,6 +236,7 @@ public sealed class CompanySimulationStateRepositoryTests
                     new CompanySimulationFinanceGenerationDayLogDto(
                         new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc),
                         2,
+                        1,
                         1,
                         1,
                         1,

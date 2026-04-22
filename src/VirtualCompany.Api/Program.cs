@@ -1335,18 +1335,33 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
                 [amount] decimal(18,2) NOT NULL,
                 [currency] nvarchar(3) NOT NULL,
                 [status] nvarchar(32) NOT NULL,
+                [settlement_status] nvarchar(32) NOT NULL CONSTRAINT [DF_finance_bills_settlement_status_startup] DEFAULT (N'unpaid'),
                 [created_at] datetime2 NOT NULL,
                 [updated_at] datetime2 NOT NULL,
                 [document_id] uniqueidentifier NULL,
+                [source_simulation_event_record_id] uniqueidentifier NULL,
                 CONSTRAINT [AK_finance_bills_company_id_id] UNIQUE ([company_id], [id]),
                 CONSTRAINT [FK_finance_bills_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
                 CONSTRAINT [FK_finance_bills_finance_counterparties_company_id_counterparty_id] FOREIGN KEY ([company_id], [counterparty_id]) REFERENCES [finance_counterparties] ([company_id], [id])
             );
             """);
     }
-    else if (!await SqlServerColumnExistsAsync(connection, "finance_bills", "document_id"))
+    else
     {
-        await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_bills] ADD [document_id] uniqueidentifier NULL;");
+        if (!await SqlServerColumnExistsAsync(connection, "finance_bills", "document_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_bills] ADD [document_id] uniqueidentifier NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_bills", "settlement_status"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_bills] ADD [settlement_status] nvarchar(32) NOT NULL CONSTRAINT [DF_finance_bills_settlement_status_startup] DEFAULT (N'unpaid');");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_bills", "source_simulation_event_record_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_bills] ADD [source_simulation_event_record_id] uniqueidentifier NULL;");
+        }
     }
 
     if (!await SqlServerTableExistsAsync(connection, "finance_invoices"))
@@ -1363,18 +1378,33 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
                 [amount] decimal(18,2) NOT NULL,
                 [currency] nvarchar(3) NOT NULL,
                 [status] nvarchar(32) NOT NULL,
+                [settlement_status] nvarchar(32) NOT NULL CONSTRAINT [DF_finance_invoices_settlement_status_startup] DEFAULT (N'unpaid'),
                 [created_at] datetime2 NOT NULL,
                 [updated_at] datetime2 NOT NULL,
                 [document_id] uniqueidentifier NULL,
+                [source_simulation_event_record_id] uniqueidentifier NULL,
                 CONSTRAINT [AK_finance_invoices_company_id_id] UNIQUE ([company_id], [id]),
                 CONSTRAINT [FK_finance_invoices_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
                 CONSTRAINT [FK_finance_invoices_finance_counterparties_company_id_counterparty_id] FOREIGN KEY ([company_id], [counterparty_id]) REFERENCES [finance_counterparties] ([company_id], [id])
             );
             """);
     }
-    else if (!await SqlServerColumnExistsAsync(connection, "finance_invoices", "document_id"))
+    else
     {
-        await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_invoices] ADD [document_id] uniqueidentifier NULL;");
+        if (!await SqlServerColumnExistsAsync(connection, "finance_invoices", "document_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_invoices] ADD [document_id] uniqueidentifier NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_invoices", "settlement_status"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_invoices] ADD [settlement_status] nvarchar(32) NOT NULL CONSTRAINT [DF_finance_invoices_settlement_status_startup] DEFAULT (N'unpaid');");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_invoices", "source_simulation_event_record_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_invoices] ADD [source_simulation_event_record_id] uniqueidentifier NULL;");
+        }
     }
 
     if (!await SqlServerTableExistsAsync(connection, "finance_transactions"))
@@ -1396,6 +1426,7 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
                 [external_reference] nvarchar(100) NOT NULL,
                 [created_at] datetime2 NOT NULL,
                 [document_id] uniqueidentifier NULL,
+                [source_simulation_event_record_id] uniqueidentifier NULL,
                 CONSTRAINT [FK_finance_transactions_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
                 CONSTRAINT [FK_finance_transactions_finance_accounts_company_id_account_id] FOREIGN KEY ([company_id], [account_id]) REFERENCES [finance_accounts] ([company_id], [id]),
                 CONSTRAINT [FK_finance_transactions_finance_bills_company_id_bill_id] FOREIGN KEY ([company_id], [bill_id]) REFERENCES [finance_bills] ([company_id], [id]),
@@ -1415,6 +1446,11 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
         {
             await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_transactions] ADD [document_id] uniqueidentifier NULL;");
         }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_transactions", "source_simulation_event_record_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_transactions] ADD [source_simulation_event_record_id] uniqueidentifier NULL;");
+        }
     }
 
     if (!await SqlServerTableExistsAsync(connection, "finance_balances"))
@@ -1429,8 +1465,170 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
                 [amount] decimal(18,2) NOT NULL,
                 [currency] nvarchar(3) NOT NULL,
                 [created_at] datetime2 NOT NULL,
+                [source_simulation_event_record_id] uniqueidentifier NULL,
                 CONSTRAINT [FK_finance_balances_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
                 CONSTRAINT [FK_finance_balances_finance_accounts_company_id_account_id] FOREIGN KEY ([company_id], [account_id]) REFERENCES [finance_accounts] ([company_id], [id])
+            );
+            """);
+    }
+    else if (!await SqlServerColumnExistsAsync(connection, "finance_balances", "source_simulation_event_record_id"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_balances] ADD [source_simulation_event_record_id] uniqueidentifier NULL;");
+    }
+
+    if (!await SqlServerTableExistsAsync(connection, "finance_payments"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [finance_payments] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_finance_payments] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [payment_type] nvarchar(32) NOT NULL,
+                [amount] decimal(18,2) NOT NULL,
+                [currency] nvarchar(3) NOT NULL,
+                [payment_date] datetime2 NOT NULL,
+                [method] nvarchar(64) NOT NULL,
+                [status] nvarchar(32) NOT NULL,
+                [counterparty_reference] nvarchar(200) NOT NULL,
+                [created_at] datetime2 NOT NULL,
+                [updated_at] datetime2 NOT NULL,
+                [source_simulation_event_record_id] uniqueidentifier NULL,
+                CONSTRAINT [AK_finance_payments_company_id_id] UNIQUE ([company_id], [id]),
+                CONSTRAINT [CK_finance_payments_amount_positive] CHECK ([amount] > 0),
+                CONSTRAINT [CK_finance_payments_payment_type] CHECK ([payment_type] IN (N'incoming', N'outgoing')),
+                CONSTRAINT [FK_finance_payments_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+            );
+            """);
+    }
+    else if (!await SqlServerColumnExistsAsync(connection, "finance_payments", "source_simulation_event_record_id"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_payments] ADD [source_simulation_event_record_id] uniqueidentifier NULL;");
+    }
+
+    if (await SqlServerTableExistsAsync(connection, "bank_transactions") &&
+        !await SqlServerColumnExistsAsync(connection, "bank_transactions", "source_simulation_event_record_id"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [bank_transactions] ADD [source_simulation_event_record_id] uniqueidentifier NULL;");
+    }
+
+    if (!await SqlServerTableExistsAsync(connection, "payment_allocations"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [payment_allocations] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_payment_allocations] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [payment_id] uniqueidentifier NOT NULL,
+                [invoice_id] uniqueidentifier NULL,
+                [bill_id] uniqueidentifier NULL,
+                [source_simulation_event_record_id] uniqueidentifier NULL,
+                [payment_source_simulation_event_record_id] uniqueidentifier NULL,
+                [target_source_simulation_event_record_id] uniqueidentifier NULL,
+                [allocated_amount] decimal(18,2) NOT NULL,
+                [currency] nvarchar(3) NOT NULL,
+                [created_at] datetime2 NOT NULL,
+                [updated_at] datetime2 NOT NULL,
+                CONSTRAINT [CK_payment_allocations_amount_positive] CHECK ([allocated_amount] > 0),
+                CONSTRAINT [CK_payment_allocations_single_target] CHECK ((([invoice_id] IS NOT NULL AND [bill_id] IS NULL) OR ([invoice_id] IS NULL AND [bill_id] IS NOT NULL))),
+                CONSTRAINT [FK_payment_allocations_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
+                CONSTRAINT [FK_payment_allocations_finance_payments_payment_id] FOREIGN KEY ([payment_id]) REFERENCES [finance_payments] ([id]),
+                CONSTRAINT [FK_payment_allocations_finance_invoices_invoice_id] FOREIGN KEY ([invoice_id]) REFERENCES [finance_invoices] ([id]),
+                CONSTRAINT [FK_payment_allocations_finance_bills_bill_id] FOREIGN KEY ([bill_id]) REFERENCES [finance_bills] ([id])
+            );
+            """);
+    }
+    else
+    {
+        if (!await SqlServerColumnExistsAsync(connection, "payment_allocations", "source_simulation_event_record_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [payment_allocations] ADD [source_simulation_event_record_id] uniqueidentifier NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "payment_allocations", "payment_source_simulation_event_record_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [payment_allocations] ADD [payment_source_simulation_event_record_id] uniqueidentifier NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "payment_allocations", "target_source_simulation_event_record_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [payment_allocations] ADD [target_source_simulation_event_record_id] uniqueidentifier NULL;");
+        }
+    }
+
+    if (!await SqlServerTableExistsAsync(connection, "simulation_event_records"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [simulation_event_records] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_simulation_event_records] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [simulation_session_id] uniqueidentifier NULL,
+                [seed] int NOT NULL,
+                [start_simulated_at] datetime2 NOT NULL,
+                [simulation_date_at] datetime2 NOT NULL,
+                [event_type] nvarchar(64) NOT NULL,
+                [source_entity_type] nvarchar(64) NOT NULL,
+                [source_entity_id] uniqueidentifier NULL,
+                [source_reference] nvarchar(128) NULL,
+                [parent_event_id] uniqueidentifier NULL,
+                [sequence_number] int NOT NULL,
+                [deterministic_key] nvarchar(256) NOT NULL,
+                [cash_before] decimal(18,2) NULL,
+                [cash_delta] decimal(18,2) NULL,
+                [cash_after] decimal(18,2) NULL,
+                [created_at] datetime2 NOT NULL,
+                CONSTRAINT [AK_simulation_event_records_company_id_id] UNIQUE ([company_id], [id]),
+                CONSTRAINT [CK_simulation_event_records_cash_snapshot] CHECK (((cash_before IS NULL AND cash_delta IS NULL AND cash_after IS NULL) OR (cash_before IS NOT NULL AND cash_delta IS NOT NULL AND cash_after IS NOT NULL AND cash_after = cash_before + cash_delta))),
+                CONSTRAINT [CK_simulation_event_records_sequence_number_positive] CHECK ([sequence_number] > 0),
+                CONSTRAINT [FK_simulation_event_records_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+            );
+            """);
+    }
+
+    if (!await SqlServerTableExistsAsync(connection, "finance_assets"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [finance_assets] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_finance_assets] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [counterparty_id] uniqueidentifier NOT NULL,
+                [reference_number] nvarchar(64) NOT NULL,
+                [name] nvarchar(160) NOT NULL,
+                [category] nvarchar(64) NOT NULL,
+                [purchased_at] datetime2 NOT NULL,
+                [amount] decimal(18,2) NOT NULL,
+                [currency] nvarchar(3) NOT NULL,
+                [funding_behavior] nvarchar(32) NOT NULL,
+                [funding_settlement_status] nvarchar(32) NOT NULL,
+                [status] nvarchar(32) NOT NULL,
+                [created_at] datetime2 NOT NULL,
+                [updated_at] datetime2 NOT NULL,
+                [source_simulation_event_record_id] uniqueidentifier NULL,
+                CONSTRAINT [AK_finance_assets_company_id_id] UNIQUE ([company_id], [id]),
+                CONSTRAINT [FK_finance_assets_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+            );
+            """);
+    }
+
+    if (!await SqlServerTableExistsAsync(connection, "simulation_cash_delta_records"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [simulation_cash_delta_records] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_simulation_cash_delta_records] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [simulation_event_record_id] uniqueidentifier NOT NULL,
+                [simulation_date_at] datetime2 NOT NULL,
+                [source_entity_type] nvarchar(64) NOT NULL,
+                [source_entity_id] uniqueidentifier NULL,
+                [cash_before] decimal(18,2) NOT NULL,
+                [cash_delta] decimal(18,2) NOT NULL,
+                [cash_after] decimal(18,2) NOT NULL,
+                [created_at] datetime2 NOT NULL,
+                CONSTRAINT [AK_simulation_cash_delta_records_company_id_id] UNIQUE ([company_id], [id]),
+                CONSTRAINT [CK_simulation_cash_delta_records_cash_snapshot] CHECK ([cash_after] = [cash_before] + [cash_delta]),
+                CONSTRAINT [FK_simulation_cash_delta_records_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
             );
             """);
     }
@@ -1501,6 +1699,14 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
         BEGIN
             CREATE INDEX [IX_finance_invoices_company_id_status_due_at] ON [finance_invoices] ([company_id], [status], [due_at]);
         END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_invoices_company_id_settlement_status_due_at' AND [object_id] = OBJECT_ID(N'[finance_invoices]'))
+        BEGIN
+            CREATE INDEX [IX_finance_invoices_company_id_settlement_status_due_at] ON [finance_invoices] ([company_id], [settlement_status], [due_at]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_invoices_company_id_source_simulation_event_record_id' AND [object_id] = OBJECT_ID(N'[finance_invoices]'))
+        BEGIN
+            CREATE INDEX [IX_finance_invoices_company_id_source_simulation_event_record_id] ON [finance_invoices] ([company_id], [source_simulation_event_record_id]);
+        END
         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_bills_company_id_bill_number' AND [object_id] = OBJECT_ID(N'[finance_bills]'))
         BEGIN
             CREATE UNIQUE INDEX [IX_finance_bills_company_id_bill_number] ON [finance_bills] ([company_id], [bill_number]);
@@ -1509,9 +1715,21 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
         BEGIN
             CREATE INDEX [IX_finance_bills_company_id_status_due_at] ON [finance_bills] ([company_id], [status], [due_at]);
         END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_bills_company_id_settlement_status_due_at' AND [object_id] = OBJECT_ID(N'[finance_bills]'))
+        BEGIN
+            CREATE INDEX [IX_finance_bills_company_id_settlement_status_due_at] ON [finance_bills] ([company_id], [settlement_status], [due_at]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_bills_company_id_source_simulation_event_record_id' AND [object_id] = OBJECT_ID(N'[finance_bills]'))
+        BEGIN
+            CREATE INDEX [IX_finance_bills_company_id_source_simulation_event_record_id] ON [finance_bills] ([company_id], [source_simulation_event_record_id]);
+        END
         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_balances_company_id_account_id_as_of_at' AND [object_id] = OBJECT_ID(N'[finance_balances]'))
         BEGIN
             CREATE UNIQUE INDEX [IX_finance_balances_company_id_account_id_as_of_at] ON [finance_balances] ([company_id], [account_id], [as_of_at]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_balances_company_id_source_simulation_event_record_id' AND [object_id] = OBJECT_ID(N'[finance_balances]'))
+        BEGIN
+            CREATE INDEX [IX_finance_balances_company_id_source_simulation_event_record_id] ON [finance_balances] ([company_id], [source_simulation_event_record_id]);
         END
         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_policy_configurations_company_id' AND [object_id] = OBJECT_ID(N'[finance_policy_configurations]'))
         BEGIN
@@ -1541,6 +1759,10 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
         BEGIN
             CREATE INDEX [IX_finance_transactions_company_id_document_id] ON [finance_transactions] ([company_id], [document_id]);
         END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_transactions_company_id_source_simulation_event_record_id' AND [object_id] = OBJECT_ID(N'[finance_transactions]'))
+        BEGIN
+            CREATE INDEX [IX_finance_transactions_company_id_source_simulation_event_record_id] ON [finance_transactions] ([company_id], [source_simulation_event_record_id]);
+        END
         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_invoices_company_id_document_id' AND [object_id] = OBJECT_ID(N'[finance_invoices]'))
         BEGIN
             CREATE INDEX [IX_finance_invoices_company_id_document_id] ON [finance_invoices] ([company_id], [document_id]);
@@ -1548,6 +1770,121 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_bills_company_id_document_id' AND [object_id] = OBJECT_ID(N'[finance_bills]'))
         BEGIN
             CREATE INDEX [IX_finance_bills_company_id_document_id] ON [finance_bills] ([company_id], [document_id]);
+        END
+        IF OBJECT_ID(N'[finance_payments]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_payments_company_id' AND [object_id] = OBJECT_ID(N'[finance_payments]'))
+        BEGIN
+            CREATE INDEX [IX_finance_payments_company_id] ON [finance_payments] ([company_id]);
+        END
+        IF OBJECT_ID(N'[finance_payments]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_payments_status' AND [object_id] = OBJECT_ID(N'[finance_payments]'))
+        BEGIN
+            CREATE INDEX [IX_finance_payments_status] ON [finance_payments] ([status]);
+        END
+        IF OBJECT_ID(N'[finance_payments]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_payments_payment_date' AND [object_id] = OBJECT_ID(N'[finance_payments]'))
+        BEGIN
+            CREATE INDEX [IX_finance_payments_payment_date] ON [finance_payments] ([payment_date]);
+        END
+        IF OBJECT_ID(N'[finance_payments]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_payments_company_id_source_simulation_event_record_id' AND [object_id] = OBJECT_ID(N'[finance_payments]'))
+        BEGIN
+            CREATE INDEX [IX_finance_payments_company_id_source_simulation_event_record_id] ON [finance_payments] ([company_id], [source_simulation_event_record_id]);
+        END
+        IF OBJECT_ID(N'[bank_transactions]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_bank_transactions_company_id_source_simulation_event_record_id' AND [object_id] = OBJECT_ID(N'[bank_transactions]'))
+        BEGIN
+            CREATE INDEX [IX_bank_transactions_company_id_source_simulation_event_record_id] ON [bank_transactions] ([company_id], [source_simulation_event_record_id]);
+        END
+        IF OBJECT_ID(N'[payment_allocations]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_payment_allocations_company_id_payment_id' AND [object_id] = OBJECT_ID(N'[payment_allocations]'))
+        BEGIN
+            CREATE INDEX [IX_payment_allocations_company_id_payment_id] ON [payment_allocations] ([company_id], [payment_id]);
+        END
+        IF OBJECT_ID(N'[payment_allocations]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_payment_allocations_company_id_invoice_id' AND [object_id] = OBJECT_ID(N'[payment_allocations]'))
+        BEGIN
+            CREATE INDEX [IX_payment_allocations_company_id_invoice_id] ON [payment_allocations] ([company_id], [invoice_id]);
+        END
+        IF OBJECT_ID(N'[payment_allocations]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_payment_allocations_company_id_bill_id' AND [object_id] = OBJECT_ID(N'[payment_allocations]'))
+        BEGIN
+            CREATE INDEX [IX_payment_allocations_company_id_bill_id] ON [payment_allocations] ([company_id], [bill_id]);
+        END
+        IF OBJECT_ID(N'[payment_allocations]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_payment_allocations_company_id_source_simulation_event_record_id' AND [object_id] = OBJECT_ID(N'[payment_allocations]'))
+        BEGIN
+            CREATE INDEX [IX_payment_allocations_company_id_source_simulation_event_record_id] ON [payment_allocations] ([company_id], [source_simulation_event_record_id]);
+        END
+        IF OBJECT_ID(N'[payment_allocations]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_payment_allocations_company_id_payment_source_simulation_event_record_id' AND [object_id] = OBJECT_ID(N'[payment_allocations]'))
+        BEGIN
+            CREATE INDEX [IX_payment_allocations_company_id_payment_source_simulation_event_record_id] ON [payment_allocations] ([company_id], [payment_source_simulation_event_record_id]);
+        END
+        IF OBJECT_ID(N'[payment_allocations]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_payment_allocations_company_id_target_source_simulation_event_record_id' AND [object_id] = OBJECT_ID(N'[payment_allocations]'))
+        BEGIN
+            CREATE INDEX [IX_payment_allocations_company_id_target_source_simulation_event_record_id] ON [payment_allocations] ([company_id], [target_source_simulation_event_record_id]);
+        END
+        IF OBJECT_ID(N'[finance_assets]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_assets_company_id_reference_number' AND [object_id] = OBJECT_ID(N'[finance_assets]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_finance_assets_company_id_reference_number] ON [finance_assets] ([company_id], [reference_number]);
+        END
+        IF OBJECT_ID(N'[finance_assets]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_assets_company_id_purchased_at' AND [object_id] = OBJECT_ID(N'[finance_assets]'))
+        BEGIN
+            CREATE INDEX [IX_finance_assets_company_id_purchased_at] ON [finance_assets] ([company_id], [purchased_at]);
+        END
+        IF OBJECT_ID(N'[finance_assets]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_assets_company_id_funding_behavior_funding_settlement_status' AND [object_id] = OBJECT_ID(N'[finance_assets]'))
+        BEGIN
+            CREATE INDEX [IX_finance_assets_company_id_funding_behavior_funding_settlement_status] ON [finance_assets] ([company_id], [funding_behavior], [funding_settlement_status]);
+        END
+        IF OBJECT_ID(N'[finance_assets]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_assets_company_id_source_simulation_event_record_id' AND [object_id] = OBJECT_ID(N'[finance_assets]'))
+        BEGIN
+            CREATE INDEX [IX_finance_assets_company_id_source_simulation_event_record_id] ON [finance_assets] ([company_id], [source_simulation_event_record_id]);
+        END
+        IF OBJECT_ID(N'[simulation_event_records]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_simulation_event_records_company_id_simulation_date_at' AND [object_id] = OBJECT_ID(N'[simulation_event_records]'))
+        BEGIN
+            CREATE INDEX [IX_simulation_event_records_company_id_simulation_date_at] ON [simulation_event_records] ([company_id], [simulation_date_at]);
+        END
+        IF OBJECT_ID(N'[simulation_event_records]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_simulation_event_records_company_id_event_type_simulation_date_at' AND [object_id] = OBJECT_ID(N'[simulation_event_records]'))
+        BEGIN
+            CREATE INDEX [IX_simulation_event_records_company_id_event_type_simulation_date_at] ON [simulation_event_records] ([company_id], [event_type], [simulation_date_at]);
+        END
+        IF OBJECT_ID(N'[simulation_event_records]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_simulation_event_records_company_id_source_entity_type_source_entity_id' AND [object_id] = OBJECT_ID(N'[simulation_event_records]'))
+        BEGIN
+            CREATE INDEX [IX_simulation_event_records_company_id_source_entity_type_source_entity_id] ON [simulation_event_records] ([company_id], [source_entity_type], [source_entity_id]);
+        END
+        IF OBJECT_ID(N'[simulation_event_records]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_simulation_event_records_company_id_simulation_session_id' AND [object_id] = OBJECT_ID(N'[simulation_event_records]'))
+        BEGIN
+            CREATE INDEX [IX_simulation_event_records_company_id_simulation_session_id] ON [simulation_event_records] ([company_id], [simulation_session_id]);
+        END
+        IF OBJECT_ID(N'[simulation_event_records]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_simulation_event_records_company_id_deterministic_key' AND [object_id] = OBJECT_ID(N'[simulation_event_records]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_simulation_event_records_company_id_deterministic_key] ON [simulation_event_records] ([company_id], [deterministic_key]);
+        END
+        IF OBJECT_ID(N'[simulation_cash_delta_records]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_simulation_cash_delta_records_company_id_simulation_date_at' AND [object_id] = OBJECT_ID(N'[simulation_cash_delta_records]'))
+        BEGIN
+            CREATE INDEX [IX_simulation_cash_delta_records_company_id_simulation_date_at] ON [simulation_cash_delta_records] ([company_id], [simulation_date_at]);
+        END
+        IF OBJECT_ID(N'[simulation_cash_delta_records]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_simulation_cash_delta_records_company_id_simulation_event_record_id' AND [object_id] = OBJECT_ID(N'[simulation_cash_delta_records]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_simulation_cash_delta_records_company_id_simulation_event_record_id] ON [simulation_cash_delta_records] ([company_id], [simulation_event_record_id]);
+        END
+        IF OBJECT_ID(N'[simulation_cash_delta_records]', N'U') IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_simulation_cash_delta_records_company_id_source_entity_type_source_entity_id' AND [object_id] = OBJECT_ID(N'[simulation_cash_delta_records]'))
+        BEGIN
+            CREATE INDEX [IX_simulation_cash_delta_records_company_id_source_entity_type_source_entity_id] ON [simulation_cash_delta_records] ([company_id], [source_entity_type], [source_entity_id]);
         END
         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_seed_anomalies_company_id_anomaly_type' AND [object_id] = OBJECT_ID(N'[finance_seed_anomalies]'))
         BEGIN
@@ -1580,6 +1917,46 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
             ALTER TABLE [finance_bills]
             ADD CONSTRAINT [FK_finance_bills_knowledge_documents_company_id_document_id]
             FOREIGN KEY ([company_id], [document_id]) REFERENCES [knowledge_documents] ([CompanyId], [Id]);
+        END
+        IF OBJECT_ID(N'[finance_invoices]', N'U') IS NOT NULL
+           AND EXISTS (SELECT 1 FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[finance_invoices]') AND [name] = N'settlement_status')
+           AND NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE [name] = N'CK_finance_invoices_settlement_status' AND [parent_object_id] = OBJECT_ID(N'[finance_invoices]'))
+        BEGIN
+            ALTER TABLE [finance_invoices]
+            ADD CONSTRAINT [CK_finance_invoices_settlement_status]
+            CHECK ([settlement_status] IN (N'unpaid', N'partially_paid', N'paid'));
+        END
+        IF OBJECT_ID(N'[finance_bills]', N'U') IS NOT NULL
+           AND EXISTS (SELECT 1 FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[finance_bills]') AND [name] = N'settlement_status')
+           AND NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE [name] = N'CK_finance_bills_settlement_status' AND [parent_object_id] = OBJECT_ID(N'[finance_bills]'))
+        BEGIN
+            ALTER TABLE [finance_bills]
+            ADD CONSTRAINT [CK_finance_bills_settlement_status]
+            CHECK ([settlement_status] IN (N'unpaid', N'partially_paid', N'paid'));
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF OBJECT_ID(N'[finance_invoices]', N'U') IS NOT NULL
+           AND COL_LENGTH(N'[finance_invoices]', N'settlement_status') IS NOT NULL
+        BEGIN
+            UPDATE [finance_invoices]
+            SET [settlement_status] = CASE
+                WHEN LOWER([status]) = N'paid' THEN N'paid'
+                ELSE N'unpaid'
+            END
+            WHERE [settlement_status] IS NULL OR [settlement_status] = N'';
+        END
+        IF OBJECT_ID(N'[finance_bills]', N'U') IS NOT NULL
+           AND COL_LENGTH(N'[finance_bills]', N'settlement_status') IS NOT NULL
+        BEGIN
+            UPDATE [finance_bills]
+            SET [settlement_status] = CASE
+                WHEN LOWER([status]) = N'paid' THEN N'paid'
+                ELSE N'unpaid'
+            END
+            WHERE [settlement_status] IS NULL OR [settlement_status] = N'';
         END
         """);
 }
@@ -1767,6 +2144,7 @@ static async Task EnsureSqlServerCompanySimulationSchemaAsync(VirtualCompanyDbCo
                 [simulated_date_at] datetime2 NOT NULL,
                 [transactions_generated] int NOT NULL,
                 [invoices_generated] int NOT NULL,
+                [asset_purchases_generated] int NOT NULL CONSTRAINT [DF_company_simulation_run_day_logs_asset_purchases_generated_startup] DEFAULT (0),
                 [bills_generated] int NOT NULL,
                 [recurring_expense_instances_generated] int NOT NULL,
                 [alerts_generated] int NOT NULL,
@@ -1779,6 +2157,10 @@ static async Task EnsureSqlServerCompanySimulationSchemaAsync(VirtualCompanyDbCo
                     FOREIGN KEY ([run_history_id]) REFERENCES [company_simulation_run_histories] ([id]) ON DELETE CASCADE
             );
             """);
+    }
+    else if (!await SqlServerColumnExistsAsync(connection, "company_simulation_run_day_logs", "asset_purchases_generated"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [company_simulation_run_day_logs] ADD [asset_purchases_generated] int NOT NULL CONSTRAINT [DF_company_simulation_run_day_logs_asset_purchases_generated_startup] DEFAULT (0);");
     }
 
     await dbContext.Database.ExecuteSqlRawAsync(

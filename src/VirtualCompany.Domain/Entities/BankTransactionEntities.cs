@@ -128,7 +128,8 @@ public sealed class BankTransaction : ICompanyOwnedEntity
         string? importSource = null,
         decimal reconciledAmount = 0m,
         DateTime? createdUtc = null,
-        DateTime? updatedUtc = null)
+        DateTime? updatedUtc = null,
+        Guid? sourceSimulationEventRecordId = null)
     {
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
@@ -143,6 +144,12 @@ public sealed class BankTransaction : ICompanyOwnedEntity
         ImportSource = NormalizeOptional(importSource, nameof(importSource), 64);
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? BookingDate, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
+        if (sourceSimulationEventRecordId == Guid.Empty)
+        {
+            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
+        }
+
+        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
         ApplyReconciliation(reconciledAmount, UpdatedUtc);
     }
 
@@ -161,6 +168,8 @@ public sealed class BankTransaction : ICompanyOwnedEntity
     public string? ImportSource { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
+    public Guid? SourceSimulationEventRecordId { get; private set; }
+    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
     public Company Company { get; private set; } = null!;
     public CompanyBankAccount BankAccount { get; private set; } = null!;
     public ICollection<BankTransactionPaymentLink> PaymentLinks { get; } = new List<BankTransactionPaymentLink>();

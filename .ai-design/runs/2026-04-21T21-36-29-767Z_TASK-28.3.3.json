@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-28.3.3",
+  "promptPath": ".ai-design/prompts/TASK-28.3.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-21T21:36:29.767Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-21T21-36-29-767Z_TASK-28.3.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-21T21-36-29-767Z_TASK-28.3.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-21T21:43:34.043Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "vate static void AssertSummary(FinanceSummaryResponse summary, Guid companyId)\n     {\n         Assert.Equal(companyId, summary.CompanyId);\n@@ -234,6 +364,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes\n         Assert.True(summary.HasFinanceData);\n         Assert.Equal(2, summary.RecentAssetPurchaseCount);\n         Assert.Equal(1150m, summary.RecentAssetPurchaseTotalAmount);\n+        Assert.All(summary.RecentAssetPurchases, asset => Assert.Equal(companyId, asset.CompanyId));\n         Assert.Collection(\n             summary.RecentAssetPurchases,\n             first =>\n@@ -286,6 +417,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes\n         public bool HasFinanceData { get; set; }\n         public int RecentAssetPurchaseCount { get; set; }\n         public decimal RecentAssetPurchaseTotalAmount { get; set; }\n+        public FinanceSummaryConsistencyResponse? ConsistencyCheck { get; set; }\n         public List<FinanceSummaryAssetPurchaseResponse> RecentAssetPurchases { get; set; } = [];\n     }\n \n@@ -301,4 +433,21 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes\n         public string FundingBehavior { get; set; } = string.Empty;\n         public string FundingSettlementStatus { get; set; } = string.Empty;\n     }\n+\n+    private sealed class FinanceSummaryConsistencyResponse\n+    {\n+        public Guid CompanyId { get; set; }\n+        public DateTime AsOfUtc { get; set; }\n+        public bool IsConsistent { get; set; }\n+        public int SourceRecordCount { get; set; }\n+        public List<FinanceSummaryConsistencyMetricResponse> Metrics { get; set; } = [];\n+    }\n+\n+    private sealed class FinanceSummaryConsistencyMetricResponse\n+    {\n+        public string MetricKey { get; set; } = string.Empty;\n+        public decimal ExpectedValue { get; set; }\n+        public decimal ActualValue { get; set; }\n+        public bool IsMatch { get; set; }\n+    }\n }\n+END_OF_PATCH\n",
+  "stderrTail": "sertSummary(FinanceSummaryResponse summary, Guid companyId)\n     {\n         Assert.Equal(companyId, summary.CompanyId);\n@@ -234,6 +364,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes\n         Assert.True(summary.HasFinanceData);\n         Assert.Equal(2, summary.RecentAssetPurchaseCount);\n         Assert.Equal(1150m, summary.RecentAssetPurchaseTotalAmount);\n+        Assert.All(summary.RecentAssetPurchases, asset => Assert.Equal(companyId, asset.CompanyId));\n         Assert.Collection(\n             summary.RecentAssetPurchases,\n             first =>\n@@ -286,6 +417,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes\n         public bool HasFinanceData { get; set; }\n         public int RecentAssetPurchaseCount { get; set; }\n         public decimal RecentAssetPurchaseTotalAmount { get; set; }\n+        public FinanceSummaryConsistencyResponse? ConsistencyCheck { get; set; }\n         public List<FinanceSummaryAssetPurchaseResponse> RecentAssetPurchases { get; set; } = [];\n     }\n \n@@ -301,4 +433,21 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes\n         public string FundingBehavior { get; set; } = string.Empty;\n         public string FundingSettlementStatus { get; set; } = string.Empty;\n     }\n+\n+    private sealed class FinanceSummaryConsistencyResponse\n+    {\n+        public Guid CompanyId { get; set; }\n+        public DateTime AsOfUtc { get; set; }\n+        public bool IsConsistent { get; set; }\n+        public int SourceRecordCount { get; set; }\n+        public List<FinanceSummaryConsistencyMetricResponse> Metrics { get; set; } = [];\n+    }\n+\n+    private sealed class FinanceSummaryConsistencyMetricResponse\n+    {\n+        public string MetricKey { get; set; } = string.Empty;\n+        public decimal ExpectedValue { get; set; }\n+        public decimal ActualValue { get; set; }\n+        public bool IsMatch { get; set; }\n+    }\n }\n+END_OF_PATCH\ntokens used\n79,014\n",
+  "verbosityMode": "summary"
+}

@@ -1,0 +1,1362 @@
+diff --git a/src/VirtualCompany.Application/Finance/PaymentContracts.cs b/src/VirtualCompany.Application/Finance/PaymentContracts.cs
+index 12f5f9b..59ca981 100644
+--- a/src/VirtualCompany.Application/Finance/PaymentContracts.cs
++++ b/src/VirtualCompany.Application/Finance/PaymentContracts.cs
+@@ -16,6 +16,10 @@ public sealed record GetFinancePaymentAllocationsByPaymentQuery(
+ public sealed record GetFinanceInvoiceAllocationsQuery(Guid CompanyId, Guid InvoiceId);
+ 
+ public sealed record GetFinanceBillAllocationsQuery(
++    Guid CompanyId,
++    Guid BillId);
++
++public sealed record GetFinancePaymentAllocationTraceQuery(
+     Guid CompanyId,
+     Guid BillId);
+ 
+@@ -80,6 +84,34 @@ public sealed record FinancePaymentAllocationDto(
+     DateTime CreatedUtc,
+     DateTime UpdatedUtc);
+ 
++public sealed record FinanceSimulationEventReferenceDto(
++    Guid Id,
++    string EventType,
++    string SourceEntityType,
++    Guid? SourceEntityId,
++    string? SourceReference,
++    Guid? ParentEventId,
++    DateTime SimulationDateUtc,
++    decimal? CashBefore,
++    decimal? CashDelta,
++    decimal? CashAfter);
++
++public sealed record FinanceAllocationTargetDocumentDto(
++    string TargetDocumentType,
++    Guid Id,
++    string Reference,
++    decimal Amount,
++    string Currency,
++    string Status,
++    Guid? SourceSimulationEventRecordId);
++
++public sealed record FinancePaymentAllocationTraceDto(
++    Guid AllocationId,
++    Guid CompanyId,
++    FinancePaymentDto Payment,
++    FinanceAllocationTargetDocumentDto TargetDocument,
++    FinanceSimulationEventReferenceDto? PaymentSourceEvent,
++    FinanceSimulationEventReferenceDto? TargetSourceEvent);
++
+ public sealed record FinancePaymentAllocationBackfillResultDto(
+     Guid CompanyId,
+     int CreatedAllocationCount,
+@@ -98,6 +130,7 @@ public interface IFinancePaymentReadService
+     Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByPaymentAsync(GetFinancePaymentAllocationsByPaymentQuery query, CancellationToken cancellationToken);
+     Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByInvoiceAsync(GetFinanceInvoiceAllocationsQuery query, CancellationToken cancellationToken);
+     Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByBillAsync(GetFinanceBillAllocationsQuery query, CancellationToken cancellationToken);
++    Task<FinancePaymentAllocationTraceDto?> GetAllocationTraceAsync(GetFinancePaymentAllocationTraceQuery query, CancellationToken cancellationToken);
+ }
+ 
+ public interface IFinancePaymentCommandService
+diff --git a/src/VirtualCompany.Domain/Entities/BankTransactionEntities.cs b/src/VirtualCompany.Domain/Entities/BankTransactionEntities.cs
+index 3d0e16b..2c901f4 100644
+--- a/src/VirtualCompany.Domain/Entities/BankTransactionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BankTransactionEntities.cs
+@@ -121,7 +121,8 @@ public sealed class BankTransaction : ICompanyOwnedEntity
+         string? externalReference = null,
+         string? importSource = null,
+         decimal reconciledAmount = 0m,
+         DateTime? createdUtc = null,
+-        DateTime? updatedUtc = null)
++        DateTime? updatedUtc = null,
++        Guid? sourceSimulationEventRecordId = null)
+     {
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
+@@ -136,6 +137,11 @@ public sealed class BankTransaction : ICompanyOwnedEntity
+         ImportSource = NormalizeOptional(importSource, nameof(importSource), 64);
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? BookingDate, nameof(createdUtc));
+         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++        if (sourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
++        }
++
++        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
+         ApplyReconciliation(reconciledAmount, UpdatedUtc);
+     }
+ 
+@@ -154,6 +160,8 @@ public sealed class BankTransaction : ICompanyOwnedEntity
+     public string? ImportSource { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
++    public Guid? SourceSimulationEventRecordId { get; private set; }
++    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public CompanyBankAccount BankAccount { get; private set; } = null!;
+     public ICollection<BankTransactionPaymentLink> PaymentLinks { get; } = new List<BankTransactionPaymentLink>();
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+index 05a2596..5c03d58 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceEntities.cs
+@@ -256,7 +256,8 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
+         string description,
+         string externalReference,
+         Guid? documentId = null,
+-        DateTime? createdUtc = null)
++        DateTime? createdUtc = null,
++        Guid? sourceSimulationEventRecordId = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -301,6 +302,11 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
+         Description = NormalizeRequired(description, nameof(description), 500);
+         ExternalReference = NormalizeRequired(externalReference, nameof(externalReference), 100);
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? TransactionUtc, nameof(createdUtc));
++        if (sourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
++        }
++
++        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
+     }
+ 
+     public Guid Id { get; private set; }
+@@ -317,6 +323,8 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
+     public string Description { get; private set; } = null!;
+     public string ExternalReference { get; private set; } = null!;
+     public DateTime CreatedUtc { get; private set; }
++    public Guid? SourceSimulationEventRecordId { get; private set; }
++    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public FinanceAccount Account { get; private set; } = null!;
+     public FinanceCounterparty? Counterparty { get; private set; }
+@@ -364,7 +372,8 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
+         DateTime? createdUtc = null,
+         DateTime? updatedUtc = null,
+-        string? settlementStatus = null)
++        string? settlementStatus = null,
++        Guid? sourceSimulationEventRecordId = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -394,6 +403,11 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
+         DocumentId = documentId;
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? IssuedUtc, nameof(createdUtc));
+         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++        if (sourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
++        }
++
++        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
+     }
+ 
+     public Guid Id { get; private set; }
+@@ -410,6 +424,8 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
+     public Guid? DocumentId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
++    public Guid? SourceSimulationEventRecordId { get; private set; }
++    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public FinanceCounterparty Counterparty { get; private set; } = null!;
+     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
+@@ -509,7 +525,8 @@ public sealed class FinanceBill : ICompanyOwnedEntity
+         DateTime? createdUtc = null,
+         DateTime? updatedUtc = null,
+-        string? settlementStatus = null)
++        string? settlementStatus = null,
++        Guid? sourceSimulationEventRecordId = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -539,6 +556,11 @@ public sealed class FinanceBill : ICompanyOwnedEntity
+         DocumentId = documentId;
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? ReceivedUtc, nameof(createdUtc));
+         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++        if (sourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
++        }
++
++        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
+     }
+ 
+     public Guid Id { get; private set; }
+@@ -555,6 +577,8 @@ public sealed class FinanceBill : ICompanyOwnedEntity
+     public Guid? DocumentId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
++    public Guid? SourceSimulationEventRecordId { get; private set; }
++    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public FinanceCounterparty Counterparty { get; private set; } = null!;
+     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
+@@ -605,7 +629,8 @@ public sealed class FinanceBalance : ICompanyOwnedEntity
+     private FinanceBalance()
+     {
+     }
+ 
+-    public FinanceBalance(Guid id, Guid companyId, Guid accountId, DateTime asOfUtc, decimal amount, string currency,
++    public FinanceBalance(Guid id, Guid companyId, Guid accountId, DateTime asOfUtc, decimal amount, string currency,
++        DateTime? createdUtc = null, Guid? sourceSimulationEventRecordId = null)
+         DateTime? createdUtc = null)
+     {
+         if (companyId == Guid.Empty)
+@@ -623,6 +648,11 @@ public sealed class FinanceBalance : ICompanyOwnedEntity
+         Amount = amount;
+         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? AsOfUtc, nameof(createdUtc));
++        if (sourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
++        }
++
++        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
+     }
+ 
+     public Guid Id { get; private set; }
+@@ -632,6 +662,8 @@ public sealed class FinanceBalance : ICompanyOwnedEntity
+     public decimal Amount { get; private set; }
+     public string Currency { get; private set; } = null!;
+     public DateTime CreatedUtc { get; private set; }
++    public Guid? SourceSimulationEventRecordId { get; private set; }
++    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public FinanceAccount Account { get; private set; } = null!;
+diff --git a/src/VirtualCompany.Domain/Entities/Payment.cs b/src/VirtualCompany.Domain/Entities/Payment.cs
+index 707de0d..bc377c4 100644
+--- a/src/VirtualCompany.Domain/Entities/Payment.cs
++++ b/src/VirtualCompany.Domain/Entities/Payment.cs
+@@ -17,7 +17,8 @@ public sealed class Payment : ICompanyOwnedEntity
+         string method,
+         string status,
+         string counterpartyReference,
+         DateTime? createdUtc = null,
+-        DateTime? updatedUtc = null)
++        DateTime? updatedUtc = null,
++        Guid? sourceSimulationEventRecordId = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -57,6 +58,11 @@ public sealed class Payment : ICompanyOwnedEntity
+         CounterpartyReference = NormalizeRequired(counterpartyReference, nameof(counterpartyReference), 200);
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? PaymentDate, nameof(createdUtc));
+         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++        if (sourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
++        }
++
++        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
+     }
+ 
+     public Guid Id { get; private set; }
+@@ -70,6 +76,8 @@ public sealed class Payment : ICompanyOwnedEntity
+     public string CounterpartyReference { get; private set; } = null!;
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
++    public Guid? SourceSimulationEventRecordId { get; private set; }
++    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public ICollection<PaymentAllocation> Allocations { get; } = new List<PaymentAllocation>();
+     public ICollection<PaymentCashLedgerLink> CashLedgerLinks { get; } = new List<PaymentCashLedgerLink>();
+diff --git a/src/VirtualCompany.Domain/Entities/SimulationEventRecord.cs b/src/VirtualCompany.Domain/Entities/SimulationEventRecord.cs
+new file mode 100644
+index 0000000..517a2bf
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/SimulationEventRecord.cs
+@@ -0,0 +1,150 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class SimulationEventRecord : ICompanyOwnedEntity
++{
++    private SimulationEventRecord()
++    {
++    }
++
++    public SimulationEventRecord(
++        Guid id,
++        Guid companyId,
++        Guid? simulationSessionId,
++        int seed,
++        DateTime startSimulatedUtc,
++        DateTime simulationDateUtc,
++        string eventType,
++        string sourceEntityType,
++        Guid? sourceEntityId,
++        string? sourceReference,
++        Guid? parentEventId,
++        int sequenceNumber,
++        string deterministicKey,
++        decimal? cashBefore,
++        decimal? cashDelta,
++        decimal? cashAfter,
++        DateTime? createdUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (sourceEntityId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceEntityId cannot be empty.", nameof(sourceEntityId));
++        }
++
++        if (parentEventId == Guid.Empty)
++        {
++            throw new ArgumentException("ParentEventId cannot be empty.", nameof(parentEventId));
++        }
++
++        if (sequenceNumber <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(sequenceNumber), "SequenceNumber must be positive.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        SimulationSessionId = simulationSessionId;
++        Seed = seed;
++        StartSimulatedUtc = EntityTimestampNormalizer.NormalizeUtc(startSimulatedUtc, nameof(startSimulatedUtc));
++        SimulationDateUtc = EntityTimestampNormalizer.NormalizeUtc(simulationDateUtc, nameof(simulationDateUtc));
++        EventType = NormalizeRequired(eventType, nameof(eventType), 64).ToLowerInvariant();
++        SourceEntityType = NormalizeRequired(sourceEntityType, nameof(sourceEntityType), 64).ToLowerInvariant();
++        SourceEntityId = sourceEntityId;
++        SourceReference = NormalizeOptional(sourceReference, nameof(sourceReference), 128);
++        ParentEventId = parentEventId;
++        SequenceNumber = sequenceNumber;
++        DeterministicKey = NormalizeRequired(deterministicKey, nameof(deterministicKey), 256).ToLowerInvariant();
++        (CashBefore, CashDelta, CashAfter) = NormalizeCashSnapshot(cashBefore, cashDelta, cashAfter);
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? SimulationDateUtc, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? SimulationSessionId { get; private set; }
++    public int Seed { get; private set; }
++    public DateTime StartSimulatedUtc { get; private set; }
++    public DateTime SimulationDateUtc { get; private set; }
++    public string EventType { get; private set; } = null!;
++    public string SourceEntityType { get; private set; } = null!;
++    public Guid? SourceEntityId { get; private set; }
++    public string? SourceReference { get; private set; }
++    public Guid? ParentEventId { get; private set; }
++    public int SequenceNumber { get; private set; }
++    public string DeterministicKey { get; private set; } = null!;
++    public decimal? CashBefore { get; private set; }
++    public decimal? CashDelta { get; private set; }
++    public decimal? CashAfter { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public SimulationEventRecord? ParentEvent { get; private set; }
++
++    private static (decimal? CashBefore, decimal? CashDelta, decimal? CashAfter) NormalizeCashSnapshot(
++        decimal? cashBefore,
++        decimal? cashDelta,
++        decimal? cashAfter)
++    {
++        var hasBefore = cashBefore.HasValue;
++        var hasDelta = cashDelta.HasValue;
++        var hasAfter = cashAfter.HasValue;
++
++        if (!hasBefore && !hasDelta && !hasAfter)
++        {
++            return (null, null, null);
++        }
++
++        if (!hasBefore || !hasDelta || !hasAfter)
++        {
++            throw new ArgumentException("CashBefore, CashDelta, and CashAfter must either all be provided or all be omitted.");
++        }
++
++        var normalizedBefore = NormalizeMoney(cashBefore!.Value);
++        var normalizedDelta = NormalizeMoney(cashDelta!.Value);
++        var normalizedAfter = NormalizeMoney(cashAfter!.Value);
++
++        if (NormalizeMoney(normalizedBefore + normalizedDelta) != normalizedAfter)
++        {
++            throw new ArgumentException("CashAfter must equal CashBefore plus CashDelta.");
++        }
++
++        return (normalizedBefore, normalizedDelta, normalizedAfter);
++    }
++
++    private static decimal NormalizeMoney(decimal value) =>
++        decimal.Round(value, 2, MidpointRounding.AwayFromZero);
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+index 05edacd..1a82712 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -627,6 +627,63 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IF
+             .ToListAsync(cancellationToken)
+             .ContinueWith(task => (IReadOnlyList<FinancePaymentAllocationDto>)task.Result.Select(MapPaymentAllocation).ToList(), cancellationToken);
+     }
++
++    public async Task<FinancePaymentAllocationTraceDto?> GetAllocationTraceAsync(
++        GetFinancePaymentAllocationTraceQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
++        if (query.AllocationId == Guid.Empty)
++        {
++            throw new ArgumentException("Allocation id is required.", nameof(query));
++        }
++
++        var allocation = await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AsSingleQuery()
++            .Include(x => x.Payment)
++                .ThenInclude(x => x.SourceSimulationEventRecord)
++            .Include(x => x.Invoice)
++                .ThenInclude(x => x!.SourceSimulationEventRecord)
++            .Include(x => x.Bill)
++                .ThenInclude(x => x!.SourceSimulationEventRecord)
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == query.CompanyId && x.Id == query.AllocationId,
++                cancellationToken);
++
++        if (allocation is null)
++        {
++            return null;
++        }
++
++        var targetDocument = allocation.Invoice is not null
++            ? new FinanceAllocationTargetDocumentDto(
++                "invoice",
++                allocation.Invoice.Id,
++                allocation.Invoice.InvoiceNumber,
++                allocation.Invoice.Amount,
++                allocation.Invoice.Currency,
++                allocation.Invoice.Status,
++                allocation.Invoice.SourceSimulationEventRecordId)
++            : new FinanceAllocationTargetDocumentDto(
++                "bill",
++                allocation.Bill!.Id,
++                allocation.Bill.BillNumber,
++                allocation.Bill.Amount,
++                allocation.Bill.Currency,
++                allocation.Bill.Status,
++                allocation.Bill.SourceSimulationEventRecordId);
++
++        return new FinancePaymentAllocationTraceDto(
++            allocation.Id,
++            allocation.CompanyId,
++            MapPayment(allocation.Payment),
++            targetDocument,
++            MapSimulationEventReference(allocation.Payment.SourceSimulationEventRecord),
++            MapSimulationEventReference(allocation.Invoice?.SourceSimulationEventRecord ?? allocation.Bill?.SourceSimulationEventRecord));
++    }
+ 
+     public async Task<IReadOnlyList<FinanceTransactionDto>> GetTransactionsAsync(
+         GetFinanceTransactionsQuery query,
+@@ -2190,6 +2247,22 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IF
+             row.CreatedUtc,
+             row.UpdatedUtc);
+ 
++    private static FinanceSimulationEventReferenceDto? MapSimulationEventReference(SimulationEventRecord? record) =>
++        record is null
++            ? null
++            : new FinanceSimulationEventReferenceDto(
++                record.Id,
++                record.EventType,
++                record.SourceEntityType,
++                record.SourceEntityId,
++                record.SourceReference,
++                record.ParentEventId,
++                record.SimulationDateUtc,
++                record.CashBefore,
++                record.CashDelta,
++                record.CashAfter);
++
++    private static FinancePaymentDto MapPayment(Payment payment) =>
++        new(payment.Id, payment.CompanyId, payment.PaymentType, payment.Amount, payment.Currency, payment.PaymentDate, payment.Method, payment.Status, payment.CounterpartyReference, payment.CreatedUtc, payment.UpdatedUtc);
++
+     private static FinancePaymentAllocationDto MapPaymentAllocation(PaymentAllocation allocation) =>
+         new(
+             allocation.Id,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+index 8653cc0..d54ccff 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+@@ -235,6 +235,9 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         var activityEventsCreated = 0;
+         var alertsCreated = 0;
+ 
++        var dayEventSequence = 0;
++        var runningCashBalance = await CalculateBalanceAsync(company.Id, account.Id, plan.DateUtc.Date.AddTicks(-1), cancellationToken);
++
+         var invoice = await _dbContext.FinanceInvoices
+             .IgnoreQueryFilters()
+             .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.InvoiceNumber == plan.InvoiceNumber, cancellationToken);
+@@ -250,9 +253,29 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                 plan.InvoiceAmount,
+                 plan.InvoiceCurrency,
+                 plan.InvoiceStatus,
++                settlementStatus: ResolveInvoiceSettlementStatus(plan.InvoiceScenario),
+                 createdUtc: plan.IssuedUtc,
+-                updatedUtc: plan.IssuedUtc);
++                updatedUtc: plan.IssuedUtc,
++                sourceSimulationEventRecordId: SimulationEventDeterministicIdentity.CreateEventId(
++                    company.Id,
++                    command.Seed,
++                    command.StartSimulatedUtc,
++                    plan.DateUtc,
++                    "finance.invoice.generated",
++                    "finance_invoice",
++                    DeterministicGuid(company.Id, $"invoice:{plan.InvoiceNumber}"),
++                    ++dayEventSequence,
++                    command.DeterministicConfigurationJson));
+             _dbContext.FinanceInvoices.Add(invoice);
++            _dbContext.SimulationEventRecords.Add(new SimulationEventRecord(
++                invoice.SourceSimulationEventRecordId!.Value,
++                company.Id,
++                command.ActiveSessionId,
++                command.Seed,
++                command.StartSimulatedUtc,
++                plan.DateUtc,
++                "finance.invoice.generated",
++                "finance_invoice",
++                invoice.Id, plan.InvoiceNumber, null, dayEventSequence, SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.invoice.generated", "finance_invoice", invoice.Id, dayEventSequence, command.DeterministicConfigurationJson), null, null, null, plan.IssuedUtc));
+             FinanceDomainEvents.EnqueueInvoiceCreated(_outboxEnqueuer, invoice, plan.CustomerName, BuildDayCorrelationId(company.Id, plan.DateUtc));
+             invoicesCreated++;
+ 
+@@ -293,9 +316,29 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                 plan.BillAmount,
+                 policy.ApprovalCurrency,
+                 plan.BillStatus,
++                settlementStatus: plan.Transactions.Any(x => x.BillId == DeterministicGuid(company.Id, $"bill:{plan.BillNumber}")) ? FinanceSettlementStatuses.Paid : FinanceSettlementStatuses.Unpaid,
+                 createdUtc: plan.ReceivedUtc,
+-                updatedUtc: plan.ReceivedUtc);
++                updatedUtc: plan.ReceivedUtc,
++                sourceSimulationEventRecordId: SimulationEventDeterministicIdentity.CreateEventId(
++                    company.Id,
++                    command.Seed,
++                    command.StartSimulatedUtc,
++                    plan.DateUtc,
++                    "finance.bill.generated",
++                    "finance_bill",
++                    DeterministicGuid(company.Id, $"bill:{plan.BillNumber}"),
++                    ++dayEventSequence,
++                    command.DeterministicConfigurationJson));
+             _dbContext.FinanceBills.Add(bill);
++            _dbContext.SimulationEventRecords.Add(new SimulationEventRecord(
++                bill.SourceSimulationEventRecordId!.Value,
++                company.Id,
++                command.ActiveSessionId,
++                command.Seed,
++                command.StartSimulatedUtc,
++                plan.DateUtc,
++                "finance.bill.generated",
++                "finance_bill",
++                bill.Id, plan.BillNumber, null, dayEventSequence, SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.bill.generated", "finance_bill", bill.Id, dayEventSequence, command.DeterministicConfigurationJson), null, null, null, plan.ReceivedUtc));
+             billsCreated++;
+             if (plan.BillApprovalRequired)
+             {
+@@ -338,27 +381,84 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                 continue;
+             }
+ 
++            var linkedDocumentId = payment.InvoiceId ?? payment.BillId;
++            var parentEventId = payment.InvoiceId.HasValue
++                ? invoice?.SourceSimulationEventRecordId
++                : bill?.SourceSimulationEventRecordId;
++            var paymentEventId = SimulationEventDeterministicIdentity.CreateEventId(
++                company.Id,
++                command.Seed,
++                command.StartSimulatedUtc,
++                plan.DateUtc,
++                "finance.cash_movement.generated",
++                "finance_payment",
++                DeterministicGuid(company.Id, $"payment:{payment.ExternalReference}"),
++                ++dayEventSequence,
++                command.DeterministicConfigurationJson);
++            var paymentEvent = await _dbContext.SimulationEventRecords
++                .IgnoreQueryFilters()
++                .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.Id == paymentEventId, cancellationToken);
++            if (paymentEvent is null)
++            {
++                paymentEvent = new SimulationEventRecord(
++                    paymentEventId,
++                    company.Id,
++                    command.ActiveSessionId,
++                    command.Seed,
++                    command.StartSimulatedUtc,
++                    plan.DateUtc,
++                    "finance.cash_movement.generated",
++                    "finance_payment",
++                    DeterministicGuid(company.Id, $"payment:{payment.ExternalReference}"),
++                    payment.ExternalReference,
++                    parentEventId,
++                    dayEventSequence,
++                    SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.cash_movement.generated", "finance_payment", DeterministicGuid(company.Id, $"payment:{payment.ExternalReference}"), dayEventSequence, command.DeterministicConfigurationJson),
++                    runningCashBalance,
++                    payment.Amount,
++                    decimal.Round(runningCashBalance + payment.Amount, 2, MidpointRounding.AwayFromZero),
++                    payment.TransactionUtc);
++                _dbContext.SimulationEventRecords.Add(paymentEvent);
++            }
++
++            var simulatedPayment = await _dbContext.Payments
++                .IgnoreQueryFilters()
++                .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.Id == DeterministicGuid(company.Id, $"payment:{payment.ExternalReference}"), cancellationToken);
++
++            if (simulatedPayment is null)
++            {
++                simulatedPayment = new Payment(
++                    DeterministicGuid(company.Id, $"payment:{payment.ExternalReference}"),
++                    company.Id,
++                    payment.Amount >= 0m ? PaymentTypes.Incoming : PaymentTypes.Outgoing,
++                    Math.Abs(payment.Amount),
++                    payment.Currency,
++                    payment.TransactionUtc,
++                    payment.Amount >= 0m ? "bank_transfer" : "ach",
++                    PaymentStatuses.Completed,
++                    payment.InvoiceId.HasValue ? invoice!.InvoiceNumber : bill!.BillNumber,
++                    createdUtc: payment.TransactionUtc,
++                    updatedUtc: payment.TransactionUtc,
++                    sourceSimulationEventRecordId: paymentEvent.Id);
++                _dbContext.Payments.Add(simulatedPayment);
++            }
++
+             transaction = new FinanceTransaction(
+                 DeterministicGuid(company.Id, $"transaction:{payment.ExternalReference}"),
+                 company.Id,
+                 account.Id,
+                 payment.CounterpartyId,
+                 payment.InvoiceId,
+                 payment.BillId,
+                 payment.TransactionUtc,
+                 payment.Category,
+                 payment.Amount,
+                 payment.Currency,
+                 payment.Description,
+                 payment.ExternalReference,
+-                createdUtc: payment.TransactionUtc);
++                createdUtc: payment.TransactionUtc,
++                sourceSimulationEventRecordId: paymentEvent.Id);
+ 
+             _dbContext.FinanceTransactions.Add(transaction);
+             FinanceDomainEvents.EnqueueTransactionCreated(_outboxEnqueuer, transaction, BuildDayCorrelationId(company.Id, plan.DateUtc));
+             transactionsCreated++;
++            runningCashBalance = paymentEvent.CashAfter ?? runningCashBalance;
++
++            await EnsurePaymentAllocationAsync(company.Id, simulatedPayment, invoice, bill, payment.TransactionUtc, cancellationToken);
+ 
+             if (await EnsureAuditEventAsync(
+                     company.Id,
+@@ -494,7 +594,26 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                 account.Id,
+                 balanceSnapshotUtc,
+                 runningBalance,
+                 account.Currency,
+-                createdUtc: balanceSnapshotUtc);
++                createdUtc: balanceSnapshotUtc,
++                sourceSimulationEventRecordId: SimulationEventDeterministicIdentity.CreateEventId(
++                    company.Id,
++                    command.Seed,
++                    command.StartSimulatedUtc,
++                    plan.DateUtc,
++                    "finance.balance.generated",
++                    "finance_balance",
++                    DeterministicGuid(company.Id, $"balance:{account.Id:N}:{balanceSnapshotUtc:yyyyMMddHH}"),
++                    ++dayEventSequence,
++                    command.DeterministicConfigurationJson));
++            _dbContext.SimulationEventRecords.Add(new SimulationEventRecord(
++                existingBalance.SourceSimulationEventRecordId!.Value,
++                company.Id,
++                command.ActiveSessionId,
++                command.Seed,
++                command.StartSimulatedUtc,
++                plan.DateUtc,
++                "finance.balance.generated",
++                "finance_balance",
++                existingBalance.Id, account.Code, null, dayEventSequence, SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.balance.generated", "finance_balance", existingBalance.Id, dayEventSequence, command.DeterministicConfigurationJson), null, null, null, balanceSnapshotUtc));
+             _dbContext.FinanceBalances.Add(existingBalance);
+             balancesCreated++;
+ 
+@@ -625,6 +744,42 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             balancesCreated,
+             recurringExpenseInstancesCreated,
+             workflowTasksCreated,
+@@ -639,6 +794,39 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             alertsCreated);
+     }
+ 
++    private async Task EnsurePaymentAllocationAsync(
++        Guid companyId,
++        Payment payment,
++        FinanceInvoice? invoice,
++        FinanceBill? bill,
++        DateTime createdUtc,
++        CancellationToken cancellationToken)
++    {
++        if (invoice is null && bill is null)
++        {
++            return;
++        }
++
++        var allocationId = DeterministicGuid(
++            companyId,
++            $"allocation:{payment.Id:N}:{invoice?.Id.ToString("N") ?? bill!.Id.ToString("N")}");
++
++        var exists = await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AnyAsync(x => x.CompanyId == companyId && x.Id == allocationId, cancellationToken);
++        if (exists)
++        {
++            return;
++        }
++
++        var allocatedAmount = decimal.Round(
++            Math.Min(
++                payment.Amount,
++                invoice?.Amount ?? bill!.Amount),
++            2,
++            MidpointRounding.AwayFromZero);
++
++        _dbContext.PaymentAllocations.Add(new PaymentAllocation(allocationId, companyId, payment.Id, invoice?.Id, bill?.Id, allocatedAmount, payment.Currency, createdUtc, createdUtc));
++    }
++
+     private async Task<FinancePolicyConfigurationDto> LoadPolicyAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var policy = await _dbContext.FinancePolicyConfigurations
+@@ -1103,6 +1291,20 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         return thresholdCase switch
+         {
+             ThresholdCase.JustBelow => Math.Max(50m, threshold - 0.01m),
+@@ -1134,6 +1336,16 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             _ => "pending"
+         };
+ 
++    private static string ResolveInvoiceSettlementStatus(InvoiceScenario scenario) =>
++        scenario switch
++        {
++            InvoiceScenario.PartialPayment => FinanceSettlementStatuses.PartiallyPaid,
++            InvoiceScenario.FullPayment => FinanceSettlementStatuses.Paid,
++            InvoiceScenario.OverPayment => FinanceSettlementStatuses.Paid,
++            _ => FinanceSettlementStatuses.Unpaid
++        };
++
+     private static string ResolveBillStatus(ThresholdCase thresholdCase) =>
+         thresholdCase switch
+         {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/SimulationEventDeterministicIdentity.cs b/src/VirtualCompany.Infrastructure/Finance/SimulationEventDeterministicIdentity.cs
+new file mode 100644
+index 0000000..806a897
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/SimulationEventDeterministicIdentity.cs
+@@ -0,0 +1,98 @@
++using System.Globalization;
++using System.Security.Cryptography;
++using System.Text;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public static class SimulationEventDeterministicIdentity
++{
++    public static Guid CreateEventId(
++        Guid companyId,
++        int seed,
++        DateTime startSimulatedUtc,
++        DateTime simulationDateUtc,
++        string eventType,
++        string sourceEntityType,
++        Guid? sourceEntityId,
++        int sequenceNumber,
++        string? deterministicConfigurationJson = null)
++    {
++        var material = BuildMaterial(companyId, seed, startSimulatedUtc, simulationDateUtc, eventType, sourceEntityType, sourceEntityId, sequenceNumber, deterministicConfigurationJson);
++        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(material));
++        Span<byte> guidBytes = stackalloc byte[16];
++        bytes.AsSpan(0, 16).CopyTo(guidBytes);
++        guidBytes[7] = (byte)((guidBytes[7] & 0x0F) | 0x40);
++        guidBytes[8] = (byte)((guidBytes[8] & 0x3F) | 0x80);
++        return new Guid(guidBytes);
++    }
++
++    public static string CreateDeterministicKey(
++        Guid companyId,
++        int seed,
++        DateTime startSimulatedUtc,
++        DateTime simulationDateUtc,
++        string eventType,
++        string sourceEntityType,
++        Guid? sourceEntityId,
++        int sequenceNumber,
++        string? deterministicConfigurationJson = null)
++    {
++        var material = BuildMaterial(companyId, seed, startSimulatedUtc, simulationDateUtc, eventType, sourceEntityType, sourceEntityId, sequenceNumber, deterministicConfigurationJson);
++        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material))).ToLowerInvariant();
++    }
++
++    private static string BuildMaterial(
++        Guid companyId,
++        int seed,
++        DateTime startSimulatedUtc,
++        DateTime simulationDateUtc,
++        string eventType,
++        string sourceEntityType,
++        Guid? sourceEntityId,
++        int sequenceNumber,
++        string? deterministicConfigurationJson)
++    {
++        if (sequenceNumber <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(sequenceNumber), "Sequence number must be positive.");
++        }
++
++        return string.Join(
++            "|",
++            companyId.ToString("N"),
++            seed.ToString(CultureInfo.InvariantCulture),
++            NormalizeUtc(startSimulatedUtc).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
++            NormalizeUtc(simulationDateUtc).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
++            eventType.Trim().ToLowerInvariant(),
++            sourceEntityType.Trim().ToLowerInvariant(),
++            sourceEntityId?.ToString("N") ?? string.Empty,
++            sequenceNumber.ToString(CultureInfo.InvariantCulture),
++            Canonicalize(deterministicConfigurationJson));
++    }
++
++    private static string Canonicalize(string? json)
++    {
++        if (string.IsNullOrWhiteSpace(json))
++        {
++            return string.Empty;
++        }
++
++        try
++        {
++            return CanonicalizeNode(JsonNode.Parse(json));
++        }
++        catch (JsonException)
++        {
++            return json.Trim();
++        }
++    }
++
++    private static string CanonicalizeNode(JsonNode? node) =>
++        node switch
++        {
++            null => "null",
++            JsonValue value => value.ToJsonString(),
++            JsonArray array => $"[{string.Join(",", array.Select(CanonicalizeNode))}]",
++            JsonObject obj => $"{{{string.Join(",", obj.OrderBy(x => x.Key, StringComparer.Ordinal).Select(x => $"{JsonValue.Create(x.Key)!.ToJsonString()}:{CanonicalizeNode(x.Value)}"))}}}",
++            _ => node.ToJsonString()
++        };
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.Kind == DateTimeKind.Local ? value.ToUniversalTime() : DateTime.SpecifyKind(value, DateTimeKind.Utc);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSimulationEventLinkConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSimulationEventLinkConfigurations.cs
+new file mode 100644
+index 0000000..d0d4da0
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSimulationEventLinkConfigurations.cs
+@@ -0,0 +1,108 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class PaymentSimulationEventLinkConfiguration : IEntityTypeConfiguration<Payment>
++{
++    public void Configure(EntityTypeBuilder<Payment> builder)
++    {
++        builder.Property(x => x.SourceSimulationEventRecordId).HasColumnName("source_simulation_event_record_id");
++        builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
++        builder.HasOne(x => x.SourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.SourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class FinanceInvoiceSimulationEventLinkConfiguration : IEntityTypeConfiguration<FinanceInvoice>
++{
++    public void Configure(EntityTypeBuilder<FinanceInvoice> builder)
++    {
++        builder.Property(x => x.SourceSimulationEventRecordId).HasColumnName("source_simulation_event_record_id");
++        builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
++        builder.HasOne(x => x.SourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.SourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class FinanceBillSimulationEventLinkConfiguration : IEntityTypeConfiguration<FinanceBill>
++{
++    public void Configure(EntityTypeBuilder<FinanceBill> builder)
++    {
++        builder.Property(x => x.SourceSimulationEventRecordId).HasColumnName("source_simulation_event_record_id");
++        builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
++        builder.HasOne(x => x.SourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.SourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class FinanceTransactionSimulationEventLinkConfiguration : IEntityTypeConfiguration<FinanceTransaction>
++{
++    public void Configure(EntityTypeBuilder<FinanceTransaction> builder)
++    {
++        builder.Property(x => x.SourceSimulationEventRecordId).HasColumnName("source_simulation_event_record_id");
++        builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
++        builder.HasOne(x => x.SourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.SourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class FinanceBalanceSimulationEventLinkConfiguration : IEntityTypeConfiguration<FinanceBalance>
++{
++    public void Configure(EntityTypeBuilder<FinanceBalance> builder)
++    {
++        builder.Property(x => x.SourceSimulationEventRecordId).HasColumnName("source_simulation_event_record_id");
++        builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
++        builder.HasOne(x => x.SourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.SourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class BankTransactionSimulationEventLinkConfiguration : IEntityTypeConfiguration<BankTransaction>
++{
++    public void Configure(EntityTypeBuilder<BankTransaction> builder)
++    {
++        builder.Property(x => x.SourceSimulationEventRecordId).HasColumnName("source_simulation_event_record_id");
++        builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
++        builder.HasOne(x => x.SourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.SourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423120000_AddSimulationEventRecords.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423120000_AddSimulationEventRecords.cs
+new file mode 100644
+index 0000000..dad11fc
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423120000_AddSimulationEventRecords.cs
+@@ -0,0 +1,224 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddSimulationEventRecords : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var decimalType = isPostgres ? "numeric(18,2)" : "decimal(18,2)";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
++            var string256Type = isPostgres ? "character varying(256)" : "nvarchar(256)";
++
++            migrationBuilder.CreateTable(
++                name: "simulation_event_records",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    simulation_session_id = table.Column<Guid>(type: guidType, nullable: true),
++                    seed = table.Column<int>(type: "int", nullable: false),
++                    start_simulated_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    simulation_date_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    event_type = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    source_entity_type = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    source_entity_id = table.Column<Guid>(type: guidType, nullable: true),
++                    source_reference = table.Column<string>(type: string128Type, maxLength: 128, nullable: true),
++                    parent_event_id = table.Column<Guid>(type: guidType, nullable: true),
++                    sequence_number = table.Column<int>(type: "int", nullable: false),
++                    deterministic_key = table.Column<string>(type: string256Type, maxLength: 256, nullable: false),
++                    cash_before = table.Column<decimal>(type: decimalType, nullable: true),
++                    cash_delta = table.Column<decimal>(type: decimalType, nullable: true),
++                    cash_after = table.Column<decimal>(type: decimalType, nullable: true),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_simulation_event_records", x => x.id);
++                    table.UniqueConstraint("AK_simulation_event_records_company_id_id", x => new { x.company_id, x.id });
++                    table.CheckConstraint(
++                        "CK_simulation_event_records_cash_snapshot",
++                        "((cash_before IS NULL AND cash_delta IS NULL AND cash_after IS NULL) OR (cash_before IS NOT NULL AND cash_delta IS NOT NULL AND cash_after IS NOT NULL AND cash_after = cash_before + cash_delta))");
++                    table.CheckConstraint("CK_simulation_event_records_sequence_number_positive", "sequence_number > 0");
++                    table.ForeignKey(
++                        name: "FK_simulation_event_records_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_simulation_event_records_simulation_event_records_company_id_parent_event_id",
++                        columns: x => new { x.company_id, x.parent_event_id },
++                        principalTable: "simulation_event_records",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_simulation_event_records_company_id_simulation_date_at",
++                table: "simulation_event_records",
++                columns: new[] { "company_id", "simulation_date_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_simulation_event_records_company_id_event_type_simulation_date_at",
++                table: "simulation_event_records",
++                columns: new[] { "company_id", "event_type", "simulation_date_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_simulation_event_records_company_id_source_entity_type_source_entity_id",
++                table: "simulation_event_records",
++                columns: new[] { "company_id", "source_entity_type", "source_entity_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_simulation_event_records_company_id_simulation_session_id",
++                table: "simulation_event_records",
++                columns: new[] { "company_id", "simulation_session_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_simulation_event_records_company_id_deterministic_key",
++                table: "simulation_event_records",
++                columns: new[] { "company_id", "deterministic_key" },
++                unique: true);
++
++            migrationBuilder.AddColumn<Guid>(name: "source_simulation_event_record_id", table: "finance_payments", type: guidType, nullable: true);
++            migrationBuilder.AddColumn<Guid>(name: "source_simulation_event_record_id", table: "finance_invoices", type: guidType, nullable: true);
++            migrationBuilder.AddColumn<Guid>(name: "source_simulation_event_record_id", table: "finance_bills", type: guidType, nullable: true);
++            migrationBuilder.AddColumn<Guid>(name: "source_simulation_event_record_id", table: "finance_transactions", type: guidType, nullable: true);
++            migrationBuilder.AddColumn<Guid>(name: "source_simulation_event_record_id", table: "finance_balances", type: guidType, nullable: true);
++            migrationBuilder.AddColumn<Guid>(name: "source_simulation_event_record_id", table: "bank_transactions", type: guidType, nullable: true);
++
++            migrationBuilder.CreateIndex(name: "IX_finance_payments_company_id_source_simulation_event_record_id", table: "finance_payments", columns: new[] { "company_id", "source_simulation_event_record_id" });
++            migrationBuilder.CreateIndex(name: "IX_finance_invoices_company_id_source_simulation_event_record_id", table: "finance_invoices", columns: new[] { "company_id", "source_simulation_event_record_id" });
++            migrationBuilder.CreateIndex(name: "IX_finance_bills_company_id_source_simulation_event_record_id", table: "finance_bills", columns: new[] { "company_id", "source_simulation_event_record_id" });
++            migrationBuilder.CreateIndex(name: "IX_finance_transactions_company_id_source_simulation_event_record_id", table: "finance_transactions", columns: new[] { "company_id", "source_simulation_event_record_id" });
++            migrationBuilder.CreateIndex(name: "IX_finance_balances_company_id_source_simulation_event_record_id", table: "finance_balances", columns: new[] { "company_id", "source_simulation_event_record_id" });
++            migrationBuilder.CreateIndex(name: "IX_bank_transactions_company_id_source_simulation_event_record_id", table: "bank_transactions", columns: new[] { "company_id", "source_simulation_event_record_id" });
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_finance_payments_simulation_event_records_company_id_source_simulation_event_record_id",
++                table: "finance_payments",
++                columns: new[] { "company_id", "source_simulation_event_record_id" },
++                principalTable: "simulation_event_records",
++                principalColumns: new[] { "company_id", "id" },
++                onDelete: ReferentialAction.Restrict);
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_finance_invoices_simulation_event_records_company_id_source_simulation_event_record_id",
++                table: "finance_invoices",
++                columns: new[] { "company_id", "source_simulation_event_record_id" },
++                principalTable: "simulation_event_records",
++                principalColumns: new[] { "company_id", "id" },
++                onDelete: ReferentialAction.Restrict);
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_finance_bills_simulation_event_records_company_id_source_simulation_event_record_id",
++                table: "finance_bills",
++                columns: new[] { "company_id", "source_simulation_event_record_id" },
++                principalTable: "simulation_event_records",
++                principalColumns: new[] { "company_id", "id" },
++                onDelete: ReferentialAction.Restrict);
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_finance_transactions_simulation_event_records_company_id_source_simulation_event_record_id",
++                table: "finance_transactions",
++                columns: new[] { "company_id", "source_simulation_event_record_id" },
++                principalTable: "simulation_event_records",
++                principalColumns: new[] { "company_id", "id" },
++                onDelete: ReferentialAction.Restrict);
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_finance_balances_simulation_event_records_company_id_source_simulation_event_record_id",
++                table: "finance_balances",
++                columns: new[] { "company_id", "source_simulation_event_record_id" },
++                principalTable: "simulation_event_records",
++                principalColumns: new[] { "company_id", "id" },
++                onDelete: ReferentialAction.Restrict);
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_bank_transactions_simulation_event_records_company_id_source_simulation_event_record_id",
++                table: "bank_transactions",
++                columns: new[] { "company_id", "source_simulation_event_record_id" },
++                principalTable: "simulation_event_records",
++                principalColumns: new[] { "company_id", "id" },
++                onDelete: ReferentialAction.Restrict);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropForeignKey(name: "FK_finance_payments_simulation_event_records_company_id_source_simulation_event_record_id", table: "finance_payments");
++            migrationBuilder.DropForeignKey(name: "FK_finance_invoices_simulation_event_records_company_id_source_simulation_event_record_id", table: "finance_invoices");
++            migrationBuilder.DropForeignKey(name: "FK_finance_bills_simulation_event_records_company_id_source_simulation_event_record_id", table: "finance_bills");
++            migrationBuilder.DropForeignKey(name: "FK_finance_transactions_simulation_event_records_company_id_source_simulation_event_record_id", table: "finance_transactions");
++            migrationBuilder.DropForeignKey(name: "FK_finance_balances_simulation_event_records_company_id_source_simulation_event_record_id", table: "finance_balances");
++            migrationBuilder.DropForeignKey(name: "FK_bank_transactions_simulation_event_records_company_id_source_simulation_event_record_id", table: "bank_transactions");
++
++            migrationBuilder.DropIndex(name: "IX_finance_payments_company_id_source_simulation_event_record_id", table: "finance_payments");
++            migrationBuilder.DropIndex(name: "IX_finance_invoices_company_id_source_simulation_event_record_id", table: "finance_invoices");
++            migrationBuilder.DropIndex(name: "IX_finance_bills_company_id_source_simulation_event_record_id", table: "finance_bills");
++            migrationBuilder.DropIndex(name: "IX_finance_transactions_company_id_source_simulation_event_record_id", table: "finance_transactions");
++            migrationBuilder.DropIndex(name: "IX_finance_balances_company_id_source_simulation_event_record_id", table: "finance_balances");
++            migrationBuilder.DropIndex(name: "IX_bank_transactions_company_id_source_simulation_event_record_id", table: "bank_transactions");
++
++            migrationBuilder.DropColumn(name: "source_simulation_event_record_id", table: "finance_payments");
++            migrationBuilder.DropColumn(name: "source_simulation_event_record_id", table: "finance_invoices");
++            migrationBuilder.DropColumn(name: "source_simulation_event_record_id", table: "finance_bills");
++            migrationBuilder.DropColumn(name: "source_simulation_event_record_id", table: "finance_transactions");
++            migrationBuilder.DropColumn(name: "source_simulation_event_record_id", table: "finance_balances");
++            migrationBuilder.DropColumn(name: "source_simulation_event_record_id", table: "bank_transactions");
++
++            migrationBuilder.DropTable(name: "simulation_event_records");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SimulationEventRecordEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/SimulationEventRecordEntityConfiguration.cs
+new file mode 100644
+index 0000000..0b0f5e7
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/SimulationEventRecordEntityConfiguration.cs
+@@ -0,0 +1,44 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class SimulationEventRecordEntityConfiguration : IEntityTypeConfiguration<SimulationEventRecord>
++{
++    public void Configure(EntityTypeBuilder<SimulationEventRecord> builder)
++    {
++        builder.ToTable("simulation_event_records");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SimulationSessionId).HasColumnName("simulation_session_id");
++        builder.Property(x => x.Seed).HasColumnName("seed").IsRequired();
++        builder.Property(x => x.StartSimulatedUtc).HasColumnName("start_simulated_at").IsRequired();
++        builder.Property(x => x.SimulationDateUtc).HasColumnName("simulation_date_at").IsRequired();
++        builder.Property(x => x.EventType).HasColumnName("event_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.SourceEntityType).HasColumnName("source_entity_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.SourceEntityId).HasColumnName("source_entity_id");
++        builder.Property(x => x.SourceReference).HasColumnName("source_reference").HasMaxLength(128);
++        builder.Property(x => x.ParentEventId).HasColumnName("parent_event_id");
++        builder.Property(x => x.SequenceNumber).HasColumnName("sequence_number").IsRequired();
++        builder.Property(x => x.DeterministicKey).HasColumnName("deterministic_key").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.CashBefore).HasColumnName("cash_before").HasColumnType("decimal(18,2)");
++        builder.Property(x => x.CashDelta).HasColumnName("cash_delta").HasColumnType("decimal(18,2)");
++        builder.Property(x => x.CashAfter).HasColumnName("cash_after").HasColumnType("decimal(18,2)");
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasCheckConstraint("CK_simulation_event_records_cash_snapshot", "((cash_before IS NULL AND cash_delta IS NULL AND cash_after IS NULL) OR (cash_before IS NOT NULL AND cash_delta IS NOT NULL AND cash_after IS NOT NULL AND cash_after = cash_before + cash_delta))");
++        builder.HasCheckConstraint("CK_simulation_event_records_sequence_number_positive", "sequence_number > 0");
++        builder.HasIndex(x => new { x.CompanyId, x.SimulationDateUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.EventType, x.SimulationDateUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.SourceEntityType, x.SourceEntityId });
++        builder.HasIndex(x => new { x.CompanyId, x.SimulationSessionId });
++        builder.HasIndex(x => new { x.CompanyId, x.DeterministicKey }).IsUnique();
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.ParentEvent).WithMany().HasForeignKey(x => new { x.CompanyId, x.ParentEventId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 9aafb97..3ef1c25 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -111,6 +111,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
+     public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
+     public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
++    public DbSet<SimulationEventRecord> SimulationEventRecords => Set<SimulationEventRecord>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+@@ -443,6 +444,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<CompanySimulationRunDayLog>()
+             .HasQueryFilter(log =>
+                 CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<SimulationEventRecord>()
++            .HasQueryFilter(record =>
++                CurrentCompanyId.HasValue && record.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationPersistenceTests.cs
+index 79d7858..b7ff620 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationPersistenceTests.cs
+@@ -106,6 +106,77 @@ public sealed class FinancePaymentAllocationPersistenceTests
+         Assert.Contains("CK_payment_allocations_single_target", exception.Message, StringComparison.OrdinalIgnoreCase);
+     }
+ 
++    [Fact]
++    public async Task Allocation_trace_resolves_payment_target_document_and_originating_events()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(Guid.NewGuid(), "Allocation Trace Company");
++        var counterparty = new FinanceCounterparty(Guid.NewGuid(), company.Id, "Trace Counterparty", "customer", "trace@example.com");
++        var invoiceEvent = new SimulationEventRecord(Guid.NewGuid(), company.Id, Guid.NewGuid(), 73, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc), "finance.invoice.generated", "finance_invoice", Guid.NewGuid(), "INV-TRACE-001", null, 1, "inv-trace", null, null, null);
++        var paymentEvent = new SimulationEventRecord(Guid.NewGuid(), company.Id, invoiceEvent.SimulationSessionId, 73, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 6, 0, 0, 0, DateTimeKind.Utc), "finance.cash_movement.generated", "finance_payment", Guid.NewGuid(), "PAY-TRACE-001", invoiceEvent.Id, 2, "pay-trace", 1000m, 100m, 1100m);
++        var invoice = new FinanceInvoice(
++            Guid.NewGuid(),
++            company.Id,
++            counterparty.Id,
++            "INV-TRACE-001",
++            new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),
++            100m,
++            "USD",
++            "open",
++            settlementStatus: FinanceSettlementStatuses.PartiallyPaid,
++            sourceSimulationEventRecordId: invoiceEvent.Id);
++        var payment = new Payment(
++            Guid.NewGuid(),
++            company.Id,
++            PaymentTypes.Incoming,
++            100m,
++            "USD",
++            new DateTime(2026, 4, 6, 0, 0, 0, DateTimeKind.Utc),
++            "bank_transfer",
++            PaymentStatuses.Completed,
++            invoice.InvoiceNumber,
++            sourceSimulationEventRecordId: paymentEvent.Id);
++        var allocation = new PaymentAllocation(Guid.NewGuid(), company.Id, payment.Id, invoice.Id, null, 100m, "USD");
++
++        dbContext.Companies.Add(company);
++        dbContext.SimulationEventRecords.AddRange(invoiceEvent, paymentEvent);
++        dbContext.FinanceCounterparties.Add(counterparty);
++        dbContext.FinanceInvoices.Add(invoice);
++        dbContext.Payments.Add(payment);
++        dbContext.PaymentAllocations.Add(allocation);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceReadService(dbContext);
++        var trace = await service.GetAllocationTraceAsync(
++            new GetFinancePaymentAllocationTraceQuery(company.Id, allocation.Id),
++            CancellationToken.None);
++
++        Assert.NotNull(trace);
++        Assert.Equal(payment.Id, trace!.Payment.Id);
++        Assert.Equal("invoice", trace.TargetDocument.TargetDocumentType);
++        Assert.Equal(invoice.Id, trace.TargetDocument.Id);
++        Assert.Equal(paymentEvent.Id, trace.PaymentSourceEvent!.Id);
++        Assert.Equal(invoiceEvent.Id, trace.TargetSourceEvent!.Id);
++        Assert.Equal(1000m, trace.PaymentSourceEvent.CashBefore);
++        Assert.Equal(100m, trace.PaymentSourceEvent.CashDelta);
++        Assert.Equal(1100m, trace.PaymentSourceEvent.CashAfter);
++    }
++
+     private static async Task<HashSet<string>> ReadColumnsAsync(SqliteConnection connection, string tableName)
+     {
+         var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+diff --git a/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs b/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs
+new file mode 100644
+index 0000000..3d5cb97
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs
+@@ -0,0 +1,50 @@
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Finance;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class SimulationEventDeterministicIdentityTests
++{
++    [Fact]
++    public void Same_inputs_produce_the_same_event_id_and_key()
++    {
++        var companyId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
++        var startUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
++        var simulationDateUtc = new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc);
++        var sourceEntityId = Guid.Parse("11111111-2222-3333-4444-555555555555");
++
++        var leftId = SimulationEventDeterministicIdentity.CreateEventId(companyId, 73, startUtc, simulationDateUtc, "finance.invoice.generated", "finance_invoice", sourceEntityId, 1, """{"b":2,"a":1}""");
++        var rightId = SimulationEventDeterministicIdentity.CreateEventId(companyId, 73, startUtc, simulationDateUtc, "finance.invoice.generated", "finance_invoice", sourceEntityId, 1, """{"a":1,"b":2}""");
++        var leftKey = SimulationEventDeterministicIdentity.CreateDeterministicKey(companyId, 73, startUtc, simulationDateUtc, "finance.invoice.generated", "finance_invoice", sourceEntityId, 1, """{"b":2,"a":1}""");
++        var rightKey = SimulationEventDeterministicIdentity.CreateDeterministicKey(companyId, 73, startUtc, simulationDateUtc, "finance.invoice.generated", "finance_invoice", sourceEntityId, 1, """{"a":1,"b":2}""");
++
++        Assert.Equal(leftId, rightId);
++        Assert.Equal(leftKey, rightKey);
++    }
++
++    [Fact]
++    public void Changing_seed_or_sequence_changes_the_event_identity()
++    {
++        var companyId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
++        var startUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
++        var simulationDateUtc = new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc);
++        var sourceEntityId = Guid.Parse("11111111-2222-3333-4444-555555555555");
++
++        var baseline = SimulationEventDeterministicIdentity.CreateEventId(companyId, 73, startUtc, simulationDateUtc, "finance.invoice.generated", "finance_invoice", sourceEntityId, 1);
++        var changedSeed = SimulationEventDeterministicIdentity.CreateEventId(companyId, 74, startUtc, simulationDateUtc, "finance.invoice.generated", "finance_invoice", sourceEntityId, 1);
++        var changedSequence = SimulationEventDeterministicIdentity.CreateEventId(companyId, 73, startUtc, simulationDateUtc, "finance.invoice.generated", "finance_invoice", sourceEntityId, 2);
++
++        Assert.NotEqual(baseline, changedSeed);
++        Assert.NotEqual(baseline, changedSequence);
++    }
++
++    [Fact]
++    public void Cash_snapshot_requires_before_delta_and_after_to_match()
++    {
++        Assert.Throws<ArgumentException>(() => new SimulationEventRecord(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 73, new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc), "finance.cash_movement.generated", "finance_payment", Guid.NewGuid(), "PAY-001", null, 1, "key", 100m, 10m, 109m));
++    }
++}
+END_OF_PATCH

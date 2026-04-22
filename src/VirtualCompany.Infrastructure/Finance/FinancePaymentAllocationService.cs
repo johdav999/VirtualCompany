@@ -46,7 +46,10 @@ internal sealed class FinancePaymentAllocationService
                 invoice?.Id,
                 bill?.Id,
                 amount,
-                currency);
+                currency,
+                sourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
+                paymentSourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
+                targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId);
 
             _dbContext.PaymentAllocations.Add(allocation);
             await ApplyTargetSettlementStatusAsync(command.CompanyId, invoice, bill, amount, null, cancellationToken);
@@ -87,6 +90,15 @@ internal sealed class FinancePaymentAllocationService
             await ValidateAsync(command.CompanyId, payment, invoice, bill, amount, currency, allocation.Id, cancellationToken);
 
             allocation.Update(payment.Id, invoice?.Id, bill?.Id, amount, currency);
+            allocation.Update(
+                payment.Id,
+                invoice?.Id,
+                bill?.Id,
+                amount,
+                currency,
+                sourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
+                paymentSourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
+                targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId);
 
             var movedAwayFromInvoice = previousInvoice is not null && previousInvoice.Id != invoice?.Id;
             var movedAwayFromBill = previousBill is not null && previousBill.Id != bill?.Id;
@@ -326,7 +338,10 @@ internal sealed class FinancePaymentAllocationService
             invoice?.Id,
             bill?.Id,
             allocationAmount,
-            payment.Currency);
+            payment.Currency,
+            sourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
+            paymentSourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
+            targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId);
 
         _dbContext.PaymentAllocations.Add(allocation);
         await ApplyTargetSettlementStatusAsync(companyId, invoice, bill, allocationAmount, null, cancellationToken);
@@ -683,7 +698,10 @@ internal sealed class FinancePaymentAllocationService
             allocation.AllocatedAmount,
             allocation.Currency,
             allocation.CreatedUtc,
-            allocation.UpdatedUtc);
+            allocation.UpdatedUtc,
+            allocation.SourceSimulationEventRecordId,
+            allocation.PaymentSourceSimulationEventRecordId,
+            allocation.TargetSourceSimulationEventRecordId);
 
     private async Task<TResult> ExecuteInTransactionAsync<TResult>(
         Func<Task<TResult>> action,

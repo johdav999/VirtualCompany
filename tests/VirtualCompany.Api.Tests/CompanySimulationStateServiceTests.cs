@@ -294,6 +294,7 @@ public sealed class CompanySimulationStateServiceTests
                 TransactionsCreated: 2,
                 BalancesCreated: 0,
                 RecurringExpenseInstancesCreated: 1,
+                AssetPurchasesCreated: 2,
                 WorkflowTasksCreated: 0,
                 ApprovalRequestsCreated: 0,
                 AuditEventsCreated: 0,
@@ -306,6 +307,7 @@ public sealed class CompanySimulationStateServiceTests
                         TransactionsCreated: 2,
                         InvoicesCreated: 1,
                         BillsCreated: 1,
+                        AssetPurchasesCreated: 2,
                         RecurringExpenseInstancesCreated: 1,
                         AlertsCreated: 1,
                         InjectedAnomalies: ["duplicate_vendor_charge"],
@@ -330,8 +332,9 @@ public sealed class CompanySimulationStateServiceTests
         Assert.Contains("duplicate_vendor_charge", run.InjectedAnomalies);
         Assert.Contains("Manual review recommended.", run.Warnings);
         Assert.Contains("Synthetic generation failure was captured safely.", run.Errors);
+        Assert.Equal(2, dayLog.AssetPurchasesGenerated);
         Assert.Equal(new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc), dayLog.SimulatedDateUtc);
-        Assert.Equal(5, dayLog.GeneratedRecordCount);
+        Assert.Equal(7, dayLog.GeneratedRecordCount);
         Assert.Contains("duplicate_vendor_charge", dayLog.InjectedAnomalies);
         Assert.Contains("Manual review recommended.", dayLog.Warnings);
         Assert.Contains("Synthetic generation failure was captured safely.", dayLog.Errors);
@@ -615,6 +618,7 @@ public sealed class CompanySimulationStateServiceTests
                 TransactionsCreated: 0,
                 BalancesCreated: 0,
                 RecurringExpenseInstancesCreated: 0,
+                AssetPurchasesCreated: 0,
                 WorkflowTasksCreated: 0,
                 ApprovalRequestsCreated: 0,
                 AuditEventsCreated: 0,

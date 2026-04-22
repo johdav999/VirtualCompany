@@ -395,6 +395,8 @@ public static class DependencyInjection
         services.AddScoped<IFinanceBootstrapRerunService, CompanyFinanceBootstrapRerunService>();
         services.AddScoped<IFinanceSeedingStateService, CompanyFinanceSeedingStateResolver>();
         services.AddScoped<IFinanceSeedBackfillOrchestrator, FinanceSeedBackfillOrchestrator>();
+        services.AddScoped<FinanceSummaryConsistencyChecker>();
+        services.AddScoped<IFinanceSummaryQueryService, CompanyFinanceSummaryQueryService>();
         services.AddScoped<IFinanceSeedBackfillQueryService, FinanceSeedBackfillQueryService>();
         services.AddScoped<IPlanningBaselineService, PlanningBaselineService>();
         services.AddScoped<IFinanceEntryService, CompanyFinanceEntryService>();

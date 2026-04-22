@@ -23,6 +23,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
     private const string AnomalyTaskType = "finance_transaction_anomaly_follow_up";
     private const string SystemActorType = "system";
     private const string DefaultApprovalCurrency = "USD";
+    private static readonly IFinanceDeterministicValueSource ProfileDeterministicValueSource = new Sha256FinanceDeterministicValueSource();
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
     private static readonly InvoiceScenario[] InvoiceScenarioCatalog =
@@ -142,6 +143,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
         var billsCreated = 0;
         var transactionsCreated = 0;
         var balancesCreated = 0;
+        var assetPurchasesCreated = 0;
         var recurringExpenseInstancesCreated = 0;
         var workflowTasksCreated = 0;
         var approvalRequestsCreated = 0;
@@ -165,6 +167,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                 company,
                 command,
                 policy,
+                config,
                 plan,
                 account,
                 financeActorId,
@@ -174,6 +177,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             billsCreated += applied.BillsCreated;
             transactionsCreated += applied.TransactionsCreated;
             balancesCreated += applied.BalancesCreated;
+            assetPurchasesCreated += applied.AssetPurchasesCreated;
             recurringExpenseInstancesCreated += applied.RecurringExpenseInstancesCreated;
             workflowTasksCreated += applied.WorkflowTasksCreated;
             approvalRequestsCreated += applied.ApprovalRequestsCreated;
@@ -186,12 +190,13 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation(
-            "Generated deterministic finance activity for company {CompanyId}, session {SessionId}. Days={DaysProcessed}, invoices={InvoicesCreated}, bills={BillsCreated}, transactions={TransactionsCreated}, balances={BalancesCreated}, tasks={WorkflowTasksCreated}, approvals={ApprovalRequestsCreated}, alerts={AlertsCreated}.",
+            "Generated deterministic finance activity for company {CompanyId}, session {SessionId}. Days={DaysProcessed}, invoices={InvoicesCreated}, bills={BillsCreated}, assetPurchases={AssetPurchasesCreated}, transactions={TransactionsCreated}, balances={BalancesCreated}, tasks={WorkflowTasksCreated}, approvals={ApprovalRequestsCreated}, alerts={AlertsCreated}.",
             command.CompanyId,
             command.ActiveSessionId,
             daysProcessed,
             invoicesCreated,
             billsCreated,
+            assetPurchasesCreated,
             transactionsCreated,
             balancesCreated,
             workflowTasksCreated,
@@ -206,6 +211,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             billsCreated,
             transactionsCreated,
             balancesCreated,
+            assetPurchasesCreated,
             recurringExpenseInstancesCreated,
             workflowTasksCreated,
             approvalRequestsCreated,
@@ -215,10 +221,204 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             dailyLogs);
     }
 
+    private FinanceDayPlan BuildDayPlan(
+        Company company,
+        DateTime simulatedDateUtc,
+        int dayIndex,
+        GenerateCompanySimulationFinanceCommand command,
+        FinancePolicyConfigurationDto policy,
+        FinanceGenerationConfiguration config,
+        CounterpartyCatalog counterparties)
+    {
+        if (counterparties.Customers.Count == 0 || counterparties.Suppliers.Count == 0)
+        {
+            throw new InvalidOperationException("Finance generation requires at least one customer and one supplier counterparty.");
+        }
+
+        var context = new FinanceDeterministicGenerationContext(
+            company.Id,
+            command.Seed,
+            command.StartSimulatedUtc,
+            simulatedDateUtc,
+            dayIndex,
+            command.DeterministicConfigurationJson);
+        var selection = _scenarioFactory.Create(
+            context,
+            InvoiceScenarioCatalog.Length,
+            ThresholdCaseCatalog.Length,
+            counterparties.Customers.Count,
+            counterparties.Suppliers.Count);
+
+        var invoiceScenario = InvoiceScenarioCatalog[selection.InvoiceScenarioIndex];
+        var thresholdCase = ThresholdCaseCatalog[selection.ThresholdCaseIndex];
+        var customer = counterparties.Customers[selection.CustomerIndex];
+        var supplier = counterparties.Suppliers[selection.SupplierIndex];
+        var invoiceNumber = $"SIM-INV-{simulatedDateUtc:yyyyMMdd}-{dayIndex:000}";
+        var billNumber = $"SIM-BILL-{simulatedDateUtc:yyyyMMdd}-{dayIndex:000}";
+        var invoiceId = DeterministicGuid(company.Id, $"invoice:{invoiceNumber}");
+        var billId = DeterministicGuid(company.Id, $"bill:{billNumber}");
+        var receivedUtc = simulatedDateUtc.Date.AddHours(8);
+        var issuedUtc = simulatedDateUtc.Date.AddHours(9);
+        var dueUtc = ResolveInvoiceDueUtc(simulatedDateUtc, invoiceScenario);
+        var billDueUtc = simulatedDateUtc.Date.AddDays(14);
+        var invoiceCurrency = invoiceScenario == InvoiceScenario.DifferentApprovalCurrency
+            ? ResolveAlternateCurrency(policy.ApprovalCurrency)
+            : policy.ApprovalCurrency;
+        var invoiceAmount = ResolveInvoiceAmount(invoiceScenario, thresholdCase, policy.InvoiceApprovalThreshold);
+        var invoiceStatus = ResolveInvoiceStatus(invoiceScenario, thresholdCase);
+        var billAmount = ResolveBillAmount(thresholdCase, policy.BillApprovalThreshold);
+        var billStatus = ResolveBillStatus(thresholdCase);
+        var invoiceApprovalRequired =
+            invoiceAmount >= policy.InvoiceApprovalThreshold ||
+            string.Equals(invoiceStatus, "pending_approval", StringComparison.OrdinalIgnoreCase);
+        var billApprovalRequired =
+            billAmount >= policy.BillApprovalThreshold ||
+            string.Equals(billStatus, "pending_approval", StringComparison.OrdinalIgnoreCase);
+        var transactions = BuildTransactions(
+            company.Id,
+            simulatedDateUtc,
+            thresholdCase,
+            invoiceScenario,
+            invoiceId,
+            billId,
+            customer,
+            supplier,
+            invoiceAmount,
+            billAmount,
+            invoiceCurrency,
+            policy.ApprovalCurrency,
+            invoiceNumber,
+            billNumber);
+
+        var anomalySchedule = _anomalyScheduleFactory.Create(
+            context,
+            AnomalyCatalog.Length,
+            transactions.Count,
+            config.AnomalyCadenceDays,
+            config.AnomalyOffsetDays);
+        FinanceAnomalyKind? anomalyType = anomalySchedule.IsAnomalyDay && anomalySchedule.AnomalyIndex.HasValue
+            ? AnomalyCatalog[anomalySchedule.AnomalyIndex.Value]
+            : null;
+        var anomalyTransaction = ResolveAnomalyTransaction(transactions, anomalyType, anomalySchedule.TargetTransactionIndex);
+        var anomalyTypeToken = anomalyType is null ? null : ToToken(anomalyType.Value);
+        Guid? anomalyTransactionId = anomalyTransaction is null
+            ? null
+            : DeterministicGuid(company.Id, $"transaction:{anomalyTransaction.ExternalReference}");
+        var anomalyExplanation = anomalyType is null || anomalyTransaction is null
+            ? null
+            : BuildAnomalyExplanation(anomalyType.Value, anomalyTransaction, supplier.Name);
+
+        var invoicePayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["invoiceNumber"] = JsonValue.Create(invoiceNumber),
+            ["customerId"] = JsonValue.Create(customer.Id),
+            ["customerName"] = JsonValue.Create(customer.Name),
+            ["issuedUtc"] = JsonValue.Create(issuedUtc),
+            ["dueUtc"] = JsonValue.Create(dueUtc),
+            ["amount"] = JsonValue.Create(invoiceAmount),
+            ["currency"] = JsonValue.Create(invoiceCurrency),
+            ["status"] = JsonValue.Create(invoiceStatus),
+            ["settlementStatus"] = JsonValue.Create(ResolveInvoiceSettlementStatus(invoiceScenario)),
+            ["scenario"] = JsonValue.Create(ToToken(invoiceScenario)),
+            ["thresholdCase"] = JsonValue.Create(ToToken(thresholdCase))
+        };
+        var invoiceResultPayload = new Dictionary<string, JsonNode?>(invoicePayload, StringComparer.OrdinalIgnoreCase)
+        {
+            ["approvalRequired"] = JsonValue.Create(invoiceApprovalRequired)
+        };
+        var billPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["billNumber"] = JsonValue.Create(billNumber),
+            ["supplierId"] = JsonValue.Create(supplier.Id),
+            ["supplierName"] = JsonValue.Create(supplier.Name),
+            ["receivedUtc"] = JsonValue.Create(receivedUtc),
+            ["dueUtc"] = JsonValue.Create(billDueUtc),
+            ["amount"] = JsonValue.Create(billAmount),
+            ["currency"] = JsonValue.Create(policy.ApprovalCurrency),
+            ["status"] = JsonValue.Create(billStatus),
+            ["settlementStatus"] = JsonValue.Create(
+                ShouldSettleBillImmediately(thresholdCase)
+                    ? FinanceSettlementStatuses.Paid
+                    : FinanceSettlementStatuses.Unpaid),
+            ["thresholdCase"] = JsonValue.Create(ToToken(thresholdCase))
+        };
+        var billResultPayload = new Dictionary<string, JsonNode?>(billPayload, StringComparer.OrdinalIgnoreCase)
+        {
+            ["approvalRequired"] = JsonValue.Create(billApprovalRequired)
+        };
+
+        Dictionary<string, JsonNode?>? anomalyPayload = null;
+        if (anomalyType is not null && anomalyTransaction is not null)
+        {
+            anomalyPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["anomalyType"] = JsonValue.Create(anomalyTypeToken),
+                ["explanation"] = JsonValue.Create(anomalyExplanation),
+                ["transactionExternalReference"] = JsonValue.Create(anomalyTransaction.ExternalReference),
+                ["transactionAmount"] = JsonValue.Create(anomalyTransaction.Amount),
+                ["supplierName"] = JsonValue.Create(supplier.Name),
+                ["simulatedDateUtc"] = JsonValue.Create(simulatedDateUtc.Date)
+            };
+        }
+
+        var activityMetadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["invoiceNumber"] = JsonValue.Create(invoiceNumber),
+            ["billNumber"] = JsonValue.Create(billNumber),
+            ["invoiceScenario"] = JsonValue.Create(ToToken(invoiceScenario)),
+            ["thresholdCase"] = JsonValue.Create(ToToken(thresholdCase)),
+            ["transactionCount"] = JsonValue.Create(transactions.Count),
+            ["anomalyType"] = JsonValue.Create(anomalyTypeToken)
+        };
+
+        return new FinanceDayPlan(
+            simulatedDateUtc.Date,
+            invoiceScenario,
+            thresholdCase,
+            invoiceNumber,
+            invoiceId,
+            customer.Id,
+            customer.Name,
+            issuedUtc,
+            dueUtc,
+            invoiceAmount,
+            invoiceCurrency,
+            invoiceStatus,
+            billNumber,
+            billId,
+            supplier.Id,
+            supplier.Name,
+            receivedUtc,
+            billDueUtc,
+            billAmount,
+            billStatus,
+            invoiceApprovalRequired,
+            billApprovalRequired,
+            transactions,
+            anomalyType,
+            anomalyTypeToken,
+            anomalyTransactionId,
+            anomalyTransaction?.ExternalReference,
+            anomalyExplanation,
+            invoicePayload,
+            invoiceResultPayload,
+            billPayload,
+            billResultPayload,
+            anomalyPayload,
+            DeterministicGuid(company.Id, $"task:invoice:{invoiceNumber}"),
+            DeterministicGuid(company.Id, $"approval:invoice:{invoiceNumber}"),
+            DeterministicGuid(company.Id, $"task:bill:{billNumber}"),
+            DeterministicGuid(company.Id, $"approval:bill:{billNumber}"),
+            DeterministicGuid(company.Id, $"task:anomaly:{simulatedDateUtc:yyyyMMdd}:{anomalyTypeToken ?? "none"}"),
+            DeterministicGuid(company.Id, $"activity:finance-day:{simulatedDateUtc:yyyyMMdd}"),
+            activityMetadata);
+    }
+
     private async Task<DayApplyResult> ApplyDayPlanAsync(
         Company company,
         GenerateCompanySimulationFinanceCommand command,
         FinancePolicyConfigurationDto policy,
+        FinanceGenerationConfiguration config,
         FinanceDayPlan plan,
         FinanceAccount account,
         Guid financeActorId,
@@ -228,12 +428,28 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
         var billsCreated = 0;
         var transactionsCreated = 0;
         var balancesCreated = 0;
+        var assetPurchasesCreated = 0;
         var recurringExpenseInstancesCreated = 0;
         var workflowTasksCreated = 0;
         var approvalRequestsCreated = 0;
         var auditEventsCreated = 0;
         var activityEventsCreated = 0;
         var alertsCreated = 0;
+
+        var dayEventSequence = 0;
+        var runningCashBalance = await CalculateBalanceAsync(company.Id, account.Id, plan.DateUtc.Date.AddTicks(-1), cancellationToken);
+        var dayIndex = (int)(plan.DateUtc.Date - command.StartSimulatedUtc.Date).TotalDays;
+        var companyProfile = ResolveOperationalFinanceProfile(company);
+        var supplierBillPlan = ResolveSupplierBillPlan(
+            company,
+            command,
+            plan,
+            policy,
+            dayIndex,
+            companyProfile);
+        var plannedTransactions = RewritePlannedTransactions(plan, supplierBillPlan);
+        var billApprovalRequired = supplierBillPlan.RequiresApproval;
+        var billPayload = CreateBillPayload(plan, supplierBillPlan);
 
         var invoice = await _dbContext.FinanceInvoices
             .IgnoreQueryFilters()
@@ -251,9 +467,30 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                 plan.InvoiceAmount,
                 plan.InvoiceCurrency,
                 plan.InvoiceStatus,
+                settlementStatus: ResolveInvoiceSettlementStatus(plan.InvoiceScenario),
                 createdUtc: plan.IssuedUtc,
-                updatedUtc: plan.IssuedUtc);
+                updatedUtc: plan.IssuedUtc,
+                sourceSimulationEventRecordId: SimulationEventDeterministicIdentity.CreateEventId(
+                    company.Id,
+                    command.Seed,
+                    command.StartSimulatedUtc,
+                    plan.DateUtc,
+                    "finance.invoice.generated",
+                    "finance_invoice",
+                    DeterministicGuid(company.Id, $"invoice:{plan.InvoiceNumber}"),
+                    ++dayEventSequence,
+                    command.DeterministicConfigurationJson));
             _dbContext.FinanceInvoices.Add(invoice);
+            _dbContext.SimulationEventRecords.Add(new SimulationEventRecord(
+                invoice.SourceSimulationEventRecordId!.Value,
+                company.Id,
+                command.ActiveSessionId,
+                command.Seed,
+                command.StartSimulatedUtc,
+                plan.DateUtc,
+                "finance.invoice.generated",
+                "finance_invoice",
+                invoice.Id, plan.InvoiceNumber, null, dayEventSequence, SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.invoice.generated", "finance_invoice", invoice.Id, dayEventSequence, command.DeterministicConfigurationJson), null, null, null, plan.IssuedUtc));
             FinanceDomainEvents.EnqueueInvoiceCreated(_outboxEnqueuer, invoice, plan.CustomerName, BuildDayCorrelationId(company.Id, plan.DateUtc));
             invoicesCreated++;
 
@@ -280,25 +517,46 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
 
         var bill = await _dbContext.FinanceBills
             .IgnoreQueryFilters()
-            .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.BillNumber == plan.BillNumber, cancellationToken);
+            .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.BillNumber == supplierBillPlan.BillNumber, cancellationToken);
 
         if (bill is null)
         {
             bill = new FinanceBill(
-                DeterministicGuid(company.Id, $"bill:{plan.BillNumber}"),
+                DeterministicGuid(company.Id, $"bill:{supplierBillPlan.BillNumber}"),
                 company.Id,
-                plan.SupplierId,
-                plan.BillNumber,
+                supplierBillPlan.SupplierId,
+                supplierBillPlan.BillNumber,
                 plan.ReceivedUtc,
-                plan.BillDueUtc,
-                plan.BillAmount,
+                supplierBillPlan.DueUtc,
+                supplierBillPlan.Amount,
                 policy.ApprovalCurrency,
-                plan.BillStatus,
+                supplierBillPlan.Status,
+                settlementStatus: supplierBillPlan.SettlementStatus,
                 createdUtc: plan.ReceivedUtc,
-                updatedUtc: plan.ReceivedUtc);
+                updatedUtc: plan.ReceivedUtc,
+                sourceSimulationEventRecordId: SimulationEventDeterministicIdentity.CreateEventId(
+                    company.Id,
+                    command.Seed,
+                    command.StartSimulatedUtc,
+                    plan.DateUtc,
+                    "finance.bill.generated",
+                    "finance_bill",
+                    DeterministicGuid(company.Id, $"bill:{supplierBillPlan.BillNumber}"),
+                    ++dayEventSequence,
+                    command.DeterministicConfigurationJson));
             _dbContext.FinanceBills.Add(bill);
+            _dbContext.SimulationEventRecords.Add(new SimulationEventRecord(
+                bill.SourceSimulationEventRecordId!.Value,
+                company.Id,
+                command.ActiveSessionId,
+                command.Seed,
+                command.StartSimulatedUtc,
+                plan.DateUtc,
+                "finance.bill.generated",
+                "finance_bill",
+                bill.Id, supplierBillPlan.BillNumber, null, dayEventSequence, SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.bill.generated", "finance_bill", bill.Id, dayEventSequence, command.DeterministicConfigurationJson), null, null, null, plan.ReceivedUtc));
             billsCreated++;
-            if (plan.BillApprovalRequired)
+            if (billApprovalRequired)
             {
                 await _financeApprovalTaskService.EnsureTaskAsync(
                     new EnsureFinanceApprovalTaskCommand(
@@ -313,7 +571,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
 
             if (await EnsureAuditEventAsync(
                     company.Id,
-                    DeterministicGuid(company.Id, $"audit:bill:{plan.BillNumber}"),
+                    DeterministicGuid(company.Id, $"audit:bill:{supplierBillPlan.BillNumber}"),
                     "finance.bill.generated",
                     "finance_bill",
                     bill.Id.ToString("N"),
@@ -322,9 +580,12 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                     financeActorId,
                     new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
                     {
-                        ["billNumber"] = plan.BillNumber,
-                        ["supplier"] = plan.SupplierName,
+                        ["billNumber"] = supplierBillPlan.BillNumber,
+                        ["supplier"] = supplierBillPlan.SupplierName,
                         ["thresholdCase"] = plan.ThresholdCaseToken,
+                        ["companyProfile"] = supplierBillPlan.ProfileKey,
+                        ["recurringCostCategory"] = supplierBillPlan.RecurringCostCategory,
+                        ["paymentTermsDays"] = supplierBillPlan.PaymentTermsDays.ToString(),
                         ["isRecurringExpenseInstance"] = bool.TrueString
                     },
                     cancellationToken))
@@ -333,7 +594,124 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             }
         }
 
-        foreach (var payment in plan.Transactions)
+        if (ShouldGenerateAssetPurchase(dayIndex, config))
+        {
+            var assetFundingBehavior = ResolveAssetFundingBehavior(config.AssetFundingBehavior, dayIndex);
+            var assetReference = $"SIM-AST-{plan.DateUtc:yyyyMMdd}-{dayIndex:000}";
+            var assetId = DeterministicGuid(company.Id, $"asset:{assetReference}");
+            var asset = await _dbContext.FinanceAssets
+                .IgnoreQueryFilters()
+                .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.ReferenceNumber == assetReference, cancellationToken);
+
+            if (asset is null)
+            {
+                var assetAmount = ResolveAssetPurchaseAmount(dayIndex, policy.BillApprovalThreshold);
+                var assetCategory = ResolveAssetCategory(dayIndex);
+                var assetName = ResolveAssetName(plan.DateUtc, dayIndex, assetCategory);
+                var assetPurchasedUtc = plan.DateUtc.Date.AddHours(11);
+                var assetEventId = SimulationEventDeterministicIdentity.CreateEventId(
+                    company.Id,
+                    command.Seed,
+                    command.StartSimulatedUtc,
+                    plan.DateUtc,
+                    "finance.asset_purchase.generated",
+                    "finance_asset",
+                    assetId,
+                    ++dayEventSequence,
+                    command.DeterministicConfigurationJson);
+
+                asset = new FinanceAsset(
+                    assetId,
+                    company.Id,
+                    plan.SupplierId,
+                    assetReference,
+                    assetName,
+                    assetCategory,
+                    assetPurchasedUtc,
+                    assetAmount,
+                    policy.ApprovalCurrency,
+                    assetFundingBehavior,
+                    string.Equals(assetFundingBehavior, FinanceAssetFundingBehaviors.Cash, StringComparison.Ordinal)
+                        ? FinanceSettlementStatuses.Paid
+                        : FinanceSettlementStatuses.Unpaid,
+                    FinanceAssetStatuses.Active,
+                    createdUtc: assetPurchasedUtc,
+                    updatedUtc: assetPurchasedUtc,
+                    sourceSimulationEventRecordId: assetEventId);
+                _dbContext.FinanceAssets.Add(asset);
+                _dbContext.SimulationEventRecords.Add(new SimulationEventRecord(
+                    assetEventId,
+                    company.Id,
+                    command.ActiveSessionId,
+                    command.Seed,
+                    command.StartSimulatedUtc,
+                    plan.DateUtc,
+                    "finance.asset_purchase.generated",
+                    "finance_asset",
+                    asset.Id,
+                    asset.ReferenceNumber,
+                    null,
+                    dayEventSequence,
+                    SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.asset_purchase.generated", "finance_asset", asset.Id, dayEventSequence, command.DeterministicConfigurationJson),
+                    null,
+                    null,
+                    null,
+                    assetPurchasedUtc));
+
+                if (await EnsureAuditEventAsync(
+                        company.Id,
+                        DeterministicGuid(company.Id, $"audit:asset:{asset.ReferenceNumber}"),
+                        "finance.asset_purchase.generated",
+                        "finance_asset",
+                        asset.Id.ToString("N"),
+                        BuildDayCorrelationId(company.Id, plan.DateUtc),
+                        assetPurchasedUtc,
+                        financeActorId,
+                        new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            ["assetReference"] = asset.ReferenceNumber,
+                            ["assetCategory"] = asset.Category,
+                            ["supplier"] = plan.SupplierName,
+                            ["fundingBehavior"] = asset.FundingBehavior,
+                            ["fundingSettlementStatus"] = asset.FundingSettlementStatus
+                        },
+                        cancellationToken))
+                {
+                    auditEventsCreated++;
+                }
+                assetPurchasesCreated++;
+
+                if (string.Equals(assetFundingBehavior, FinanceAssetFundingBehaviors.Cash, StringComparison.Ordinal))
+                {
+                    var assetCashReference = $"{asset.ReferenceNumber}-PAY";
+                    (dayEventSequence, runningCashBalance, transactionsCreated, auditEventsCreated) = await CreateCashMovementAsync(
+                        company,
+                        command,
+                        account,
+                        plan,
+                        financeActorId,
+                        asset.Id,
+                        asset.SourceSimulationEventRecordId,
+                        plan.SupplierId,
+                        null,
+                        null,
+                        assetPurchasedUtc.AddHours(2),
+                        -asset.Amount,
+                        asset.Currency,
+                        "asset_purchase",
+                        assetCashReference,
+                        $"Simulated asset purchase for {asset.Name}",
+                        asset.ReferenceNumber,
+                        dayEventSequence,
+                        runningCashBalance,
+                        transactionsCreated,
+                        auditEventsCreated,
+                        cancellationToken);
+                }
+            }
+        }
+
+        foreach (var payment in plannedTransactions)
         {
             var transaction = await _dbContext.FinanceTransactions
                 .IgnoreQueryFilters()
@@ -342,6 +720,77 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             if (transaction is not null)
             {
                 continue;
+            }
+
+            var allocationInvoice = payment.InvoiceId.HasValue && invoice?.Id == payment.InvoiceId
+                ? invoice
+                : null;
+            var allocationBill = payment.BillId.HasValue && bill?.Id == payment.BillId
+                ? bill
+                : null;
+            var parentEventId = allocationInvoice?.SourceSimulationEventRecordId
+                ?? allocationBill?.SourceSimulationEventRecordId;
+            var paymentEventId = SimulationEventDeterministicIdentity.CreateEventId(
+                company.Id,
+                command.Seed,
+                command.StartSimulatedUtc,
+                plan.DateUtc,
+                "finance.cash_movement.generated",
+                "finance_payment",
+                DeterministicGuid(company.Id, $"payment:{payment.ExternalReference}"),
+                ++dayEventSequence,
+                command.DeterministicConfigurationJson);
+            var paymentEvent = await _dbContext.SimulationEventRecords
+                .IgnoreQueryFilters()
+                .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.Id == paymentEventId, cancellationToken);
+            if (paymentEvent is null)
+            {
+                paymentEvent = new SimulationEventRecord(
+                    paymentEventId,
+                    company.Id,
+                    command.ActiveSessionId,
+                    command.Seed,
+                    command.StartSimulatedUtc,
+                    plan.DateUtc,
+                    "finance.cash_movement.generated",
+                    "finance_payment",
+                    DeterministicGuid(company.Id, $"payment:{payment.ExternalReference}"),
+                    payment.ExternalReference,
+                    parentEventId,
+                    dayEventSequence,
+                    SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.cash_movement.generated", "finance_payment", DeterministicGuid(company.Id, $"payment:{payment.ExternalReference}"), dayEventSequence, command.DeterministicConfigurationJson),
+                    runningCashBalance,
+                    payment.Amount,
+                    decimal.Round(runningCashBalance + payment.Amount, 2, MidpointRounding.AwayFromZero),
+                    payment.TransactionUtc);
+                _dbContext.SimulationEventRecords.Add(paymentEvent);
+            }
+            await EnsureSimulationCashDeltaRecordAsync(company.Id, paymentEvent, cancellationToken);
+
+            var simulatedPayment = await _dbContext.Payments
+                .IgnoreQueryFilters()
+                .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.Id == DeterministicGuid(company.Id, $"payment:{payment.ExternalReference}"), cancellationToken);
+
+            if (simulatedPayment is null)
+            {
+                var counterpartyReference = allocationInvoice?.InvoiceNumber
+                    ?? allocationBill?.BillNumber
+                    ?? payment.ExternalReference;
+
+                simulatedPayment = new Payment(
+                    DeterministicGuid(company.Id, $"payment:{payment.ExternalReference}"),
+                    company.Id,
+                    payment.Amount >= 0m ? PaymentTypes.Incoming : PaymentTypes.Outgoing,
+                    Math.Abs(payment.Amount),
+                    payment.Currency,
+                    payment.TransactionUtc,
+                    payment.Amount >= 0m ? "bank_transfer" : "ach",
+                    PaymentStatuses.Completed,
+                    counterpartyReference,
+                    createdUtc: payment.TransactionUtc,
+                    updatedUtc: payment.TransactionUtc,
+                    sourceSimulationEventRecordId: paymentEvent.Id);
+                _dbContext.Payments.Add(simulatedPayment);
             }
 
             transaction = new FinanceTransaction(
@@ -357,11 +806,15 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                 payment.Currency,
                 payment.Description,
                 payment.ExternalReference,
-                createdUtc: payment.TransactionUtc);
+                createdUtc: payment.TransactionUtc,
+                sourceSimulationEventRecordId: paymentEvent.Id);
 
             _dbContext.FinanceTransactions.Add(transaction);
             FinanceDomainEvents.EnqueueTransactionCreated(_outboxEnqueuer, transaction, BuildDayCorrelationId(company.Id, plan.DateUtc));
             transactionsCreated++;
+            runningCashBalance = paymentEvent.CashAfter ?? runningCashBalance;
+
+            await EnsurePaymentAllocationAsync(company.Id, simulatedPayment, allocationInvoice, allocationBill, payment.TransactionUtc, cancellationToken);
 
             if (await EnsureAuditEventAsync(
                     company.Id,
@@ -445,15 +898,15 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             company.Id,
             plan.BillTaskId,
             BillReviewTaskType,
-            $"Review bill {plan.BillNumber}",
-            $"Review generated bill {plan.BillNumber} for threshold case {plan.ThresholdCaseToken}.",
-            plan.BillApprovalRequired ? WorkTaskPriority.High : WorkTaskPriority.Normal,
+            $"Review bill {supplierBillPlan.BillNumber}",
+            $"Review generated bill {supplierBillPlan.BillNumber} for profile {supplierBillPlan.ProfileKey} and category {supplierBillPlan.RecurringCostCategory}.",
+            billApprovalRequired ? WorkTaskPriority.High : WorkTaskPriority.Normal,
             financeActorId,
-            BuildTaskCorrelationId(company.Id, "bill", plan.BillNumber),
-            plan.BillPayload,
-            plan.BillApprovalRequired ? plan.BillPayload : plan.BillResultPayload,
-            plan.BillApprovalRequired ? WorkTaskStatus.AwaitingApproval : WorkTaskStatus.Completed,
-            plan.BillDueUtc,
+            BuildTaskCorrelationId(company.Id, "bill", supplierBillPlan.BillNumber),
+            billPayload,
+            billApprovalRequired ? billPayload : CreateBillResultPayload(plan, supplierBillPlan),
+            billApprovalRequired ? WorkTaskStatus.AwaitingApproval : WorkTaskStatus.Completed,
+            supplierBillPlan.DueUtc,
             cancellationToken);
 
         if (billTask.Created)
@@ -461,7 +914,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             workflowTasksCreated++;
         }
 
-        if (plan.BillApprovalRequired)
+        if (billApprovalRequired)
         {
             var approval = await EnsureApprovalRequestAsync(
                 company.Id,
@@ -469,7 +922,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                 billTask.Task.Id,
                 "bill_review",
                 financeActorId,
-                plan.BillPayload,
+                billPayload,
                 cancellationToken);
             if (approval.Created)
             {
@@ -496,7 +949,27 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                 balanceSnapshotUtc,
                 runningBalance,
                 account.Currency,
-                createdUtc: balanceSnapshotUtc);
+                createdUtc: balanceSnapshotUtc,
+                sourceSimulationEventRecordId: SimulationEventDeterministicIdentity.CreateEventId(
+                    company.Id,
+                    command.Seed,
+                    command.StartSimulatedUtc,
+                    plan.DateUtc,
+                    "finance.balance.generated",
+                    "finance_balance",
+                    DeterministicGuid(company.Id, $"balance:{account.Id:N}:{balanceSnapshotUtc:yyyyMMddHH}"),
+                    ++dayEventSequence,
+                    command.DeterministicConfigurationJson));
+            _dbContext.SimulationEventRecords.Add(new SimulationEventRecord(
+                existingBalance.SourceSimulationEventRecordId!.Value,
+                company.Id,
+                command.ActiveSessionId,
+                command.Seed,
+                command.StartSimulatedUtc,
+                plan.DateUtc,
+                "finance.balance.generated",
+                "finance_balance",
+                existingBalance.Id, account.Code, null, dayEventSequence, SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.balance.generated", "finance_balance", existingBalance.Id, dayEventSequence, command.DeterministicConfigurationJson), null, null, null, balanceSnapshotUtc));
             _dbContext.FinanceBalances.Add(existingBalance);
             balancesCreated++;
 
@@ -605,6 +1078,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             invoicesCreated,
             billsCreated,
             transactionsCreated,
+            assetPurchasesCreated,
             balancesCreated,
             recurringExpenseInstancesCreated,
             workflowTasksCreated,
@@ -614,219 +1088,88 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             alertsCreated);
     }
 
-    private FinanceDayPlan BuildDayPlan(
-        Company company,
-        DateTime simulatedDateUtc,
-        int dayIndex,
-        GenerateCompanySimulationFinanceCommand command,
-        FinancePolicyConfigurationDto policy,
-        FinanceGenerationConfiguration config,
-        CounterpartyCatalog counterparties)
+    private async Task EnsurePaymentAllocationAsync(
+        Guid companyId,
+        Payment payment,
+        FinanceInvoice? invoice,
+        FinanceBill? bill,
+        DateTime createdUtc,
+        CancellationToken cancellationToken)
     {
-        var generationContext = new FinanceDeterministicGenerationContext(
-            company.Id,
-            command.Seed,
-            command.StartSimulatedUtc,
-            simulatedDateUtc.Date,
-            dayIndex,
-            command.DeterministicConfigurationJson);
-        var scenarioSelection = _scenarioFactory.Create(
-            generationContext,
-            InvoiceScenarioCatalog.Length,
-            ThresholdCaseCatalog.Length,
-            counterparties.Customers.Count,
-            counterparties.Suppliers.Count);
-        var invoiceScenario = InvoiceScenarioCatalog[scenarioSelection.InvoiceScenarioIndex];
-        var thresholdCase = ThresholdCaseCatalog[scenarioSelection.ThresholdCaseIndex];
-        var customer = counterparties.Customers[scenarioSelection.CustomerIndex];
-        var supplier = counterparties.Suppliers[scenarioSelection.SupplierIndex];
-
-        var invoiceAmount = ResolveInvoiceAmount(invoiceScenario, thresholdCase, policy.InvoiceApprovalThreshold);
-        var billAmount = ResolveBillAmount(thresholdCase, policy.BillApprovalThreshold);
-        var invoiceCurrency = invoiceScenario == InvoiceScenario.DifferentApprovalCurrency
-            ? ResolveAlternateCurrency(policy.ApprovalCurrency)
-            : policy.ApprovalCurrency;
-
-        var invoiceStatus = ResolveInvoiceStatus(invoiceScenario, thresholdCase);
-        var billStatus = ResolveBillStatus(thresholdCase);
-        var invoiceDueUtc = ResolveInvoiceDueUtc(simulatedDateUtc, invoiceScenario);
-        var billDueUtc = simulatedDateUtc.Date.AddDays(14);
-
-        var invoiceNumber = $"SIM-INV-{simulatedDateUtc:yyyyMMdd}-{ToToken(invoiceScenario)}";
-        var billNumber = $"SIM-BILL-{simulatedDateUtc:yyyyMMdd}-{ToToken(thresholdCase)}";
-        var invoiceId = DeterministicGuid(company.Id, $"invoice:{invoiceNumber}");
-        var billId = DeterministicGuid(company.Id, $"bill:{billNumber}");
-
-        var invoiceApprovalRequired =
-            string.Equals(invoiceStatus, "pending_approval", StringComparison.OrdinalIgnoreCase) ||
-            invoiceAmount > policy.InvoiceApprovalThreshold ||
-            !string.Equals(invoiceCurrency, policy.ApprovalCurrency, StringComparison.OrdinalIgnoreCase);
-
-        var billApprovalRequired =
-            billAmount > policy.BillApprovalThreshold ||
-            thresholdCase == ThresholdCase.JustAbove ||
-            thresholdCase == ThresholdCase.HumanApprovalRequired;
-
-        var transactions = BuildTransactions(
-            company.Id,
-            simulatedDateUtc,
-            thresholdCase,
-            invoiceScenario,
-            invoiceId,
-            billId,
-            customer,
-            supplier,
-            invoiceAmount,
-            billAmount,
-            invoiceCurrency,
-            policy.ApprovalCurrency,
-            invoiceNumber,
-            billNumber);
-
-        var anomalySchedule = _anomalyScheduleFactory.Create(
-            generationContext,
-            AnomalyCatalog.Length,
-            transactions.Count,
-            config.AnomalyCadenceDays,
-            config.AnomalyOffsetDays);
-        var anomalyType = anomalySchedule.IsAnomalyDay && anomalySchedule.AnomalyIndex.HasValue
-            ? AnomalyCatalog[anomalySchedule.AnomalyIndex.Value]
-            : (FinanceAnomalyKind?)null;
-        var anomalyTransaction = ResolveAnomalyTransaction(
-            transactions,
-            anomalyType,
-            anomalySchedule.TargetTransactionIndex);
-
-        var invoicePayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        if (invoice is null && bill is null)
         {
-            ["invoiceId"] = JsonValue.Create(invoiceId),
-            ["invoiceNumber"] = JsonValue.Create(invoiceNumber),
-            ["invoiceScenario"] = JsonValue.Create(ToToken(invoiceScenario)),
-            ["thresholdCase"] = JsonValue.Create(ToToken(thresholdCase)),
-            ["amount"] = JsonValue.Create(invoiceAmount),
-            ["currency"] = JsonValue.Create(invoiceCurrency),
-            ["simulatedDateUtc"] = JsonValue.Create(simulatedDateUtc.Date),
-            ["approvalThreshold"] = JsonValue.Create(policy.InvoiceApprovalThreshold),
-            ["approvalCurrency"] = JsonValue.Create(policy.ApprovalCurrency)
-        };
-
-        var billPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["billId"] = JsonValue.Create(billId),
-            ["billNumber"] = JsonValue.Create(billNumber),
-            ["thresholdCase"] = JsonValue.Create(ToToken(thresholdCase)),
-            ["amount"] = JsonValue.Create(billAmount),
-            ["currency"] = JsonValue.Create(policy.ApprovalCurrency),
-            ["simulatedDateUtc"] = JsonValue.Create(simulatedDateUtc.Date),
-            ["billApprovalThreshold"] = JsonValue.Create(policy.BillApprovalThreshold)
-        };
-
-        var invoiceResultPayload = new Dictionary<string, JsonNode?>(invoicePayload, StringComparer.OrdinalIgnoreCase);
-        FinanceWorkflowOutputSchemas.CopyToPayload(
-            invoiceResultPayload,
-            FinanceWorkflowOutputSchemas.Create(
-                invoiceApprovalRequired ? "invoice_requires_review" : "invoice_auto_cleared",
-                invoiceApprovalRequired ? "high" : "low",
-                invoiceApprovalRequired ? "request_human_approval" : "monitor",
-                $"Generated invoice scenario {ToToken(invoiceScenario)} on {simulatedDateUtc:yyyy-MM-dd}.",
-                invoiceApprovalRequired ? 0.89m : 0.82m,
-                "simulation_finance_generation"));
-
-        var billResultPayload = new Dictionary<string, JsonNode?>(billPayload, StringComparer.OrdinalIgnoreCase);
-        FinanceWorkflowOutputSchemas.CopyToPayload(
-            billResultPayload,
-            FinanceWorkflowOutputSchemas.Create(
-                billApprovalRequired ? "bill_requires_review" : "bill_auto_cleared",
-                billApprovalRequired ? "high" : "low",
-                billApprovalRequired ? "request_human_approval" : "monitor",
-                $"Generated bill threshold case {ToToken(thresholdCase)} on {simulatedDateUtc:yyyy-MM-dd}.",
-                billApprovalRequired ? 0.88m : 0.80m,
-                "simulation_finance_generation"));
-
-        Dictionary<string, JsonNode?>? anomalyPayload = null;
-        string? anomalyExplanation = null;
-        Guid? anomalyTransactionId = null;
-        string? anomalyTransactionExternalReference = null;
-        string? anomalyTypeToken = null;
-
-        if (anomalyType is not null && anomalyTransaction is not null)
-        {
-            anomalyTransactionId = DeterministicGuid(company.Id, $"transaction:{anomalyTransaction.ExternalReference}");
-            anomalyTransactionExternalReference = anomalyTransaction.ExternalReference;
-            anomalyTypeToken = ToToken(anomalyType.Value);
-            anomalyExplanation = BuildAnomalyExplanation(anomalyType.Value, anomalyTransaction, supplier.Name);
-            anomalyPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["transactionId"] = JsonValue.Create(anomalyTransactionId.Value),
-                ["transactionExternalReference"] = JsonValue.Create(anomalyTransaction.ExternalReference),
-                ["anomalyType"] = JsonValue.Create(anomalyTypeToken),
-                ["simulatedDateUtc"] = JsonValue.Create(simulatedDateUtc.Date),
-                ["supplierName"] = JsonValue.Create(supplier.Name),
-                ["dedupeKey"] = JsonValue.Create($"finance-transaction-anomaly:{anomalyTypeToken}"),
-                ["deduplicationWindowStartUtc"] = JsonValue.Create(simulatedDateUtc.Date),
-                ["deduplicationWindowEndUtc"] = JsonValue.Create(simulatedDateUtc.Date.AddDays(1)),
-                ["recommendedAction"] = JsonValue.Create("Review generated anomaly evidence before approving downstream finance work.")
-            };
-            FinanceWorkflowOutputSchemas.CopyToPayload(
-                anomalyPayload,
-                FinanceWorkflowOutputSchemas.Create(
-                    anomalyTypeToken,
-                    "high",
-                    "investigate",
-                    anomalyExplanation,
-                    0.91m,
-                    "simulation_finance_generation"));
+            return;
         }
 
-        return new FinanceDayPlan(
-            simulatedDateUtc.Date,
-            invoiceScenario,
-            thresholdCase,
-            invoiceNumber,
-            invoiceId,
-            customer.Id,
-            customer.Name,
-            simulatedDateUtc.Date.AddHours(9),
-            invoiceDueUtc,
-            invoiceAmount,
-            invoiceCurrency,
-            invoiceStatus,
-            billNumber,
-            billId,
-            supplier.Id,
-            supplier.Name,
-            simulatedDateUtc.Date.AddHours(8),
-            billDueUtc,
-            billAmount,
-            billStatus,
-            invoiceApprovalRequired,
-            billApprovalRequired,
-            transactions,
-            anomalyType,
-            anomalyTypeToken,
-            anomalyTransactionId,
-            anomalyTransactionExternalReference,
-            anomalyExplanation,
-            invoicePayload,
-            invoiceResultPayload,
-            billPayload,
-            billResultPayload,
-            anomalyPayload,
-            DeterministicGuid(company.Id, $"task:invoice:{invoiceNumber}"),
-            DeterministicGuid(company.Id, $"approval:invoice:{invoiceNumber}"),
-            DeterministicGuid(company.Id, $"task:bill:{billNumber}"),
-            DeterministicGuid(company.Id, $"approval:bill:{billNumber}"),
-            DeterministicGuid(company.Id, $"task:anomaly:{simulatedDateUtc:yyyyMMdd}:{anomalyTypeToken ?? "none"}"),
-            DeterministicGuid(company.Id, $"activity:{simulatedDateUtc:yyyyMMdd}"),
-            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["simulatedDateUtc"] = JsonValue.Create(simulatedDateUtc.Date),
-                ["invoiceScenario"] = JsonValue.Create(ToToken(invoiceScenario)),
-                ["thresholdCase"] = JsonValue.Create(ToToken(thresholdCase)),
-                ["invoiceNumber"] = JsonValue.Create(invoiceNumber),
-                ["billNumber"] = JsonValue.Create(billNumber),
-                ["anomalyType"] = anomalyTypeToken is null ? null : JsonValue.Create(anomalyTypeToken)
-            });
+        var allocationId = DeterministicGuid(
+            companyId,
+            $"allocation:{payment.Id:N}:{invoice?.Id.ToString("N") ?? bill!.Id.ToString("N")}");
+
+        var exists = await _dbContext.PaymentAllocations
+            .IgnoreQueryFilters()
+            .AnyAsync(x => x.CompanyId == companyId && x.Id == allocationId, cancellationToken);
+        if (exists)
+        {
+            return;
+        }
+
+        var allocatedAmount = decimal.Round(
+            Math.Min(
+                payment.Amount,
+                invoice?.Amount ?? bill!.Amount),
+            2,
+            MidpointRounding.AwayFromZero);
+
+        // Reuse the causal event identifiers already assigned to the simulated payment/document so replayed
+        // allocations keep a stable traversal path without reconstructing it from runtime ordering.
+        _dbContext.PaymentAllocations.Add(new PaymentAllocation(
+            allocationId,
+            companyId,
+            payment.Id,
+            invoice?.Id,
+            bill?.Id,
+            allocatedAmount,
+            payment.Currency,
+            createdUtc,
+            createdUtc,
+            sourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
+            paymentSourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
+            targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId));
+    }
+
+    private async Task EnsureSimulationCashDeltaRecordAsync(
+        Guid companyId,
+        SimulationEventRecord simulationEventRecord,
+        CancellationToken cancellationToken)
+    {
+        if (!simulationEventRecord.CashBefore.HasValue ||
+            !simulationEventRecord.CashDelta.HasValue ||
+            !simulationEventRecord.CashAfter.HasValue)
+        {
+            return;
+        }
+
+        var exists = await _dbContext.SimulationCashDeltaRecords
+            .IgnoreQueryFilters()
+            .AnyAsync(
+                x => x.CompanyId == companyId && x.SimulationEventRecordId == simulationEventRecord.Id,
+                cancellationToken);
+        if (exists)
+        {
+            return;
+        }
+
+        _dbContext.SimulationCashDeltaRecords.Add(new SimulationCashDeltaRecord(
+            FinanceSimulationDeterministicIdentity.CreateCashDeltaRecordId(companyId, simulationEventRecord.Id),
+            companyId,
+            simulationEventRecord.Id,
+            simulationEventRecord.SimulationDateUtc,
+            simulationEventRecord.SourceEntityType,
+            simulationEventRecord.SourceEntityId,
+            simulationEventRecord.CashBefore.Value,
+            simulationEventRecord.CashDelta.Value,
+            simulationEventRecord.CashAfter.Value,
+            simulationEventRecord.CreatedUtc));
     }
 
     private async Task<FinancePolicyConfigurationDto> LoadPolicyAsync(Guid companyId, CancellationToken cancellationToken)
@@ -885,23 +1228,14 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
         DateTime startSimulatedUtc,
         CancellationToken cancellationToken)
     {
-        var names = new[]
-        {
-            ("Northwind Retail", "customer"),
-            ("Adventure Works", "customer"),
-            ("Graphic Design Institute", "customer"),
-            ("Contoso Cloud", "supplier"),
-            ("Wide World Rentals", "supplier"),
-            ("Tailspin Telecom", "supplier"),
-            ("Northwind Insurance", "supplier")
-        };
+        var companyProfile = ResolveOperationalFinanceProfile(company);
 
         var existing = await _dbContext.FinanceCounterparties
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == company.Id)
             .ToListAsync(cancellationToken);
 
-        foreach (var (name, type) in names)
+        foreach (var (name, type) in companyProfile.CounterpartySeeds)
         {
             if (existing.Any(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)))
             {
@@ -1247,6 +1581,219 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
         return true;
     }
 
+    private static SupplierBillPlan ResolveSupplierBillPlan(
+        Company company,
+        GenerateCompanySimulationFinanceCommand command,
+        FinanceDayPlan plan,
+        FinancePolicyConfigurationDto policy,
+        int dayIndex,
+        OperationalFinanceProfile profile)
+    {
+        var categoryIndex = ProfileDeterministicValueSource.GetDayValue(
+            company.Id,
+            command.Seed,
+            command.StartSimulatedUtc,
+            plan.DateUtc,
+            dayIndex,
+            command.DeterministicConfigurationJson,
+            $"profile:{profile.Key}:recurring-category",
+            profile.RecurringCostCategories.Count);
+        var termsIndex = ProfileDeterministicValueSource.GetDayValue(
+            company.Id,
+            command.Seed,
+            command.StartSimulatedUtc,
+            plan.DateUtc,
+            dayIndex,
+            command.DeterministicConfigurationJson,
+            $"profile:{profile.Key}:payment-terms",
+            profile.PaymentTermsDays.Count);
+        var amountIndex = ProfileDeterministicValueSource.GetDayValue(
+            company.Id,
+            command.Seed,
+            command.StartSimulatedUtc,
+            plan.DateUtc,
+            dayIndex,
+            command.DeterministicConfigurationJson,
+            $"profile:{profile.Key}:amount-variance",
+            5);
+
+        var recurringCostCategory = profile.RecurringCostCategories[categoryIndex];
+        var paymentTermsDays = profile.PaymentTermsDays[termsIndex];
+        var amountVariance = 0.90m + (amountIndex * 0.05m);
+        var amount = decimal.Round(
+            Math.Max(50m, plan.BillAmount * profile.BaseBillAmountMultiplier * amountVariance),
+            2,
+            MidpointRounding.AwayFromZero);
+        var isSettled = plan.Transactions.Any(x => x.BillId == plan.BillId);
+        var status = isSettled
+            ? "paid"
+            : amount >= policy.BillApprovalThreshold || profile.DefaultOpenBillStatus == "pending_approval"
+                ? "pending_approval"
+                : profile.DefaultOpenBillStatus;
+
+        return new SupplierBillPlan(
+            plan.BillNumber,
+            plan.BillId,
+            plan.SupplierId,
+            plan.SupplierName,
+            plan.ReceivedUtc,
+            plan.ReceivedUtc.Date.AddDays(paymentTermsDays),
+            amount,
+            status,
+            isSettled ? FinanceSettlementStatuses.Paid : FinanceSettlementStatuses.Unpaid,
+            recurringCostCategory,
+            profile.Key,
+            paymentTermsDays,
+            amount >= policy.BillApprovalThreshold || string.Equals(status, "pending_approval", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IReadOnlyList<PlannedTransaction> RewritePlannedTransactions(
+        FinanceDayPlan plan,
+        SupplierBillPlan supplierBillPlan)
+    {
+        if (plan.Transactions.Count == 0)
+        {
+            return plan.Transactions;
+        }
+
+        var rewritten = new List<PlannedTransaction>(plan.Transactions.Count);
+        foreach (var transaction in plan.Transactions)
+        {
+            if (transaction.BillId == plan.BillId)
+            {
+                rewritten.Add(transaction with
+                {
+                    Amount = -supplierBillPlan.Amount,
+                    Category = supplierBillPlan.RecurringCostCategory,
+                    Description = $"Simulated {supplierBillPlan.RecurringCostCategory.Replace('_', ' ')} cost for {supplierBillPlan.BillNumber}"
+                });
+                continue;
+            }
+
+            rewritten.Add(transaction);
+        }
+
+        return rewritten;
+    }
+
+    private static Dictionary<string, JsonNode?> CreateBillPayload(
+        FinanceDayPlan plan,
+        SupplierBillPlan supplierBillPlan)
+    {
+        var payload = new Dictionary<string, JsonNode?>(
+            plan.BillPayload,
+            StringComparer.OrdinalIgnoreCase);
+        payload["billNumber"] = JsonValue.Create(supplierBillPlan.BillNumber);
+        payload["supplierName"] = JsonValue.Create(supplierBillPlan.SupplierName);
+        payload["amount"] = JsonValue.Create(supplierBillPlan.Amount);
+        payload["dueUtc"] = JsonValue.Create(supplierBillPlan.DueUtc);
+        payload["status"] = JsonValue.Create(supplierBillPlan.Status);
+        payload["settlementStatus"] = JsonValue.Create(supplierBillPlan.SettlementStatus);
+        payload["recurringCostCategory"] = JsonValue.Create(supplierBillPlan.RecurringCostCategory);
+        payload["companyProfile"] = JsonValue.Create(supplierBillPlan.ProfileKey);
+        payload["paymentTermsDays"] = JsonValue.Create(supplierBillPlan.PaymentTermsDays);
+        return payload;
+    }
+
+    private static Dictionary<string, JsonNode?> CreateBillResultPayload(
+        FinanceDayPlan plan,
+        SupplierBillPlan supplierBillPlan)
+    {
+        var payload = new Dictionary<string, JsonNode?>(
+            plan.BillResultPayload,
+            StringComparer.OrdinalIgnoreCase);
+        payload["billNumber"] = JsonValue.Create(supplierBillPlan.BillNumber);
+        payload["supplierName"] = JsonValue.Create(supplierBillPlan.SupplierName);
+        payload["amount"] = JsonValue.Create(supplierBillPlan.Amount);
+        payload["dueUtc"] = JsonValue.Create(supplierBillPlan.DueUtc);
+        payload["status"] = JsonValue.Create(supplierBillPlan.Status);
+        payload["settlementStatus"] = JsonValue.Create(supplierBillPlan.SettlementStatus);
+        payload["recurringCostCategory"] = JsonValue.Create(supplierBillPlan.RecurringCostCategory);
+        payload["companyProfile"] = JsonValue.Create(supplierBillPlan.ProfileKey);
+        payload["paymentTermsDays"] = JsonValue.Create(supplierBillPlan.PaymentTermsDays);
+        return payload;
+    }
+
+    private static OperationalFinanceProfile ResolveOperationalFinanceProfile(Company company)
+    {
+        var normalizedIndustry = (company.Industry ?? company.Settings?.Onboarding?.Industry ?? string.Empty).Trim().ToLowerInvariant();
+        var normalizedBusinessType = (company.BusinessType ?? company.Settings?.Onboarding?.BusinessType ?? string.Empty).Trim().ToLowerInvariant();
+        var profileKey = $"{normalizedIndustry}|{normalizedBusinessType}";
+
+        if (profileKey.Contains("software") || profileKey.Contains("saas") || profileKey.Contains("technology"))
+        {
+            return new OperationalFinanceProfile(
+                "saas",
+                0.72m,
+                "open",
+                ["cloud_infrastructure", "software_licenses", "telecom", "cyber_insurance"],
+                [7, 14, 21],
+                [
+                    ("Northwind Retail", "customer"),
+                    ("Adventure Works", "customer"),
+                    ("Graphic Design Institute", "customer"),
+                    ("Contoso Cloud Platform", "supplier"),
+                    ("Fabrikam Identity Services", "supplier"),
+                    ("Alpine Telecom Services", "supplier"),
+                    ("Northwind Cyber Insurance", "supplier")
+                ]);
+        }
+
+        if (profileKey.Contains("retail") || profileKey.Contains("commerce") || profileKey.Contains("ecommerce"))
+        {
+            return new OperationalFinanceProfile(
+                "retail",
+                1.28m,
+                "pending_approval",
+                ["inventory_restock", "freight", "store_rent", "merchant_fees"],
+                [14, 21, 30],
+                [
+                    ("Northwind Retail", "customer"),
+                    ("Adventure Works", "customer"),
+                    ("Graphic Design Institute", "customer"),
+                    ("Metro Wholesale Group", "supplier"),
+                    ("Wide World Logistics", "supplier"),
+                    ("Contoso Store Leasing", "supplier"),
+                    ("Tailspin Card Services", "supplier")
+                ]);
+        }
+
+        if (profileKey.Contains("manufacturing") || profileKey.Contains("industrial") || profileKey.Contains("logistics"))
+        {
+            return new OperationalFinanceProfile(
+                "industrial",
+                1.55m,
+                "pending_approval",
+                ["raw_materials", "equipment_maintenance", "freight", "industrial_utilities"],
+                [21, 30, 45],
+                [
+                    ("Northwind Retail", "customer"),
+                    ("Adventure Works", "customer"),
+                    ("Graphic Design Institute", "customer"),
+                    ("Fabrikam Industrial Supply", "supplier"),
+                    ("Wide World Freight", "supplier"),
+                    ("Contoso Equipment Care", "supplier"),
+                    ("Northwind Energy Services", "supplier")
+                ]);
+        }
+
+        return new OperationalFinanceProfile(
+            "services",
+            0.94m,
+            "open",
+            ["contractors", "software_subscriptions", "workspace", "professional_insurance"],
+            [7, 14, 30],
+            [
+                ("Northwind Retail", "customer"),
+                ("Adventure Works", "customer"),
+                ("Graphic Design Institute", "customer"),
+                ("Contoso Cloud", "supplier"),
+                ("Wide World Rentals", "supplier"),
+                ("Tailspin Telecom", "supplier"),
+                ("Northwind Insurance", "supplier")
+            ]);
+    }
+
     private static IReadOnlyList<PlannedTransaction> BuildTransactions(
         Guid companyId,
         DateTime simulatedDateUtc,
@@ -1286,16 +1833,19 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             results.Clear();
         }
 
-        results.Add(new PlannedTransaction(
-            "recurring_expense",
-            -billAmount,
-            simulatedDateUtc.Date.AddHours(10),
-            billCurrency,
-            $"SIM-TXN-BILL-{simulatedDateUtc:yyyyMMdd}-{ToToken(thresholdCase)}",
-            $"Simulated recurring expense for {billNumber}",
-            supplier.Id,
-            null,
-            billId));
+        if (ShouldSettleBillImmediately(thresholdCase))
+        {
+            results.Add(new PlannedTransaction(
+                "recurring_expense",
+                -billAmount,
+                simulatedDateUtc.Date.AddHours(10),
+                billCurrency,
+                $"SIM-TXN-BILL-{simulatedDateUtc:yyyyMMdd}-{ToToken(thresholdCase)}",
+                $"Simulated recurring expense for {billNumber}",
+                supplier.Id,
+                null,
+                billId));
+        }
 
         return results;
     }
@@ -1342,6 +1892,148 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
         {
             yield return cursor;
         }
+    }
+
+    private async Task<(int DayEventSequence, decimal RunningCashBalance, int TransactionsCreated, int AuditEventsCreated)> CreateCashMovementAsync(
+        Company company,
+        GenerateCompanySimulationFinanceCommand command,
+        FinanceAccount account,
+        FinanceDayPlan plan,
+        Guid financeActorId,
+        Guid sourceEntityId,
+        Guid? parentEventId,
+        Guid counterpartyId,
+        Guid? invoiceId,
+        Guid? billId,
+        DateTime transactionUtc,
+        decimal amount,
+        string currency,
+        string category,
+        string externalReference,
+        string description,
+        string counterpartyReference,
+        int dayEventSequence,
+        decimal runningCashBalance,
+        int transactionsCreated,
+        int auditEventsCreated,
+        CancellationToken cancellationToken)
+    {
+        var paymentId = DeterministicGuid(company.Id, $"payment:{externalReference}");
+        var paymentEventId = SimulationEventDeterministicIdentity.CreateEventId(
+            company.Id,
+            command.Seed,
+            command.StartSimulatedUtc,
+            plan.DateUtc,
+            "finance.cash_movement.generated",
+            "finance_payment",
+            paymentId,
+            ++dayEventSequence,
+            command.DeterministicConfigurationJson);
+
+        var paymentEvent = await _dbContext.SimulationEventRecords
+            .IgnoreQueryFilters()
+            .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.Id == paymentEventId, cancellationToken);
+        if (paymentEvent is null)
+        {
+            paymentEvent = new SimulationEventRecord(
+                paymentEventId,
+                company.Id,
+                command.ActiveSessionId,
+                command.Seed,
+                command.StartSimulatedUtc,
+                plan.DateUtc,
+                "finance.cash_movement.generated",
+                "finance_payment",
+                paymentId,
+                externalReference,
+                parentEventId,
+                dayEventSequence,
+                SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.cash_movement.generated", "finance_payment", paymentId, dayEventSequence, command.DeterministicConfigurationJson),
+                runningCashBalance,
+                amount,
+                decimal.Round(runningCashBalance + amount, 2, MidpointRounding.AwayFromZero),
+                transactionUtc);
+            _dbContext.SimulationEventRecords.Add(paymentEvent);
+        }
+
+        await EnsureSimulationCashDeltaRecordAsync(company.Id, paymentEvent, cancellationToken);
+
+        var payment = await _dbContext.Payments
+            .IgnoreQueryFilters()
+            .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.Id == paymentId, cancellationToken);
+        if (payment is null)
+        {
+            payment = new Payment(
+                paymentId,
+                company.Id,
+                amount >= 0m ? PaymentTypes.Incoming : PaymentTypes.Outgoing,
+                Math.Abs(amount),
+                currency,
+                transactionUtc,
+                amount >= 0m ? "bank_transfer" : "ach",
+                PaymentStatuses.Completed,
+                counterpartyReference,
+                createdUtc: transactionUtc,
+                updatedUtc: transactionUtc,
+                sourceSimulationEventRecordId: paymentEvent.Id);
+            _dbContext.Payments.Add(payment);
+        }
+
+        var transaction = await _dbContext.FinanceTransactions
+            .IgnoreQueryFilters()
+            .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.ExternalReference == externalReference, cancellationToken);
+        if (transaction is not null)
+        {
+            runningCashBalance = paymentEvent.CashAfter ?? runningCashBalance;
+            return (dayEventSequence, runningCashBalance, transactionsCreated, auditEventsCreated);
+        }
+
+        transaction = new FinanceTransaction(
+            DeterministicGuid(company.Id, $"transaction:{externalReference}"),
+            company.Id,
+            account.Id,
+            counterpartyId,
+            invoiceId,
+            billId,
+            transactionUtc,
+            category,
+            amount,
+            currency,
+            description,
+            externalReference,
+            createdUtc: transactionUtc,
+            sourceSimulationEventRecordId: paymentEvent.Id);
+        _dbContext.FinanceTransactions.Add(transaction);
+        FinanceDomainEvents.EnqueueTransactionCreated(_outboxEnqueuer, transaction, BuildDayCorrelationId(company.Id, plan.DateUtc));
+        transactionsCreated++;
+        runningCashBalance = paymentEvent.CashAfter ?? runningCashBalance;
+
+        var invoice = invoiceId.HasValue ? await _dbContext.FinanceInvoices.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == company.Id && x.Id == invoiceId.Value, cancellationToken) : null;
+        var bill = billId.HasValue ? await _dbContext.FinanceBills.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == company.Id && x.Id == billId.Value, cancellationToken) : null;
+        await EnsurePaymentAllocationAsync(company.Id, payment, invoice, bill, transactionUtc, cancellationToken);
+
+        if (await EnsureAuditEventAsync(
+                company.Id,
+                DeterministicGuid(company.Id, $"audit:transaction:{externalReference}"),
+                "finance.transaction.generated",
+                "finance_transaction",
+                transaction.Id.ToString("N"),
+                BuildDayCorrelationId(company.Id, plan.DateUtc),
+                transactionUtc,
+                financeActorId,
+                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["externalReference"] = externalReference,
+                    ["scenario"] = plan.InvoiceScenarioToken,
+                    ["amount"] = amount.ToString("0.00"),
+                    ["currency"] = currency
+                },
+                cancellationToken))
+        {
+            auditEventsCreated++;
+        }
+
+        return (dayEventSequence, runningCashBalance, transactionsCreated, auditEventsCreated);
     }
 
     private static decimal ResolveInvoiceAmount(InvoiceScenario invoiceScenario, ThresholdCase thresholdCase, decimal threshold)
@@ -1411,14 +2103,62 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             _ => "pending"
         };
 
+    private static string ResolveInvoiceSettlementStatus(InvoiceScenario scenario) =>
+        scenario switch
+        {
+            InvoiceScenario.PartialPayment => FinanceSettlementStatuses.PartiallyPaid,
+            InvoiceScenario.FullPayment => FinanceSettlementStatuses.Paid,
+            InvoiceScenario.OverPayment => FinanceSettlementStatuses.Paid,
+            _ => FinanceSettlementStatuses.Unpaid
+        };
+
     private static string ResolveBillStatus(ThresholdCase thresholdCase) =>
         thresholdCase switch
         {
             ThresholdCase.JustAbove => "pending_approval",
             ThresholdCase.HumanApprovalRequired => "pending_approval",
+            ThresholdCase.EligibleWithoutEscalation => "paid",
             ThresholdCase.AlreadyApprovedOrNotActionable => "paid",
             _ => "open"
         };
+
+    private static bool ShouldSettleBillImmediately(ThresholdCase thresholdCase) =>
+        thresholdCase is ThresholdCase.EligibleWithoutEscalation or ThresholdCase.AlreadyApprovedOrNotActionable;
+
+    private static bool ShouldGenerateAssetPurchase(int dayIndex, FinanceGenerationConfiguration config)
+    {
+        var cadence = Math.Max(1, config.AssetPurchaseCadenceDays);
+        return ((dayIndex + config.AssetPurchaseOffsetDays) % cadence) == 0;
+    }
+
+    private static string ResolveAssetFundingBehavior(string configuredBehavior, int dayIndex)
+    {
+        var normalized = NormalizeAssetFundingBehavior(configuredBehavior);
+        return normalized switch
+        {
+            FinanceAssetFundingBehaviors.Cash => FinanceAssetFundingBehaviors.Cash,
+            FinanceAssetFundingBehaviors.Payable => FinanceAssetFundingBehaviors.Payable,
+            _ => dayIndex % 2 == 0 ? FinanceAssetFundingBehaviors.Cash : FinanceAssetFundingBehaviors.Payable
+        };
+    }
+
+    private static decimal ResolveAssetPurchaseAmount(int dayIndex, decimal billThreshold)
+    {
+        var multiplier = 2.10m + ((dayIndex % 4) * 0.35m);
+        return decimal.Round(Math.Max(750m, billThreshold * multiplier), 2, MidpointRounding.AwayFromZero);
+    }
+
+    private static string ResolveAssetCategory(int dayIndex) =>
+        (dayIndex % 4) switch
+        {
+            0 => "equipment",
+            1 => "vehicle",
+            2 => "infrastructure",
+            _ => "software"
+        };
+
+    private static string ResolveAssetName(DateTime simulatedDateUtc, int dayIndex, string category) =>
+        $"{category}-{simulatedDateUtc:yyyyMMdd}-{(dayIndex % 7) + 1:00}";
 
     private static string ResolveAlternateCurrency(string approvalCurrency) =>
         string.Equals(approvalCurrency, "USD", StringComparison.OrdinalIgnoreCase)
@@ -1444,15 +2184,8 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
             _ => $"Generated anomaly signal for {transaction.ExternalReference}."
         };
 
-    private static Guid DeterministicGuid(Guid companyId, string scope)
-    {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(FormattableString.Invariant($"{companyId:N}:{scope}")));
-        Span<byte> guidBytes = stackalloc byte[16];
-        bytes.AsSpan(0, 16).CopyTo(guidBytes);
-        guidBytes[7] = (byte)((guidBytes[7] & 0x0F) | 0x40);
-        guidBytes[8] = (byte)((guidBytes[8] & 0x3F) | 0x80);
-        return new Guid(guidBytes);
-    }
+    private static Guid DeterministicGuid(Guid companyId, string scope) =>
+        FinanceSimulationDeterministicIdentity.CreateScopedGuid(companyId, scope);
 
     private static string BuildDayCorrelationId(Guid companyId, DateTime simulatedDateUtc) =>
         $"finance-sim:{companyId:N}:day:{simulatedDateUtc:yyyyMMdd}";
@@ -1594,6 +2327,29 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
         List<FinanceCounterparty> Customers,
         List<FinanceCounterparty> Suppliers);
 
+    private sealed record SupplierBillPlan(
+        string BillNumber,
+        Guid BillId,
+        Guid SupplierId,
+        string SupplierName,
+        DateTime ReceivedUtc,
+        DateTime DueUtc,
+        decimal Amount,
+        string Status,
+        string SettlementStatus,
+        string RecurringCostCategory,
+        string ProfileKey,
+        int PaymentTermsDays,
+        bool RequiresApproval);
+
+    private sealed record OperationalFinanceProfile(
+        string Key,
+        decimal BaseBillAmountMultiplier,
+        string DefaultOpenBillStatus,
+        IReadOnlyList<string> RecurringCostCategories,
+        IReadOnlyList<int> PaymentTermsDays,
+        IReadOnlyList<(string Name, string Type)> CounterpartySeeds);
+
     private sealed record PlannedTransaction(
         string Category,
         decimal Amount,
@@ -1610,6 +2366,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
         string? AnomalyTypeToken,
         int InvoicesCreated,
         int BillsCreated,
+        int AssetPurchasesCreated,
         int TransactionsCreated,
         int BalancesCreated,
         int RecurringExpenseInstancesCreated,
@@ -1621,7 +2378,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
     {
         public CompanySimulationFinanceGenerationDayLogDto ToDayLog()
         {
-            var warnings = InvoicesCreated + BillsCreated + TransactionsCreated + RecurringExpenseInstancesCreated == 0
+            var warnings = InvoicesCreated + BillsCreated + AssetPurchasesCreated + TransactionsCreated + RecurringExpenseInstancesCreated == 0
                 ? ["The simulated day completed without generating finance records."]
                 : Array.Empty<string>();
 
@@ -1629,6 +2386,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                 DateUtc.Date,
                 TransactionsCreated,
                 InvoicesCreated,
+                AssetPurchasesCreated,
                 BillsCreated,
                 RecurringExpenseInstancesCreated,
                 AlertsCreated,
@@ -1642,6 +2400,9 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
     {
         public int AnomalyCadenceDays { get; init; } = 3;
         public int AnomalyOffsetDays { get; init; }
+        public int AssetPurchaseCadenceDays { get; init; } = 4;
+        public int AssetPurchaseOffsetDays { get; init; } = 1;
+        public string AssetFundingBehavior { get; init; } = "alternate";
 
         public static FinanceGenerationConfiguration Parse(string? deterministicConfigurationJson)
         {
@@ -1657,7 +2418,10 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                 return new FinanceGenerationConfiguration
                 {
                     AnomalyCadenceDays = Math.Max(1, financeNode?["anomalyCadenceDays"]?.GetValue<int>() ?? 3),
-                    AnomalyOffsetDays = Math.Max(0, financeNode?["anomalyOffsetDays"]?.GetValue<int>() ?? 0)
+                    AnomalyOffsetDays = Math.Max(0, financeNode?["anomalyOffsetDays"]?.GetValue<int>() ?? 0),
+                    AssetPurchaseCadenceDays = Math.Max(1, financeNode?["assetPurchaseCadenceDays"]?.GetValue<int>() ?? 4),
+                    AssetPurchaseOffsetDays = Math.Max(0, financeNode?["assetPurchaseOffsetDays"]?.GetValue<int>() ?? 1),
+                    AssetFundingBehavior = NormalizeAssetFundingBehavior(financeNode?["assetFundingBehavior"]?.GetValue<string>() ?? "alternate")
                 };
             }
             catch (JsonException)
@@ -1665,6 +2429,15 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                 return new FinanceGenerationConfiguration();
             }
         }
+
+        private static string NormalizeAssetFundingBehavior(string value) =>
+            value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
+    }
+
+    private static string NormalizeAssetFundingBehavior(string value)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value) ? "alternate" : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
+        return normalized is FinanceAssetFundingBehaviors.Cash or FinanceAssetFundingBehaviors.Payable or "alternate" ? normalized : "alternate";
     }
 
     private enum InvoiceScenario

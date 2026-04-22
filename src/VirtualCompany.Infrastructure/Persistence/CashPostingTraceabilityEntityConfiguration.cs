@@ -34,6 +34,12 @@ internal sealed class BankTransactionPostingStateRecordEntityConfiguration : IEn
     public void Configure(EntityTypeBuilder<BankTransactionPostingStateRecord> builder)
     {
         builder.ToTable("bank_transaction_posting_states");
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_bank_transaction_posting_states_matching_status", BankTransactionMatchingStatuses.BuildCheckConstraintSql("matching_status"));
+            t.HasCheckConstraint("CK_bank_transaction_posting_states_posting_state", BankTransactionPostingStates.BuildCheckConstraintSql("posting_state"));
+            t.HasCheckConstraint("CK_bank_transaction_posting_states_linked_payment_count", "linked_payment_count >= 0");
+        });
 
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -48,9 +54,6 @@ internal sealed class BankTransactionPostingStateRecordEntityConfiguration : IEn
         builder.Property(x => x.ConflictDetails).HasColumnName("conflict_details").HasMaxLength(512);
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
-        builder.HasCheckConstraint("CK_bank_transaction_posting_states_matching_status", BankTransactionMatchingStatuses.BuildCheckConstraintSql("matching_status"));
-        builder.HasCheckConstraint("CK_bank_transaction_posting_states_posting_state", BankTransactionPostingStates.BuildCheckConstraintSql("posting_state"));
-        builder.HasCheckConstraint("CK_bank_transaction_posting_states_linked_payment_count", "linked_payment_count >= 0");
         builder.HasIndex(x => new { x.CompanyId, x.BankTransactionId }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.MatchingStatus, x.PostingState });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);

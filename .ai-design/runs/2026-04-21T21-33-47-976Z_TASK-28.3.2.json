@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-28.3.2",
+  "promptPath": ".ai-design/prompts/TASK-28.3.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-21T21:33:47.976Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-21T21-33-47-976Z_TASK-28.3.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-21T21-33-47-976Z_TASK-28.3.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-21T21:35:54.468Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": ".cs\n@@ -41,6 +41,34 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes\n             $\"/api/companies/{seed.CompanyId:D}/finance-summary?asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString(\"O\"))}\");\n \n         Assert.NotNull(second);\n+        Assert.All(first!.RecentAssetPurchases, asset => Assert.Equal(seed.CompanyId, asset.CompanyId));\n+        Assert.Equivalent(first, second);\n+    }\n+\n+    [Fact]\n+    public async Task GetFinanceSummary_AliasRoutesReturnSameProjection_ForDashboardAgentAndDebugConsumers()\n+    {\n+        var seed = await SeedScenarioAsync();\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);\n+\n+        var query = $\"asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString(\"O\"))}&recentAssetPurchaseLimit=1\";\n+\n+        var canonical = await client.GetFromJsonAsync<FinanceSummaryResponse>(\n+            $\"/api/companies/{seed.CompanyId:D}/finance-summary?{query}\");\n+        var dashboard = await client.GetFromJsonAsync<FinanceSummaryResponse>(\n+            $\"/api/companies/{seed.CompanyId:D}/finance/dashboard/summary?{query}\");\n+        var agent = await client.GetFromJsonAsync<FinanceSummaryResponse>(\n+            $\"/api/companies/{seed.CompanyId:D}/finance/agent-context/summary?{query}\");\n+        var debug = await client.GetFromJsonAsync<FinanceSummaryResponse>(\n+            $\"/internal/companies/{seed.CompanyId:D}/finance/debug/summary?{query}\");\n+\n+        Assert.NotNull(canonical);\n+        Assert.NotNull(dashboard);\n+        Assert.NotNull(agent);\n+        Assert.NotNull(debug);\n+\n+        Assert.Single(canonical!.RecentAssetPurchases);\n+        Assert.All(canonical.RecentAssetPurchases, asset => Assert.Equal(seed.CompanyId, asset.CompanyId));\n+        Assert.Equivalent(canonical, dashboard);\n+        Assert.Equivalent(canonical, agent);\n+        Assert.Equivalent(canonical, debug);\n         Assert.Equivalent(first, second);\n     }\n \nEND_OF_PATCH\n",
+  "stderrTail": "@@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes\n             $\"/api/companies/{seed.CompanyId:D}/finance-summary?asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString(\"O\"))}\");\n \n         Assert.NotNull(second);\n+        Assert.All(first!.RecentAssetPurchases, asset => Assert.Equal(seed.CompanyId, asset.CompanyId));\n+        Assert.Equivalent(first, second);\n+    }\n+\n+    [Fact]\n+    public async Task GetFinanceSummary_AliasRoutesReturnSameProjection_ForDashboardAgentAndDebugConsumers()\n+    {\n+        var seed = await SeedScenarioAsync();\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);\n+\n+        var query = $\"asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString(\"O\"))}&recentAssetPurchaseLimit=1\";\n+\n+        var canonical = await client.GetFromJsonAsync<FinanceSummaryResponse>(\n+            $\"/api/companies/{seed.CompanyId:D}/finance-summary?{query}\");\n+        var dashboard = await client.GetFromJsonAsync<FinanceSummaryResponse>(\n+            $\"/api/companies/{seed.CompanyId:D}/finance/dashboard/summary?{query}\");\n+        var agent = await client.GetFromJsonAsync<FinanceSummaryResponse>(\n+            $\"/api/companies/{seed.CompanyId:D}/finance/agent-context/summary?{query}\");\n+        var debug = await client.GetFromJsonAsync<FinanceSummaryResponse>(\n+            $\"/internal/companies/{seed.CompanyId:D}/finance/debug/summary?{query}\");\n+\n+        Assert.NotNull(canonical);\n+        Assert.NotNull(dashboard);\n+        Assert.NotNull(agent);\n+        Assert.NotNull(debug);\n+\n+        Assert.Single(canonical!.RecentAssetPurchases);\n+        Assert.All(canonical.RecentAssetPurchases, asset => Assert.Equal(seed.CompanyId, asset.CompanyId));\n+        Assert.Equivalent(canonical, dashboard);\n+        Assert.Equivalent(canonical, agent);\n+        Assert.Equivalent(canonical, debug);\n         Assert.Equivalent(first, second);\n     }\n \nEND_OF_PATCH\ntokens used\n102,598\n",
+  "verbosityMode": "summary"
+}

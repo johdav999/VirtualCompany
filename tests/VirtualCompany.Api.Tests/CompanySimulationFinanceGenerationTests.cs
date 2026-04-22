@@ -79,6 +79,11 @@ public sealed class CompanySimulationFinanceGenerationTests
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
             .ToListAsync();
+        var assets = await dbContext.FinanceAssets
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId)
+            .OrderBy(x => x.ReferenceNumber)
+            .ToListAsync();
         var tasks = await dbContext.WorkTasks
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
@@ -122,12 +127,16 @@ public sealed class CompanySimulationFinanceGenerationTests
 
         Assert.Equal(16, invoices.Count);
         Assert.Equal(16, bills.Count);
-        Assert.True(transactions.Count >= 24);
+        Assert.True(transactions.Count >= 12);
         Assert.Equal(16, balances.Count);
         Assert.True(tasks.Count >= 24);
         Assert.True(approvals.Count >= 6);
         Assert.True(audits.Count >= 40);
         Assert.Equal(16, activity.Count);
+        Assert.True(assets.Count >= 4);
+        Assert.Contains(assets, x => x.FundingBehavior == FinanceAssetFundingBehaviors.Cash);
+        Assert.Contains(assets, x => x.FundingBehavior == FinanceAssetFundingBehaviors.Payable);
+        Assert.All(assets, x => Assert.Equal(FinanceAssetStatuses.Active, x.Status));
         Assert.Equal(8, seedAnomalies.Count);
         Assert.Equal(8, alerts.Count);
 

@@ -611,6 +611,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
                     x.SimulatedDateUtc,
                     x.TransactionsGenerated,
                     x.InvoicesGenerated,
+                    x.AssetPurchasesGenerated,
                     x.BillsGenerated,
                     x.RecurringExpenseInstancesGenerated,
                     x.AlertsGenerated,

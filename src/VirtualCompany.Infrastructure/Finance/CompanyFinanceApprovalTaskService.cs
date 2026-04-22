@@ -155,7 +155,7 @@ public sealed class CompanyFinanceApprovalTaskService : IFinanceApprovalTaskServ
         createdCount += billCounts.CreatedCount;
         skippedExistingCount += billCounts.SkippedExistingCount;
 
-        BackfillTargetCounts paymentCounts = default;
+        var paymentCounts = BackfillTargetCounts.Empty;
         if (command.IncludePayments)
         {
             paymentCounts = await BackfillPaymentsAsync(command, policy, assignee, batchSize, cancellationToken);

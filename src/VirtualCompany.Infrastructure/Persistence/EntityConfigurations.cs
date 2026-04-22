@@ -122,7 +122,7 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
         builder.Property(x => x.OnboardingAbandonedUtc);
         builder.Property(x => x.CreatedUtc).IsRequired();
         builder.Property(x => x.UpdatedUtc).IsRequired();
-        builder.HasCheckConstraint("CK_companies_finance_seed_status", FinanceSeedingStateValues.BuildCheckConstraintSql("finance_seed_status"));
+        builder.ToTable(t => t.HasCheckConstraint("CK_companies_finance_seed_status", FinanceSeedingStateValues.BuildCheckConstraintSql("finance_seed_status")));
         builder.HasIndex(x => x.FinanceSeedStatus);
         builder.HasIndex(x => x.OnboardingCompletedUtc);
         builder.HasIndex(x => x.OnboardingStatus);
@@ -2267,9 +2267,9 @@ internal sealed class AgentScheduledTriggerEnqueueWindowConfiguration : IEntityT
         builder.HasIndex(x => x.ExecutionRequestId)
             .HasFilter("execution_request_id IS NOT NULL");
 
-        builder.HasCheckConstraint(
+        builder.ToTable(t => t.HasCheckConstraint(
             "CK_agent_scheduled_trigger_enqueue_windows_window_order",
-            ActiveProviderConstraint.WindowEndAfterStart);
+            ActiveProviderConstraint.WindowEndAfterStart));
 
         builder.HasOne(x => x.Company)
             .WithMany()
@@ -2782,7 +2782,7 @@ internal sealed class FinanceBillConfiguration : IEntityTypeConfiguration<Financ
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
-        builder.HasCheckConstraint("CK_finance_bills_settlement_status", FinanceSettlementStatuses.BuildCheckConstraintSql("settlement_status"));
+        builder.ToTable(t => t.HasCheckConstraint("CK_finance_bills_settlement_status", FinanceSettlementStatuses.BuildCheckConstraintSql("settlement_status")));
         builder.HasIndex(x => new { x.CompanyId, x.BillNumber }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.DueUtc });
         builder.HasIndex(x => new { x.CompanyId, x.SettlementStatus, x.DueUtc });
@@ -2921,9 +2921,12 @@ internal sealed class FinancialStatementMappingConfiguration : IEntityTypeConfig
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
-        builder.HasCheckConstraint("CK_financial_statement_mappings_statement_type", FinancialStatementTypeValues.BuildCheckConstraintSql("statement_type"));
-        builder.HasCheckConstraint("CK_financial_statement_mappings_report_section", FinancialStatementReportSectionValues.BuildCheckConstraintSql("report_section"));
-        builder.HasCheckConstraint("CK_financial_statement_mappings_line_classification", FinancialStatementLineClassificationValues.BuildCheckConstraintSql("line_classification"));
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_financial_statement_mappings_statement_type", FinancialStatementTypeValues.BuildCheckConstraintSql("statement_type"));
+            t.HasCheckConstraint("CK_financial_statement_mappings_report_section", FinancialStatementReportSectionValues.BuildCheckConstraintSql("report_section"));
+            t.HasCheckConstraint("CK_financial_statement_mappings_line_classification", FinancialStatementLineClassificationValues.BuildCheckConstraintSql("line_classification"));
+        });
 
         builder.HasIndex(x => x.CompanyId);
         builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId });
@@ -2990,7 +2993,7 @@ internal sealed class FinanceInvoiceConfiguration : IEntityTypeConfiguration<Fin
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
-        builder.HasCheckConstraint("CK_finance_invoices_settlement_status", FinanceSettlementStatuses.BuildCheckConstraintSql("settlement_status"));
+        builder.ToTable(t => t.HasCheckConstraint("CK_finance_invoices_settlement_status", FinanceSettlementStatuses.BuildCheckConstraintSql("settlement_status")));
         builder.HasIndex(x => new { x.CompanyId, x.InvoiceNumber }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.DueUtc });
         builder.HasIndex(x => new { x.CompanyId, x.SettlementStatus, x.DueUtc });
@@ -3198,7 +3201,7 @@ internal sealed class FinancialStatementSnapshotConfiguration : IEntityTypeConfi
         builder.Property(x => x.GeneratedAtUtc).HasColumnName("generated_at").IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
 
-        builder.HasCheckConstraint("CK_financial_statement_snapshots_statement_type", FinancialStatementTypeValues.BuildCheckConstraintSql("statement_type"));
+        builder.ToTable(t => t.HasCheckConstraint("CK_financial_statement_snapshots_statement_type", FinancialStatementTypeValues.BuildCheckConstraintSql("statement_type")));
 
         builder.HasIndex(x => new { x.CompanyId, x.StatementType, x.FiscalPeriodId, x.VersionNumber }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.StatementType, x.FiscalPeriodId, x.GeneratedAtUtc });
@@ -3235,8 +3238,11 @@ internal sealed class FinancialStatementSnapshotLineConfiguration : IEntityTypeC
         builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
 
-        builder.HasCheckConstraint("CK_financial_statement_snapshot_lines_report_section", FinancialStatementReportSectionValues.BuildCheckConstraintSql("report_section"));
-        builder.HasCheckConstraint("CK_financial_statement_snapshot_lines_line_classification", FinancialStatementLineClassificationValues.BuildCheckConstraintSql("line_classification"));
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_financial_statement_snapshot_lines_report_section", FinancialStatementReportSectionValues.BuildCheckConstraintSql("report_section"));
+            t.HasCheckConstraint("CK_financial_statement_snapshot_lines_line_classification", FinancialStatementLineClassificationValues.BuildCheckConstraintSql("line_classification"));
+        });
         builder.HasIndex(x => new { x.SnapshotId, x.LineCode }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.SnapshotId, x.LineOrder });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
@@ -3316,8 +3322,11 @@ internal sealed class CompanySimulationStateConfiguration : IEntityTypeConfigura
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
-        builder.HasCheckConstraint("CK_company_simulation_states_status", CompanySimulationStatusValues.BuildCheckConstraintSql("status"));
-        builder.HasCheckConstraint("CK_company_simulation_states_active_session", "(status = 'stopped' AND active_session_id IS NULL) OR (status IN ('running', 'paused') AND active_session_id IS NOT NULL)");
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_company_simulation_states_status", CompanySimulationStatusValues.BuildCheckConstraintSql("status"));
+            t.HasCheckConstraint("CK_company_simulation_states_active_session", "(status = 'stopped' AND active_session_id IS NULL) OR (status IN ('running', 'paused') AND active_session_id IS NOT NULL)");
+        });
         builder.HasIndex(x => x.CompanyId).IsUnique();
         builder.HasIndex(x => new { x.Status, x.LastProgressedUtc, x.CompanyId });
         builder.HasIndex(x => new { x.CompanyId, x.ActiveSessionId });
@@ -3396,6 +3405,7 @@ internal sealed class CompanySimulationRunDayLogConfiguration : IEntityTypeConfi
         builder.Property(x => x.SimulatedDateUtc).HasColumnName("simulated_date_at").IsRequired();
         builder.Property(x => x.TransactionsGenerated).HasColumnName("transactions_generated").IsRequired();
         builder.Property(x => x.InvoicesGenerated).HasColumnName("invoices_generated").IsRequired();
+        builder.Property(x => x.AssetPurchasesGenerated).HasColumnName("asset_purchases_generated").IsRequired();
         builder.Property(x => x.BillsGenerated).HasColumnName("bills_generated").IsRequired();
         builder.Property(x => x.RecurringExpenseInstancesGenerated).HasColumnName("recurring_expense_instances_generated").IsRequired();
         builder.Property(x => x.AlertsGenerated).HasColumnName("alerts_generated").IsRequired();

@@ -10,6 +10,11 @@ internal sealed class PaymentEntityConfiguration : IEntityTypeConfiguration<Paym
     public void Configure(EntityTypeBuilder<Payment> builder)
     {
         builder.ToTable("finance_payments");
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_finance_payments_amount_positive", "amount > 0");
+            t.HasCheckConstraint("CK_finance_payments_payment_type", PaymentTypes.BuildCheckConstraintSql("payment_type"));
+        });
 
         builder.HasKey(x => x.Id);
         builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
@@ -24,9 +29,6 @@ internal sealed class PaymentEntityConfiguration : IEntityTypeConfiguration<Paym
         builder.Property(x => x.CounterpartyReference).HasColumnName("counterparty_reference").HasMaxLength(200).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
-
-        builder.HasCheckConstraint("CK_finance_payments_amount_positive", "amount > 0");
-        builder.HasCheckConstraint("CK_finance_payments_payment_type", PaymentTypes.BuildCheckConstraintSql("payment_type"));
 
         builder.HasIndex(x => x.CompanyId);
         builder.HasIndex(x => x.Status);

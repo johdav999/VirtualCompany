@@ -1,0 +1,677 @@
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+@@ -23,6 +23,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+     private const string AnomalyTaskType = "finance_transaction_anomaly_follow_up";
+     private const string SystemActorType = "system";
+     private const string DefaultApprovalCurrency = "USD";
++    private static readonly IFinanceDeterministicValueSource ProfileDeterministicValueSource = new Sha256FinanceDeterministicValueSource();
+     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+ 
+     private static readonly InvoiceScenario[] InvoiceScenarioCatalog =
+@@ -235,6 +236,17 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+ 
+         var dayEventSequence = 0;
+         var runningCashBalance = await CalculateBalanceAsync(company.Id, account.Id, plan.DateUtc.Date.AddTicks(-1), cancellationToken);
++        var dayIndex = (int)(plan.DateUtc.Date - command.StartSimulatedUtc.Date).TotalDays;
++        var companyProfile = ResolveOperationalFinanceProfile(company);
++        var supplierBillPlan = ResolveSupplierBillPlan(
++            company,
++            command,
++            plan,
++            policy,
++            dayIndex,
++            companyProfile);
++        var plannedTransactions = RewritePlannedTransactions(plan, supplierBillPlan);
++        var billApprovalRequired = supplierBillPlan.RequiresApproval;
++        var billPayload = CreateBillPayload(plan, supplierBillPlan);
+ 
+         var invoice = await _dbContext.FinanceInvoices
+             .IgnoreQueryFilters()
+@@ -313,18 +325,18 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         }
+ 
+         var bill = await _dbContext.FinanceBills
+             .IgnoreQueryFilters()
+-            .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.BillNumber == plan.BillNumber, cancellationToken);
++            .SingleOrDefaultAsync(x => x.CompanyId == company.Id && x.BillNumber == supplierBillPlan.BillNumber, cancellationToken);
+ 
+         if (bill is null)
+         {
+             bill = new FinanceBill(
+-                DeterministicGuid(company.Id, $"bill:{plan.BillNumber}"),
++                DeterministicGuid(company.Id, $"bill:{supplierBillPlan.BillNumber}"),
+                 company.Id,
+-                plan.SupplierId,
+-                plan.BillNumber,
++                supplierBillPlan.SupplierId,
++                supplierBillPlan.BillNumber,
+                 plan.ReceivedUtc,
+-                plan.BillDueUtc,
+-                plan.BillAmount,
++                supplierBillPlan.DueUtc,
++                supplierBillPlan.Amount,
+                 policy.ApprovalCurrency,
+-                plan.BillStatus,
+-                settlementStatus: plan.Transactions.Any(x => x.BillId == DeterministicGuid(company.Id, $"bill:{plan.BillNumber}")) ? FinanceSettlementStatuses.Paid : FinanceSettlementStatuses.Unpaid,
++                supplierBillPlan.Status,
++                settlementStatus: supplierBillPlan.SettlementStatus,
+                 createdUtc: plan.ReceivedUtc,
+                 updatedUtc: plan.ReceivedUtc,
+                 sourceSimulationEventRecordId: SimulationEventDeterministicIdentity.CreateEventId(
+@@ -333,13 +345,13 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                     command.StartSimulatedUtc,
+                     plan.DateUtc,
+                     "finance.bill.generated",
+                     "finance_bill",
+-                    DeterministicGuid(company.Id, $"bill:{plan.BillNumber}"),
++                    DeterministicGuid(company.Id, $"bill:{supplierBillPlan.BillNumber}"),
+                     ++dayEventSequence,
+                     command.DeterministicConfigurationJson));
+             _dbContext.FinanceBills.Add(bill);
+             _dbContext.SimulationEventRecords.Add(new SimulationEventRecord(
+                 bill.SourceSimulationEventRecordId!.Value,
+                 company.Id,
+                 command.ActiveSessionId,
+@@ -347,37 +359,39 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                 command.StartSimulatedUtc,
+                 plan.DateUtc,
+                 "finance.bill.generated",
+                 "finance_bill",
+-                bill.Id, plan.BillNumber, null, dayEventSequence, SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.bill.generated", "finance_bill", bill.Id, dayEventSequence, command.DeterministicConfigurationJson), null, null, null, plan.ReceivedUtc));
++                bill.Id, supplierBillPlan.BillNumber, null, dayEventSequence, SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.bill.generated", "finance_bill", bill.Id, dayEventSequence, command.DeterministicConfigurationJson), null, null, null, plan.ReceivedUtc));
+             billsCreated++;
+-            if (plan.BillApprovalRequired)
++            if (billApprovalRequired)
+             {
+                 await _financeApprovalTaskService.EnsureTaskAsync(
+                     new EnsureFinanceApprovalTaskCommand(
+                         company.Id,
+                         ApprovalTargetType.Bill,
+                         bill.Id,
+                         bill.Amount,
+                         bill.Currency,
+                         bill.DueUtc), cancellationToken);
+             }
+             recurringExpenseInstancesCreated++;
+ 
+             if (await EnsureAuditEventAsync(
+-                    company.Id,
+-                    DeterministicGuid(company.Id, $"audit:bill:{plan.BillNumber}"),
++                    company.Id,
++                    DeterministicGuid(company.Id, $"audit:bill:{supplierBillPlan.BillNumber}"),
+                     "finance.bill.generated",
+                     "finance_bill",
+                     bill.Id.ToString("N"),
+                     BuildDayCorrelationId(company.Id, plan.DateUtc),
+                     plan.ReceivedUtc,
+                     financeActorId,
+                     new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                     {
+-                        ["billNumber"] = plan.BillNumber,
+-                        ["supplier"] = plan.SupplierName,
+-                        ["thresholdCase"] = plan.ThresholdCaseToken,
+-                        ["isRecurringExpenseInstance"] = bool.TrueString
++                        ["billNumber"] = supplierBillPlan.BillNumber,
++                        ["supplier"] = supplierBillPlan.SupplierName,
++                        ["thresholdCase"] = plan.ThresholdCaseToken,
++                        ["companyProfile"] = supplierBillPlan.ProfileKey,
++                        ["recurringCostCategory"] = supplierBillPlan.RecurringCostCategory,
++                        ["paymentTermsDays"] = supplierBillPlan.PaymentTermsDays.ToString(),
++                        ["isRecurringExpenseInstance"] = bool.TrueString
+                     },
+                     cancellationToken))
+             {
+                 auditEventsCreated++;
+@@ -393,7 +407,6 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                 auditEventsCreated++;
+             }
+         }
+ 
+-        var dayIndex = (int)(plan.DateUtc.Date - command.StartSimulatedUtc.Date).TotalDays;
+         if (ShouldGenerateAssetPurchase(dayIndex, config))
+         {
+             var assetFundingBehavior = ResolveAssetFundingBehavior(config.AssetFundingBehavior, dayIndex);
+             var assetReference = $"SIM-AST-{plan.DateUtc:yyyyMMdd}-{dayIndex:000}";
+@@ -503,7 +516,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                 }
+             }
+         }
+ 
+-        foreach (var payment in plan.Transactions)
++        foreach (var payment in plannedTransactions)
+         {
+             var transaction = await _dbContext.FinanceTransactions
+                 .IgnoreQueryFilters()
+@@ -621,11 +634,11 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             $"Review generated invoice {plan.InvoiceNumber} for scenario {plan.InvoiceScenarioToken}.",
+             plan.InvoiceApprovalRequired ? WorkTaskPriority.High : WorkTaskPriority.Normal,
+             financeActorId,
+             BuildTaskCorrelationId(company.Id, "invoice", plan.InvoiceNumber),
+             plan.InvoicePayload,
+             plan.InvoiceApprovalRequired ? plan.InvoicePayload : plan.InvoiceResultPayload,
+             plan.InvoiceApprovalRequired ? WorkTaskStatus.AwaitingApproval : WorkTaskStatus.Completed,
+             plan.DueUtc,
+             cancellationToken);
+@@ -676,27 +689,27 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         var billTask = await EnsureWorkflowTaskAsync(
+             company.Id,
+             plan.BillTaskId,
+             BillReviewTaskType,
+-            $"Review bill {plan.BillNumber}",
+-            $"Review generated bill {plan.BillNumber} for threshold case {plan.ThresholdCaseToken}.",
+-            plan.BillApprovalRequired ? WorkTaskPriority.High : WorkTaskPriority.Normal,
++            $"Review bill {supplierBillPlan.BillNumber}",
++            $"Review generated bill {supplierBillPlan.BillNumber} for profile {supplierBillPlan.ProfileKey} and category {supplierBillPlan.RecurringCostCategory}.",
++            billApprovalRequired ? WorkTaskPriority.High : WorkTaskPriority.Normal,
+             financeActorId,
+-            BuildTaskCorrelationId(company.Id, "bill", plan.BillNumber),
+-            plan.BillPayload,
+-            plan.BillApprovalRequired ? plan.BillPayload : plan.BillResultPayload,
+-            plan.BillApprovalRequired ? WorkTaskStatus.AwaitingApproval : WorkTaskStatus.Completed,
+-            plan.BillDueUtc,
++            BuildTaskCorrelationId(company.Id, "bill", supplierBillPlan.BillNumber),
++            billPayload,
++            billApprovalRequired ? billPayload : CreateBillResultPayload(plan, supplierBillPlan),
++            billApprovalRequired ? WorkTaskStatus.AwaitingApproval : WorkTaskStatus.Completed,
++            supplierBillPlan.DueUtc,
+             cancellationToken);
+ 
+         if (billTask.Created)
+         {
+             workflowTasksCreated++;
+         }
+ 
+-        if (plan.BillApprovalRequired)
++        if (billApprovalRequired)
+         {
+             var approval = await EnsureApprovalRequestAsync(
+                 company.Id,
+                 plan.BillApprovalId,
+                 billTask.Task.Id,
+                 "bill_review",
+                 financeActorId,
+-                plan.BillPayload,
++                billPayload,
+                 cancellationToken);
+             if (approval.Created)
+             {
+                 approvalRequestsCreated++;
+@@ -998,20 +1011,11 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         Company company,
+         DateTime startSimulatedUtc,
+         CancellationToken cancellationToken)
+     {
+-        var names = new[]
+-        {
+-            ("Northwind Retail", "customer"),
+-            ("Adventure Works", "customer"),
+-            ("Graphic Design Institute", "customer"),
+-            ("Contoso Cloud", "supplier"),
+-            ("Wide World Rentals", "supplier"),
+-            ("Tailspin Telecom", "supplier"),
+-            ("Northwind Insurance", "supplier")
+-        };
++        var companyProfile = ResolveOperationalFinanceProfile(company);
+ 
+         var existing = await _dbContext.FinanceCounterparties
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == company.Id)
+             .ToListAsync(cancellationToken);
+ 
+-        foreach (var (name, type) in names)
++        foreach (var (name, type) in companyProfile.CounterpartySeeds)
+         {
+             if (existing.Any(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)))
+             {
+                 continue;
+@@ -1343,6 +1347,147 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             occurredUtc));
+         return true;
+     }
+ 
++    private static SupplierBillPlan ResolveSupplierBillPlan(
++        Company company,
++        GenerateCompanySimulationFinanceCommand command,
++        FinanceDayPlan plan,
++        FinancePolicyConfigurationDto policy,
++        int dayIndex,
++        OperationalFinanceProfile profile)
++    {
++        var categoryIndex = ProfileDeterministicValueSource.GetDayValue(
++            company.Id,
++            command.Seed,
++            command.StartSimulatedUtc,
++            plan.DateUtc,
++            dayIndex,
++            command.DeterministicConfigurationJson,
++            $"profile:{profile.Key}:recurring-category",
++            profile.RecurringCostCategories.Count);
++        var termsIndex = ProfileDeterministicValueSource.GetDayValue(
++            company.Id,
++            command.Seed,
++            command.StartSimulatedUtc,
++            plan.DateUtc,
++            dayIndex,
++            command.DeterministicConfigurationJson,
++            $"profile:{profile.Key}:payment-terms",
++            profile.PaymentTermsDays.Count);
++        var amountIndex = ProfileDeterministicValueSource.GetDayValue(
++            company.Id,
++            command.Seed,
++            command.StartSimulatedUtc,
++            plan.DateUtc,
++            dayIndex,
++            command.DeterministicConfigurationJson,
++            $"profile:{profile.Key}:amount-variance",
++            5);
++
++        var recurringCostCategory = profile.RecurringCostCategories[categoryIndex];
++        var paymentTermsDays = profile.PaymentTermsDays[termsIndex];
++        var amountVariance = 0.90m + (amountIndex * 0.05m);
++        var amount = decimal.Round(
++            Math.Max(50m, plan.BillAmount * profile.BaseBillAmountMultiplier * amountVariance),
++            2,
++            MidpointRounding.AwayFromZero);
++        var isSettled = plan.Transactions.Any(x => x.BillId == plan.BillId);
++        var status = isSettled
++            ? "paid"
++            : amount >= policy.BillApprovalThreshold || profile.DefaultOpenBillStatus == "pending_approval"
++                ? "pending_approval"
++                : profile.DefaultOpenBillStatus;
++
++        return new SupplierBillPlan(
++            plan.BillNumber,
++            plan.BillId,
++            plan.SupplierId,
++            plan.SupplierName,
++            plan.ReceivedUtc,
++            plan.ReceivedUtc.Date.AddDays(paymentTermsDays),
++            amount,
++            status,
++            isSettled ? FinanceSettlementStatuses.Paid : FinanceSettlementStatuses.Unpaid,
++            recurringCostCategory,
++            profile.Key,
++            paymentTermsDays,
++            amount >= policy.BillApprovalThreshold || string.Equals(status, "pending_approval", StringComparison.OrdinalIgnoreCase));
++    }
++
++    private static IReadOnlyList<PlannedTransaction> RewritePlannedTransactions(
++        FinanceDayPlan plan,
++        SupplierBillPlan supplierBillPlan)
++    {
++        if (plan.Transactions.Count == 0)
++        {
++            return plan.Transactions;
++        }
++
++        var rewritten = new List<PlannedTransaction>(plan.Transactions.Count);
++        foreach (var transaction in plan.Transactions)
++        {
++            if (transaction.BillId == plan.BillId)
++            {
++                rewritten.Add(transaction with
++                {
++                    Amount = -supplierBillPlan.Amount,
++                    Category = supplierBillPlan.RecurringCostCategory,
++                    Description = $"Simulated {supplierBillPlan.RecurringCostCategory.Replace('_', ' ')} cost for {supplierBillPlan.BillNumber}"
++                });
++                continue;
++            }
++
++            rewritten.Add(transaction);
++        }
++
++        return rewritten;
++    }
++
++    private static Dictionary<string, JsonNode?> CreateBillPayload(
++        FinanceDayPlan plan,
++        SupplierBillPlan supplierBillPlan)
++    {
++        var payload = new Dictionary<string, JsonNode?>(
++            plan.BillPayload,
++            StringComparer.OrdinalIgnoreCase);
++        payload["billNumber"] = JsonValue.Create(supplierBillPlan.BillNumber);
++        payload["supplierName"] = JsonValue.Create(supplierBillPlan.SupplierName);
++        payload["amount"] = JsonValue.Create(supplierBillPlan.Amount);
++        payload["dueUtc"] = JsonValue.Create(supplierBillPlan.DueUtc);
++        payload["status"] = JsonValue.Create(supplierBillPlan.Status);
++        payload["settlementStatus"] = JsonValue.Create(supplierBillPlan.SettlementStatus);
++        payload["recurringCostCategory"] = JsonValue.Create(supplierBillPlan.RecurringCostCategory);
++        payload["companyProfile"] = JsonValue.Create(supplierBillPlan.ProfileKey);
++        payload["paymentTermsDays"] = JsonValue.Create(supplierBillPlan.PaymentTermsDays);
++        return payload;
++    }
++
++    private static Dictionary<string, JsonNode?> CreateBillResultPayload(
++        FinanceDayPlan plan,
++        SupplierBillPlan supplierBillPlan)
++    {
++        var payload = new Dictionary<string, JsonNode?>(
++            plan.BillResultPayload,
++            StringComparer.OrdinalIgnoreCase);
++        payload["billNumber"] = JsonValue.Create(supplierBillPlan.BillNumber);
++        payload["supplierName"] = JsonValue.Create(supplierBillPlan.SupplierName);
++        payload["amount"] = JsonValue.Create(supplierBillPlan.Amount);
++        payload["dueUtc"] = JsonValue.Create(supplierBillPlan.DueUtc);
++        payload["status"] = JsonValue.Create(supplierBillPlan.Status);
++        payload["settlementStatus"] = JsonValue.Create(supplierBillPlan.SettlementStatus);
++        payload["recurringCostCategory"] = JsonValue.Create(supplierBillPlan.RecurringCostCategory);
++        payload["companyProfile"] = JsonValue.Create(supplierBillPlan.ProfileKey);
++        payload["paymentTermsDays"] = JsonValue.Create(supplierBillPlan.PaymentTermsDays);
++        return payload;
++    }
++
++    private static OperationalFinanceProfile ResolveOperationalFinanceProfile(Company company)
++    {
++        var normalizedIndustry = (company.Industry ?? company.Settings?.Onboarding?.Industry ?? string.Empty).Trim().ToLowerInvariant();
++        var normalizedBusinessType = (company.BusinessType ?? company.Settings?.Onboarding?.BusinessType ?? string.Empty).Trim().ToLowerInvariant();
++        var profileKey = $"{normalizedIndustry}|{normalizedBusinessType}";
++
++        if (profileKey.Contains("software") || profileKey.Contains("saas") || profileKey.Contains("technology"))
++        {
++            return new OperationalFinanceProfile(
++                "saas",
++                0.72m,
++                "open",
++                ["cloud_infrastructure", "software_licenses", "telecom", "cyber_insurance"],
++                [7, 14, 21],
++                [
++                    ("Northwind Retail", "customer"),
++                    ("Adventure Works", "customer"),
++                    ("Graphic Design Institute", "customer"),
++                    ("Contoso Cloud Platform", "supplier"),
++                    ("Fabrikam Identity Services", "supplier"),
++                    ("Alpine Telecom Services", "supplier"),
++                    ("Northwind Cyber Insurance", "supplier")
++                ]);
++        }
++
++        if (profileKey.Contains("retail") || profileKey.Contains("commerce") || profileKey.Contains("ecommerce"))
++        {
++            return new OperationalFinanceProfile(
++                "retail",
++                1.28m,
++                "pending_approval",
++                ["inventory_restock", "freight", "store_rent", "merchant_fees"],
++                [14, 21, 30],
++                [
++                    ("Northwind Retail", "customer"),
++                    ("Adventure Works", "customer"),
++                    ("Graphic Design Institute", "customer"),
++                    ("Metro Wholesale Group", "supplier"),
++                    ("Wide World Logistics", "supplier"),
++                    ("Contoso Store Leasing", "supplier"),
++                    ("Tailspin Card Services", "supplier")
++                ]);
++        }
++
++        if (profileKey.Contains("manufacturing") || profileKey.Contains("industrial") || profileKey.Contains("logistics"))
++        {
++            return new OperationalFinanceProfile(
++                "industrial",
++                1.55m,
++                "pending_approval",
++                ["raw_materials", "equipment_maintenance", "freight", "industrial_utilities"],
++                [21, 30, 45],
++                [
++                    ("Northwind Retail", "customer"),
++                    ("Adventure Works", "customer"),
++                    ("Graphic Design Institute", "customer"),
++                    ("Fabrikam Industrial Supply", "supplier"),
++                    ("Wide World Freight", "supplier"),
++                    ("Contoso Equipment Care", "supplier"),
++                    ("Northwind Energy Services", "supplier")
++                ]);
++        }
++
++        return new OperationalFinanceProfile(
++            "services",
++            0.94m,
++            "open",
++            ["contractors", "software_subscriptions", "workspace", "professional_insurance"],
++            [7, 14, 30],
++            [
++                ("Northwind Retail", "customer"),
++                ("Adventure Works", "customer"),
++                ("Graphic Design Institute", "customer"),
++                ("Contoso Cloud", "supplier"),
++                ("Wide World Rentals", "supplier"),
++                ("Tailspin Telecom", "supplier"),
++                ("Northwind Insurance", "supplier")
++            ]);
++    }
++
+     private static IReadOnlyList<PlannedTransaction> BuildTransactions(
+         Guid companyId,
+         DateTime simulatedDateUtc,
+         ThresholdCase thresholdCase,
+@@ -1897,6 +2042,18 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+     private sealed record CounterpartyCatalog(
+         List<FinanceCounterparty> Customers,
+         List<FinanceCounterparty> Suppliers);
+ 
++    private sealed record SupplierBillPlan(
++        string BillNumber,
++        Guid BillId,
++        Guid SupplierId,
++        string SupplierName,
++        DateTime ReceivedUtc,
++        DateTime DueUtc,
++        decimal Amount,
++        string Status,
++        string SettlementStatus,
++        string RecurringCostCategory,
++        string ProfileKey,
++        int PaymentTermsDays,
++        bool RequiresApproval);
++
++    private sealed record OperationalFinanceProfile(
++        string Key,
++        decimal BaseBillAmountMultiplier,
++        string DefaultOpenBillStatus,
++        IReadOnlyList<string> RecurringCostCategories,
++        IReadOnlyList<int> PaymentTermsDays,
++        IReadOnlyList<(string Name, string Type)> CounterpartySeeds);
++
+     private sealed record PlannedTransaction(
+         string Category,
+         decimal Amount,
+         DateTime TransactionUtc,
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs
+@@ -105,6 +105,39 @@ public sealed class CompanySimulationFinanceDeterminismTests
+         Assert.Equal(snapshot.CashDeltaRecords.Count, snapshot.SimulationEventLinks.Count(x => x.HasCashSnapshot));
+     }
+ 
++    [Fact]
++    public async Task Same_profile_seed_and_window_replay_preserves_profiled_supplier_bills()
++    {
++        var companyId = Guid.Parse("e7b2605e-d377-4308-9a5d-1496e3f60311");
++        var first = await RunProfiledBillSnapshotAsync(companyId, 73, "Software", "SaaS");
++        var second = await RunProfiledBillSnapshotAsync(companyId, 73, "Software", "SaaS");
++
++        Assert.Equal(first, second);
++        Assert.NotEmpty(first);
++    }
++
++    [Fact]
++    public async Task Different_company_profiles_shift_recurring_cost_suppliers_terms_and_amounts()
++    {
++        var saas = await RunProfiledBillSnapshotAsync(
++            Guid.Parse("f6bd8adb-4681-4929-bb46-d7dca2166d2d"),
++            73,
++            "Software",
++            "SaaS");
++        var retail = await RunProfiledBillSnapshotAsync(
++            Guid.Parse("04728e31-c7d7-4897-b9fb-b0314691b673"),
++            73,
++            "Retail",
++            "Ecommerce");
++
++        Assert.NotEqual(saas, retail);
++        Assert.NotEqual(
++            saas.Select(x => x.SupplierName).Distinct().ToArray(),
++            retail.Select(x => x.SupplierName).Distinct().ToArray());
++        Assert.NotEqual(
++            saas.Select(x => x.DueUtc).Distinct().ToArray(),
++            retail.Select(x => x.DueUtc).Distinct().ToArray());
++        Assert.NotEqual(saas.Select(x => x.Amount).ToArray(), retail.Select(x => x.Amount).ToArray());
++    }
++
+     private static async Task<FinanceSnapshot> RunSnapshotAsync(Guid companyId, int seed, string configurationJson)
+     {
+         var provider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero));
+@@ -148,6 +181,57 @@ public sealed class CompanySimulationFinanceDeterminismTests
+                 configurationJson),
+             CancellationToken.None);
+ 
++        provider.Advance(TimeSpan.FromSeconds(100));
++        _ = await stateService.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
++
++        var invoiceNumbers = await dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.InvoiceNumber)
++            .Select(x => x.InvoiceNumber)
++            .ToListAsync();
++        var billNumbers = await dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.BillNumber)
++            .Select(x => x.BillNumber)
++            .ToListAsync();
++        var transactionReferences = await dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.ExternalReference)
++            .Select(x => x.ExternalReference)
++            .ToListAsync();
++        var invoiceCausality = await dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.InvoiceNumber)
++            .Select(x => new EntityCausality(x.Id, x.SourceSimulationEventRecordId ?? Guid.Empty))
++            .ToListAsync();
++        var billCausality = await dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.BillNumber)
++            .Select(x => new EntityCausality(x.Id, x.SourceSimulationEventRecordId ?? Guid.Empty))
++            .ToListAsync();
++        var paymentCausality = await dbContext.Payments
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.Id)
++            .Select(x => new EntityCausality(x.Id, x.SourceSimulationEventRecordId ?? Guid.Empty))
++            .ToListAsync();
++        var transactionCausality = await dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.ExternalReference)
++            .Select(x => new EntityCausality(x.Id, x.SourceSimulationEventRecordId ?? Guid.Empty))
++            .ToListAsync();
++        var balanceCausality = await dbContext.FinanceBalances
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.AsOfUtc)
++            .ThenBy(x => x.Id)
++            .Select(x => new EntityCausality(x.Id, x.SourceSimulationEventRecordId ?? Guid.Empty))
++            .ToListAsync();
++        var allocationCausality = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.Id)
++            .Select(x => new AllocationCausality(
++                x.Id,
++                x.SourceSimulationEventRecordId ?? Guid.Empty,
++                x.PaymentSourceSimulationEventRecordId ?? Guid.Empty,
++                x.TargetSourceSimulationEventRecordId ?? Guid.Empty))
++            .ToListAsync();
+         var cashDeltaRecords = await dbContext.SimulationCashDeltaRecords
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+@@ -182,6 +266,46 @@ public sealed class CompanySimulationFinanceDeterminismTests
+                 .Distinct()
+                 .OrderBy(x => x)
+                 .ToList());
++    }
++
++    private static async Task<IReadOnlyList<ProfiledBillSnapshot>> RunProfiledBillSnapshotAsync(
++        Guid companyId,
++        int seed,
++        string industry,
++        string businessType)
++    {
++        var provider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero));
++
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var company = new Company(companyId, $"Profile {industry} {businessType}");
++        company.UpdateWorkspaceProfile(company.Name, industry, businessType, "UTC", "USD", "en", "US");
++        dbContext.Companies.Add(company);
++        dbContext.FinancePolicyConfigurations.Add(new FinancePolicyConfiguration(
++            Guid.NewGuid(),
++            companyId,
++            "USD",
++            1000m,
++            500m,
++            true,
++            -2000m,
++            2000m,
++            60,
++            20));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfCompanySimulationStateRepository(dbContext);
++        var generationService = new CompanySimulationFinanceGenerationService(
++            dbContext,
++            provider,
++            NullLogger<CompanySimulationFinanceGenerationService>.Instance);
++        var stateService = new CompanySimulationStateService(
++            repository,
++            provider,
++            companyContextAccessor: null,
++            distributedLockProvider: null,
++            financeGenerationPolicy: generationService,
++            logger: NullLogger<CompanySimulationStateService>.Instance);
++
++        await stateService.StartAsync(
++            new StartCompanySimulationCommand(
++                companyId,
++                new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                true,
++                seed,
++                """{"financeGeneration":{"anomalyCadenceDays":3,"anomalyOffsetDays":1}}"""),
++            CancellationToken.None);
++
++        provider.Advance(TimeSpan.FromSeconds(100));
++        _ = await stateService.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
++
++        return await (
++            from bill in dbContext.FinanceBills.IgnoreQueryFilters()
++            join supplier in dbContext.FinanceCounterparties.IgnoreQueryFilters() on bill.CounterpartyId equals supplier.Id
++            where bill.CompanyId == companyId
++            orderby bill.BillNumber
++            select new ProfiledBillSnapshot(
++                bill.BillNumber,
++                supplier.Name,
++                bill.DueUtc,
++                bill.Amount,
++                bill.Status,
++                bill.SettlementStatus))
++            .ToListAsync();
+     }
+ 
+     private static async Task<SqliteConnection> OpenConnectionAsync()
+@@ -209,6 +333,7 @@ public sealed class CompanySimulationFinanceDeterminismTests
+         IReadOnlyList<SimulationEventLink> SimulationEventLinks,
+         IReadOnlyList<string> AnomalyTypes,
+         IReadOnlyList<DateTime> AlertDates);
++    private sealed record ProfiledBillSnapshot(string BillNumber, string SupplierName, DateTime DueUtc, decimal Amount, string Status, string SettlementStatus);
+ 
+     private sealed record EntityCausality(Guid EntityId, Guid SourceSimulationEventRecordId);
+     private sealed record AllocationCausality(Guid AllocationId, Guid SourceSimulationEventRecordId, Guid PaymentSourceSimulationEventRecordId, Guid TargetSourceSimulationEventRecordId);
+ END_OF_PATCH

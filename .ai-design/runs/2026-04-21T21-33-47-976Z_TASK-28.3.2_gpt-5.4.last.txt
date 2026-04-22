@@ -1,0 +1,91 @@
+diff --git a/src/VirtualCompany.Api/Controllers/FinanceSummaryController.cs b/src/VirtualCompany.Api/Controllers/FinanceSummaryController.cs
+index 354825f..e65b7d6 100644
+--- a/src/VirtualCompany.Api/Controllers/FinanceSummaryController.cs
++++ b/src/VirtualCompany.Api/Controllers/FinanceSummaryController.cs
+@@ -7,6 +7,9 @@ namespace VirtualCompany.Api.Controllers;
+ 
+ [ApiController]
+ [Route("api/companies/{companyId:guid}/finance-summary")]
++[Route("api/companies/{companyId:guid}/finance/dashboard/summary")]
++[Route("api/companies/{companyId:guid}/finance/agent-context/summary")]
++[Route("internal/companies/{companyId:guid}/finance/debug/summary")]
+ [Authorize(Policy = CompanyPolicies.FinanceView)]
+ [RequireCompanyContext]
+ public sealed class FinanceSummaryController : ControllerBase
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 5d8e25e..2a93ac2 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -143,7 +143,8 @@ public sealed record GetFinanceBalancesQuery(
+ 
+ public sealed record GetFinanceSummaryQuery(
+     Guid CompanyId,
+-    DateTime? AsOfUtc = null);
++    DateTime? AsOfUtc = null,
++    int RecentAssetPurchaseLimit = 5);
+ public sealed record GetFinanceInsightsQuery(
+     Guid CompanyId,
+     DateTime? AsOfUtc = null,
+@@ -664,6 +665,7 @@ public sealed record FinanceDashboardMetricDto(
+ 
+ public sealed record FinanceSummaryAssetPurchaseDto(
+     Guid AssetId,
++    Guid CompanyId,
+     string ReferenceNumber,
+     string Name,
+     string Category,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSummaryQueryService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSummaryQueryService.cs
+index 00c76d6..bc4ed31 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSummaryQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSummaryQueryService.cs
+@@ -182,6 +182,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
+             .Take(recentAssetPurchaseLimit)
+             .Select(x => new FinanceSummaryAssetPurchaseDto(
+                 x.Id,
++                query.CompanyId,
+                 x.ReferenceNumber,
+                 x.Name,
+                 x.Category,
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSummaryProjectionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSummaryProjectionIntegrationTests.cs
+index e661a3a..88e4f41 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSummaryProjectionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSummaryProjectionIntegrationTests.cs
+@@ -41,6 +41,34 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+             $"/api/companies/{seed.CompanyId:D}/finance-summary?asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString("O"))}");
+ 
+         Assert.NotNull(second);
++        Assert.All(first!.RecentAssetPurchases, asset => Assert.Equal(seed.CompanyId, asset.CompanyId));
++        Assert.Equivalent(first, second);
++    }
++
++    [Fact]
++    public async Task GetFinanceSummary_AliasRoutesReturnSameProjection_ForDashboardAgentAndDebugConsumers()
++    {
++        var seed = await SeedScenarioAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);
++
++        var query = $"asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString("O"))}&recentAssetPurchaseLimit=1";
++
++        var canonical = await client.GetFromJsonAsync<FinanceSummaryResponse>(
++            $"/api/companies/{seed.CompanyId:D}/finance-summary?{query}");
++        var dashboard = await client.GetFromJsonAsync<FinanceSummaryResponse>(
++            $"/api/companies/{seed.CompanyId:D}/finance/dashboard/summary?{query}");
++        var agent = await client.GetFromJsonAsync<FinanceSummaryResponse>(
++            $"/api/companies/{seed.CompanyId:D}/finance/agent-context/summary?{query}");
++        var debug = await client.GetFromJsonAsync<FinanceSummaryResponse>(
++            $"/internal/companies/{seed.CompanyId:D}/finance/debug/summary?{query}");
++
++        Assert.NotNull(canonical);
++        Assert.NotNull(dashboard);
++        Assert.NotNull(agent);
++        Assert.NotNull(debug);
++
++        Assert.Single(canonical!.RecentAssetPurchases);
++        Assert.All(canonical.RecentAssetPurchases, asset => Assert.Equal(seed.CompanyId, asset.CompanyId));
++        Assert.Equivalent(canonical, dashboard);
++        Assert.Equivalent(canonical, agent);
++        Assert.Equivalent(canonical, debug);
+         Assert.Equivalent(first, second);
+     }
+ 
+END_OF_PATCH

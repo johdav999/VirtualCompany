@@ -64,7 +64,7 @@ public sealed class CompanySimulationController : ControllerBase
                 result.LastProgressionTimestamp,
                 result.GenerationEnabled);
 
-            return CreatedAtAction(nameof(GetStateAsync), new { companyId }, result);
+            return Ok(result);
         }
         catch (UnauthorizedAccessException)
         {

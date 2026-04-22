@@ -1,0 +1,742 @@
+diff --git a/src/VirtualCompany.Api/Controllers/FinanceSummaryController.cs b/src/VirtualCompany.Api/Controllers/FinanceSummaryController.cs
+index 388a807..aef5a72 100644
+--- a/src/VirtualCompany.Api/Controllers/FinanceSummaryController.cs
++++ b/src/VirtualCompany.Api/Controllers/FinanceSummaryController.cs
+@@ -24,14 +24,15 @@ public sealed class FinanceSummaryController : ControllerBase
+     public async Task<ActionResult<FinanceSummaryDto>> GetAsync(
+         Guid companyId,
+         [FromQuery] DateTime? asOfUtc,
++        [FromQuery] bool includeConsistencyCheck = false,
+         [FromQuery] int recentAssetPurchaseLimit = 5,
+         CancellationToken cancellationToken = default)
+     {
+         try
+         {
+             var result = await _financeSummaryQueryService.GetAsync(
+-                new GetFinanceSummaryQuery(companyId, asOfUtc, recentAssetPurchaseLimit),
++                new GetFinanceSummaryQuery(companyId, asOfUtc, recentAssetPurchaseLimit, includeConsistencyCheck),
+                 cancellationToken);
+             return Ok(result);
+         }
+         catch (UnauthorizedAccessException)
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 602897f..08cb920 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -144,7 +144,8 @@ public sealed record GetFinanceBalancesQuery(
+ public sealed record GetFinanceSummaryQuery(
+     Guid CompanyId,
+     DateTime? AsOfUtc = null,
+-    int RecentAssetPurchaseLimit = 5);
++    int RecentAssetPurchaseLimit = 5,
++    bool IncludeConsistencyCheck = false);
+ public sealed record GetFinanceInsightsQuery(
+     Guid CompanyId,
+     DateTime? AsOfUtc = null,
+@@ -676,6 +677,19 @@ public sealed record FinanceSummaryAssetPurchaseDto(
+     string FundingBehavior,
+     string FundingSettlementStatus);
+ 
++public sealed record FinanceSummaryConsistencyMetricDto(
++    string MetricKey,
++    decimal ExpectedValue,
++    decimal ActualValue,
++    bool IsMatch);
++
++public sealed record FinanceSummaryConsistencyResultDto(
++    Guid CompanyId,
++    DateTime AsOfUtc,
++    bool IsConsistent,
++    int SourceRecordCount,
++    IReadOnlyList<FinanceSummaryConsistencyMetricDto> Metrics);
++
+ public sealed record FinanceSummaryDto(
+     Guid CompanyId,
+     DateTime AsOfUtc,
+@@ -689,7 +703,8 @@ public sealed record FinanceSummaryDto(
+     string Currency,
+     bool HasFinanceData,
+     int RecentAssetPurchaseCount,
+-    decimal RecentAssetPurchaseTotalAmount,
+-    IReadOnlyList<FinanceSummaryAssetPurchaseDto> RecentAssetPurchases);
++    decimal RecentAssetPurchaseTotalAmount,
++    IReadOnlyList<FinanceSummaryAssetPurchaseDto> RecentAssetPurchases,
++    FinanceSummaryConsistencyResultDto? ConsistencyCheck = null);
+ 
+ public sealed record FinanceMonthlyProfitAndLossDto(
+     Guid CompanyId,
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index fe97a89..4976aea 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -395,6 +395,7 @@ public static class DependencyInjection
+         services.AddScoped<IFinanceBootstrapRerunService, CompanyFinanceBootstrapRerunService>();
+         services.AddScoped<IFinanceSeedingStateService, CompanyFinanceSeedingStateResolver>();
+         services.AddScoped<IFinanceSeedBackfillOrchestrator, FinanceSeedBackfillOrchestrator>();
++        services.AddScoped<FinanceSummaryConsistencyChecker>();
+         services.AddScoped<IFinanceSummaryQueryService, CompanyFinanceSummaryQueryService>();
+         services.AddScoped<IFinanceSeedBackfillQueryService, FinanceSeedBackfillQueryService>();
+         services.AddScoped<IPlanningBaselineService, PlanningBaselineService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSummaryQueryService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSummaryQueryService.cs
+index 25f90d0..030a386 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSummaryQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSummaryQueryService.cs
+@@ -12,15 +12,18 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly TimeProvider _timeProvider;
+     private readonly ICompanyContextAccessor? _companyContextAccessor;
++    private readonly FinanceSummaryConsistencyChecker _consistencyChecker;
+ 
+     public CompanyFinanceSummaryQueryService(
+         VirtualCompanyDbContext dbContext,
+         TimeProvider timeProvider,
++        FinanceSummaryConsistencyChecker consistencyChecker,
+         ICompanyContextAccessor? companyContextAccessor = null)
+     {
+         _dbContext = dbContext;
+         _timeProvider = timeProvider;
+         _companyContextAccessor = companyContextAccessor;
++        _consistencyChecker = consistencyChecker;
+     }
+ 
+     public async Task<FinanceSummaryDto> GetAsync(
+@@ -166,7 +169,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
+         var recentAssetPurchases = assetRows
+             .Where(x => IsIncludedAssetCost(x.Status))
+             .OrderByDescending(x => x.PurchasedUtc)
+-            .ThenBy(x => x.ReferenceNumber, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.ReferenceNumber, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.Id)
+             .Take(recentAssetPurchaseLimit)
+             .Select(x => new FinanceSummaryAssetPurchaseDto(
+                 x.Id,
+@@ -209,7 +213,24 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
+             invoiceRows.Count > 0 ||
+             billRows.Count > 0 ||
+             assetRows.Count > 0;
+-
+-        return new FinanceSummaryDto(
++        var summary = new FinanceSummaryDto(
+             query.CompanyId,
+             effectiveAsOfUtc,
+             currentCash,
+@@ -223,7 +244,17 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
+             hasFinanceData,
+             recentAssetPurchaseCount,
+             recentAssetPurchaseTotalAmount,
+-            recentAssetPurchases);
++            recentAssetPurchases);
++
++        if (!query.IncludeConsistencyCheck)
++        {
++            return summary;
++        }
++
++        var consistencyCheck = await _consistencyChecker.CheckAsync(
++            query.CompanyId,
++            effectiveAsOfUtc,
++            recentAssetPurchaseLimit,
++            summary,
++            cancellationToken);
++        return summary with { ConsistencyCheck = consistencyCheck };
+     }
+ 
+     private async Task<decimal> CalculateCurrentCashAsync(
+@@ -298,6 +329,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
+         var simulatedUtc = await _dbContext.CompanySimulationStates
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId)
+             .OrderByDescending(x => x.UpdatedUtc)
++            .ThenByDescending(x => x.Id)
+             .Select(x => (DateTime?)x.CurrentSimulatedUtc)
+             .FirstOrDefaultAsync(cancellationToken);
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceSummaryConsistencyChecker.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceSummaryConsistencyChecker.cs
+new file mode 100644
+index 0000000..372c4ef
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceSummaryConsistencyChecker.cs
+@@ -0,0 +1,284 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++internal sealed class FinanceSummaryConsistencyChecker
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public FinanceSummaryConsistencyChecker(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<FinanceSummaryConsistencyResultDto> CheckAsync(
++        Guid companyId,
++        DateTime asOfUtc,
++        int recentAssetPurchaseLimit,
++        FinanceSummaryDto summary,
++        CancellationToken cancellationToken)
++    {
++        var normalizedRecentAssetPurchaseLimit = Math.Clamp(recentAssetPurchaseLimit, 1, 20);
++        var monthStartUtc = new DateTime(asOfUtc.Year, asOfUtc.Month, 1, 0, 0, 0, DateTimeKind.Utc);
++        var monthEndExclusiveUtc = monthStartUtc.AddMonths(1);
++        var monthCutoffExclusiveUtc = asOfUtc < monthEndExclusiveUtc
++            ? asOfUtc.AddTicks(1)
++            : monthEndExclusiveUtc;
++
++        var cashDeltaRows = await _dbContext.SimulationCashDeltaRecords
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.SimulationDateUtc <= asOfUtc)
++            .Select(x => new CashDeltaRow(x.SimulationDateUtc, x.CreatedUtc, x.CashAfter))
++            .ToListAsync(cancellationToken);
++
++        var invoiceRows = await _dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.IssuedUtc <= asOfUtc)
++            .Select(x => new InvoiceRow(
++                x.Id,
++                x.IssuedUtc,
++                x.DueUtc,
++                x.Amount,
++                x.Status,
++                x.SettlementStatus))
++            .ToListAsync(cancellationToken);
++
++        var billRows = await _dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.ReceivedUtc <= asOfUtc)
++            .Select(x => new BillRow(
++                x.Id,
++                x.ReceivedUtc,
++                x.DueUtc,
++                x.Amount,
++                x.Status,
++                x.SettlementStatus))
++            .ToListAsync(cancellationToken);
++
++        var assetRows = await _dbContext.FinanceAssets
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.PurchasedUtc <= asOfUtc)
++            .Select(x => new AssetRow(
++                x.Id,
++                x.ReferenceNumber,
++                x.PurchasedUtc,
++                x.Amount,
++                x.FundingBehavior,
++                x.FundingSettlementStatus,
++                x.Status))
++            .ToListAsync(cancellationToken);
++
++        var incomingAllocationRows = await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.InvoiceId.HasValue &&
++                x.Payment.Status == PaymentStatuses.Completed &&
++                x.Payment.PaymentType == PaymentTypes.Incoming &&
++                x.Payment.PaymentDate <= asOfUtc)
++            .Select(x => new AllocationRow(x.InvoiceId!.Value, x.AllocatedAmount))
++            .ToListAsync(cancellationToken);
++
++        var outgoingAllocationRows = await _dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.BillId.HasValue &&
++                x.Payment.Status == PaymentStatuses.Completed &&
++                x.Payment.PaymentType == PaymentTypes.Outgoing &&
++                x.Payment.PaymentDate <= asOfUtc)
++            .Select(x => new AllocationRow(x.BillId!.Value, x.AllocatedAmount))
++            .ToListAsync(cancellationToken);
++
++        var completedIncomingByInvoice = incomingAllocationRows
++            .GroupBy(x => x.DocumentId)
++            .ToDictionary(x => x.Key, x => Round(x.Sum(y => y.Amount)));
++        var completedOutgoingByBill = outgoingAllocationRows
++            .GroupBy(x => x.DocumentId)
++            .ToDictionary(x => x.Key, x => Round(x.Sum(y => y.Amount)));
++
++        // When simulation cash deltas exist they are the most direct point-in-time source record.
++        var expectedCurrentCash = cashDeltaRows.Count > 0
++            ? Round(cashDeltaRows
++                .OrderByDescending(x => x.SimulationDateUtc)
++                .ThenByDescending(x => x.CreatedUtc)
++                .Select(x => x.CashAfter)
++                .First())
++            : await CalculateLedgerCashFallbackAsync(companyId, asOfUtc, cancellationToken);
++
++        var expectedAccountsReceivable = Round(invoiceRows
++            .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus))
++            .Sum(x => RemainingBalance(x.Amount, completedIncomingByInvoice.GetValueOrDefault(x.Id))));
++
++        var expectedOverdueReceivables = Round(invoiceRows
++            .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus) && x.DueUtc < asOfUtc)
++            .Sum(x => RemainingBalance(x.Amount, completedIncomingByInvoice.GetValueOrDefault(x.Id))));
++
++        var payableAssets = assetRows
++            .Where(IsOpenPayableAsset)
++            .ToList();
++
++        var expectedAccountsPayable = Round(
++            billRows
++                .Where(x => IsIncludedPayable(x.Status, x.SettlementStatus))
++                .Sum(x => RemainingBalance(x.Amount, completedOutgoingByBill.GetValueOrDefault(x.Id))) +
++            payableAssets.Sum(x => x.Amount));
++
++        var expectedOverduePayables = Round(
++            billRows
++                .Where(x => IsIncludedPayable(x.Status, x.SettlementStatus) && x.DueUtc < asOfUtc)
++                .Sum(x => RemainingBalance(x.Amount, completedOutgoingByBill.GetValueOrDefault(x.Id))) +
++            payableAssets.Where(x => x.PurchasedUtc < asOfUtc).Sum(x => x.Amount));
++
++        var expectedMonthlyRevenue = Round(invoiceRows
++            .Where(x =>
++                x.IssuedUtc >= monthStartUtc &&
++                x.IssuedUtc < monthCutoffExclusiveUtc &&
++                IsIncludedInMonthlyRevenue(x.Status))
++            .Sum(x => x.Amount));
++
++        // Month-to-date costs intentionally include active asset purchases so payable-funded
++        // acquisitions reconcile against the same operational summary seen by dashboards.
++        var expectedMonthlyCosts = Round(
++            billRows
++                .Where(x =>
++                    x.ReceivedUtc >= monthStartUtc &&
++                    x.ReceivedUtc < monthCutoffExclusiveUtc &&
++                    IsIncludedInMonthlyCosts(x.Status))
++                .Sum(x => x.Amount) +
++            assetRows
++                .Where(x =>
++                    x.PurchasedUtc >= monthStartUtc &&
++                    x.PurchasedUtc < monthCutoffExclusiveUtc &&
++                    IsIncludedAssetCost(x.Status))
++                .Sum(x => x.Amount));
++
++        var recentAssetPurchases = assetRows
++            .Where(x => IsIncludedAssetCost(x.Status))
++            .OrderByDescending(x => x.PurchasedUtc)
++            .ThenBy(x => x.ReferenceNumber, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.Id)
++            .Take(normalizedRecentAssetPurchaseLimit)
++            .ToList();
++
++        var metrics = new[]
++        {
++            CreateMetric("current_cash", expectedCurrentCash, summary.CurrentCash),
++            CreateMetric("accounts_receivable", expectedAccountsReceivable, summary.AccountsReceivable),
++            CreateMetric("overdue_receivables", expectedOverdueReceivables, summary.OverdueReceivables),
++            CreateMetric("accounts_payable", expectedAccountsPayable, summary.AccountsPayable),
++            CreateMetric("overdue_payables", expectedOverduePayables, summary.OverduePayables),
++            CreateMetric("monthly_revenue", expectedMonthlyRevenue, summary.MonthlyRevenue),
++            CreateMetric("monthly_costs", expectedMonthlyCosts, summary.MonthlyCosts),
++            CreateMetric("recent_asset_purchase_count", recentAssetPurchases.Count, summary.RecentAssetPurchaseCount),
++            CreateMetric("recent_asset_purchase_total_amount", Round(recentAssetPurchases.Sum(x => x.Amount)), summary.RecentAssetPurchaseTotalAmount)
++        };
++
++        return new FinanceSummaryConsistencyResultDto(
++            companyId,
++            asOfUtc,
++            metrics.All(x => x.IsMatch),
++            invoiceRows.Count + billRows.Count + assetRows.Count + incomingAllocationRows.Count + outgoingAllocationRows.Count + cashDeltaRows.Count,
++            metrics);
++    }
++
++    private async Task<decimal> CalculateLedgerCashFallbackAsync(
++        Guid companyId,
++        DateTime asOfUtc,
++        CancellationToken cancellationToken)
++    {
++        var cashAccounts = await _dbContext.FinanceAccounts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => new CashAccountRow(x.Id, x.Code, x.Name, x.AccountType, x.OpeningBalance))
++            .Where(IsCashAccount)
++            .ToListAsync(cancellationToken);
++
++        if (cashAccounts.Count == 0)
++        {
++            return 0m;
++        }
++
++        var cashAccountIds = cashAccounts.Select(x => x.Id).ToArray();
++
++        var balances = await _dbContext.FinanceBalances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && cashAccountIds.Contains(x.AccountId) && x.AsOfUtc <= asOfUtc)
++            .Select(x => new BalanceRow(x.AccountId, x.AsOfUtc, x.Amount))
++            .ToListAsync(cancellationToken);
++
++        var transactions = await _dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && cashAccountIds.Contains(x.AccountId) && x.TransactionUtc <= asOfUtc)
++            .Select(x => new TransactionRow(x.AccountId, x.TransactionUtc, x.Amount))
++            .ToListAsync(cancellationToken);
++
++        var latestBalanceByAccount = balances
++            .GroupBy(x => x.AccountId)
++            .ToDictionary(x => x.Key, x => x.OrderByDescending(y => y.AsOfUtc).First());
++        var transactionsByAccount = transactions
++            .GroupBy(x => x.AccountId)
++            .ToDictionary(x => x.Key, x => x.ToList());
++
++        var expectedCash = cashAccounts.Sum(account =>
++        {
++            var accountTransactions = transactionsByAccount.GetValueOrDefault(account.Id) ?? [];
++            if (latestBalanceByAccount.TryGetValue(account.Id, out var balance))
++            {
++                return balance.Amount + accountTransactions.Where(x => x.TransactionUtc > balance.AsOfUtc).Sum(x => x.Amount);
++            }
++
++            return account.OpeningBalance + accountTransactions.Sum(x => x.Amount);
++        });
++
++        return Round(expectedCash);
++    }
++
++    private static FinanceSummaryConsistencyMetricDto CreateMetric(string metricKey, decimal expectedValue, decimal actualValue) =>
++        new(metricKey, Round(expectedValue), Round(actualValue), Round(expectedValue) == Round(actualValue));
++
++    private static bool IsCashAccount(CashAccountRow account) =>
++        string.Equals(account.AccountType, "cash", StringComparison.OrdinalIgnoreCase) ||
++        account.Name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
++        account.Code.StartsWith("10", StringComparison.OrdinalIgnoreCase);
++
++    private static bool IsIncludedReceivable(string status, string settlementStatus) =>
++        !string.Equals(FinanceSettlementStatuses.Normalize(settlementStatus), FinanceSettlementStatuses.Paid, StringComparison.Ordinal) &&
++        NormalizeStatus(status) is not ("paid" or "cancelled" or "canceled" or "void" or "voided" or "written_off" or "rejected");
++
++    private static bool IsIncludedPayable(string status, string settlementStatus) =>
++        !string.Equals(FinanceSettlementStatuses.Normalize(settlementStatus), FinanceSettlementStatuses.Paid, StringComparison.Ordinal) &&
++        NormalizeStatus(status) is not ("paid" or "cancelled" or "canceled" or "void" or "voided");
++
++    private static bool IsOpenPayableAsset(AssetRow row) =>
++        string.Equals(FinanceAssetFundingBehaviors.Normalize(row.FundingBehavior), FinanceAssetFundingBehaviors.Payable, StringComparison.Ordinal) &&
++        !string.Equals(FinanceSettlementStatuses.Normalize(row.FundingSettlementStatus), FinanceSettlementStatuses.Paid, StringComparison.Ordinal) &&
++        IsIncludedAssetCost(row.Status);
++
++    private static bool IsIncludedInMonthlyRevenue(string status) =>
++        NormalizeStatus(status) is not ("cancelled" or "canceled" or "void" or "voided" or "rejected");
++
++    private static bool IsIncludedInMonthlyCosts(string status) =>
++        NormalizeStatus(status) is not ("cancelled" or "canceled" or "void" or "voided" or "rejected");
++
++    private static bool IsIncludedAssetCost(string status) =>
++        string.Equals(NormalizeStatus(status), NormalizeStatus(FinanceAssetStatuses.Active), StringComparison.Ordinal);
++
++    private static decimal RemainingBalance(decimal amount, decimal allocatedAmount) =>
++        Round(Math.Max(0m, amount - allocatedAmount));
++
++    private static decimal Round(decimal amount) =>
++        Math.Round(amount, 2, MidpointRounding.AwayFromZero);
++
++    private static string NormalizeStatus(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(" ", "_", StringComparison.Ordinal).Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
++
++    private sealed record CashDeltaRow(DateTime SimulationDateUtc, DateTime CreatedUtc, decimal CashAfter);
++    private sealed record CashAccountRow(Guid Id, string Code, string Name, string AccountType, decimal OpeningBalance);
++    private sealed record BalanceRow(Guid AccountId, DateTime AsOfUtc, decimal Amount);
++    private sealed record TransactionRow(Guid AccountId, DateTime TransactionUtc, decimal Amount);
++    private sealed record AllocationRow(Guid DocumentId, decimal Amount);
++    private sealed record InvoiceRow(Guid Id, DateTime IssuedUtc, DateTime DueUtc, decimal Amount, string Status, string SettlementStatus);
++    private sealed record BillRow(Guid Id, DateTime ReceivedUtc, DateTime DueUtc, decimal Amount, string Status, string SettlementStatus);
++    private sealed record AssetRow(Guid Id, string ReferenceNumber, DateTime PurchasedUtc, decimal Amount, string FundingBehavior, string FundingSettlementStatus, string Status);
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSummaryProjectionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSummaryProjectionIntegrationTests.cs
+index 4f1fcad..00ca783 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSummaryProjectionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSummaryProjectionIntegrationTests.cs
+@@ -69,7 +69,34 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+         Assert.Equivalent(canonical, dashboard);
+         Assert.Equivalent(canonical, agent);
+         Assert.Equivalent(canonical, debug);
+-        Assert.Equivalent(first, second);
++    }
++
++    [Fact]
++    public async Task GetFinanceSummary_ConsistencyCheckMatchesSourceRecords_AndRepeatedDebugReadsStayStable()
++    {
++        var seed = await SeedScenarioAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);
++
++        var query = $"asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString("O"))}&includeConsistencyCheck=true";
++
++        var stopwatch = Stopwatch.StartNew();
++        var firstResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/debug/summary?{query}");
++        stopwatch.Stop();
++
++        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
++        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2));
++
++        var first = await firstResponse.Content.ReadFromJsonAsync<FinanceSummaryResponse>();
++        var second = await client.GetFromJsonAsync<FinanceSummaryResponse>(
++            $"/internal/companies/{seed.CompanyId:D}/finance/debug/summary?{query}");
++
++        Assert.NotNull(first);
++        Assert.NotNull(second);
++        AssertSummary(first!, seed.CompanyId);
++        Assert.NotNull(first.ConsistencyCheck);
++        Assert.True(first.ConsistencyCheck!.IsConsistent);
++        Assert.Equal(11, first.ConsistencyCheck.SourceRecordCount);
++        AssertConsistencyMetrics(first.ConsistencyCheck);
++        Assert.Equivalent(first, second);
+     }
+ 
+     [Fact]
+@@ -146,11 +173,51 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+         var otherCashAccountId = Guid.NewGuid();
+         var customerId = Guid.NewGuid();
+         var supplierId = Guid.NewGuid();
++        var simulationSessionId = Guid.NewGuid();
++        var simulationStartUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
+         var otherCounterpartyId = Guid.NewGuid();
++        var eventSequence = 0;
++
++        SimulationEventRecord CreateSimulationEvent(
++            Guid sourceEntityId,
++            string eventType,
++            string sourceEntityType,
++            DateTime simulationDateUtc,
++            decimal? cashBefore = null,
++            decimal? cashDelta = null,
++            decimal? cashAfter = null)
++        {
++            eventSequence++;
++            return new SimulationEventRecord(
++                Guid.NewGuid(),
++                companyId,
++                simulationSessionId,
++                73,
++                simulationStartUtc,
++                simulationDateUtc,
++                eventType,
++                sourceEntityType,
++                sourceEntityId,
++                null,
++                null,
++                eventSequence,
++                $"finance-summary-{eventSequence}",
++                cashBefore,
++                cashDelta,
++                cashAfter,
++                simulationDateUtc);
++        }
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+             dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++
++            var overdueInvoiceId = Guid.NewGuid();
++            var partialInvoiceId = Guid.NewGuid();
++            var priorInvoiceId = Guid.NewGuid();
++            var futureInvoiceId = Guid.NewGuid();
++            var otherInvoiceId = Guid.NewGuid();
++            var overdueBillId = Guid.NewGuid();
++            var partialBillId = Guid.NewGuid();
++            var priorBillId = Guid.NewGuid();
++            var futureBillId = Guid.NewGuid();
+             dbContext.Companies.AddRange(
+                 new Company(companyId, "Projection Finance Company"),
+                 new Company(otherCompanyId, "Other Projection Company"));
+@@ -164,8 +231,8 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+             dbContext.CompanySimulationStates.Add(new CompanySimulationState(
+                 Guid.NewGuid(),
+                 companyId,
+-                Guid.NewGuid(),
++                simulationSessionId,
+                 CompanySimulationStatus.Running,
+-                new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++                simulationStartUtc,
+                 ScenarioAsOfUtc,
+                 ScenarioAsOfUtc,
+                 true,
+@@ -186,24 +253,47 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+                 new FinanceCounterparty(customerId, companyId, "Northwind", "customer", "northwind@example.com"),
+                 new FinanceCounterparty(supplierId, companyId, "Wingtip", "supplier", "wingtip@example.com"),
+                 new FinanceCounterparty(otherCounterpartyId, otherCompanyId, "Fourth Coffee", "supplier", "fourthcoffee@example.com"));
+-
+-            var overdueInvoiceId = Guid.NewGuid();
+-            var partialInvoiceId = Guid.NewGuid();
+-            var priorInvoiceId = Guid.NewGuid();
+-            var futureInvoiceId = Guid.NewGuid();
+-            var otherInvoiceId = Guid.NewGuid();
++            var overdueInvoiceEvent = CreateSimulationEvent(overdueInvoiceId, "finance.invoice.generated", "finance_invoice", new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc));
++            var partialInvoiceEvent = CreateSimulationEvent(partialInvoiceId, "finance.invoice.generated", "finance_invoice", new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc));
++            var priorInvoiceEvent = CreateSimulationEvent(priorInvoiceId, "finance.invoice.generated", "finance_invoice", new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc));
++            var overdueBillEvent = CreateSimulationEvent(overdueBillId, "finance.bill.generated", "finance_bill", new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc));
++            var partialBillEvent = CreateSimulationEvent(partialBillId, "finance.bill.generated", "finance_bill", new DateTime(2026, 4, 9, 0, 0, 0, DateTimeKind.Utc));
++            var priorBillEvent = CreateSimulationEvent(priorBillId, "finance.bill.generated", "finance_bill", new DateTime(2026, 3, 29, 0, 0, 0, DateTimeKind.Utc));
+             dbContext.FinanceInvoices.AddRange(
+-                new FinanceInvoice(overdueInvoiceId, companyId, customerId, "INV-OVERDUE-001", new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc), 300m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid),
+-                new FinanceInvoice(partialInvoiceId, companyId, customerId, "INV-PART-001", new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 25, 0, 0, 0, DateTimeKind.Utc), 1000m, "USD", "open", settlementStatus: FinanceSettlementStatuses.PartiallyPaid),
+-                new FinanceInvoice(priorInvoiceId, companyId, customerId, "INV-PRIOR-001", new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc), 150m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid),
++                new FinanceInvoice(overdueInvoiceId, companyId, customerId, "INV-OVERDUE-001", new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc), 300m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid, sourceSimulationEventRecordId: overdueInvoiceEvent.Id),
++                new FinanceInvoice(partialInvoiceId, companyId, customerId, "INV-PART-001", new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 25, 0, 0, 0, DateTimeKind.Utc), 1000m, "USD", "open", settlementStatus: FinanceSettlementStatuses.PartiallyPaid, sourceSimulationEventRecordId: partialInvoiceEvent.Id),
++                new FinanceInvoice(priorInvoiceId, companyId, customerId, "INV-PRIOR-001", new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc), 150m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid, sourceSimulationEventRecordId: priorInvoiceEvent.Id),
+                 new FinanceInvoice(futureInvoiceId, companyId, customerId, "INV-FUTURE-001", new DateTime(2026, 4, 25, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 5, 5, 0, 0, 0, DateTimeKind.Utc), 700m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid),
+                 new FinanceInvoice(otherInvoiceId, otherCompanyId, otherCounterpartyId, "INV-OTHER-001", new DateTime(2026, 4, 6, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc), 999m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid));
+ 
+-            var overdueBillId = Guid.NewGuid();
+-            var partialBillId = Guid.NewGuid();
+-            var priorBillId = Guid.NewGuid();
+-            var futureBillId = Guid.NewGuid();
+             var otherBillId = Guid.NewGuid();
+             dbContext.FinanceBills.AddRange(
+-                new FinanceBill(overdueBillId, companyId, supplierId, "BILL-OVERDUE-001", new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 14, 0, 0, 0, DateTimeKind.Utc), 200m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid),
+-                new FinanceBill(partialBillId, companyId, supplierId, "BILL-PART-001", new DateTime(2026, 4, 9, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc), 500m, "USD", "open", settlementStatus: FinanceSettlementStatuses.PartiallyPaid),
+-                new FinanceBill(priorBillId, companyId, supplierId, "BILL-PRIOR-001", new DateTime(2026, 3, 29, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc), 80m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid),
++                new FinanceBill(overdueBillId, companyId, supplierId, "BILL-OVERDUE-001", new DateTime(2026, 4, 3, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 14, 0, 0, 0, DateTimeKind.Utc), 200m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid, sourceSimulationEventRecordId: overdueBillEvent.Id),
++                new FinanceBill(partialBillId, companyId, supplierId, "BILL-PART-001", new DateTime(2026, 4, 9, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc), 500m, "USD", "open", settlementStatus: FinanceSettlementStatuses.PartiallyPaid, sourceSimulationEventRecordId: partialBillEvent.Id),
++                new FinanceBill(priorBillId, companyId, supplierId, "BILL-PRIOR-001", new DateTime(2026, 3, 29, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc), 80m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid, sourceSimulationEventRecordId: priorBillEvent.Id),
+                 new FinanceBill(futureBillId, companyId, supplierId, "BILL-FUTURE-001", new DateTime(2026, 4, 22, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc), 300m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid),
+                 new FinanceBill(otherBillId, otherCompanyId, otherCounterpartyId, "BILL-OTHER-001", new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc), 444m, "USD", "open", settlementStatus: FinanceSettlementStatuses.Unpaid));
+ 
+             var incomingPaymentId = Guid.NewGuid();
+             var outgoingPaymentId = Guid.NewGuid();
+             var futureIncomingPaymentId = Guid.NewGuid();
++            var incomingPaymentEvent = CreateSimulationEvent(incomingPaymentId, "finance.payment.completed", "payment", ScenarioAsOfUtc);
++            var outgoingPaymentEvent = CreateSimulationEvent(outgoingPaymentId, "finance.payment.completed", "payment", ScenarioAsOfUtc);
++            var incomingAllocationEvent = CreateSimulationEvent(Guid.NewGuid(), "finance.payment.allocated", "payment_allocation", ScenarioAsOfUtc);
++            var outgoingAllocationEvent = CreateSimulationEvent(Guid.NewGuid(), "finance.payment.allocated", "payment_allocation", ScenarioAsOfUtc);
++            var cashReceiptTransactionId = Guid.NewGuid();
++            var bankFeeTransactionId = Guid.NewGuid();
++            var cashReceiptEvent = CreateSimulationEvent(cashReceiptTransactionId, "finance.transaction.posted", "finance_transaction", new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc), 900m, 250m, 1150m);
++            var bankFeeEvent = CreateSimulationEvent(bankFeeTransactionId, "finance.transaction.posted", "finance_transaction", ScenarioAsOfUtc, 1150m, -25m, 1125m);
++
++            dbContext.SimulationEventRecords.AddRange(
++                overdueInvoiceEvent,
++                partialInvoiceEvent,
++                priorInvoiceEvent,
++                overdueBillEvent,
++                partialBillEvent,
++                priorBillEvent,
++                incomingPaymentEvent,
++                outgoingPaymentEvent,
++                incomingAllocationEvent,
++                outgoingAllocationEvent,
++                cashReceiptEvent,
++                bankFeeEvent);
++
++            dbContext.SimulationCashDeltaRecords.AddRange(
++                new SimulationCashDeltaRecord(Guid.NewGuid(), companyId, cashReceiptEvent.Id, new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc), "finance_transaction", cashReceiptTransactionId, 900m, 250m, 1150m, new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc)),
++                new SimulationCashDeltaRecord(Guid.NewGuid(), companyId, bankFeeEvent.Id, ScenarioAsOfUtc, "finance_transaction", bankFeeTransactionId, 1150m, -25m, 1125m, ScenarioAsOfUtc));
++
+             dbContext.Payments.AddRange(
+-                new Payment(incomingPaymentId, companyId, PaymentTypes.Incoming, 400m, "USD", ScenarioAsOfUtc, "bank_transfer", PaymentStatuses.Completed, "INV-PART-001"),
+-                new Payment(outgoingPaymentId, companyId, PaymentTypes.Outgoing, 125m, "USD", ScenarioAsOfUtc, "bank_transfer", PaymentStatuses.Completed, "BILL-PART-001"),
++                new Payment(incomingPaymentId, companyId, PaymentTypes.Incoming, 400m, "USD", ScenarioAsOfUtc, "bank_transfer", PaymentStatuses.Completed, "INV-PART-001", sourceSimulationEventRecordId: incomingPaymentEvent.Id),
++                new Payment(outgoingPaymentId, companyId, PaymentTypes.Outgoing, 125m, "USD", ScenarioAsOfUtc, "bank_transfer", PaymentStatuses.Completed, "BILL-PART-001", sourceSimulationEventRecordId: outgoingPaymentEvent.Id),
+                 new Payment(futureIncomingPaymentId, companyId, PaymentTypes.Incoming, 100m, "USD", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), "bank_transfer", PaymentStatuses.Completed, "INV-PART-001"));
+ 
+             dbContext.PaymentAllocations.AddRange(
+-                new PaymentAllocation(Guid.NewGuid(), companyId, incomingPaymentId, partialInvoiceId, null, 400m, "USD"),
+-                new PaymentAllocation(Guid.NewGuid(), companyId, outgoingPaymentId, null, partialBillId, 125m, "USD"),
++                new PaymentAllocation(Guid.NewGuid(), companyId, incomingPaymentId, partialInvoiceId, null, 400m, "USD", sourceSimulationEventRecordId: incomingAllocationEvent.Id, paymentSourceSimulationEventRecordId: incomingPaymentEvent.Id, targetSourceSimulationEventRecordId: partialInvoiceEvent.Id),
++                new PaymentAllocation(Guid.NewGuid(), companyId, outgoingPaymentId, null, partialBillId, 125m, "USD", sourceSimulationEventRecordId: outgoingAllocationEvent.Id, paymentSourceSimulationEventRecordId: outgoingPaymentEvent.Id, targetSourceSimulationEventRecordId: partialBillEvent.Id),
+                 new PaymentAllocation(Guid.NewGuid(), companyId, futureIncomingPaymentId, partialInvoiceId, null, 100m, "USD"));
+ 
++            var payableAssetId = Guid.NewGuid();
++            var cashAssetId = Guid.NewGuid();
++            var payableAssetEvent = CreateSimulationEvent(payableAssetId, "finance.asset.purchased", "finance_asset", new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc));
++            var cashAssetEvent = CreateSimulationEvent(cashAssetId, "finance.asset.purchased", "finance_asset", new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc));
++            dbContext.SimulationEventRecords.AddRange(payableAssetEvent, cashAssetEvent);
++
+             dbContext.FinanceTransactions.AddRange(
+-                new FinanceTransaction(Guid.NewGuid(), companyId, cashAccountId, null, null, null, new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc), "customer_payment", 250m, "USD", "Cash receipt", "TX-CASH-001"),
+-                new FinanceTransaction(Guid.NewGuid(), companyId, cashAccountId, null, null, null, ScenarioAsOfUtc, "bank_fee", -25m, "USD", "Bank fee", "TX-CASH-BOUNDARY"),
++                new FinanceTransaction(cashReceiptTransactionId, companyId, cashAccountId, null, null, null, new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc), "customer_payment", 250m, "USD", "Cash receipt", "TX-CASH-001", sourceSimulationEventRecordId: cashReceiptEvent.Id),
++                new FinanceTransaction(bankFeeTransactionId, companyId, cashAccountId, null, null, null, ScenarioAsOfUtc, "bank_fee", -25m, "USD", "Bank fee", "TX-CASH-BOUNDARY", sourceSimulationEventRecordId: bankFeeEvent.Id),
+                 new FinanceTransaction(Guid.NewGuid(), companyId, cashAccountId, null, null, null, new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), "future_cash", 100m, "USD", "Future cash receipt", "TX-CASH-FUTURE"),
+                 new FinanceTransaction(Guid.NewGuid(), otherCompanyId, otherCashAccountId, null, null, null, new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc), "other_cash", 500m, "USD", "Other company cash", "TX-CASH-OTHER"));
++
+             dbContext.FinanceAssets.AddRange(
+-                new FinanceAsset(Guid.NewGuid(), companyId, supplierId, "AST-PAYABLE-001", "Server Cluster", "equipment", new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc), 900m, "USD", FinanceAssetFundingBehaviors.Payable, FinanceSettlementStatuses.Unpaid, FinanceAssetStatuses.Active),
+-                new FinanceAsset(Guid.NewGuid(), companyId, supplierId, "AST-CASH-001", "Design Workstations", "equipment", new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc), 250m, "USD", FinanceAssetFundingBehaviors.Cash, FinanceSettlementStatuses.Paid, FinanceAssetStatuses.Active),
++                new FinanceAsset(payableAssetId, companyId, supplierId, "AST-PAYABLE-001", "Server Cluster", "equipment", new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc), 900m, "USD", FinanceAssetFundingBehaviors.Payable, FinanceSettlementStatuses.Unpaid, FinanceAssetStatuses.Active, sourceSimulationEventRecordId: payableAssetEvent.Id),
++                new FinanceAsset(cashAssetId, companyId, supplierId, "AST-CASH-001", "Design Workstations", "equipment", new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc), 250m, "USD", FinanceAssetFundingBehaviors.Cash, FinanceSettlementStatuses.Paid, FinanceAssetStatuses.Active, sourceSimulationEventRecordId: cashAssetEvent.Id),
+                 new FinanceAsset(Guid.NewGuid(), companyId, supplierId, "AST-FUTURE-001", "Future Equipment", "equipment", new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc), 400m, "USD", FinanceAssetFundingBehaviors.Payable, FinanceSettlementStatuses.Unpaid, FinanceAssetStatuses.Active),
+                 new FinanceAsset(Guid.NewGuid(), otherCompanyId, otherCounterpartyId, "AST-OTHER-001", "Other Company Asset", "equipment", new DateTime(2026, 4, 11, 0, 0, 0, DateTimeKind.Utc), 888m, "USD", FinanceAssetFundingBehaviors.Payable, FinanceSettlementStatuses.Unpaid, FinanceAssetStatuses.Active));
+ 
+@@ -219,6 +329,26 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+         return new FinanceSummarySeed(companyId, subject, email, displayName);
+     }
+ 
++    private static void AssertConsistencyMetrics(FinanceSummaryConsistencyResponse consistencyCheck)
++    {
++        Assert.Collection(
++            consistencyCheck.Metrics.OrderBy(x => x.MetricKey, StringComparer.Ordinal),
++            metric => AssertMetric(metric, "accounts_payable", 1555m),
++            metric => AssertMetric(metric, "accounts_receivable", 1050m),
++            metric => AssertMetric(metric, "current_cash", 1125m),
++            metric => AssertMetric(metric, "monthly_costs", 1850m),
++            metric => AssertMetric(metric, "monthly_revenue", 1300m),
++            metric => AssertMetric(metric, "overdue_payables", 1180m),
++            metric => AssertMetric(metric, "overdue_receivables", 450m),
++            metric => AssertMetric(metric, "recent_asset_purchase_count", 2m),
++            metric => AssertMetric(metric, "recent_asset_purchase_total_amount", 1150m));
++    }
++
++    private static void AssertMetric(FinanceSummaryConsistencyMetricResponse metric, string expectedKey, decimal expectedValue)
++    {
++        Assert.Equal(expectedKey, metric.MetricKey);
++        Assert.Equal(expectedValue, metric.ExpectedValue);
++        Assert.Equal(expectedValue, metric.ActualValue);
++        Assert.True(metric.IsMatch);
++    }
++
+     private static void AssertSummary(FinanceSummaryResponse summary, Guid companyId)
+     {
+         Assert.Equal(companyId, summary.CompanyId);
+@@ -234,6 +364,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+         Assert.True(summary.HasFinanceData);
+         Assert.Equal(2, summary.RecentAssetPurchaseCount);
+         Assert.Equal(1150m, summary.RecentAssetPurchaseTotalAmount);
++        Assert.All(summary.RecentAssetPurchases, asset => Assert.Equal(companyId, asset.CompanyId));
+         Assert.Collection(
+             summary.RecentAssetPurchases,
+             first =>
+@@ -286,6 +417,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+         public bool HasFinanceData { get; set; }
+         public int RecentAssetPurchaseCount { get; set; }
+         public decimal RecentAssetPurchaseTotalAmount { get; set; }
++        public FinanceSummaryConsistencyResponse? ConsistencyCheck { get; set; }
+         public List<FinanceSummaryAssetPurchaseResponse> RecentAssetPurchases { get; set; } = [];
+     }
+ 
+@@ -301,4 +433,21 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+         public string FundingBehavior { get; set; } = string.Empty;
+         public string FundingSettlementStatus { get; set; } = string.Empty;
+     }
++
++    private sealed class FinanceSummaryConsistencyResponse
++    {
++        public Guid CompanyId { get; set; }
++        public DateTime AsOfUtc { get; set; }
++        public bool IsConsistent { get; set; }
++        public int SourceRecordCount { get; set; }
++        public List<FinanceSummaryConsistencyMetricResponse> Metrics { get; set; } = [];
++    }
++
++    private sealed class FinanceSummaryConsistencyMetricResponse
++    {
++        public string MetricKey { get; set; } = string.Empty;
++        public decimal ExpectedValue { get; set; }
++        public decimal ActualValue { get; set; }
++        public bool IsMatch { get; set; }
++    }
+ }
++END_OF_PATCH

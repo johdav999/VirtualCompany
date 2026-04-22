@@ -34,6 +34,7 @@ public sealed record CompanySimulationDayLogDto(
     int TransactionsGenerated,
     int InvoicesGenerated,
     int BillsGenerated,
+    int AssetPurchasesGenerated,
     int RecurringExpenseInstancesGenerated,
     int AlertsGenerated,
     IReadOnlyList<string> InjectedAnomalies,
@@ -44,6 +45,7 @@ public sealed record CompanySimulationDayLogDto(
         TransactionsGenerated +
         InvoicesGenerated +
         BillsGenerated +
+        AssetPurchasesGenerated +
         RecurringExpenseInstancesGenerated;
 }
 

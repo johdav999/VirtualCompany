@@ -10,6 +10,11 @@ internal sealed class ApprovalTaskEntityConfiguration : IEntityTypeConfiguration
     public void Configure(EntityTypeBuilder<ApprovalTask> builder)
     {
         builder.ToTable("approval_tasks");
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_approval_tasks_target_type", ApprovalTargetTypeValues.BuildCheckConstraintSql("target_type"));
+            t.HasCheckConstraint("CK_approval_tasks_status", ApprovalTaskStatusValues.BuildCheckConstraintSql("status"));
+        });
 
         builder.HasKey(x => x.Id);
         builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
@@ -30,9 +35,6 @@ internal sealed class ApprovalTaskEntityConfiguration : IEntityTypeConfiguration
         builder.Property(x => x.DueDate).HasColumnName("due_date");
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
-
-        builder.HasCheckConstraint("CK_approval_tasks_target_type", ApprovalTargetTypeValues.BuildCheckConstraintSql("target_type"));
-        builder.HasCheckConstraint("CK_approval_tasks_status", ApprovalTaskStatusValues.BuildCheckConstraintSql("status"));
 
         builder.HasIndex(x => x.AssigneeId);
         builder.HasIndex(x => x.CompanyId);

@@ -1,0 +1,664 @@
+diff --git a/src/VirtualCompany.Application/Finance/PaymentContracts.cs b/src/VirtualCompany.Application/Finance/PaymentContracts.cs
+--- a/src/VirtualCompany.Application/Finance/PaymentContracts.cs
++++ b/src/VirtualCompany.Application/Finance/PaymentContracts.cs
+@@ -20,7 +20,7 @@ public sealed record GetFinanceBillAllocationsQuery(
+     Guid CompanyId,
+     Guid BillId);
+ 
+ public sealed record GetFinancePaymentAllocationTraceQuery(
+     Guid CompanyId,
+-    Guid BillId);
++    Guid AllocationId);
+@@ -67,7 +67,10 @@ public sealed record FinancePaymentAllocationDto(
+     Guid? BillId,
+     decimal AllocatedAmount,
+     string Currency,
+     DateTime CreatedUtc,
+-    DateTime UpdatedUtc);
++    DateTime UpdatedUtc,
++    Guid? SourceSimulationEventRecordId,
++    Guid? PaymentSourceSimulationEventRecordId,
++    Guid? TargetSourceSimulationEventRecordId);
+ 
+ public sealed record FinanceSimulationEventReferenceDto(
+     Guid Id,
+@@ -94,7 +97,8 @@ public sealed record FinancePaymentAllocationTraceDto(
+     FinancePaymentDto Payment,
+     FinanceAllocationTargetDocumentDto TargetDocument,
+     FinanceSimulationEventReferenceDto? PaymentSourceEvent,
+-    FinanceSimulationEventReferenceDto? TargetSourceEvent);
++    FinanceSimulationEventReferenceDto? TargetSourceEvent,
++    FinanceSimulationEventReferenceDto? OriginatingSourceEvent);
+ 
+ public sealed record FinancePaymentAllocationBackfillResultDto(
+     Guid CompanyId,
+diff --git a/src/VirtualCompany.Domain/Entities/PaymentAllocation.cs b/src/VirtualCompany.Domain/Entities/PaymentAllocation.cs
+--- a/src/VirtualCompany.Domain/Entities/PaymentAllocation.cs
++++ b/src/VirtualCompany.Domain/Entities/PaymentAllocation.cs
+@@ -14,7 +14,10 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
+         decimal allocatedAmount,
+         string currency,
+         DateTime? createdUtc = null,
+-        DateTime? updatedUtc = null)
++        DateTime? updatedUtc = null,
++        Guid? sourceSimulationEventRecordId = null,
++        Guid? paymentSourceSimulationEventRecordId = null,
++        Guid? targetSourceSimulationEventRecordId = null)
+     {
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
+@@ -25,6 +28,17 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
+         AllocatedAmount = NormalizeAmount(allocatedAmount, nameof(allocatedAmount));
+         Currency = NormalizeCurrency(currency, nameof(currency));
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
+         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++        if (sourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
++        }
++
++        if (paymentSourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("PaymentSourceSimulationEventRecordId cannot be empty.", nameof(paymentSourceSimulationEventRecordId));
++        }
++
++        if (targetSourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("TargetSourceSimulationEventRecordId cannot be empty.", nameof(targetSourceSimulationEventRecordId));
++        }
++
++        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
++        PaymentSourceSimulationEventRecordId = paymentSourceSimulationEventRecordId;
++        TargetSourceSimulationEventRecordId = targetSourceSimulationEventRecordId;
+     }
+@@ -38,11 +52,17 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
+     public string Currency { get; private set; } = null!;
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
++    public Guid? SourceSimulationEventRecordId { get; private set; }
++    public Guid? PaymentSourceSimulationEventRecordId { get; private set; }
++    public Guid? TargetSourceSimulationEventRecordId { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public Payment Payment { get; private set; } = null!;
+     public FinanceInvoice? Invoice { get; private set; }
+     public FinanceBill? Bill { get; private set; }
++    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
++    public SimulationEventRecord? PaymentSourceSimulationEventRecord { get; private set; }
++    public SimulationEventRecord? TargetSourceSimulationEventRecord { get; private set; }
+ 
+     public void Update(
+         Guid paymentId,
+         Guid? invoiceId,
+         Guid? billId,
+         decimal allocatedAmount,
+         string currency,
+-        DateTime? updatedUtc = null)
++        DateTime? updatedUtc = null,
++        Guid? sourceSimulationEventRecordId = null,
++        Guid? paymentSourceSimulationEventRecordId = null,
++        Guid? targetSourceSimulationEventRecordId = null)
+     {
+         PaymentId = paymentId == Guid.Empty
+             ? throw new ArgumentException("PaymentId is required.", nameof(paymentId))
+@@ -53,6 +73,17 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
+         EnsureSingleTarget(InvoiceId, BillId);
+         AllocatedAmount = NormalizeAmount(allocatedAmount, nameof(allocatedAmount));
+         Currency = NormalizeCurrency(currency, nameof(currency));
+         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
++        if (sourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
++        }
++
++        if (paymentSourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("PaymentSourceSimulationEventRecordId cannot be empty.", nameof(paymentSourceSimulationEventRecordId));
++        }
++
++        if (targetSourceSimulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("TargetSourceSimulationEventRecordId cannot be empty.", nameof(targetSourceSimulationEventRecordId));
++        }
++
++        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
++        PaymentSourceSimulationEventRecordId = paymentSourceSimulationEventRecordId;
++        TargetSourceSimulationEventRecordId = targetSourceSimulationEventRecordId;
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -638,6 +638,9 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
+             .AsNoTracking()
+             .AsSingleQuery()
++            .Include(x => x.SourceSimulationEventRecord)
++            .Include(x => x.PaymentSourceSimulationEventRecord)
++            .Include(x => x.TargetSourceSimulationEventRecord)
+             .Include(x => x.Payment)
+                 .ThenInclude(x => x.SourceSimulationEventRecord)
+             .Include(x => x.Invoice)
+@@ -679,7 +682,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
+             allocation.CompanyId,
+             MapPayment(allocation.Payment),
+             targetDocument,
+-            MapSimulationEventReference(allocation.Payment.SourceSimulationEventRecord),
+-            MapSimulationEventReference(allocation.Invoice?.SourceSimulationEventRecord ?? allocation.Bill?.SourceSimulationEventRecord));
++            MapSimulationEventReference(allocation.PaymentSourceSimulationEventRecord ?? allocation.Payment.SourceSimulationEventRecord),
++            MapSimulationEventReference(allocation.TargetSourceSimulationEventRecord ?? allocation.Invoice?.SourceSimulationEventRecord ?? allocation.Bill?.SourceSimulationEventRecord),
++            MapSimulationEventReference(allocation.SourceSimulationEventRecord ?? allocation.PaymentSourceSimulationEventRecord ?? allocation.Payment.SourceSimulationEventRecord));
+     }
+@@ -2258,7 +2262,10 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
+             allocation.BillId,
+             allocation.AllocatedAmount,
+             allocation.Currency,
+             allocation.CreatedUtc,
+-            allocation.UpdatedUtc);
++            allocation.UpdatedUtc,
++            allocation.SourceSimulationEventRecordId,
++            allocation.PaymentSourceSimulationEventRecordId,
++            allocation.TargetSourceSimulationEventRecordId);
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+@@ -775,7 +775,17 @@ public sealed class CompanySimulationFinanceGenerationService : ICompanySimulati
+             Math.Min(
+                 payment.Amount,
+                 invoice?.Amount ?? bill!.Amount),
+             2,
+             MidpointRounding.AwayFromZero);
+ 
+-        _dbContext.PaymentAllocations.Add(new PaymentAllocation(allocationId, companyId, payment.Id, invoice?.Id, bill?.Id, allocatedAmount, payment.Currency, createdUtc, createdUtc));
++        // Reuse the causal event identifiers already assigned to the simulated payment/document so replayed
++        // allocations keep a stable traversal path without reconstructing it from runtime ordering.
++        _dbContext.PaymentAllocations.Add(new PaymentAllocation(
++            allocationId,
++            companyId,
++            payment.Id,
++            invoice?.Id,
++            bill?.Id,
++            allocatedAmount,
++            payment.Currency,
++            createdUtc,
++            createdUtc,
++            sourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
++            paymentSourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
++            targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId));
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinancePaymentAllocationService.cs b/src/VirtualCompany.Infrastructure/Finance/FinancePaymentAllocationService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/FinancePaymentAllocationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinancePaymentAllocationService.cs
+@@ -43,7 +43,10 @@ internal sealed class FinancePaymentAllocationService
+                 payment.Id,
+                 invoice?.Id,
+                 bill?.Id,
+                 amount,
+-                currency);
++                currency,
++                sourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
++                paymentSourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
++                targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId);
+ 
+             _dbContext.PaymentAllocations.Add(allocation);
+             await ApplyTargetSettlementStatusAsync(command.CompanyId, invoice, bill, amount, null, cancellationToken);
+@@ -80,7 +83,10 @@ internal sealed class FinancePaymentAllocationService
+             allocation.Update(payment.Id, invoice?.Id, bill?.Id, amount, currency);
++            allocation.Update(
++                payment.Id,
++                invoice?.Id,
++                bill?.Id,
++                amount,
++                currency,
++                sourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
++                paymentSourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
++                targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId);
+ 
+             var movedAwayFromInvoice = previousInvoice is not null && previousInvoice.Id != invoice?.Id;
+             var movedAwayFromBill = previousBill is not null && previousBill.Id != bill?.Id;
+@@ -328,7 +334,10 @@ internal sealed class FinancePaymentAllocationService
+             payment.Id,
+             invoice?.Id,
+             bill?.Id,
+             allocationAmount,
+-            payment.Currency);
++            payment.Currency,
++            sourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
++            paymentSourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
++            targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId);
+ 
+         _dbContext.PaymentAllocations.Add(allocation);
+         await ApplyTargetSettlementStatusAsync(companyId, invoice, bill, allocationAmount, null, cancellationToken);
+@@ -493,7 +502,10 @@ internal sealed class FinancePaymentAllocationService
+             allocation.BillId,
+             allocation.AllocatedAmount,
+             allocation.Currency,
+             allocation.CreatedUtc,
+-            allocation.UpdatedUtc);
++            allocation.UpdatedUtc,
++            allocation.SourceSimulationEventRecordId,
++            allocation.PaymentSourceSimulationEventRecordId,
++            allocation.TargetSourceSimulationEventRecordId);
+ 
+     private async Task<TResult> ExecuteInTransactionAsync<TResult>(
+         Func<Task<TResult>> action,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceSimulationEventLinkConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceSimulationEventLinkConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceSimulationEventLinkConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceSimulationEventLinkConfigurations.cs
+@@ -58,6 +58,34 @@ internal sealed class FinanceTransactionSimulationEventLinkConfiguration : IEnti
+             .OnDelete(DeleteBehavior.Restrict);
+     }
+ }
+ 
++internal sealed class PaymentAllocationSimulationEventLinkConfiguration : IEntityTypeConfiguration<PaymentAllocation>
++{
++    public void Configure(EntityTypeBuilder<PaymentAllocation> builder)
++    {
++        builder.Property(x => x.SourceSimulationEventRecordId).HasColumnName("source_simulation_event_record_id");
++        builder.Property(x => x.PaymentSourceSimulationEventRecordId).HasColumnName("payment_source_simulation_event_record_id");
++        builder.Property(x => x.TargetSourceSimulationEventRecordId).HasColumnName("target_source_simulation_event_record_id");
++        builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
++        builder.HasIndex(x => new { x.CompanyId, x.PaymentSourceSimulationEventRecordId });
++        builder.HasIndex(x => new { x.CompanyId, x.TargetSourceSimulationEventRecordId });
++        builder.HasOne(x => x.SourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.SourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.PaymentSourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.PaymentSourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.TargetSourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.TargetSourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
+ internal sealed class FinanceBalanceSimulationEventLinkConfiguration : IEntityTypeConfiguration<FinanceBalance>
+ {
+     public void Configure(EntityTypeBuilder<FinanceBalance> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/PaymentAllocationEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/PaymentAllocationEntityConfiguration.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/PaymentAllocationEntityConfiguration.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/PaymentAllocationEntityConfiguration.cs
+@@ -15,6 +15,9 @@ internal sealed class PaymentAllocationEntityConfiguration : IEntityTypeConfigur
+         builder.Property(x => x.PaymentId).HasColumnName("payment_id").IsRequired();
+         builder.Property(x => x.InvoiceId).HasColumnName("invoice_id");
+         builder.Property(x => x.BillId).HasColumnName("bill_id");
++        builder.Property(x => x.SourceSimulationEventRecordId).HasColumnName("source_simulation_event_record_id");
++        builder.Property(x => x.PaymentSourceSimulationEventRecordId).HasColumnName("payment_source_simulation_event_record_id");
++        builder.Property(x => x.TargetSourceSimulationEventRecordId).HasColumnName("target_source_simulation_event_record_id");
+         builder.Property(x => x.AllocatedAmount).HasColumnName("allocated_amount").HasColumnType("decimal(18,2)").IsRequired();
+         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+@@ -24,6 +27,9 @@ internal sealed class PaymentAllocationEntityConfiguration : IEntityTypeConfigur
+         builder.HasIndex(x => new { x.CompanyId, x.PaymentId });
+         builder.HasIndex(x => new { x.CompanyId, x.InvoiceId });
+         builder.HasIndex(x => new { x.CompanyId, x.BillId });
++        builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
++        builder.HasIndex(x => new { x.CompanyId, x.PaymentSourceSimulationEventRecordId });
++        builder.HasIndex(x => new { x.CompanyId, x.TargetSourceSimulationEventRecordId });
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+@@ -45,5 +51,20 @@ internal sealed class PaymentAllocationEntityConfiguration : IEntityTypeConfigur
+             .WithMany(x => x.Allocations)
+             .HasForeignKey(x => new { x.CompanyId, x.BillId })
+             .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+             .OnDelete(DeleteBehavior.Cascade);
++
++        builder.HasOne(x => x.SourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.SourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++
++        builder.HasOne(x => x.PaymentSourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.PaymentSourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++
++        builder.HasOne(x => x.TargetSourceSimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.TargetSourceSimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423133000_AddPaymentAllocationSimulationCausality.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423133000_AddPaymentAllocationSimulationCausality.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423133000_AddPaymentAllocationSimulationCausality.cs
+@@ -0,0 +1,123 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddPaymentAllocationSimulationCausality : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "source_simulation_event_record_id",
++                table: "payment_allocations",
++                type: guidType,
++                nullable: true);
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "payment_source_simulation_event_record_id",
++                table: "payment_allocations",
++                type: guidType,
++                nullable: true);
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "target_source_simulation_event_record_id",
++                table: "payment_allocations",
++                type: guidType,
++                nullable: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_payment_allocations_company_id_source_simulation_event_record_id",
++                table: "payment_allocations",
++                columns: new[] { "company_id", "source_simulation_event_record_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_payment_allocations_company_id_payment_source_simulation_event_record_id",
++                table: "payment_allocations",
++                columns: new[] { "company_id", "payment_source_simulation_event_record_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_payment_allocations_company_id_target_source_simulation_event_record_id",
++                table: "payment_allocations",
++                columns: new[] { "company_id", "target_source_simulation_event_record_id" });
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_payment_allocations_simulation_event_records_company_id_source_simulation_event_record_id",
++                table: "payment_allocations",
++                columns: new[] { "company_id", "source_simulation_event_record_id" },
++                principalTable: "simulation_event_records",
++                principalColumns: new[] { "company_id", "id" },
++                onDelete: ReferentialAction.Restrict);
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_payment_allocations_simulation_event_records_company_id_payment_source_simulation_event_record_id",
++                table: "payment_allocations",
++                columns: new[] { "company_id", "payment_source_simulation_event_record_id" },
++                principalTable: "simulation_event_records",
++                principalColumns: new[] { "company_id", "id" },
++                onDelete: ReferentialAction.Restrict);
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_payment_allocations_simulation_event_records_company_id_target_source_simulation_event_record_id",
++                table: "payment_allocations",
++                columns: new[] { "company_id", "target_source_simulation_event_record_id" },
++                principalTable: "simulation_event_records",
++                principalColumns: new[] { "company_id", "id" },
++                onDelete: ReferentialAction.Restrict);
++
++            migrationBuilder.Sql(
++                """
++                UPDATE payment_allocations
++                SET payment_source_simulation_event_record_id = (
++                        SELECT p.source_simulation_event_record_id
++                        FROM finance_payments p
++                        WHERE p.company_id = payment_allocations.company_id
++                          AND p.id = payment_allocations.payment_id
++                    ),
++                    target_source_simulation_event_record_id = COALESCE(
++                        (
++                            SELECT i.source_simulation_event_record_id
++                            FROM finance_invoices i
++                            WHERE i.company_id = payment_allocations.company_id
++                              AND i.id = payment_allocations.invoice_id
++                        ),
++                        (
++                            SELECT b.source_simulation_event_record_id
++                            FROM finance_bills b
++                            WHERE b.company_id = payment_allocations.company_id
++                              AND b.id = payment_allocations.bill_id
++                        )
++                    ),
++                    source_simulation_event_record_id = COALESCE(
++                        (
++                            SELECT p.source_simulation_event_record_id
++                            FROM finance_payments p
++                            WHERE p.company_id = payment_allocations.company_id
++                              AND p.id = payment_allocations.payment_id
++                        ),
++                        (
++                            SELECT i.source_simulation_event_record_id
++                            FROM finance_invoices i
++                            WHERE i.company_id = payment_allocations.company_id
++                              AND i.id = payment_allocations.invoice_id
++                        ),
++                        (
++                            SELECT b.source_simulation_event_record_id
++                            FROM finance_bills b
++                            WHERE b.company_id = payment_allocations.company_id
++                              AND b.id = payment_allocations.bill_id
++                        )
++                    );
++                """);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropForeignKey(name: "FK_payment_allocations_simulation_event_records_company_id_source_simulation_event_record_id", table: "payment_allocations");
++            migrationBuilder.DropForeignKey(name: "FK_payment_allocations_simulation_event_records_company_id_payment_source_simulation_event_record_id", table: "payment_allocations");
++            migrationBuilder.DropForeignKey(name: "FK_payment_allocations_simulation_event_records_company_id_target_source_simulation_event_record_id", table: "payment_allocations");
++
++            migrationBuilder.DropIndex(name: "IX_payment_allocations_company_id_source_simulation_event_record_id", table: "payment_allocations");
++            migrationBuilder.DropIndex(name: "IX_payment_allocations_company_id_payment_source_simulation_event_record_id", table: "payment_allocations");
++            migrationBuilder.DropIndex(name: "IX_payment_allocations_company_id_target_source_simulation_event_record_id", table: "payment_allocations");
++
++            migrationBuilder.DropColumn(name: "source_simulation_event_record_id", table: "payment_allocations");
++            migrationBuilder.DropColumn(name: "payment_source_simulation_event_record_id", table: "payment_allocations");
++            migrationBuilder.DropColumn(name: "target_source_simulation_event_record_id", table: "payment_allocations");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs
+@@ -38,6 +38,35 @@ public sealed class CompanySimulationFinanceDeterminismTests
+         Assert.All(gaps, gap => Assert.Equal(3, gap));
+     }
+ 
++    [Fact]
++    public async Task Same_seed_and_start_date_replay_preserves_causal_links_and_event_identifiers()
++    {
++        var companyId = Guid.Parse("8e34a7d4-bfd3-4d7f-9a0c-17f7ea8fe3a5");
++        const int seed = 73;
++        const string configurationJson = """{"financeGeneration":{"anomalyCadenceDays":3,"anomalyOffsetDays":1}}""";
++
++        var first = await RunSnapshotAsync(companyId, seed, configurationJson);
++        var second = await RunSnapshotAsync(companyId, seed, configurationJson);
++
++        Assert.Equal(first.InvoiceCausality, second.InvoiceCausality);
++        Assert.Equal(first.BillCausality, second.BillCausality);
++        Assert.Equal(first.PaymentCausality, second.PaymentCausality);
++        Assert.Equal(first.TransactionCausality, second.TransactionCausality);
++        Assert.Equal(first.BalanceCausality, second.BalanceCausality);
++        Assert.Equal(first.AllocationCausality, second.AllocationCausality);
++        Assert.Equal(first.SimulationEventLinks, second.SimulationEventLinks);
++
++        Assert.NotEmpty(first.InvoiceCausality);
++        Assert.NotEmpty(first.BillCausality);
++        Assert.NotEmpty(first.PaymentCausality);
++        Assert.NotEmpty(first.TransactionCausality);
++        Assert.NotEmpty(first.BalanceCausality);
++        Assert.NotEmpty(first.AllocationCausality);
++
++        Assert.All(first.InvoiceCausality, x => Assert.NotEqual(Guid.Empty, x.SourceSimulationEventRecordId));
++        Assert.All(first.BillCausality, x => Assert.NotEqual(Guid.Empty, x.SourceSimulationEventRecordId));
++        Assert.All(first.PaymentCausality, x => Assert.NotEqual(Guid.Empty, x.SourceSimulationEventRecordId));
++        Assert.All(first.TransactionCausality, x => Assert.NotEqual(Guid.Empty, x.SourceSimulationEventRecordId));
++        Assert.All(first.BalanceCausality, x => Assert.NotEqual(Guid.Empty, x.SourceSimulationEventRecordId));
++        Assert.All(first.AllocationCausality, x => Assert.NotEqual(Guid.Empty, x.SourceSimulationEventRecordId));
++    }
++
+     private static async Task<FinanceSnapshot> RunSnapshotAsync(Guid companyId, int seed, string configurationJson)
+     {
+         var provider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 19, 12, 0, 0, TimeSpan.Zero));
+@@ -99,6 +128,54 @@ public sealed class CompanySimulationFinanceDeterminismTests
+             .OrderBy(x => x.ExternalReference)
+             .Select(x => x.ExternalReference)
+             .ToListAsync();
++        var invoiceCausality = await dbContext.FinanceInvoices
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.InvoiceNumber)
++            .Select(x => new EntityCausality(x.Id, x.SourceSimulationEventRecordId ?? Guid.Empty))
++            .ToListAsync();
++        var billCausality = await dbContext.FinanceBills
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.BillNumber)
++            .Select(x => new EntityCausality(x.Id, x.SourceSimulationEventRecordId ?? Guid.Empty))
++            .ToListAsync();
++        var paymentCausality = await dbContext.Payments
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.Id)
++            .Select(x => new EntityCausality(x.Id, x.SourceSimulationEventRecordId ?? Guid.Empty))
++            .ToListAsync();
++        var transactionCausality = await dbContext.FinanceTransactions
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.ExternalReference)
++            .Select(x => new EntityCausality(x.Id, x.SourceSimulationEventRecordId ?? Guid.Empty))
++            .ToListAsync();
++        var balanceCausality = await dbContext.FinanceBalances
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.AsOfUtc)
++            .ThenBy(x => x.Id)
++            .Select(x => new EntityCausality(x.Id, x.SourceSimulationEventRecordId ?? Guid.Empty))
++            .ToListAsync();
++        var allocationCausality = await dbContext.PaymentAllocations
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.Id)
++            .Select(x => new AllocationCausality(
++                x.Id,
++                x.SourceSimulationEventRecordId ?? Guid.Empty,
++                x.PaymentSourceSimulationEventRecordId ?? Guid.Empty,
++                x.TargetSourceSimulationEventRecordId ?? Guid.Empty))
++            .ToListAsync();
++        var simulationEventLinks = await dbContext.SimulationEventRecords
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.SimulationDateUtc)
++            .ThenBy(x => x.SequenceNumber)
++            .ThenBy(x => x.Id)
++            .Select(x => new SimulationEventLink(
++                x.Id,
++                x.ParentEventId,
++                x.SourceEntityId,
++                x.DeterministicKey))
++            .ToListAsync();
+         var alerts = await dbContext.Alerts
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId && x.Type == AlertType.Anomaly)
+@@ -109,12 +186,26 @@ public sealed class CompanySimulationFinanceDeterminismTests
+         return new FinanceSnapshot(
+             invoiceNumbers,
+             billNumbers,
+             transactionReferences,
++            invoiceCausality,
++            billCausality,
++            paymentCausality,
++            transactionCausality,
++            balanceCausality,
++            allocationCausality,
++            simulationEventLinks,
+             alerts
+                 .Select(x => x.Metadata["anomalyType"]?.GetValue<string>() ?? string.Empty)
+                 .ToList(),
+             alerts
+                 .Select(x => (x.LastDetectedUtc ?? x.CreatedUtc).Date)
+                 .Distinct()
+                 .OrderBy(x => x)
+                 .ToList());
+     }
+@@ -137,8 +228,18 @@ public sealed class CompanySimulationFinanceDeterminismTests
+     private sealed record FinanceSnapshot(
+         IReadOnlyList<string> InvoiceNumbers,
+         IReadOnlyList<string> BillNumbers,
+         IReadOnlyList<string> TransactionReferences,
++        IReadOnlyList<EntityCausality> InvoiceCausality,
++        IReadOnlyList<EntityCausality> BillCausality,
++        IReadOnlyList<EntityCausality> PaymentCausality,
++        IReadOnlyList<EntityCausality> TransactionCausality,
++        IReadOnlyList<EntityCausality> BalanceCausality,
++        IReadOnlyList<AllocationCausality> AllocationCausality,
++        IReadOnlyList<SimulationEventLink> SimulationEventLinks,
+         IReadOnlyList<string> AnomalyTypes,
+         IReadOnlyList<DateTime> AlertDates);
++
++    private sealed record EntityCausality(Guid EntityId, Guid SourceSimulationEventRecordId);
++    private sealed record AllocationCausality(Guid AllocationId, Guid SourceSimulationEventRecordId, Guid PaymentSourceSimulationEventRecordId, Guid TargetSourceSimulationEventRecordId);
++    private sealed record SimulationEventLink(Guid EventId, Guid? ParentEventId, Guid? SourceEntityId, string DeterministicKey);
+ 
+     private sealed class MutableTimeProvider : TimeProvider
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationPersistenceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationPersistenceTests.cs
+@@ -19,12 +19,18 @@ public sealed class FinancePaymentAllocationPersistenceTests
+         Assert.Contains("payment_id", allocationColumns);
+         Assert.Contains("invoice_id", allocationColumns);
+         Assert.Contains("bill_id", allocationColumns);
++        Assert.Contains("source_simulation_event_record_id", allocationColumns);
++        Assert.Contains("payment_source_simulation_event_record_id", allocationColumns);
++        Assert.Contains("target_source_simulation_event_record_id", allocationColumns);
+         Assert.Contains("allocated_amount", allocationColumns);
+         Assert.Contains("currency", allocationColumns);
+ 
+         var allocationIndexes = await ReadIndexesAsync(connection, "payment_allocations");
+         Assert.Contains("IX_payment_allocations_company_id_payment_id", allocationIndexes);
+         Assert.Contains("IX_payment_allocations_company_id_invoice_id", allocationIndexes);
+         Assert.Contains("IX_payment_allocations_company_id_bill_id", allocationIndexes);
++        Assert.Contains("IX_payment_allocations_company_id_source_simulation_event_record_id", allocationIndexes);
++        Assert.Contains("IX_payment_allocations_company_id_payment_source_simulation_event_record_id", allocationIndexes);
++        Assert.Contains("IX_payment_allocations_company_id_target_source_simulation_event_record_id", allocationIndexes);
+ 
+         var invoiceColumns = await ReadColumnsAsync(connection, "finance_invoices");
+         var billColumns = await ReadColumnsAsync(connection, "finance_bills");
+@@ -148,7 +154,12 @@ public sealed class FinancePaymentAllocationPersistenceTests
+             "bank_transfer",
+             PaymentStatuses.Completed,
+             invoice.InvoiceNumber,
+             sourceSimulationEventRecordId: paymentEvent.Id);
+-        var allocation = new PaymentAllocation(Guid.NewGuid(), company.Id, payment.Id, invoice.Id, null, 100m, "USD");
++        var allocation = new PaymentAllocation(
++            Guid.NewGuid(),
++            company.Id,
++            payment.Id,
++            invoice.Id,
++            null,
++            100m,
++            "USD",
++            sourceSimulationEventRecordId: paymentEvent.Id,
++            paymentSourceSimulationEventRecordId: paymentEvent.Id,
++            targetSourceSimulationEventRecordId: invoiceEvent.Id);
+ 
+         dbContext.Companies.Add(company);
+         dbContext.SimulationEventRecords.AddRange(invoiceEvent, paymentEvent);
+@@ -171,6 +182,7 @@ public sealed class FinancePaymentAllocationPersistenceTests
+         Assert.Equal(invoiceEvent.Id, trace.TargetSourceEvent!.Id);
+         Assert.Equal(1000m, trace.PaymentSourceEvent.CashBefore);
+         Assert.Equal(100m, trace.PaymentSourceEvent.CashDelta);
+         Assert.Equal(1100m, trace.PaymentSourceEvent.CashAfter);
++        Assert.Equal(paymentEvent.Id, trace.OriginatingSourceEvent!.Id);
+     }
+ 
+     private static async Task<HashSet<string>> ReadColumnsAsync(SqliteConnection connection, string tableName)
+END_OF_PATCH

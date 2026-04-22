@@ -1,0 +1,402 @@
+diff --git a/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs b/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs
+--- a/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs
++++ b/src/VirtualCompany.Application/Finance/CompanySimulationStateContracts.cs
+@@ -35,13 +35,15 @@ public sealed record CompanySimulationDayLogDto(
+     int TransactionsGenerated,
+     int InvoicesGenerated,
+     int BillsGenerated,
++    int AssetPurchasesGenerated,
+     int RecurringExpenseInstancesGenerated,
+     int AlertsGenerated,
+     IReadOnlyList<string> InjectedAnomalies,
+     IReadOnlyList<string> Warnings,
+     IReadOnlyList<string> Errors)
+ {
+     public int GeneratedRecordCount =>
+         TransactionsGenerated +
+         InvoicesGenerated +
+         BillsGenerated +
++        AssetPurchasesGenerated +
+         RecurringExpenseInstancesGenerated;
+ }
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -463,13 +463,15 @@ public sealed record CompanySimulationFinanceGenerationDayLogDto(
+     int TransactionsCreated,
+     int InvoicesCreated,
+     int BillsCreated,
++    int AssetPurchasesCreated,
+     int RecurringExpenseInstancesCreated,
+     int AlertsCreated,
+     IReadOnlyList<string> InjectedAnomalies,
+     IReadOnlyList<string> Warnings,
+     IReadOnlyList<string> Errors)
+ {
+-    public int GeneratedRecordCount => TransactionsCreated + InvoicesCreated + BillsCreated + RecurringExpenseInstancesCreated;
++    public int GeneratedRecordCount =>
++        TransactionsCreated + InvoicesCreated + BillsCreated + AssetPurchasesCreated + RecurringExpenseInstancesCreated;
+ }
+ 
+ public sealed record CompanySimulationFinanceGenerationResultDto(
+@@ -480,6 +482,7 @@ public sealed record CompanySimulationFinanceGenerationResultDto(
+     int BillsCreated,
+     int TransactionsCreated,
+     int BalancesCreated,
++    int AssetPurchasesCreated,
+     int RecurringExpenseInstancesCreated,
+     int WorkflowTasksCreated,
+     int ApprovalRequestsCreated,
+diff --git a/src/VirtualCompany.Domain/Entities/SimulationStateEntities.cs b/src/VirtualCompany.Domain/Entities/SimulationStateEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/SimulationStateEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SimulationStateEntities.cs
+@@ -325,6 +325,7 @@ public sealed class CompanySimulationRunHistory : ICompanyOwnedEntity
+         DateTime simulatedDateUtc,
+         int transactionsCreated,
+         int invoicesCreated,
++        int assetPurchasesCreated,
+         int billsCreated,
+         int recurringExpenseInstancesCreated,
+         int alertsCreated,
+@@ -343,6 +344,7 @@ public sealed class CompanySimulationRunHistory : ICompanyOwnedEntity
+                 normalizedSimulatedDateUtc,
+                 transactionsCreated,
+                 invoicesCreated,
++                assetPurchasesCreated,
+                 billsCreated,
+                 recurringExpenseInstancesCreated,
+                 alertsCreated,
+@@ -354,6 +356,7 @@ public sealed class CompanySimulationRunHistory : ICompanyOwnedEntity
+             existing.Update(
+                 transactionsCreated,
+                 invoicesCreated,
++                assetPurchasesCreated,
+                 billsCreated,
+                 recurringExpenseInstancesCreated,
+                 alertsCreated,
+@@ -463,6 +466,7 @@ public sealed class CompanySimulationRunDayLog : ICompanyOwnedEntity
+         DateTime simulatedDateUtc,
+         int transactionsGenerated,
+         int invoicesGenerated,
++        int assetPurchasesGenerated,
+         int billsGenerated,
+         int recurringExpenseInstancesGenerated,
+         int alertsGenerated,
+@@ -476,7 +480,7 @@ public sealed class CompanySimulationRunDayLog : ICompanyOwnedEntity
+         CompanyId = companyId;
+         RunHistoryId = runHistoryId;
+         SessionId = sessionId;
+         SimulatedDateUtc = EntityTimestampNormalizer.NormalizeUtc(simulatedDateUtc, nameof(simulatedDateUtc));
+-        Update(transactionsGenerated, invoicesGenerated, billsGenerated, recurringExpenseInstancesGenerated, alertsGenerated, injectedAnomalies, warnings, errors, createdUtc);
++        Update(transactionsGenerated, invoicesGenerated, assetPurchasesGenerated, billsGenerated, recurringExpenseInstancesGenerated, alertsGenerated, injectedAnomalies, warnings, errors, createdUtc);
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
+     }
+ 
+@@ -487,6 +491,7 @@ public sealed class CompanySimulationRunDayLog : ICompanyOwnedEntity
+     public DateTime SimulatedDateUtc { get; private set; }
+     public int TransactionsGenerated { get; private set; }
+     public int InvoicesGenerated { get; private set; }
++    public int AssetPurchasesGenerated { get; private set; }
+     public int BillsGenerated { get; private set; }
+     public int RecurringExpenseInstancesGenerated { get; private set; }
+     public int AlertsGenerated { get; private set; }
+@@ -500,6 +505,7 @@ public sealed class CompanySimulationRunDayLog : ICompanyOwnedEntity
+     public void Update(
+         int transactionsGenerated,
+         int invoicesGenerated,
++        int assetPurchasesGenerated,
+         int billsGenerated,
+         int recurringExpenseInstancesGenerated,
+         int alertsGenerated,
+@@ -510,6 +516,7 @@ public sealed class CompanySimulationRunDayLog : ICompanyOwnedEntity
+     {
+         TransactionsGenerated = Math.Max(0, transactionsGenerated);
+         InvoicesGenerated = Math.Max(0, invoicesGenerated);
++        AssetPurchasesGenerated = Math.Max(0, assetPurchasesGenerated);
+         BillsGenerated = Math.Max(0, billsGenerated);
+         RecurringExpenseInstancesGenerated = Math.Max(0, recurringExpenseInstancesGenerated);
+         AlertsGenerated = Math.Max(0, alertsGenerated);
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+@@ -143,6 +143,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         var billsCreated = 0;
+         var transactionsCreated = 0;
+         var balancesCreated = 0;
++        var assetPurchasesCreated = 0;
+         var recurringExpenseInstancesCreated = 0;
+         var workflowTasksCreated = 0;
+         var approvalRequestsCreated = 0;
+@@ -176,6 +177,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             billsCreated += applied.BillsCreated;
+             transactionsCreated += applied.TransactionsCreated;
+             balancesCreated += applied.BalancesCreated;
++            assetPurchasesCreated += applied.AssetPurchasesCreated;
+             recurringExpenseInstancesCreated += applied.RecurringExpenseInstancesCreated;
+             workflowTasksCreated += applied.WorkflowTasksCreated;
+             approvalRequestsCreated += applied.ApprovalRequestsCreated;
+@@ -188,14 +190,15 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         _logger.LogInformation(
+-            "Generated deterministic finance activity for company {CompanyId}, session {SessionId}. Days={DaysProcessed}, invoices={InvoicesCreated}, bills={BillsCreated}, transactions={TransactionsCreated}, balances={BalancesCreated}, tasks={WorkflowTasksCreated}, approvals={ApprovalRequestsCreated}, alerts={AlertsCreated}.",
++            "Generated deterministic finance activity for company {CompanyId}, session {SessionId}. Days={DaysProcessed}, invoices={InvoicesCreated}, bills={BillsCreated}, assetPurchases={AssetPurchasesCreated}, transactions={TransactionsCreated}, balances={BalancesCreated}, tasks={WorkflowTasksCreated}, approvals={ApprovalRequestsCreated}, alerts={AlertsCreated}.",
+             command.CompanyId,
+             command.ActiveSessionId,
+             daysProcessed,
+             invoicesCreated,
+             billsCreated,
++            assetPurchasesCreated,
+             transactionsCreated,
+-            balancesCreated,
++            balancesCreated,
+             workflowTasksCreated,
+             approvalRequestsCreated,
+             alertsCreated);
+@@ -208,6 +211,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             billsCreated,
+             transactionsCreated,
+             balancesCreated,
++            assetPurchasesCreated,
+             recurringExpenseInstancesCreated,
+             workflowTasksCreated,
+             approvalRequestsCreated,
+@@ -231,6 +235,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         var billsCreated = 0;
+         var transactionsCreated = 0;
+         var balancesCreated = 0;
++        var assetPurchasesCreated = 0;
+         var recurringExpenseInstancesCreated = 0;
+         var workflowTasksCreated = 0;
+         var approvalRequestsCreated = 0;
+@@ -480,6 +485,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                 {
+                     auditEventsCreated++;
+                 }
++                assetPurchasesCreated++;
+ 
+                 if (string.Equals(assetFundingBehavior, FinanceAssetFundingBehaviors.Cash, StringComparison.Ordinal))
+                 {
+@@ -873,6 +879,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             invoicesCreated,
+             billsCreated,
+             transactionsCreated,
++            assetPurchasesCreated,
+             balancesCreated,
+             recurringExpenseInstancesCreated,
+             workflowTasksCreated,
+@@ -2157,6 +2164,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+         string? AnomalyTypeToken,
+         int InvoicesCreated,
+         int BillsCreated,
++        int AssetPurchasesCreated,
+         int TransactionsCreated,
+         int BalancesCreated,
+         int RecurringExpenseInstancesCreated,
+@@ -2167,14 +2175,15 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+     {
+         public CompanySimulationFinanceGenerationDayLogDto ToDayLog()
+         {
+-            var warnings = InvoicesCreated + BillsCreated + TransactionsCreated + RecurringExpenseInstancesCreated == 0
++            var warnings = InvoicesCreated + BillsCreated + AssetPurchasesCreated + TransactionsCreated + RecurringExpenseInstancesCreated == 0
+                 ? ["The simulated day completed without generating finance records."]
+                 : Array.Empty<string>();
+ 
+             return new CompanySimulationFinanceGenerationDayLogDto(
+                 DateUtc.Date,
+                 TransactionsCreated,
+                 InvoicesCreated,
++                AssetPurchasesCreated,
+                 BillsCreated,
+                 RecurringExpenseInstancesCreated,
+                 AlertsCreated,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateRepository.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateRepository.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateRepository.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateRepository.cs
+@@ -434,6 +434,7 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
+                 .ExecuteUpdateAsync(
+                     setters => setters
+                         .SetProperty(x => x.TransactionsGenerated, log.TransactionsCreated)
+                         .SetProperty(x => x.InvoicesGenerated, log.InvoicesCreated)
++                        .SetProperty(x => x.AssetPurchasesGenerated, log.AssetPurchasesCreated)
+                         .SetProperty(x => x.BillsGenerated, log.BillsCreated)
+                         .SetProperty(x => x.RecurringExpenseInstancesGenerated, log.RecurringExpenseInstancesCreated)
+                         .SetProperty(x => x.AlertsGenerated, log.AlertsCreated)
+@@ -453,11 +454,11 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
+                     INSERT INTO [company_simulation_run_day_logs]
+                         ([id], [company_id], [run_history_id], [session_id], [simulated_date_at], [transactions_generated],
+-                         [invoices_generated], [bills_generated], [recurring_expense_instances_generated], [alerts_generated],
++                         [invoices_generated], [asset_purchases_generated], [bills_generated], [recurring_expense_instances_generated], [alerts_generated],
+                          [injected_anomalies_json], [warnings_json], [errors_json], [created_at], [updated_at])
+                     VALUES
+                         ({CreateDeterministicGuid(companyId, $"run-day:{sessionId:N}:{simulatedDateUtc:yyyyMMdd}")}, {companyId}, {runHistory.Id}, {sessionId}, {simulatedDateUtc}, {Math.Max(0, log.TransactionsCreated)},
+-                         {Math.Max(0, log.InvoicesCreated)}, {Math.Max(0, log.BillsCreated)}, {Math.Max(0, log.RecurringExpenseInstancesCreated)}, {Math.Max(0, log.AlertsCreated)},
++                         {Math.Max(0, log.InvoicesCreated)}, {Math.Max(0, log.AssetPurchasesCreated)}, {Math.Max(0, log.BillsCreated)}, {Math.Max(0, log.RecurringExpenseInstancesCreated)}, {Math.Max(0, log.AlertsCreated)},
+                          {JsonSerializer.Serialize(NormalizeDistinct(log.InjectedAnomalies))}, {JsonSerializer.Serialize(NormalizeDistinct(log.Warnings))}, {JsonSerializer.Serialize(NormalizeDistinct(log.Errors))}, {observedUtc}, {observedUtc});
+                 END
+                 """,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationStateService.cs
+@@ -611,6 +611,7 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
+                 .Select(x => new CompanySimulationDayLogDto(
+                     x.SimulatedDateUtc,
+                     x.TransactionsGenerated,
+                     x.InvoicesGenerated,
++                    x.AssetPurchasesGenerated,
+                     x.BillsGenerated,
+                     x.RecurringExpenseInstancesGenerated,
+                     x.AlertsGenerated,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -3396,6 +3396,7 @@ internal sealed class CompanySimulationRunDayLogConfiguration : IEntityTypeConfi
+         builder.Property(x => x.SimulatedDateUtc).HasColumnName("simulated_date_at").IsRequired();
+         builder.Property(x => x.TransactionsGenerated).HasColumnName("transactions_generated").IsRequired();
+         builder.Property(x => x.InvoicesGenerated).HasColumnName("invoices_generated").IsRequired();
++        builder.Property(x => x.AssetPurchasesGenerated).HasColumnName("asset_purchases_generated").IsRequired();
+         builder.Property(x => x.BillsGenerated).HasColumnName("bills_generated").IsRequired();
+         builder.Property(x => x.RecurringExpenseInstancesGenerated).HasColumnName("recurring_expense_instances_generated").IsRequired();
+         builder.Property(x => x.AlertsGenerated).HasColumnName("alerts_generated").IsRequired();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421153000_AddAssetPurchaseCountsToCompanySimulationRunDayLogs.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421153000_AddAssetPurchaseCountsToCompanySimulationRunDayLogs.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260421153000_AddAssetPurchaseCountsToCompanySimulationRunDayLogs.cs
+@@ -0,0 +1,36 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddAssetPurchaseCountsToCompanySimulationRunDayLogs : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<int>(
++                name: "asset_purchases_generated",
++                table: "company_simulation_run_day_logs",
++                type: "int",
++                nullable: false,
++                defaultValue: 0);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropColumn(
++                name: "asset_purchases_generated",
++                table: "company_simulation_run_day_logs");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Shared/FinanceCompanySimulationContracts.cs b/src/VirtualCompany.Shared/FinanceCompanySimulationContracts.cs
+--- a/src/VirtualCompany.Shared/FinanceCompanySimulationContracts.cs
++++ b/src/VirtualCompany.Shared/FinanceCompanySimulationContracts.cs
+@@ -21,11 +21,13 @@ public sealed class FinanceCompanySimulationDayLogResponse
+     public int TransactionsGenerated { get; set; }
+     public int InvoicesGenerated { get; set; }
+     public int BillsGenerated { get; set; }
++    public int AssetPurchasesGenerated { get; set; }
+     public int RecurringExpenseInstancesGenerated { get; set; }
+     public int AlertsGenerated { get; set; }
+     public List<string> InjectedAnomalies { get; set; } = [];
+     public List<string> Warnings { get; set; } = [];
+     public List<string> Errors { get; set; } = [];
+-    public int GeneratedRecordCount => TransactionsGenerated + InvoicesGenerated + BillsGenerated + RecurringExpenseInstancesGenerated;
++    public int GeneratedRecordCount =>
++        TransactionsGenerated + InvoicesGenerated + BillsGenerated + AssetPurchasesGenerated + RecurringExpenseInstancesGenerated;
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/FinancePage.razor.cs
+@@ -914,6 +914,7 @@ public partial class FinancePage
+             TransactionsGenerated = dayLog.TransactionsGenerated,
+             InvoicesGenerated = dayLog.InvoicesGenerated,
+             BillsGenerated = dayLog.BillsGenerated,
++            AssetPurchasesGenerated = dayLog.AssetPurchasesGenerated,
+             RecurringExpenseInstancesGenerated = dayLog.RecurringExpenseInstancesGenerated,
+             AlertsGenerated = dayLog.AlertsGenerated,
+             InjectedAnomalies = dayLog.InjectedAnomalies.ToList(),
+diff --git a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+--- a/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
++++ b/src/VirtualCompany.Web/Services/FinanceSandboxAdminService.cs
+@@ -392,6 +392,7 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
+             TransactionsGenerated = response.TransactionsGenerated,
+             InvoicesGenerated = response.InvoicesGenerated,
+             BillsGenerated = response.BillsGenerated,
++            AssetPurchasesGenerated = response.AssetPurchasesGenerated,
+             RecurringExpenseInstancesGenerated = response.RecurringExpenseInstancesGenerated,
+             AlertsGenerated = response.AlertsGenerated,
+             InjectedAnomalies = response.InjectedAnomalies.ToArray(),
+@@ -636,12 +637,15 @@ public sealed class FinanceSandboxSimulationDayLogViewModel
+     public int TransactionsGenerated { get; set; }
+     public int InvoicesGenerated { get; set; }
+     public int BillsGenerated { get; set; }
++    public int AssetPurchasesGenerated { get; set; }
+     public int RecurringExpenseInstancesGenerated { get; set; }
+     public int AlertsGenerated { get; set; }
+     public IReadOnlyList<string> InjectedAnomalies { get; set; } = [];
+     public IReadOnlyList<string> Warnings { get; set; } = [];
+     public IReadOnlyList<string> Errors { get; set; } = [];
+-    public int GeneratedRecordCount => TransactionsGenerated + InvoicesGenerated + BillsGenerated + RecurringExpenseInstancesGenerated;
++    public int GeneratedRecordCount =>
++        TransactionsGenerated + InvoicesGenerated + BillsGenerated + AssetPurchasesGenerated + RecurringExpenseInstancesGenerated;
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationStateRepositoryTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationStateRepositoryTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanySimulationStateRepositoryTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationStateRepositoryTests.cs
+@@ -226,6 +226,7 @@ public sealed class CompanySimulationStateRepositoryTests
+                 1,
+                 2,
+                 0,
++                1,
+                 1,
+                 0,
+                 0,
+@@ -239,6 +240,7 @@ public sealed class CompanySimulationStateRepositoryTests
+                         2,
+                         1,
+                         1,
++                        1,
+                         1,
+                         1,
+                         ["duplicate_vendor_charge"],
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationStateServiceTests.cs
+@@ -296,6 +296,7 @@ public sealed class CompanySimulationStateServiceTests
+                 TransactionsCreated: 2,
+                 BalancesCreated: 0,
+                 RecurringExpenseInstancesCreated: 1,
++                AssetPurchasesCreated: 2,
+                 WorkflowTasksCreated: 0,
+                 ApprovalRequestsCreated: 0,
+                 AuditEventsCreated: 0,
+@@ -308,6 +309,7 @@ public sealed class CompanySimulationStateServiceTests
+                         TransactionsCreated: 2,
+                         InvoicesCreated: 1,
+                         BillsCreated: 1,
++                        AssetPurchasesCreated: 2,
+                         RecurringExpenseInstancesCreated: 1,
+                         AlertsCreated: 1,
+                         InjectedAnomalies: ["duplicate_vendor_charge"],
+@@ -331,7 +333,8 @@ public sealed class CompanySimulationStateServiceTests
+         Assert.Contains("duplicate_vendor_charge", run.InjectedAnomalies);
+         Assert.Contains("Manual review recommended.", run.Warnings);
+         Assert.Contains("Synthetic generation failure was captured safely.", run.Errors);
++        Assert.Equal(2, dayLog.AssetPurchasesGenerated);
+         Assert.Equal(new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc), dayLog.SimulatedDateUtc);
+-        Assert.Equal(5, dayLog.GeneratedRecordCount);
++        Assert.Equal(7, dayLog.GeneratedRecordCount);
+         Assert.Contains("duplicate_vendor_charge", dayLog.InjectedAnomalies);
+         Assert.Contains("Manual review recommended.", dayLog.Warnings);
+         Assert.Contains("Synthetic generation failure was captured safely.", dayLog.Errors);
+@@ -615,6 +618,7 @@ public sealed class CompanySimulationStateServiceTests
+                 TransactionsCreated: 0,
+                 BalancesCreated: 0,
+                 RecurringExpenseInstancesCreated: 0,
++                AssetPurchasesCreated: 0,
+                 WorkflowTasksCreated: 0,
+                 ApprovalRequestsCreated: 0,
+                 AuditEventsCreated: 0,
+END_OF_PATCH

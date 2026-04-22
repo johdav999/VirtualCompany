@@ -1,11 +1,13 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.FileProviders;
+using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 using VirtualCompany.Web;
 using VirtualCompany.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+ConfigureDevelopmentUrls(builder);
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
@@ -130,6 +132,17 @@ app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
 app.Run();
+
+static void ConfigureDevelopmentUrls(WebApplicationBuilder builder)
+{
+    var startupUrls = ResolveStartupUrls();
+    if (startupUrls.Count == 0)
+    {
+        return;
+    }
+
+    builder.WebHost.UseUrls([.. startupUrls]);
+}
 
 static Uri ResolveApiBaseAddress(string? configuredValue, bool useOfflineMode, HttpContext? httpContext)
 {
@@ -306,6 +319,145 @@ static IReadOnlyList<string> ReadApiLaunchProfileUrls()
     }
 
     return urls;
+}
+
+static IReadOnlyList<string> ResolveStartupUrls()
+{
+    var configuredUrls = ReadConfiguredStartupUrls();
+    if (configuredUrls.Count == 0)
+    {
+        return [];
+    }
+
+    var resolvedUrls = new List<string>(configuredUrls.Count);
+    foreach (var value in configuredUrls)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
+        {
+            resolvedUrls.Add(value);
+            continue;
+        }
+
+        if (!uri.IsLoopback || CanBind(uri))
+        {
+            resolvedUrls.Add(NormalizeUrl(uri));
+            continue;
+        }
+
+        var fallbackUri = AllocateAvailableLoopbackUri(uri);
+        Console.WriteLine($"Port {uri.Port} is already in use. Falling back to {fallbackUri}.");
+        resolvedUrls.Add(NormalizeUrl(fallbackUri));
+    }
+
+    return resolvedUrls;
+}
+
+static IReadOnlyList<string> ReadConfiguredStartupUrls()
+{
+    var values = new List<string>();
+    AddUrls(values, Environment.GetEnvironmentVariable("ASPNETCORE_URLS"));
+    AddUrls(values, Environment.GetEnvironmentVariable("DOTNET_URLS"));
+
+    if (values.Count > 0)
+    {
+        return values;
+    }
+
+    var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "VirtualCompany.Web", "Properties", "launchSettings.json");
+    if (!File.Exists(path))
+    {
+        return values;
+    }
+
+    try
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        if (!document.RootElement.TryGetProperty("profiles", out var profiles))
+        {
+            return values;
+        }
+
+        foreach (var profile in profiles.EnumerateObject())
+        {
+            if (!profile.Value.TryGetProperty("applicationUrl", out var applicationUrl))
+            {
+                continue;
+            }
+
+            AddUrls(values, applicationUrl.GetString());
+        }
+    }
+    catch
+    {
+        return values;
+    }
+
+    return values;
+}
+
+static void AddUrls(List<string> values, string? rawValue)
+{
+    if (string.IsNullOrWhiteSpace(rawValue))
+    {
+        return;
+    }
+
+    foreach (var url in rawValue.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        if (values.Contains(url, StringComparer.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        values.Add(url);
+    }
+}
+
+static bool CanBind(Uri uri)
+{
+    try
+    {
+        var host = string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
+            ? IPAddress.Loopback
+            : IPAddress.TryParse(uri.Host, out var parsedAddress)
+                ? parsedAddress
+                : IPAddress.Loopback;
+
+        using var listener = new TcpListener(host, uri.Port);
+        listener.Start();
+        listener.Stop();
+        return true;
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+static Uri AllocateAvailableLoopbackUri(Uri sourceUri)
+{
+    var address = string.Equals(sourceUri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
+        ? IPAddress.Loopback
+        : IPAddress.TryParse(sourceUri.Host, out var parsedAddress)
+            ? parsedAddress
+            : IPAddress.Loopback;
+
+    using var listener = new TcpListener(address, 0);
+    listener.Start();
+    var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    listener.Stop();
+
+    var builder = new UriBuilder(sourceUri)
+    {
+        Port = port
+    };
+    return builder.Uri;
+}
+
+static string NormalizeUrl(Uri uri)
+{
+    var text = uri.ToString();
+    return text.EndsWith("/", StringComparison.Ordinal) ? text : $"{text}/";
 }
 
 static bool IsReachable(Uri uri)

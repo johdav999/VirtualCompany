@@ -19,6 +19,10 @@ public sealed record GetFinanceBillAllocationsQuery(
     Guid CompanyId,
     Guid BillId);
 
+public sealed record GetFinancePaymentAllocationTraceQuery(
+    Guid CompanyId,
+    Guid AllocationId);
+
 public sealed record CreateFinancePaymentDto(
     string PaymentType,
     decimal Amount,
@@ -80,7 +84,40 @@ public sealed record FinancePaymentAllocationDto(
     decimal AllocatedAmount,
     string Currency,
     DateTime CreatedUtc,
-    DateTime UpdatedUtc);
+    DateTime UpdatedUtc,
+    Guid? SourceSimulationEventRecordId,
+    Guid? PaymentSourceSimulationEventRecordId,
+    Guid? TargetSourceSimulationEventRecordId);
+
+public sealed record FinanceSimulationEventReferenceDto(
+    Guid Id,
+    string EventType,
+    string SourceEntityType,
+    Guid? SourceEntityId,
+    string? SourceReference,
+    Guid? ParentEventId,
+    DateTime SimulationDateUtc,
+    decimal? CashBefore,
+    decimal? CashDelta,
+    decimal? CashAfter);
+
+public sealed record FinanceAllocationTargetDocumentDto(
+    string TargetDocumentType,
+    Guid Id,
+    string Reference,
+    decimal Amount,
+    string Currency,
+    string Status,
+    Guid? SourceSimulationEventRecordId);
+
+public sealed record FinancePaymentAllocationTraceDto(
+    Guid AllocationId,
+    Guid CompanyId,
+    FinancePaymentDto Payment,
+    FinanceAllocationTargetDocumentDto TargetDocument,
+    FinanceSimulationEventReferenceDto? PaymentSourceEvent,
+    FinanceSimulationEventReferenceDto? TargetSourceEvent,
+    FinanceSimulationEventReferenceDto? OriginatingSourceEvent);
 
 public sealed record FinancePaymentAllocationBackfillResultDto(
     Guid CompanyId,
@@ -96,6 +133,7 @@ public interface IFinancePaymentReadService
     Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByPaymentAsync(GetFinancePaymentAllocationsByPaymentQuery query, CancellationToken cancellationToken);
     Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByInvoiceAsync(GetFinanceInvoiceAllocationsQuery query, CancellationToken cancellationToken);
     Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByBillAsync(GetFinanceBillAllocationsQuery query, CancellationToken cancellationToken);
+    Task<FinancePaymentAllocationTraceDto?> GetAllocationTraceAsync(GetFinancePaymentAllocationTraceQuery query, CancellationToken cancellationToken);
 }
 
 public interface IFinancePaymentCommandService

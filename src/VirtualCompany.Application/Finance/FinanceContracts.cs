@@ -141,6 +141,12 @@ public sealed record GetFinanceBillsQuery(
 public sealed record GetFinanceBalancesQuery(
     Guid CompanyId,
     DateTime? AsOfUtc = null);
+
+public sealed record GetFinanceSummaryQuery(
+    Guid CompanyId,
+    DateTime? AsOfUtc = null,
+    int RecentAssetPurchaseLimit = 5,
+    bool IncludeConsistencyCheck = false);
 public sealed record GetFinanceInsightsQuery(
     Guid CompanyId,
     DateTime? AsOfUtc = null,
@@ -463,13 +469,15 @@ public sealed record CompanySimulationFinanceGenerationDayLogDto(
     int TransactionsCreated,
     int InvoicesCreated,
     int BillsCreated,
+    int AssetPurchasesCreated,
     int RecurringExpenseInstancesCreated,
     int AlertsCreated,
     IReadOnlyList<string> InjectedAnomalies,
     IReadOnlyList<string> Warnings,
     IReadOnlyList<string> Errors)
 {
-    public int GeneratedRecordCount => TransactionsCreated + InvoicesCreated + BillsCreated + RecurringExpenseInstancesCreated;
+    public int GeneratedRecordCount =>
+        TransactionsCreated + InvoicesCreated + BillsCreated + AssetPurchasesCreated + RecurringExpenseInstancesCreated;
 }
 
 public sealed record CompanySimulationFinanceGenerationResultDto(
@@ -480,6 +488,7 @@ public sealed record CompanySimulationFinanceGenerationResultDto(
     int BillsCreated,
     int TransactionsCreated,
     int BalancesCreated,
+    int AssetPurchasesCreated,
     int RecurringExpenseInstancesCreated,
     int WorkflowTasksCreated,
     int ApprovalRequestsCreated,
@@ -654,6 +663,48 @@ public sealed record FinanceAccountBalanceDto(
     decimal Amount,
     string Currency,
     DateTime AsOfUtc);
+
+public sealed record FinanceSummaryAssetPurchaseDto(
+    Guid AssetId,
+    Guid CompanyId,
+    string ReferenceNumber,
+    string Name,
+    string Category,
+    DateTime PurchasedUtc,
+    decimal Amount,
+    string Currency,
+    string FundingBehavior,
+    string FundingSettlementStatus);
+
+public sealed record FinanceSummaryConsistencyMetricDto(
+    string MetricKey,
+    decimal ExpectedValue,
+    decimal ActualValue,
+    bool IsMatch);
+
+public sealed record FinanceSummaryConsistencyResultDto(
+    Guid CompanyId,
+    DateTime AsOfUtc,
+    bool IsConsistent,
+    int SourceRecordCount,
+    IReadOnlyList<FinanceSummaryConsistencyMetricDto> Metrics);
+
+public sealed record FinanceSummaryDto(
+    Guid CompanyId,
+    DateTime AsOfUtc,
+    decimal CurrentCash,
+    decimal AccountsReceivable,
+    decimal OverdueReceivables,
+    decimal AccountsPayable,
+    decimal OverduePayables,
+    decimal MonthlyRevenue,
+    decimal MonthlyCosts,
+    string Currency,
+    bool HasFinanceData,
+    int RecentAssetPurchaseCount,
+    decimal RecentAssetPurchaseTotalAmount,
+    IReadOnlyList<FinanceSummaryAssetPurchaseDto> RecentAssetPurchases,
+    FinanceSummaryConsistencyResultDto? ConsistencyCheck = null);
 
 public sealed record FinanceMonthlyProfitAndLossDto(
     Guid CompanyId,
@@ -1834,6 +1885,13 @@ public interface IFinanceReadService
 
     Task<FinanceVarianceResultDto> GetVarianceAsync(
         GetFinanceVarianceQuery query,
+        CancellationToken cancellationToken);
+}
+
+public interface IFinanceSummaryQueryService
+{
+    Task<FinanceSummaryDto> GetAsync(
+        GetFinanceSummaryQuery query,
         CancellationToken cancellationToken);
 }
 

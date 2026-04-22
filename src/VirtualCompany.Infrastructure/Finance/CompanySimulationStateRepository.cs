@@ -434,6 +434,7 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
                     setters => setters
                         .SetProperty(x => x.TransactionsGenerated, log.TransactionsCreated)
                         .SetProperty(x => x.InvoicesGenerated, log.InvoicesCreated)
+                        .SetProperty(x => x.AssetPurchasesGenerated, log.AssetPurchasesCreated)
                         .SetProperty(x => x.BillsGenerated, log.BillsCreated)
                         .SetProperty(x => x.RecurringExpenseInstancesGenerated, log.RecurringExpenseInstancesCreated)
                         .SetProperty(x => x.AlertsGenerated, log.AlertsCreated)
@@ -459,11 +460,11 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
                 BEGIN
                     INSERT INTO [company_simulation_run_day_logs]
                         ([id], [company_id], [run_history_id], [session_id], [simulated_date_at], [transactions_generated],
-                         [invoices_generated], [bills_generated], [recurring_expense_instances_generated], [alerts_generated],
+                         [invoices_generated], [asset_purchases_generated], [bills_generated], [recurring_expense_instances_generated], [alerts_generated],
                          [injected_anomalies_json], [warnings_json], [errors_json], [created_at], [updated_at])
                     VALUES
                         ({CreateDeterministicGuid(companyId, $"run-day:{sessionId:N}:{simulatedDateUtc:yyyyMMdd}")}, {companyId}, {runHistory.Id}, {sessionId}, {simulatedDateUtc}, {Math.Max(0, log.TransactionsCreated)},
-                         {Math.Max(0, log.InvoicesCreated)}, {Math.Max(0, log.BillsCreated)}, {Math.Max(0, log.RecurringExpenseInstancesCreated)}, {Math.Max(0, log.AlertsCreated)},
+                         {Math.Max(0, log.InvoicesCreated)}, {Math.Max(0, log.AssetPurchasesCreated)}, {Math.Max(0, log.BillsCreated)}, {Math.Max(0, log.RecurringExpenseInstancesCreated)}, {Math.Max(0, log.AlertsCreated)},
                          {JsonSerializer.Serialize(NormalizeDistinct(log.InjectedAnomalies))}, {JsonSerializer.Serialize(NormalizeDistinct(log.Warnings))}, {JsonSerializer.Serialize(NormalizeDistinct(log.Errors))}, {observedUtc}, {observedUtc});
                 END
                 """,

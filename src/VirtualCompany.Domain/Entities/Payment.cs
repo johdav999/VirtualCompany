@@ -19,7 +19,8 @@ public sealed class Payment : ICompanyOwnedEntity
         string status,
         string counterpartyReference,
         DateTime? createdUtc = null,
-        DateTime? updatedUtc = null)
+        DateTime? updatedUtc = null,
+        Guid? sourceSimulationEventRecordId = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -62,6 +63,12 @@ public sealed class Payment : ICompanyOwnedEntity
         CounterpartyReference = NormalizeRequired(counterpartyReference, nameof(counterpartyReference), 200);
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? PaymentDate, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
+        if (sourceSimulationEventRecordId == Guid.Empty)
+        {
+            throw new ArgumentException("SourceSimulationEventRecordId cannot be empty.", nameof(sourceSimulationEventRecordId));
+        }
+
+        SourceSimulationEventRecordId = sourceSimulationEventRecordId;
     }
 
     public Guid Id { get; private set; }
@@ -75,6 +82,8 @@ public sealed class Payment : ICompanyOwnedEntity
     public string CounterpartyReference { get; private set; } = null!;
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
+    public Guid? SourceSimulationEventRecordId { get; private set; }
+    public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
     public Company Company { get; private set; } = null!;
     public ICollection<PaymentAllocation> Allocations { get; } = new List<PaymentAllocation>();
     public ICollection<PaymentCashLedgerLink> CashLedgerLinks { get; } = new List<PaymentCashLedgerLink>();

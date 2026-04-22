@@ -625,6 +625,67 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             .ContinueWith(task => (IReadOnlyList<FinancePaymentAllocationDto>)task.Result.Select(MapPaymentAllocation).ToList(), cancellationToken);
     }
 
+    public async Task<FinancePaymentAllocationTraceDto?> GetAllocationTraceAsync(
+        GetFinancePaymentAllocationTraceQuery query,
+        CancellationToken cancellationToken)
+    {
+        EnsureTenant(query.CompanyId);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
+        if (query.AllocationId == Guid.Empty)
+        {
+            throw new ArgumentException("Allocation id is required.", nameof(query));
+        }
+
+        var allocation = await _dbContext.PaymentAllocations
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AsSingleQuery()
+            .Include(x => x.SourceSimulationEventRecord)
+            .Include(x => x.PaymentSourceSimulationEventRecord)
+            .Include(x => x.TargetSourceSimulationEventRecord)
+            .Include(x => x.Payment)
+                .ThenInclude(x => x.SourceSimulationEventRecord)
+            .Include(x => x.Invoice)
+                .ThenInclude(x => x!.SourceSimulationEventRecord)
+            .Include(x => x.Bill)
+                .ThenInclude(x => x!.SourceSimulationEventRecord)
+            .SingleOrDefaultAsync(
+                x => x.CompanyId == query.CompanyId && x.Id == query.AllocationId,
+                cancellationToken);
+
+        if (allocation is null)
+        {
+            return null;
+        }
+
+        var targetDocument = allocation.Invoice is not null
+            ? new FinanceAllocationTargetDocumentDto(
+                "invoice",
+                allocation.Invoice.Id,
+                allocation.Invoice.InvoiceNumber,
+                allocation.Invoice.Amount,
+                allocation.Invoice.Currency,
+                allocation.Invoice.Status,
+                allocation.Invoice.SourceSimulationEventRecordId)
+            : new FinanceAllocationTargetDocumentDto(
+                "bill",
+                allocation.Bill!.Id,
+                allocation.Bill.BillNumber,
+                allocation.Bill.Amount,
+                allocation.Bill.Currency,
+                allocation.Bill.Status,
+                allocation.Bill.SourceSimulationEventRecordId);
+
+        return new FinancePaymentAllocationTraceDto(
+            allocation.Id,
+            allocation.CompanyId,
+            MapPayment(allocation.Payment),
+            targetDocument,
+            MapSimulationEventReference(allocation.PaymentSourceSimulationEventRecord ?? allocation.Payment.SourceSimulationEventRecord),
+            MapSimulationEventReference(allocation.TargetSourceSimulationEventRecord ?? allocation.Invoice?.SourceSimulationEventRecord ?? allocation.Bill?.SourceSimulationEventRecord),
+            MapSimulationEventReference(allocation.SourceSimulationEventRecord ?? allocation.PaymentSourceSimulationEventRecord ?? allocation.Payment.SourceSimulationEventRecord));
+    }
+
     public async Task<IReadOnlyList<FinanceTransactionDto>> GetTransactionsAsync(
         GetFinanceTransactionsQuery query,
         CancellationToken cancellationToken)
@@ -2200,7 +2261,10 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             allocation.AllocatedAmount,
             allocation.Currency,
             allocation.CreatedUtc,
-            allocation.UpdatedUtc);
+            allocation.UpdatedUtc,
+            allocation.SourceSimulationEventRecordId,
+            allocation.PaymentSourceSimulationEventRecordId,
+            allocation.TargetSourceSimulationEventRecordId);
 
     private async Task<ContributionRule> LoadAccountContributionRuleAsync(
         Guid companyId,
@@ -3575,6 +3639,24 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             row.DefaultAccountMapping,
             row.CreatedUtc,
             row.UpdatedUtc);
+
+    private static FinanceSimulationEventReferenceDto? MapSimulationEventReference(SimulationEventRecord? record) =>
+        record is null
+            ? null
+            : new FinanceSimulationEventReferenceDto(
+                record.Id,
+                record.EventType,
+                record.SourceEntityType,
+                record.SourceEntityId,
+                record.SourceReference,
+                record.ParentEventId,
+                record.SimulationDateUtc,
+                record.CashBefore,
+                record.CashDelta,
+                record.CashAfter);
+
+    private static FinancePaymentDto MapPayment(Payment payment) =>
+        new(payment.Id, payment.CompanyId, payment.PaymentType, payment.Amount, payment.Currency, payment.PaymentDate, payment.Method, payment.Status, payment.CounterpartyReference, payment.CreatedUtc, payment.UpdatedUtc);
 
     private static string NormalizeCounterpartyType(string value) =>
         FinanceCounterparty.NormalizeCounterpartyKind(value);

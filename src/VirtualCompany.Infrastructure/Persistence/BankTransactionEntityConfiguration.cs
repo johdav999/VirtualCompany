@@ -39,6 +39,11 @@ internal sealed class BankTransactionEntityConfiguration : IEntityTypeConfigurat
     public void Configure(EntityTypeBuilder<BankTransaction> builder)
     {
         builder.ToTable("bank_transactions");
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_bank_transactions_status", BankTransactionReconciliationStatuses.BuildCheckConstraintSql("status"));
+            t.HasCheckConstraint("CK_bank_transactions_reconciled_amount", "reconciled_amount >= 0 AND reconciled_amount <= ABS(amount)");
+        });
 
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -56,9 +61,6 @@ internal sealed class BankTransactionEntityConfiguration : IEntityTypeConfigurat
         builder.Property(x => x.ImportSource).HasColumnName("import_source").HasMaxLength(64);
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
-
-        builder.HasCheckConstraint("CK_bank_transactions_status", BankTransactionReconciliationStatuses.BuildCheckConstraintSql("status"));
-        builder.HasCheckConstraint("CK_bank_transactions_reconciled_amount", "reconciled_amount >= 0 AND reconciled_amount <= ABS(amount)");
 
         builder.HasIndex(x => x.CompanyId);
         builder.HasIndex(x => new { x.CompanyId, x.BankAccountId, x.BookingDate });
@@ -82,6 +84,10 @@ internal sealed class BankTransactionPaymentLinkEntityConfiguration : IEntityTyp
     public void Configure(EntityTypeBuilder<BankTransactionPaymentLink> builder)
     {
         builder.ToTable("bank_transaction_payment_links");
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_bank_transaction_payment_links_allocated_amount", "allocated_amount > 0");
+        });
 
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -91,8 +97,6 @@ internal sealed class BankTransactionPaymentLinkEntityConfiguration : IEntityTyp
         builder.Property(x => x.AllocatedAmount).HasColumnName("allocated_amount").HasColumnType("decimal(18,2)").IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
-
-        builder.HasCheckConstraint("CK_bank_transaction_payment_links_allocated_amount", "allocated_amount > 0");
 
         builder.HasIndex(x => new { x.CompanyId, x.BankTransactionId });
         builder.HasIndex(x => new { x.CompanyId, x.PaymentId });

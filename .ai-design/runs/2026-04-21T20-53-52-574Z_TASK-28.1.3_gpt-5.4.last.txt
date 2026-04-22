@@ -1,0 +1,549 @@
+diff --git a/src/VirtualCompany.Domain/Entities/SimulationCashDeltaRecord.cs b/src/VirtualCompany.Domain/Entities/SimulationCashDeltaRecord.cs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/SimulationCashDeltaRecord.cs
+@@ -0,0 +1,96 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class SimulationCashDeltaRecord : ICompanyOwnedEntity
++{
++    private SimulationCashDeltaRecord()
++    {
++    }
++
++    public SimulationCashDeltaRecord(
++        Guid id,
++        Guid companyId,
++        Guid simulationEventRecordId,
++        DateTime simulationDateUtc,
++        string sourceEntityType,
++        Guid? sourceEntityId,
++        decimal cashBefore,
++        decimal cashDelta,
++        decimal cashAfter,
++        DateTime? createdUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (simulationEventRecordId == Guid.Empty)
++        {
++            throw new ArgumentException("SimulationEventRecordId is required.", nameof(simulationEventRecordId));
++        }
++
++        if (sourceEntityId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceEntityId cannot be empty.", nameof(sourceEntityId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        SimulationEventRecordId = simulationEventRecordId;
++        SimulationDateUtc = EntityTimestampNormalizer.NormalizeUtc(simulationDateUtc, nameof(simulationDateUtc));
++        SourceEntityType = NormalizeRequired(sourceEntityType, nameof(sourceEntityType), 64).ToLowerInvariant();
++        SourceEntityId = sourceEntityId;
++        CashBefore = NormalizeMoney(cashBefore);
++        CashDelta = NormalizeMoney(cashDelta);
++        CashAfter = NormalizeMoney(cashAfter);
++        if (NormalizeMoney(CashBefore + CashDelta) != CashAfter)
++        {
++            throw new ArgumentException("CashAfter must equal CashBefore plus CashDelta.");
++        }
++
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? SimulationDateUtc, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid SimulationEventRecordId { get; private set; }
++    public DateTime SimulationDateUtc { get; private set; }
++    public string SourceEntityType { get; private set; } = null!;
++    public Guid? SourceEntityId { get; private set; }
++    public decimal CashBefore { get; private set; }
++    public decimal CashDelta { get; private set; }
++    public decimal CashAfter { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public SimulationEventRecord SimulationEventRecord { get; private set; } = null!;
++
++    private static decimal NormalizeMoney(decimal value) =>
++        decimal.Round(value, 2, MidpointRounding.AwayFromZero);
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+index 2222222..3333333 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+@@ -427,6 +427,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                     payment.TransactionUtc);
+                 _dbContext.SimulationEventRecords.Add(paymentEvent);
+             }
++            await EnsureSimulationCashDeltaRecordAsync(company.Id, paymentEvent, cancellationToken);
+ 
+             var simulatedPayment = await _dbContext.Payments
+                 .IgnoreQueryFilters()
+@@ -792,6 +793,36 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId));
+     }
+ 
++    private async Task EnsureSimulationCashDeltaRecordAsync(
++        Guid companyId,
++        SimulationEventRecord simulationEventRecord,
++        CancellationToken cancellationToken)
++    {
++        if (!simulationEventRecord.CashBefore.HasValue ||
++            !simulationEventRecord.CashDelta.HasValue ||
++            !simulationEventRecord.CashAfter.HasValue)
++        {
++            return;
++        }
++
++        var exists = await _dbContext.SimulationCashDeltaRecords
++            .IgnoreQueryFilters()
++            .AnyAsync(
++                x => x.CompanyId == companyId && x.SimulationEventRecordId == simulationEventRecord.Id,
++                cancellationToken);
++        if (exists)
++        {
++            return;
++        }
++
++        _dbContext.SimulationCashDeltaRecords.Add(new SimulationCashDeltaRecord(
++            FinanceSimulationDeterministicIdentity.CreateCashDeltaRecordId(companyId, simulationEventRecord.Id),
++            companyId,
++            simulationEventRecord.Id,
++            simulationEventRecord.SimulationDateUtc,
++            simulationEventRecord.SourceEntityType,
++            simulationEventRecord.SourceEntityId,
++            simulationEventRecord.CashBefore.Value,
++            simulationEventRecord.CashDelta.Value,
++            simulationEventRecord.CashAfter.Value,
++            simulationEventRecord.CreatedUtc));
++    }
++
+@@ -1418,14 +1449,8 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+             _ => $"Generated anomaly signal for {transaction.ExternalReference}."
+         };
+ 
+-    private static Guid DeterministicGuid(Guid companyId, string scope)
+-    {
+-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(FormattableString.Invariant($"{companyId:N}:{scope}")));
+-        Span<byte> guidBytes = stackalloc byte[16];
+-        bytes.AsSpan(0, 16).CopyTo(guidBytes);
+-        guidBytes[7] = (byte)((guidBytes[7] & 0x0F) | 0x40);
+-        guidBytes[8] = (byte)((guidBytes[8] & 0x3F) | 0x80);
+-        return new Guid(guidBytes);
+-    }
++    private static Guid DeterministicGuid(Guid companyId, string scope) =>
++        FinanceSimulationDeterministicIdentity.CreateScopedGuid(companyId, scope);
+ 
+     private static string BuildDayCorrelationId(Guid companyId, DateTime simulatedDateUtc) =>
+         $"finance-sim:{companyId:N}:day:{simulatedDateUtc:yyyyMMdd}";
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceSimulationDeterministicIdentity.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceSimulationDeterministicIdentity.cs
+new file mode 100644
+index 0000000..4444444
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceSimulationDeterministicIdentity.cs
+@@ -0,0 +1,27 @@
++using System.Security.Cryptography;
++using System.Text;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public static class FinanceSimulationDeterministicIdentity
++{
++    public static Guid CreateScopedGuid(Guid companyId, string scope)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (string.IsNullOrWhiteSpace(scope))
++        {
++            throw new ArgumentException("Scope is required.", nameof(scope));
++        }
++
++        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(FormattableString.Invariant($"{companyId:N}:{scope.Trim()}")));
++        Span<byte> guidBytes = stackalloc byte[16];
++        bytes.AsSpan(0, 16).CopyTo(guidBytes);
++        guidBytes[7] = (byte)((guidBytes[7] & 0x0F) | 0x40);
++        guidBytes[8] = (byte)((guidBytes[8] & 0x3F) | 0x80);
++        return new Guid(guidBytes);
++    }
++
++    public static Guid CreateCashDeltaRecordId(Guid companyId, Guid simulationEventRecordId) =>
++        CreateScopedGuid(companyId, $"simulation-cash-delta:{simulationEventRecordId:N}");
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423143000_AddSimulationCashDeltaRecords.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423143000_AddSimulationCashDeltaRecords.cs
+new file mode 100644
+index 0000000..5555555
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423143000_AddSimulationCashDeltaRecords.cs
+@@ -0,0 +1,127 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddSimulationCashDeltaRecords : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var decimalType = isPostgres ? "numeric(18,2)" : "decimal(18,2)";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++
++            migrationBuilder.CreateTable(
++                name: "simulation_cash_delta_records",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    simulation_event_record_id = table.Column<Guid>(type: guidType, nullable: false),
++                    simulation_date_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    source_entity_type = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    source_entity_id = table.Column<Guid>(type: guidType, nullable: true),
++                    cash_before = table.Column<decimal>(type: decimalType, nullable: false),
++                    cash_delta = table.Column<decimal>(type: decimalType, nullable: false),
++                    cash_after = table.Column<decimal>(type: decimalType, nullable: false),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_simulation_cash_delta_records", x => x.id);
++                    table.UniqueConstraint("AK_simulation_cash_delta_records_company_id_id", x => new { x.company_id, x.id });
++                    table.CheckConstraint(
++                        "CK_simulation_cash_delta_records_cash_snapshot",
++                        "cash_after = cash_before + cash_delta");
++                    table.ForeignKey(
++                        name: "FK_simulation_cash_delta_records_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_simulation_cash_delta_records_simulation_event_records_company_id_simulation_event_record_id",
++                        columns: x => new { x.company_id, x.simulation_event_record_id },
++                        principalTable: "simulation_event_records",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_simulation_cash_delta_records_company_id_simulation_date_at",
++                table: "simulation_cash_delta_records",
++                columns: new[] { "company_id", "simulation_date_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_simulation_cash_delta_records_company_id_simulation_event_record_id",
++                table: "simulation_cash_delta_records",
++                columns: new[] { "company_id", "simulation_event_record_id" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_simulation_cash_delta_records_company_id_source_entity_type_source_entity_id",
++                table: "simulation_cash_delta_records",
++                columns: new[] { "company_id", "source_entity_type", "source_entity_id" });
++
++            migrationBuilder.Sql(
++                """
++                INSERT INTO simulation_cash_delta_records (
++                    id,
++                    company_id,
++                    simulation_event_record_id,
++                    simulation_date_at,
++                    source_entity_type,
++                    source_entity_id,
++                    cash_before,
++                    cash_delta,
++                    cash_after,
++                    created_at
++                )
++                SELECT
++                    s.id,
++                    s.company_id,
++                    s.id,
++                    s.simulation_date_at,
++                    s.source_entity_type,
++                    s.source_entity_id,
++                    s.cash_before,
++                    s.cash_delta,
++                    s.cash_after,
++                    s.created_at
++                FROM simulation_event_records s
++                WHERE s.cash_before IS NOT NULL
++                  AND s.cash_delta IS NOT NULL
++                  AND s.cash_after IS NOT NULL
++                  AND NOT EXISTS (
++                      SELECT 1
++                      FROM simulation_cash_delta_records d
++                      WHERE d.company_id = s.company_id
++                        AND d.simulation_event_record_id = s.id
++                  );
++                """);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "simulation_cash_delta_records");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SimulationCashDeltaRecordEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/SimulationCashDeltaRecordEntityConfiguration.cs
+new file mode 100644
+index 0000000..6666666
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/SimulationCashDeltaRecordEntityConfiguration.cs
+@@ -0,0 +1,36 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class SimulationCashDeltaRecordEntityConfiguration : IEntityTypeConfiguration<SimulationCashDeltaRecord>
++{
++    public void Configure(EntityTypeBuilder<SimulationCashDeltaRecord> builder)
++    {
++        builder.ToTable("simulation_cash_delta_records");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SimulationEventRecordId).HasColumnName("simulation_event_record_id").IsRequired();
++        builder.Property(x => x.SimulationDateUtc).HasColumnName("simulation_date_at").IsRequired();
++        builder.Property(x => x.SourceEntityType).HasColumnName("source_entity_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.SourceEntityId).HasColumnName("source_entity_id");
++        builder.Property(x => x.CashBefore).HasColumnName("cash_before").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.CashDelta).HasColumnName("cash_delta").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.CashAfter).HasColumnName("cash_after").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasCheckConstraint("CK_simulation_cash_delta_records_cash_snapshot", "cash_after = cash_before + cash_delta");
++        builder.HasIndex(x => new { x.CompanyId, x.SimulationDateUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.SimulationEventRecordId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.SourceEntityType, x.SourceEntityId });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.SimulationEventRecord)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.SimulationEventRecordId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 7777777..8888888 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -110,6 +110,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
+     public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
+     public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
++    public DbSet<SimulationCashDeltaRecord> SimulationCashDeltaRecords => Set<SimulationCashDeltaRecord>();
+     public DbSet<SimulationEventRecord> SimulationEventRecords => Set<SimulationEventRecord>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+@@ -274,6 +275,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is TrialBalanceSnapshot ||
+                 entry.Entity is FinancialStatementSnapshot ||
+                 entry.Entity is FinancialStatementSnapshotLine)
++                entry.Entity is SimulationCashDeltaRecord ||
+             .Select(entry =>
+             {
+                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
+@@ -438,6 +440,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<CompanySimulationRunDayLog>()
+             .HasQueryFilter(log =>
+                 CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<SimulationCashDeltaRecord>()
++            .HasQueryFilter(record =>
++                CurrentCompanyId.HasValue && record.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<SimulationEventRecord>()
+             .HasQueryFilter(record =>
+                 CurrentCompanyId.HasValue && record.CompanyId == CurrentCompanyId.Value);
+diff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs
+index 9999999..aaaaaaa 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceDeterminismTests.cs
+@@ -61,6 +61,7 @@ public sealed class CompanySimulationFinanceDeterminismTests
+         Assert.Equal(first.TransactionCausality, second.TransactionCausality);
+         Assert.Equal(first.BalanceCausality, second.BalanceCausality);
+         Assert.Equal(first.AllocationCausality, second.AllocationCausality);
++        Assert.Equal(first.CashDeltaRecords, second.CashDeltaRecords);
+         Assert.Equal(first.SimulationEventLinks, second.SimulationEventLinks);
+ 
+         Assert.NotEmpty(first.InvoiceCausality);
+@@ -70,10 +71,34 @@ public sealed class CompanySimulationFinanceDeterminismTests
+         Assert.NotEmpty(first.TransactionCausality);
+         Assert.NotEmpty(first.BalanceCausality);
+         Assert.NotEmpty(first.AllocationCausality);
++        Assert.NotEmpty(first.CashDeltaRecords);
+ 
+         Assert.All(first.InvoiceCausality, x => Assert.NotEqual(Guid.Empty, x.SourceSimulationEventRecordId));
+         Assert.All(first.BillCausality, x => Assert.NotEqual(Guid.Empty, x.SourceSimulationEventRecordId));
+         Assert.All(first.PaymentCausality, x => Assert.NotEqual(Guid.Empty, x.SourceSimulationEventRecordId));
+         Assert.All(first.TransactionCausality, x => Assert.NotEqual(Guid.Empty, x.SourceSimulationEventRecordId));
+         Assert.All(first.BalanceCausality, x => Assert.NotEqual(Guid.Empty, x.SourceSimulationEventRecordId));
+         Assert.All(first.AllocationCausality, x => Assert.NotEqual(Guid.Empty, x.SourceSimulationEventRecordId));
++        Assert.All(first.CashDeltaRecords, x =>
++        {
++            Assert.NotEqual(Guid.Empty, x.SimulationEventRecordId);
++            Assert.Equal(decimal.Round(x.CashBefore + x.CashDelta, 2, MidpointRounding.AwayFromZero), x.CashAfter);
++        });
++    }
++
++    [Fact]
++    public async Task Generated_cash_movements_persist_cash_delta_records_with_company_and_simulation_date()
++    {
++        var snapshot = await RunSnapshotAsync(
++            Guid.Parse("d77fd389-f7c9-42c4-8938-fd7cd4011d68"),
++            73,
++            """{"financeGeneration":{"anomalyCadenceDays":3,"anomalyOffsetDays":1}}""");
++
++        Assert.NotEmpty(snapshot.CashDeltaRecords);
++        Assert.All(snapshot.CashDeltaRecords, record =>
++        {
++            Assert.NotEqual(Guid.Empty, record.Id);
++            Assert.NotEqual(Guid.Empty, record.SimulationEventRecordId);
++            Assert.NotEqual(default, record.SimulationDateUtc);
++            Assert.Equal(decimal.Round(record.CashBefore + record.CashDelta, 2, MidpointRounding.AwayFromZero), record.CashAfter);
++        });
++
++        Assert.Equal(snapshot.CashDeltaRecords.Count, snapshot.SimulationEventLinks.Count(x => x.HasCashSnapshot));
+     }
+ 
+     private static async Task<FinanceSnapshot> RunSnapshotAsync(Guid companyId, int seed, string configurationJson)
+@@ -182,6 +207,18 @@ public sealed class CompanySimulationFinanceDeterminismTests
+                 x.PaymentSourceSimulationEventRecordId ?? Guid.Empty,
+                 x.TargetSourceSimulationEventRecordId ?? Guid.Empty))
+             .ToListAsync();
++        var cashDeltaRecords = await dbContext.SimulationCashDeltaRecords
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.SimulationDateUtc)
++            .ThenBy(x => x.SimulationEventRecordId)
++            .Select(x => new CashDeltaSnapshot(
++                x.Id,
++                x.SimulationEventRecordId,
++                x.SimulationDateUtc,
++                x.CashBefore,
++                x.CashDelta,
++                x.CashAfter))
++            .ToListAsync();
+         var simulationEventLinks = await dbContext.SimulationEventRecords
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+@@ -191,7 +228,8 @@ public sealed class CompanySimulationFinanceDeterminismTests
+             .Select(x => new SimulationEventLink(
+                 x.Id,
+                 x.ParentEventId,
+                 x.SourceEntityId,
+-                x.DeterministicKey))
++                x.DeterministicKey,
++                x.CashBefore.HasValue && x.CashDelta.HasValue && x.CashAfter.HasValue))
+             .ToListAsync();
+         var alerts = await dbContext.Alerts
+             .IgnoreQueryFilters()
+@@ -208,6 +246,7 @@ public sealed class CompanySimulationFinanceDeterminismTests
+             transactionCausality,
+             balanceCausality,
+             allocationCausality,
++            cashDeltaRecords,
+             simulationEventLinks,
+             alerts
+                 .Select(x => x.Metadata["anomalyType"]?.GetValue<string>() ?? string.Empty)
+@@ -225,6 +264,7 @@ public sealed class CompanySimulationFinanceDeterminismTests
+         IReadOnlyList<EntityCausality> TransactionCausality,
+         IReadOnlyList<EntityCausality> BalanceCausality,
+         IReadOnlyList<AllocationCausality> AllocationCausality,
++        IReadOnlyList<CashDeltaSnapshot> CashDeltaRecords,
+         IReadOnlyList<SimulationEventLink> SimulationEventLinks,
+         IReadOnlyList<string> AnomalyTypes,
+         IReadOnlyList<DateTime> AlertDates);
+@@ -232,8 +272,9 @@ public sealed class CompanySimulationFinanceDeterminismTests
+     private sealed record EntityCausality(Guid EntityId, Guid SourceSimulationEventRecordId);
+     private sealed record AllocationCausality(Guid AllocationId, Guid SourceSimulationEventRecordId, Guid PaymentSourceSimulationEventRecordId, Guid TargetSourceSimulationEventRecordId);
+-    private sealed record SimulationEventLink(Guid EventId, Guid? ParentEventId, Guid? SourceEntityId, string DeterministicKey);
++    private sealed record CashDeltaSnapshot(Guid Id, Guid SimulationEventRecordId, DateTime SimulationDateUtc, decimal CashBefore, decimal CashDelta, decimal CashAfter);
++    private sealed record SimulationEventLink(Guid EventId, Guid? ParentEventId, Guid? SourceEntityId, string DeterministicKey, bool HasCashSnapshot);
+ 
+     private sealed class MutableTimeProvider : TimeProvider
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationPersistenceTests.cs
+index bbbbbbb..ccccccc 100644
+--- a/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePaymentAllocationPersistenceTests.cs
+@@ -34,6 +34,20 @@ public sealed class FinancePaymentAllocationPersistenceTests
+         Assert.Contains("settlement_status", invoiceColumns);
+         Assert.Contains("settlement_status", billColumns);
++
++        var cashDeltaColumns = await ReadColumnsAsync(connection, "simulation_cash_delta_records");
++        Assert.Contains("company_id", cashDeltaColumns);
++        Assert.Contains("simulation_event_record_id", cashDeltaColumns);
++        Assert.Contains("simulation_date_at", cashDeltaColumns);
++        Assert.Contains("source_entity_type", cashDeltaColumns);
++        Assert.Contains("source_entity_id", cashDeltaColumns);
++        Assert.Contains("cash_before", cashDeltaColumns);
++        Assert.Contains("cash_delta", cashDeltaColumns);
++        Assert.Contains("cash_after", cashDeltaColumns);
++
++        var cashDeltaIndexes = await ReadIndexesAsync(connection, "simulation_cash_delta_records");
++        Assert.Contains("IX_simulation_cash_delta_records_company_id_simulation_date_at", cashDeltaIndexes);
++        Assert.Contains("IX_simulation_cash_delta_records_company_id_simulation_event_record_id", cashDeltaIndexes);
++        Assert.Contains("IX_simulation_cash_delta_records_company_id_source_entity_type_source_entity_id", cashDeltaIndexes);
+     }
+ 
+     [Fact]
+diff --git a/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs b/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs
+index ddddddd..eeeeeee 100644
+--- a/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SimulationEventDeterministicIdentityTests.cs
+@@ -38,6 +38,19 @@ public sealed class SimulationEventDeterministicIdentityTests
+         Assert.NotEqual(baseline, changedSequence);
+     }
+ 
++    [Fact]
++    public void Deterministic_scoped_guid_generation_is_stable_for_replay_artifacts()
++    {
++        var companyId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
++
++        var left = FinanceSimulationDeterministicIdentity.CreateCashDeltaRecordId(
++            companyId,
++            Guid.Parse("11111111-2222-3333-4444-555555555555"));
++        var right = FinanceSimulationDeterministicIdentity.CreateCashDeltaRecordId(
++            companyId,
++            Guid.Parse("11111111-2222-3333-4444-555555555555"));
++
++        Assert.Equal(left, right);
++    }
++
+     [Fact]
+     public void Cash_snapshot_requires_before_delta_and_after_to_match()
+     {
+END_OF_PATCH

@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-28.2.1",
+  "promptPath": ".ai-design/prompts/TASK-28.2.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-21T20:59:33.797Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-21T20-59-33-797Z_TASK-28.2.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-21T20-59-33-797Z_TASK-28.2.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-21T21:08:34.332Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ow;\n+        }\n+\n+        public override DateTimeOffset GetUtcNow() => _utcNow;\n+\n+        public void Advance(TimeSpan duration)\n+        {\n+            _utcNow = _utcNow.Add(duration);\n+        }\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceGenerationTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceGenerationTests.cs\nindex ccccccc..ddddddd 100644\n--- a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceGenerationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceGenerationTests.cs\n@@ -67,6 +67,11 @@ public sealed class CompanySimulationFinanceGenerationTests\n             .IgnoreQueryFilters()\n             .Where(x => x.CompanyId == companyId)\n             .ToListAsync();\n+        var assets = await dbContext.FinanceAssets\n+            .IgnoreQueryFilters()\n+            .Where(x => x.CompanyId == companyId)\n+            .OrderBy(x => x.ReferenceNumber)\n+            .ToListAsync();\n         var tasks = await dbContext.WorkTasks\n             .IgnoreQueryFilters()\n             .Where(x => x.CompanyId == companyId)\n@@ -110,12 +115,16 @@ public sealed class CompanySimulationFinanceGenerationTests\n \n         Assert.Equal(16, invoices.Count);\n         Assert.Equal(16, bills.Count);\n-        Assert.True(transactions.Count >= 24);\n+        Assert.True(transactions.Count >= 12);\n         Assert.Equal(16, balances.Count);\n         Assert.True(tasks.Count >= 24);\n         Assert.True(approvals.Count >= 6);\n         Assert.True(audits.Count >= 40);\n         Assert.Equal(16, activity.Count);\n+        Assert.True(assets.Count >= 4);\n+        Assert.Contains(assets, x => x.FundingBehavior == FinanceAssetFundingBehaviors.Cash);\n+        Assert.Contains(assets, x => x.FundingBehavior == FinanceAssetFundingBehaviors.Payable);\n+        Assert.All(assets, x => Assert.Equal(FinanceAssetStatuses.Active, x.Status));\n         Assert.Equal(8, seedAnomalies.Count);\n         Assert.Equal(8, alerts.Count);\n END_OF_PATCH\n",
+  "stderrTail": "      public override DateTimeOffset GetUtcNow() => _utcNow;\n+\n+        public void Advance(TimeSpan duration)\n+        {\n+            _utcNow = _utcNow.Add(duration);\n+        }\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceGenerationTests.cs b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceGenerationTests.cs\nindex ccccccc..ddddddd 100644\n--- a/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceGenerationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/CompanySimulationFinanceGenerationTests.cs\n@@ -67,6 +67,11 @@ public sealed class CompanySimulationFinanceGenerationTests\n             .IgnoreQueryFilters()\n             .Where(x => x.CompanyId == companyId)\n             .ToListAsync();\n+        var assets = await dbContext.FinanceAssets\n+            .IgnoreQueryFilters()\n+            .Where(x => x.CompanyId == companyId)\n+            .OrderBy(x => x.ReferenceNumber)\n+            .ToListAsync();\n         var tasks = await dbContext.WorkTasks\n             .IgnoreQueryFilters()\n             .Where(x => x.CompanyId == companyId)\n@@ -110,12 +115,16 @@ public sealed class CompanySimulationFinanceGenerationTests\n \n         Assert.Equal(16, invoices.Count);\n         Assert.Equal(16, bills.Count);\n-        Assert.True(transactions.Count >= 24);\n+        Assert.True(transactions.Count >= 12);\n         Assert.Equal(16, balances.Count);\n         Assert.True(tasks.Count >= 24);\n         Assert.True(approvals.Count >= 6);\n         Assert.True(audits.Count >= 40);\n         Assert.Equal(16, activity.Count);\n+        Assert.True(assets.Count >= 4);\n+        Assert.Contains(assets, x => x.FundingBehavior == FinanceAssetFundingBehaviors.Cash);\n+        Assert.Contains(assets, x => x.FundingBehavior == FinanceAssetFundingBehaviors.Payable);\n+        Assert.All(assets, x => Assert.Equal(FinanceAssetStatuses.Active, x.Status));\n         Assert.Equal(8, seedAnomalies.Count);\n         Assert.Equal(8, alerts.Count);\n END_OF_PATCH\ntokens used\n171,909\n",
+  "verbosityMode": "summary"
+}

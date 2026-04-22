@@ -91,6 +91,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();
     public DbSet<FinanceCounterparty> FinanceCounterparties => Set<FinanceCounterparty>();
     public DbSet<FinanceBill> FinanceBills => Set<FinanceBill>();
+    public DbSet<FinanceAsset> FinanceAssets => Set<FinanceAsset>();
     public DbSet<FinanceBalance> FinanceBalances => Set<FinanceBalance>();
     public DbSet<FinancePolicyConfiguration> FinancePolicyConfigurations => Set<FinancePolicyConfiguration>();
     public DbSet<FinanceSeedAnomaly> FinanceSeedAnomalies => Set<FinanceSeedAnomaly>();
@@ -109,6 +110,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
     public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
     public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
+    public DbSet<SimulationCashDeltaRecord> SimulationCashDeltaRecords => Set<SimulationCashDeltaRecord>();
+    public DbSet<SimulationEventRecord> SimulationEventRecords => Set<SimulationEventRecord>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
 
@@ -218,6 +221,7 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is FinanceTransaction ||
                 entry.Entity is FinanceInvoice ||
                 entry.Entity is FinanceBill ||
+                entry.Entity is FinanceAsset ||
                 entry.Entity is FinanceBalance ||
                 entry.Entity is FinanceCounterparty ||
                 entry.Entity is FinancePolicyConfiguration ||
@@ -229,7 +233,9 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is LedgerEntryLine ||
                 entry.Entity is TrialBalanceSnapshot ||
                 entry.Entity is FinancialStatementSnapshot ||
-                entry.Entity is FinancialStatementSnapshotLine)
+                entry.Entity is FinancialStatementSnapshotLine ||
+                entry.Entity is SimulationCashDeltaRecord ||
+                entry.Entity is SimulationEventRecord)
             .Select(entry =>
             {
                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
@@ -424,6 +430,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinanceBill>()
             .HasQueryFilter(bill =>
                 CurrentCompanyId.HasValue && bill.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceAsset>()
+            .HasQueryFilter(asset =>
+                CurrentCompanyId.HasValue && asset.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<FinanceBalance>()
             .HasQueryFilter(balance =>
                 CurrentCompanyId.HasValue && balance.CompanyId == CurrentCompanyId.Value);
@@ -472,5 +481,11 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<CompanySimulationRunDayLog>()
             .HasQueryFilter(log =>
                 CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SimulationCashDeltaRecord>()
+            .HasQueryFilter(record =>
+                CurrentCompanyId.HasValue && record.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SimulationEventRecord>()
+            .HasQueryFilter(record =>
+                CurrentCompanyId.HasValue && record.CompanyId == CurrentCompanyId.Value);
     }
 }
