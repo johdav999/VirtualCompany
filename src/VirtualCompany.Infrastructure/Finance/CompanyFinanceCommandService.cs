@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Shared;
 using VirtualCompany.Domain.Entities;
@@ -19,6 +20,7 @@ public sealed partial class CompanyFinanceCommandService : IFinanceCommandServic
     private readonly FinancePaymentAllocationService _paymentAllocationService;
     private readonly IFinanceApprovalTaskService _approvalTaskService;
     private readonly IFinanceCashSettlementPostingService _cashSettlementPostingService;
+    private readonly ICompanyOutboxEnqueuer? _outboxEnqueuer;
 
     public CompanyFinanceCommandService(VirtualCompanyDbContext dbContext)
         : this(dbContext, null, null)
@@ -42,6 +44,7 @@ public sealed partial class CompanyFinanceCommandService : IFinanceCommandServic
         _serviceProvider = serviceProvider;
         _cashSettlementPostingService = serviceProvider?.GetService<IFinanceCashSettlementPostingService>() ?? new CompanyCashSettlementPostingService(dbContext, companyContextAccessor);
         _paymentAllocationService = new FinancePaymentAllocationService(dbContext, _cashSettlementPostingService);
+        _outboxEnqueuer = serviceProvider?.GetService<ICompanyOutboxEnqueuer>();
         _approvalTaskService = serviceProvider?.GetService<IFinanceApprovalTaskService>() ??
             new CompanyFinanceApprovalTaskService(dbContext, companyContextAccessor, NullLogger<CompanyFinanceApprovalTaskService>.Instance);
     }
@@ -65,6 +68,7 @@ public sealed partial class CompanyFinanceCommandService : IFinanceCommandServic
             command.Payment.CounterpartyReference);
 
         _dbContext.Payments.Add(payment);
+        FinanceDomainEvents.EnqueuePaymentCreated(_outboxEnqueuer, payment);
         await _approvalTaskService.EnsureTaskAsync(
             new EnsureFinanceApprovalTaskCommand(
                 command.CompanyId,
@@ -123,7 +127,8 @@ public sealed partial class CompanyFinanceCommandService : IFinanceCommandServic
             payment.Status,
             payment.CounterpartyReference,
             payment.CreatedUtc,
-            payment.UpdatedUtc);
+            payment.UpdatedUtc,
+            Array.Empty<NormalizedFinanceInsightDto>());
 
     public async Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(
         UpdateFinanceInvoiceApprovalStatusCommand command,

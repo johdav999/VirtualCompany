@@ -1,3 +1,4 @@
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Signals;
 
 namespace VirtualCompany.Application.Cockpit;
@@ -8,6 +9,42 @@ public interface ISignalEngine
         Guid companyId,
         CancellationToken cancellationToken = default);
 }
+
+public sealed record FinancialHealthSummaryDto(
+    string Status,
+    int? Score,
+    string Trend,
+    string Summary,
+    int ActiveInsightCount,
+    int CriticalInsightCount,
+    int HighInsightCount,
+    decimal CurrentCashBalance,
+    decimal ExpectedIncomingCash,
+    decimal ExpectedOutgoingCash,
+    decimal OverdueReceivables,
+    decimal UpcomingPayables,
+    string Currency);
+
+public sealed record FinanceActionDto(
+    string Title,
+    string Description,
+    string Priority,
+    string? TargetEntityType,
+    string? TargetEntityId,
+    string ActionLabel,
+    string? NavigationTarget);
+
+public sealed record GroupedFinanceInsightDto(
+    string GroupKey,
+    string Title,
+    string Summary,
+    string Recommendation,
+    string Severity,
+    string Category,
+    DateTime LatestOccurredUtc,
+    int OccurrenceCount,
+    FinanceInsightEntityReferenceDto? PrimaryEntity,
+    IReadOnlyList<FinanceInsightEntityReferenceDto> RelatedEntities);
 
 public sealed record DashboardFinanceSnapshotDto(
     Guid CompanyId,
@@ -23,7 +60,10 @@ public sealed record DashboardFinanceSnapshotDto(
     decimal BurnRate,
     int? RunwayDays,
     string RiskLevel,
-    bool HasFinanceData);
+    bool HasFinanceData,
+    FinancialHealthSummaryDto FinancialHealth,
+    IReadOnlyList<FinanceActionDto> TopFinanceActions,
+    IReadOnlyList<GroupedFinanceInsightDto> InsightFeed);
 
 public sealed record FinanceDashboardMetricDto(
     string MetricKey,

@@ -252,12 +252,6 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
                 new FinanceBalance(Guid.NewGuid(), companyId, cashAccountId, new DateTime(2026, 4, 15, 0, 0, 0, DateTimeKind.Utc), 900m, "USD"),
                 new FinanceBalance(Guid.NewGuid(), otherCompanyId, otherCashAccountId, new DateTime(2026, 4, 15, 0, 0, 0, DateTimeKind.Utc), 9100m, "USD"));
 
-            dbContext.FinanceTransactions.AddRange(
-                new FinanceTransaction(Guid.NewGuid(), companyId, cashAccountId, null, null, null, new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc), "customer_payment", 250m, "USD", "Cash receipt", "TX-CASH-001"),
-                new FinanceTransaction(Guid.NewGuid(), companyId, cashAccountId, null, null, null, ScenarioAsOfUtc, "bank_fee", -25m, "USD", "Bank fee", "TX-CASH-BOUNDARY"),
-                new FinanceTransaction(Guid.NewGuid(), companyId, cashAccountId, null, null, null, new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), "future_cash", 100m, "USD", "Future cash receipt", "TX-CASH-FUTURE"),
-                new FinanceTransaction(Guid.NewGuid(), otherCompanyId, otherCashAccountId, null, null, null, new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc), "other_cash", 500m, "USD", "Other company cash", "TX-CASH-OTHER"));
-
             dbContext.FinanceCounterparties.AddRange(
                 new FinanceCounterparty(customerId, companyId, "Northwind", "customer", "northwind@example.com"),
                 new FinanceCounterparty(supplierId, companyId, "Wingtip", "supplier", "wingtip@example.com"),
@@ -385,6 +379,52 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
         Assert.True(summary.HasFinanceData);
         Assert.Equal(2, summary.RecentAssetPurchaseCount);
         Assert.Equal(1150m, summary.RecentAssetPurchaseTotalAmount);
+        Assert.NotNull(summary.Intelligence);
+
+        Assert.Equal(1125m, summary.Intelligence!.SevenDayProjection.StartingCash);
+        Assert.Equal(1050m, summary.Intelligence.SevenDayProjection.ProjectedInflows);
+        Assert.Equal(280m, summary.Intelligence.SevenDayProjection.ProjectedOutflows);
+        Assert.Equal(1050m, summary.Intelligence.SevenDayProjection.InvoiceInflows);
+        Assert.Equal(280m, summary.Intelligence.SevenDayProjection.BillOutflows);
+        Assert.Equal(0m, summary.Intelligence.SevenDayProjection.RecurringOutflows);
+        Assert.Equal(1895m, summary.Intelligence.SevenDayProjection.EndingCash);
+
+        Assert.Equal(1125m, summary.Intelligence.ThirtyDayProjection.StartingCash);
+        Assert.Equal(1050m, summary.Intelligence.ThirtyDayProjection.ProjectedInflows);
+        Assert.Equal(655m, summary.Intelligence.ThirtyDayProjection.ProjectedOutflows);
+        Assert.Equal(1050m, summary.Intelligence.ThirtyDayProjection.InvoiceInflows);
+        Assert.Equal(655m, summary.Intelligence.ThirtyDayProjection.BillOutflows);
+        Assert.Equal(0m, summary.Intelligence.ThirtyDayProjection.RecurringOutflows);
+        Assert.Equal(1520m, summary.Intelligence.ThirtyDayProjection.EndingCash);
+
+        Assert.Equal("healthy", summary.Intelligence.ObligationCoverage.Severity);
+        Assert.Equal("coverage_healthy", summary.Intelligence.ObligationCoverage.RecommendationCode);
+        Assert.Equal("Near-term obligations are covered for the next 7 days. Pay overdue bills now and keep collections moving.", summary.Intelligence.ObligationCoverage.RecommendationText);
+
+        Assert.Equal(new[] { "INV-PRIOR-001", "INV-OVERDUE-001" }, summary.Intelligence.OverdueInvoices.Select(x => x.InvoiceNumber).ToArray());
+        Assert.Equal(new[] { "17", "9" }, summary.Intelligence.OverdueInvoices.Select(x => x.OverdueDays.ToString()).ToArray());
+        Assert.Equal(new[] { "1_30", "1_30" }, summary.Intelligence.OverdueInvoices.Select(x => x.AgingBucket).ToArray());
+        Assert.Equal(new[] { "45", "45" }, summary.Intelligence.OverdueInvoices.Select(x => x.PaymentPatternScore.ToString()).ToArray());
+        Assert.Equal(new[] { "follow_up", "follow_up" }, summary.Intelligence.OverdueInvoices.Select(x => x.RecommendationType).ToArray());
+        Assert.All(summary.Intelligence.OverdueInvoices, x => Assert.True(x.PriorityScore > 0));
+        Assert.All(summary.Intelligence.OverdueInvoices, x => Assert.False(string.IsNullOrWhiteSpace(x.ScoringFactors)));
+        Assert.Equal(new[] { "BILL-OVERDUE-001", "BILL-PRIOR-001", "BILL-PART-001" }, summary.Intelligence.DueSoonBills.Select(x => x.BillNumber).ToArray());
+        Assert.Equal(new[] { "pay_now", "pay_now", "delay" }, summary.Intelligence.DueSoonBills.Select(x => x.RecommendationAction).ToArray());
+        Assert.All(summary.Intelligence.DueSoonBills, x => Assert.False(string.IsNullOrWhiteSpace(x.VendorCriticality)));
+        Assert.All(summary.Intelligence.DueSoonBills, x => Assert.False(string.IsNullOrWhiteSpace(x.CashPressure)));
+        Assert.All(summary.Intelligence.DueSoonBills, x => Assert.False(string.IsNullOrWhiteSpace(x.ScoringFactors)));
+        Assert.Equal(
+            "Call Northwind today about INV-PRIOR-001 and secure a payment commitment. It is 17 day(s) overdue and the balance is 150.00 USD.",
+            summary.Intelligence.OverdueInvoices[0].RecommendationText);
+        Assert.Equal(
+            "Call Northwind today about INV-OVERDUE-001 and secure a payment commitment. It is 9 day(s) overdue and the balance is 300.00 USD.",
+            summary.Intelligence.OverdueInvoices[1].RecommendationText);
+        Assert.Equal(
+            "Pay now. BILL-OVERDUE-001 is overdue and should be cleared before lower-priority cash uses.",
+            summary.Intelligence.DueSoonBills[0].RecommendationText);
+        Assert.Equal(
+            "Delay. Preserve cash for higher-priority obligations and review BILL-PART-001 on 2026-04-28.",
+            summary.Intelligence.DueSoonBills[2].RecommendationText);
         Assert.All(summary.RecentAssetPurchases, asset => Assert.Equal(companyId, asset.CompanyId));
         Assert.Collection(
             summary.RecentAssetPurchases,
@@ -438,6 +478,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
         public int RecentAssetPurchaseCount { get; set; }
         public decimal RecentAssetPurchaseTotalAmount { get; set; }
         public FinanceSummaryConsistencyResponse? ConsistencyCheck { get; set; }
+        public FinanceIntelligenceResponse? Intelligence { get; set; }
         public List<FinanceSummaryAssetPurchaseResponse> RecentAssetPurchases { get; set; } = [];
     }
 
@@ -464,12 +505,80 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
         public List<FinanceSummaryConsistencyMetricResponse> Metrics { get; set; } = [];
     }
 
-    private sealed class FinanceSummaryConsistencyMetricResponse
+    private sealed class FinanceIntelligenceResponse
     {
-        public string MetricKey { get; set; } = string.Empty;
-        public decimal ExpectedValue { get; set; }
-        public decimal ActualValue { get; set; }
-        public bool IsMatch { get; set; }
+        public DateTime AsOfUtc { get; set; }
+        public FinanceProjectionResponse SevenDayProjection { get; set; } = new();
+        public FinanceProjectionResponse ThirtyDayProjection { get; set; } = new();
+        public FinanceObligationCoverageResponse ObligationCoverage { get; set; } = new();
+        public List<FinanceOverdueInvoiceResponse> OverdueInvoices { get; set; } = [];
+        public List<FinanceDueSoonBillResponse> DueSoonBills { get; set; } = [];
+    }
+
+    private sealed class FinanceProjectionResponse
+    {
+        public int HorizonDays { get; set; }
+        public decimal StartingCash { get; set; }
+        public decimal ProjectedInflows { get; set; }
+        public decimal ProjectedOutflows { get; set; }
+        public decimal InvoiceInflows { get; set; }
+        public decimal BillOutflows { get; set; }
+        public decimal RecurringOutflows { get; set; }
+        public decimal EndingCash { get; set; }
+    }
+
+    private sealed class FinanceObligationCoverageResponse
+    {
+        public int HorizonDays { get; set; }
+        public decimal AvailableCash { get; set; }
+        public decimal NearTermObligations { get; set; }
+        public decimal CoverageRatio { get; set; }
+        public string Severity { get; set; } = string.Empty;
+        public string RecommendationCode { get; set; } = string.Empty;
+        public string RecommendationText { get; set; } = string.Empty;
+    }
+
+    private sealed class FinanceOverdueInvoiceResponse
+    {
+        public int Rank { get; set; }
+        public string InvoiceNumber { get; set; } = string.Empty;
+        public int OverdueDays { get; set; }
+        public decimal OutstandingAmount { get; set; }
+        public string Severity { get; set; } = string.Empty;
+        public string AgingBucket { get; set; } = string.Empty;
+        public int PaymentPatternScore { get; set; }
+        public string PaymentPatternSeverity { get; set; } = string.Empty;
+        public string PaymentPatternConfidence { get; set; } = string.Empty;
+        public string RecommendationCode { get; set; } = string.Empty;
+        public string RecommendationText { get; set; } = string.Empty;
+        public string RecommendationSeverity { get; set; } = string.Empty;
+        public int PriorityScore { get; set; }
+        public string RecommendationType { get; set; } = string.Empty;
+        public string ScoringFactors { get; set; } = string.Empty;
+    }
+
+    private sealed class FinanceDueSoonBillResponse
+    {
+        public int Rank { get; set; }
+        public string BillNumber { get; set; } = string.Empty;
+        public int DaysUntilDue { get; set; }
+        public string Severity { get; set; } = string.Empty;
+        public string CashImpact { get; set; } = string.Empty;
+        public int UrgencyScore { get; set; }
+        public string RecommendationCode { get; set; } = string.Empty;
+        public string RecommendationText { get; set; } = string.Empty;
+        public string RecommendationAction { get; set; } = string.Empty;
+        public string RecommendationSeverity { get; set; } = string.Empty;
+        public string CashImpactRationale { get; set; } = string.Empty;
+        public string VendorCriticality { get; set; } = string.Empty;
+        public string VendorCriticalityReason { get; set; } = string.Empty;
+        public string CashPressure { get; set; } = string.Empty;
+        public string CashPressureReason { get; set; } = string.Empty;
+        public int DueDateFactor { get; set; }
+        public int AmountFactor { get; set; }
+        public int VendorCriticalityFactor { get; set; }
+        public int CashPressureFactor { get; set; }
+        public string ScoringFactors { get; set; } = string.Empty;
     }
 }
 END_OF_PATCH

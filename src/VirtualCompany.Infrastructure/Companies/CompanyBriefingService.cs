@@ -110,7 +110,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
                      x.PeriodEndUtc == window.EndUtc,
                 cancellationToken);
 
-        if (existing is not null && !command.Force)
+        if (existing is not null)
         {
             return new CompanyBriefingGenerationResult(await ToDtoAsync(existing, cancellationToken), true, 0);
         }
@@ -165,7 +165,35 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
         AddStructuredSections(companyId, briefing.Id, aggregate.StructuredSections);
 
         var notificationsCreated = await AddNotificationsAsync(briefing, cancellationToken);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (IsDuplicateBriefingWindow(ex))
+        {
+            _dbContext.ChangeTracker.Clear();
+
+            var persisted = await _dbContext.CompanyBriefings
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Include(x => x.Sections.Where(section => section.CompanyId == companyId))
+                    .ThenInclude(section => section.Contributions.Where(contribution => contribution.CompanyId == companyId))
+                .SingleAsync(
+                    x => x.CompanyId == companyId &&
+                         x.BriefingType == briefingType &&
+                         x.PeriodStartUtc == window.StartUtc &&
+                         x.PeriodEndUtc == window.EndUtc,
+                    cancellationToken);
+
+            _logger.LogInformation(
+                "Skipped duplicate {BriefingType} briefing generation for company {CompanyId} and period {PeriodStartUtc} - {PeriodEndUtc} because the briefing already exists.",
+                briefingType.ToStorageValue(),
+                companyId,
+                window.StartUtc,
+                window.EndUtc);
+
+            return new CompanyBriefingGenerationResult(await ToDtoAsync(persisted, cancellationToken), true, 0);
+        }
 
         _logger.LogInformation(
             "Generated {BriefingType} briefing {BriefingId} for company {CompanyId}; notifications created: {NotificationsCreated}.",
@@ -1812,6 +1840,13 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
         entityType.Equals("task", StringComparison.OrdinalIgnoreCase) ? 0 :
         entityType.Equals("workflow_instance", StringComparison.OrdinalIgnoreCase) ? 1 :
         entityType.Equals("approval", StringComparison.OrdinalIgnoreCase) ? 2 : 3;
+
+    private static bool IsDuplicateBriefingWindow(DbUpdateException exception)
+    {
+        var message = exception.ToString();
+        return message.Contains("company_briefings", StringComparison.OrdinalIgnoreCase) &&
+               message.Contains("IX_company_briefings_company_id_briefing_type_period_start_at_period_end_at", StringComparison.OrdinalIgnoreCase);
+    }
 
     private sealed record BriefingWindow(DateTime StartUtc, DateTime EndUtc);
     private sealed record DueCompany(Guid Id, string Name, string? Timezone);

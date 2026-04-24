@@ -76,8 +76,31 @@ public sealed record ExecutiveCockpitFinanceDto(
     ExecutiveCockpitFinanceCashWidgetDto CashPosition,
     ExecutiveCockpitFinanceRunwayWidgetDto Runway,
     ExecutiveCockpitFinanceAlertDetailDto? LowCashAlert,
+    ExecutiveCockpitFinancialHealthDto FinancialHealth,
+    IReadOnlyList<ExecutiveCockpitFinanceInsightFeedItemDto> TopActions,
+    IReadOnlyList<ExecutiveCockpitFinanceInsightFeedItemDto> InsightsFeed,
     IReadOnlyList<ExecutiveCockpitFinanceActionDto> AvailableActions,
     IReadOnlyList<ExecutiveCockpitDeepLinkDto> DeepLinks);
+
+public sealed record ExecutiveCockpitFinancialHealthDto(
+    string Status,
+    string Title,
+    string Summary,
+    int ActiveInsightCount,
+    int CriticalInsightCount,
+    int HighInsightCount,
+    DateTime? LastUpdatedUtc);
+
+public sealed record ExecutiveCockpitFinanceInsightFeedItemDto(
+    string GroupKey,
+    string Severity,
+    string Title,
+    string Summary,
+    string Recommendation,
+    int OccurrenceCount,
+    string EntitySummary,
+    DateTime LatestUpdatedUtc,
+    string? Route);
 
 public sealed record ExecutiveCockpitFinanceCashWidgetDto(
     decimal Amount,

@@ -1,0 +1,676 @@
+diff --git a/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs b/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs
+index b46ca8b..f04d0ef 100644
+--- a/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs
++++ b/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs
+@@ -1,4 +1,5 @@
+ using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Http;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Application.Finance;
+@@ -18,6 +19,71 @@ public sealed class FinanceInsightsController : ControllerBase
+         _financeReadService = financeReadService;
+     }
+ 
++    [HttpGet("dashboard")]
++    public Task<ActionResult<NormalizedFinanceInsightsDto>> GetDashboardAsync(
++        Guid companyId,
++        [FromQuery] string? status = null,
++        [FromQuery] string? severity = null,
++        [FromQuery] string? checkCode = null,
++        [FromQuery] DateTime? createdFromUtc = null,
++        [FromQuery] DateTime? createdToUtc = null,
++        [FromQuery] DateTime? updatedFromUtc = null,
++        [FromQuery] DateTime? updatedToUtc = null,
++        [FromQuery] string sortBy = FinanceInsightSortFields.UpdatedAt,
++        [FromQuery] string sortDirection = FinanceInsightSortDirections.Desc,
++        CancellationToken cancellationToken = default) =>
++        GetNormalizedAsync(
++            new GetNormalizedFinanceInsightsQuery(
++                companyId,
++                EntityType: null,
++                EntityId: null,
++                Status: status,
++                Severity: severity,
++                CheckCode: checkCode,
++                CreatedFromUtc: createdFromUtc,
++                CreatedToUtc: createdToUtc,
++                UpdatedFromUtc: updatedFromUtc,
++                UpdatedToUtc: updatedToUtc,
++                SortBy: sortBy,
++                SortDirection: sortDirection),
++            cancellationToken);
++
++    [HttpGet("entities/{entityType}/{entityId}")]
++    public Task<ActionResult<NormalizedFinanceInsightsDto>> GetByEntityAsync(
++        Guid companyId,
++        string entityType,
++        string entityId,
++        [FromQuery] string? status = null,
++        [FromQuery] string? severity = null,
++        [FromQuery] string? checkCode = null,
++        [FromQuery] DateTime? createdFromUtc = null,
++        [FromQuery] DateTime? createdToUtc = null,
++        [FromQuery] DateTime? updatedFromUtc = null,
++        [FromQuery] DateTime? updatedToUtc = null,
++        [FromQuery] string sortBy = FinanceInsightSortFields.UpdatedAt,
++        [FromQuery] string sortDirection = FinanceInsightSortDirections.Desc,
++        CancellationToken cancellationToken = default) =>
++        GetNormalizedAsync(
++            new GetNormalizedFinanceInsightsQuery(
++                companyId,
++                entityType,
++                entityId,
++                Status: status,
++                Severity: severity,
++                CheckCode: checkCode,
++                CreatedFromUtc: createdFromUtc,
++                CreatedToUtc: createdToUtc,
++                UpdatedFromUtc: updatedFromUtc,
++                UpdatedToUtc: updatedToUtc,
++                SortBy: sortBy,
++                SortDirection: sortDirection),
++            cancellationToken);
++
+     [HttpGet]
+     public async Task<ActionResult<FinanceInsightsDto>> GetAsync(
+         Guid companyId,
+@@ -49,4 +115,26 @@ public sealed class FinanceInsightsController : ControllerBase
+             return Forbid();
+         }
+     }
++
++    private async Task<ActionResult<NormalizedFinanceInsightsDto>> GetNormalizedAsync(
++        GetNormalizedFinanceInsightsQuery query,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _financeReadService.GetNormalizedInsightsAsync(query, cancellationToken);
++            return Ok(result);
++        }
++        catch (ArgumentException exception)
++        {
++            return BadRequest(new ProblemDetails
++            {
++                Status = StatusCodes.Status400BadRequest,
++                Title = "Invalid finance insight query.",
++                Detail = exception.Message
++            });
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
+ }
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 672818c..d6cd7db 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -147,6 +147,31 @@ public sealed record GetFinanceSummaryQuery(
+     DateTime? AsOfUtc = null,
+     int RecentAssetPurchaseLimit = 5,
+     bool IncludeConsistencyCheck = false);
++
++public sealed record GetNormalizedFinanceInsightsQuery(
++    Guid CompanyId,
++    string? EntityType = null,
++    string? EntityId = null,
++    string? Status = null,
++    string? Severity = null,
++    string? CheckCode = null,
++    DateTime? CreatedFromUtc = null,
++    DateTime? CreatedToUtc = null,
++    DateTime? UpdatedFromUtc = null,
++    DateTime? UpdatedToUtc = null,
++    string SortBy = FinanceInsightSortFields.UpdatedAt,
++    string SortDirection = FinanceInsightSortDirections.Desc);
++
+ public sealed record GetFinanceInsightsQuery(
+     Guid CompanyId,
+     DateTime? AsOfUtc = null,
+@@ -164,6 +189,26 @@ public static class FinanceInsightSnapshotKeys
+ 
+     public static string Normalize(string? value) => string.IsNullOrWhiteSpace(value) ? Default : value.Trim().ToLowerInvariant();
+ }
++
++public static class FinanceInsightSortFields
++{
++    public const string CreatedAt = "createdAt";
++    public const string UpdatedAt = "updatedAt";
++
++    public static string Normalize(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? UpdatedAt
++            : value.Trim() switch
++            {
++                CreatedAt => CreatedAt,
++                UpdatedAt => UpdatedAt,
++                _ => throw new ArgumentOutOfRangeException(nameof(value), value, "SortBy must be createdAt or updatedAt.")
++            };
++}
++
++public static class FinanceInsightSortDirections
++{
++    public const string Asc = "asc";
++    public const string Desc = "desc";
++}
+ 
+ public sealed record GetFinanceAgentQueryQuery(
+     Guid CompanyId,
+@@ -275,6 +320,22 @@ public sealed record FinanceInsightDto(
+     DateTime? ResolvedAt,
+     string? MetadataJson);
+ 
++public sealed record NormalizedFinanceInsightsDto(
++    Guid CompanyId,
++    IReadOnlyList<NormalizedFinanceInsightDto> Items);
++
++public sealed record NormalizedFinanceInsightDto(
++    Guid Id,
++    string Severity,
++    string Message,
++    string Recommendation,
++    FinanceInsightEntityReferenceDto EntityReference,
++    string Status,
++    DateTime CreatedAt,
++    DateTime UpdatedAt,
++    string CheckCode,
++    string CheckName,
++    string ConditionKey,
++    IReadOnlyList<FinanceInsightEntityReferenceDto> AffectedEntities,
++    DateTime ObservedAt,
++    DateTime? ResolvedAt);
++
+ public sealed record FinanceInsightEntityReferenceDto(
+     string EntityType,
+     string EntityId,
+@@ -1669,6 +1730,10 @@ public interface IFinanceAgentInsightRepository
+     Task<IReadOnlyList<FinanceAgentInsight>> ListAsync(
+         Guid companyId,
+         bool includeResolved,
++        CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<FinanceAgentInsight>> QueryAsync(
++        GetNormalizedFinanceInsightsQuery query,
+         CancellationToken cancellationToken);
+ 
+     Task AddAsync(FinanceAgentInsight insight, CancellationToken cancellationToken);
+@@ -1854,6 +1919,10 @@ public interface IFinanceReadService
+     Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(
+         GetFinanceBalancesQuery query,
+         CancellationToken cancellationToken);
++
++    Task<NormalizedFinanceInsightsDto> GetNormalizedInsightsAsync(
++        GetNormalizedFinanceInsightsQuery query,
++        CancellationToken cancellationToken);
+ 
+     Task<FinanceInsightsDto> GetInsightsAsync(
+         GetFinanceInsightsQuery query,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.NormalizedInsights.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.NormalizedInsights.cs
+new file mode 100644
+index 0000000..5fc6128
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.NormalizedInsights.cs
+@@ -0,0 +1,81 @@
++using System.Text.Json;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed partial class CompanyFinanceReadService
++{
++    private static readonly JsonSerializerOptions InsightReadModelSerializerOptions = new(JsonSerializerDefaults.Web);
++
++    public async Task<NormalizedFinanceInsightsDto> GetNormalizedInsightsAsync(
++        GetNormalizedFinanceInsightsQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++
++        var repository = new FinanceAgentInsightRepository(_dbContext);
++        var insights = await repository.QueryAsync(query, cancellationToken);
++        var normalizedEntityType = NormalizeInsightFilter(query.EntityType);
++        var normalizedEntityId = NormalizeInsightFilter(query.EntityId);
++
++        var items = insights
++            .Select(MapNormalizedInsight)
++            .Where(x => MatchesNormalizedEntityFilter(x, normalizedEntityType, normalizedEntityId))
++            .ToArray();
++
++        return new NormalizedFinanceInsightsDto(query.CompanyId, items);
++    }
++
++    private static NormalizedFinanceInsightDto MapNormalizedInsight(FinanceAgentInsight insight)
++    {
++        var definition = FinancialCheckDefinitions.Resolve(insight.CheckCode);
++        var affectedEntities = DeserializeInsightEntities(insight.AffectedEntitiesJson);
++        var entityReference = affectedEntities.FirstOrDefault(x => x.IsPrimary) ??
++            new FinanceInsightEntityReferenceDto(
++                insight.EntityType,
++                insight.EntityId,
++                insight.EntityDisplayName,
++                true);
++
++        return new NormalizedFinanceInsightDto(
++            insight.Id,
++            insight.Severity.ToStorageValue(),
++            insight.Message,
++            insight.Recommendation,
++            entityReference,
++            insight.Status.ToStorageValue(),
++            insight.CreatedUtc,
++            insight.UpdatedUtc,
++            insight.CheckCode,
++            definition.Name,
++            insight.ConditionKey,
++            affectedEntities,
++            insight.ObservedUtc,
++            insight.ResolvedUtc);
++    }
++
++    private static IReadOnlyList<FinanceInsightEntityReferenceDto> DeserializeInsightEntities(string payload)
++    {
++        if (string.IsNullOrWhiteSpace(payload))
++        {
++            return [];
++        }
++
++        return JsonSerializer.Deserialize<List<FinanceInsightEntityReferenceDto>>(payload, InsightReadModelSerializerOptions) ?? [];
++    }
++
++    private static bool MatchesNormalizedEntityFilter(NormalizedFinanceInsightDto insight, string? entityType, string? entityId)
++    {
++        if (entityType is null && entityId is null)
++        {
++            return true;
++        }
++
++        return MatchesEntityReference(insight.EntityReference, entityType, entityId) ||
++               insight.AffectedEntities.Any(x => MatchesEntityReference(x, entityType, entityId));
++    }
++
++    private static bool MatchesEntityReference(FinanceInsightEntityReferenceDto entity, string? entityType, string? entityId) =>
++        (entityType is null || string.Equals(entity.EntityType, entityType, StringComparison.OrdinalIgnoreCase)) &&
++        (entityId is null || string.Equals(entity.EntityId, entityId, StringComparison.OrdinalIgnoreCase));
++
++    private static string? NormalizeInsightFilter(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceAgentInsightRepository.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceAgentInsightRepository.cs
+index 7d52cd4..2b699b4 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceAgentInsightRepository.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceAgentInsightRepository.cs
+@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Infrastructure.Finance;
+ 
+@@ -81,6 +82,59 @@ public sealed class FinanceAgentInsightRepository : IFinanceAgentInsightReposito
+             .ThenBy(x => x.CheckCode)
+             .ToListAsync(cancellationToken);
+     }
++
++    public async Task<IReadOnlyList<FinanceAgentInsight>> QueryAsync(
++        GetNormalizedFinanceInsightsQuery query,
++        CancellationToken cancellationToken)
++    {
++        EnsureCompany(query.CompanyId);
++        ValidateRange(query.CreatedFromUtc, query.CreatedToUtc, nameof(query.CreatedFromUtc), nameof(query.CreatedToUtc));
++        ValidateRange(query.UpdatedFromUtc, query.UpdatedToUtc, nameof(query.UpdatedFromUtc), nameof(query.UpdatedToUtc));
++
++        var insights = _dbContext.FinanceAgentInsights
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId);
++
++        if (!string.IsNullOrWhiteSpace(query.Status))
++        {
++            var status = FinanceInsightStatusValues.Parse(query.Status.Trim());
++            insights = insights.Where(x => x.Status == status);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.Severity))
++        {
++            var severity = FinancialCheckSeverityValues.Parse(query.Severity.Trim());
++            insights = insights.Where(x => x.Severity == severity);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.CheckCode))
++        {
++            var normalizedCheckCode = NormalizeRequired(query.CheckCode, nameof(query.CheckCode)).ToLowerInvariant();
++            insights = insights.Where(x => x.CheckCode == normalizedCheckCode);
++        }
++
++        if (query.CreatedFromUtc.HasValue)
++        {
++            var createdFromUtc = NormalizeUtc(query.CreatedFromUtc.Value);
++            insights = insights.Where(x => x.CreatedUtc >= createdFromUtc);
++        }
++
++        if (query.CreatedToUtc.HasValue)
++        {
++            var createdToUtc = NormalizeUtc(query.CreatedToUtc.Value);
++            insights = insights.Where(x => x.CreatedUtc <= createdToUtc);
++        }
++
++        if (query.UpdatedFromUtc.HasValue)
++        {
++            var updatedFromUtc = NormalizeUtc(query.UpdatedFromUtc.Value);
++            insights = insights.Where(x => x.UpdatedUtc >= updatedFromUtc);
++        }
++
++        if (query.UpdatedToUtc.HasValue)
++        {
++            var updatedToUtc = NormalizeUtc(query.UpdatedToUtc.Value);
++            insights = insights.Where(x => x.UpdatedUtc <= updatedToUtc);
++        }
++
++        return await ApplySort(insights, query.SortBy, query.SortDirection).ToListAsync(cancellationToken);
++    }
+ 
+     public async Task AddAsync(FinanceAgentInsight insight, CancellationToken cancellationToken) =>
+         await _dbContext.FinanceAgentInsights.AddAsync(insight, cancellationToken);
+@@ -100,4 +154,36 @@ public sealed class FinanceAgentInsightRepository : IFinanceAgentInsightReposito
+ 
+     private static string NormalizeRequired(string value, string name) =>
+         string.IsNullOrWhiteSpace(value) ? throw new ArgumentException($"{name} is required.", name) : value.Trim();
++
++    private static IQueryable<FinanceAgentInsight> ApplySort(
++        IQueryable<FinanceAgentInsight> insights,
++        string? sortBy,
++        string? sortDirection)
++    {
++        var normalizedSortBy = FinanceInsightSortFields.Normalize(sortBy);
++        var normalizedSortDirection = string.IsNullOrWhiteSpace(sortDirection)
++            ? FinanceInsightSortDirections.Desc
++            : sortDirection.Trim().ToLowerInvariant();
++        var descending = normalizedSortDirection switch
++        {
++            FinanceInsightSortDirections.Asc => false,
++            FinanceInsightSortDirections.Desc => true,
++            _ => throw new ArgumentOutOfRangeException(nameof(sortDirection), sortDirection, "SortDirection must be asc or desc.")
++        };
++
++        return (normalizedSortBy, descending) switch
++        {
++            (FinanceInsightSortFields.CreatedAt, true) => insights.OrderByDescending(x => x.CreatedUtc).ThenByDescending(x => x.UpdatedUtc).ThenBy(x => x.Id),
++            (FinanceInsightSortFields.CreatedAt, false) => insights.OrderBy(x => x.CreatedUtc).ThenBy(x => x.UpdatedUtc).ThenBy(x => x.Id),
++            (_, true) => insights.OrderByDescending(x => x.UpdatedUtc).ThenByDescending(x => x.CreatedUtc).ThenBy(x => x.Id),
++            _ => insights.OrderBy(x => x.UpdatedUtc).ThenBy(x => x.CreatedUtc).ThenBy(x => x.Id)
++        };
++    }
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++
++    private static void ValidateRange(DateTime? fromUtc, DateTime? toUtc, string fromName, string toName)
++    {
++        if (fromUtc.HasValue && toUtc.HasValue && NormalizeUtc(fromUtc.Value) > NormalizeUtc(toUtc.Value))
++        {
++            throw new ArgumentException($"{fromName} must be earlier than or equal to {toName}.");
++        }
++    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightQueryEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightQueryEndpointsIntegrationTests.cs
+new file mode 100644
+index 0000000..b13ad90
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceInsightQueryEndpointsIntegrationTests.cs
+@@ -0,0 +1,282 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceInsightQueryEndpointsIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinanceInsightQueryEndpointsIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Dashboard_endpoint_returns_normalized_persisted_insights_and_supports_status_filter()
++    {
++        var seed = await SeedAsync(includeOtherCompanyMembership: true);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync(
++            $"/api/companies/{seed.CompanyId}/finance/insights/dashboard?status=resolved&sortBy=createdAt&sortDirection=asc");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<JsonObject>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!["companyId"]!.GetValue<Guid>());
++
++        var items = payload["items"]!.AsArray();
++        var item = Assert.Single(items).AsObject();
++
++        Assert.Equal(seed.ResolvedInsightId, item["id"]!.GetValue<Guid>());
++        Assert.Equal("resolved", item["status"]!.GetValue<string>());
++        Assert.False(string.IsNullOrWhiteSpace(item["severity"]!.GetValue<string>()));
++        Assert.False(string.IsNullOrWhiteSpace(item["message"]!.GetValue<string>()));
++        Assert.False(string.IsNullOrWhiteSpace(item["recommendation"]!.GetValue<string>()));
++        Assert.False(string.IsNullOrWhiteSpace(item["checkCode"]!.GetValue<string>()));
++        Assert.False(string.IsNullOrWhiteSpace(item["checkName"]!.GetValue<string>()));
++        Assert.False(string.IsNullOrWhiteSpace(item["conditionKey"]!.GetValue<string>()));
++        Assert.NotEqual(DateTime.MinValue, item["createdAt"]!.GetValue<DateTime>());
++        Assert.NotEqual(DateTime.MinValue, item["updatedAt"]!.GetValue<DateTime>());
++
++        var entityReference = item["entityReference"]!.AsObject();
++        Assert.False(string.IsNullOrWhiteSpace(entityReference["entityType"]!.GetValue<string>()));
++        Assert.False(string.IsNullOrWhiteSpace(entityReference["entityId"]!.GetValue<string>()));
++        Assert.NotNull(item["affectedEntities"]);
++    }
++
++    [Fact]
++    public async Task Entity_endpoint_returns_same_normalized_shape_and_matches_primary_or_affected_entities()
++    {
++        var seed = await SeedAsync(includeOtherCompanyMembership: false);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var dashboardResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/finance/insights/dashboard");
++        var entityResponse = await client.GetAsync(
++            $"/api/companies/{seed.CompanyId}/finance/insights/entities/counterparty/customer-1?sortBy=updatedAt&sortDirection=desc");
++
++        Assert.Equal(HttpStatusCode.OK, dashboardResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, entityResponse.StatusCode);
++
++        var dashboardPayload = await dashboardResponse.Content.ReadFromJsonAsync<JsonObject>();
++        var entityPayload = await entityResponse.Content.ReadFromJsonAsync<JsonObject>();
++        Assert.NotNull(dashboardPayload);
++        Assert.NotNull(entityPayload);
++
++        var dashboardItem = dashboardPayload!["items"]!.AsArray()[0]!.AsObject();
++        var entityItems = entityPayload!["items"]!.AsArray();
++        Assert.Equal(2, entityItems.Count);
++
++        var dashboardKeys = dashboardItem.Select(x => x.Key).OrderBy(x => x, StringComparer.Ordinal).ToArray();
++        var entityKeys = entityItems[0]!.AsObject().Select(x => x.Key).OrderBy(x => x, StringComparer.Ordinal).ToArray();
++        Assert.Equal(dashboardKeys, entityKeys);
++
++        var returnedIds = entityItems
++            .Select(x => x!["id"]!.GetValue<Guid>())
++            .OrderBy(x => x)
++            .ToArray();
++        Assert.Equal(
++            new[] { seed.ActiveInsightId, seed.ResolvedInsightId }.OrderBy(x => x).ToArray(),
++            returnedIds);
++
++        Assert.All(entityItems, item =>
++        {
++            var insight = item!.AsObject();
++            var entityReference = insight["entityReference"]!.AsObject();
++            var matchesPrimary = string.Equals(entityReference["entityType"]!.GetValue<string>(), "counterparty", StringComparison.OrdinalIgnoreCase) &&
++                                 string.Equals(entityReference["entityId"]!.GetValue<string>(), "customer-1", StringComparison.OrdinalIgnoreCase);
++            var matchesAffected = insight["affectedEntities"]!.AsArray().Any(entity =>
++                string.Equals(entity!["entityType"]!.GetValue<string>(), "counterparty", StringComparison.OrdinalIgnoreCase) &&
++                string.Equals(entity!["entityId"]!.GetValue<string>(), "customer-1", StringComparison.OrdinalIgnoreCase));
++
++            Assert.True(matchesPrimary || matchesAffected);
++        });
++    }
++
++    [Fact]
++    public async Task Dashboard_endpoint_is_tenant_scoped()
++    {
++        var seed = await SeedAsync(includeOtherCompanyMembership: false);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/api/companies/{seed.OtherCompanyId}/finance/insights/dashboard");
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Dashboard_endpoint_returns_bad_request_for_unknown_status_filter()
++    {
++        var seed = await SeedAsync(includeOtherCompanyMembership: false);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/finance/insights/dashboard?status=not-a-status");
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.SubjectHeaderName, subject);
++        client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.EmailHeaderName, email);
++        client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.DisplayNameHeaderName, displayName);
++        client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.ProviderHeaderName, "dev-header");
++        return client;
++    }
++
++    private async Task<SeedContext> SeedAsync(bool includeOtherCompanyMembership)
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var activeInsightId = Guid.NewGuid();
++        var resolvedInsightId = Guid.NewGuid();
++        var otherCompanyInsightId = Guid.NewGuid();
++        var subject = $"finance-insight-query-{Guid.NewGuid():N}";
++        var email = $"finance-insight-query-{Guid.NewGuid():N}@example.com";
++        var displayName = "Finance Insight Query User";
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Finance Insight Query Company"),
++                new Company(otherCompanyId, "Other Finance Insight Query Company"));
++            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++
++            if (includeOtherCompanyMembership)
++            {
++                dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            }
++
++            var customerPrimary = new FinanceInsightEntityReferenceDto("counterparty", "customer-1", "Contoso", true);
++            var customerAffected = new FinanceInsightEntityReferenceDto("counterparty", "customer-1", "Contoso", false);
++            var invoicePrimary = new FinanceInsightEntityReferenceDto("invoice", "invoice-7", "INV-7", true);
++            var invoiceAffected = new FinanceInsightEntityReferenceDto("invoice", "invoice-7", "INV-7", false);
++            var otherCounterparty = new FinanceInsightEntityReferenceDto("counterparty", "customer-99", "Fabrikam", true);
++
++            dbContext.FinanceAgentInsights.Add(
++                new FinanceAgentInsight(
++                    activeInsightId,
++                    companyId,
++                    FinancialCheckDefinitions.OverdueReceivables.Code,
++                    "overdue_receivables:customer-1",
++                    customerPrimary.EntityType,
++                    customerPrimary.EntityId,
++                    FinancialCheckSeverity.High,
++                    "Contoso has overdue receivables.",
++                    "Start collections outreach.",
++                    0.82m,
++                    customerPrimary.DisplayName,
++                    JsonSerializer.Serialize(new[] { customerPrimary, invoiceAffected }),
++                    null,
++                    FinanceInsightStatus.Active,
++                    new DateTime(2026, 4, 22, 7, 30, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 7, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 8, 0, 0, DateTimeKind.Utc)));
++
++            dbContext.FinanceAgentInsights.Add(
++                new FinanceAgentInsight(
++                    resolvedInsightId,
++                    companyId,
++                    FinancialCheckDefinitions.TransactionAnomaly.Code,
++                    "transaction_anomaly:invoice-7",
++                    invoicePrimary.EntityType,
++                    invoicePrimary.EntityId,
++                    FinancialCheckSeverity.Medium,
++                    "Invoice INV-7 was previously flagged for review.",
++                    "Keep the audit trail and monitor related activity.",
++                    0.71m,
++                    invoicePrimary.DisplayName,
++                    JsonSerializer.Serialize(new[] { invoicePrimary, customerAffected }),
++                    "{\"source\":\"persisted\"}",
++                    FinanceInsightStatus.Resolved,
++                    new DateTime(2026, 4, 21, 12, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 21, 10, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 21, 14, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 21, 14, 0, 0, DateTimeKind.Utc)));
++
++            dbContext.FinanceAgentInsights.Add(
++                new FinanceAgentInsight(
++                    otherCompanyInsightId,
++                    otherCompanyId,
++                    FinancialCheckDefinitions.PayablesPressure.Code,
++                    "payables_pressure:customer-99",
++                    otherCounterparty.EntityType,
++                    otherCounterparty.EntityId,
++                    FinancialCheckSeverity.Critical,
++                    "Other company payables pressure insight.",
++                    "This record must never leak into another tenant response.",
++                    0.95m,
++                    otherCounterparty.DisplayName,
++                    JsonSerializer.Serialize(new[] { otherCounterparty }),
++                    null,
++                    FinanceInsightStatus.Active,
++                    new DateTime(2026, 4, 22, 9, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 9, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 9, 15, 0, DateTimeKind.Utc)));
++
++            await dbContext.SaveChangesAsync();
++        });
++
++        return new SeedContext(
++            companyId,
++            otherCompanyId,
++            subject,
++            email,
++            displayName,
++            activeInsightId,
++            resolvedInsightId);
++    }
++
++    private sealed record SeedContext(
++        Guid CompanyId,
++        Guid OtherCompanyId,
++        string Subject,
++        string Email,
++        string DisplayName,
++        Guid ActiveInsightId,
++        Guid ResolvedInsightId);
++}
+END_OF_PATCH

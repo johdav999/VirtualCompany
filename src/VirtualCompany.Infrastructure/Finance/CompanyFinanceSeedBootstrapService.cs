@@ -444,6 +444,18 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
             .GroupBy(x => x.Id)
             .ToDictionary(x => x.Key, x => x.First().Name, EqualityComparer<Guid>.Default);
 
+        var bills = _dbContext.ChangeTracker.Entries<FinanceBill>()
+            .Where(entry => entry.State == EntityState.Added)
+            .Select(entry => entry.Entity)
+            .ToList();
+        foreach (var bill in bills)
+        {
+            FinanceDomainEvents.EnqueueBillCreated(
+                _outboxEnqueuer,
+                bill,
+                bill.BillNumber);
+        }
+
         var invoices = _dbContext.ChangeTracker.Entries<FinanceInvoice>()
             .Where(x => x.State == EntityState.Added && x.Entity.CompanyId == companyId)
             .Select(x => x.Entity)

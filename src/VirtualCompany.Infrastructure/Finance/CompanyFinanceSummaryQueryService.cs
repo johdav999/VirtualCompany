@@ -81,6 +81,9 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             .Where(x => x.CompanyId == query.CompanyId && x.IssuedUtc <= effectiveAsOfUtc)
             .Select(x => new InvoiceRow(
                 x.Id,
+                x.InvoiceNumber,
+                x.CounterpartyId,
+                x.Counterparty.Name,
                 x.IssuedUtc,
                 x.DueUtc,
                 x.Amount,
@@ -95,6 +98,9 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             .Where(x => x.CompanyId == query.CompanyId && x.ReceivedUtc <= effectiveAsOfUtc)
             .Select(x => new BillRow(
                 x.Id,
+                x.BillNumber,
+                x.CounterpartyId,
+                x.Counterparty.Name,
                 x.ReceivedUtc,
                 x.DueUtc,
                 x.Amount,
@@ -207,6 +213,47 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             billRows.Select(x => x.Currency),
             assetRows.Select(x => x.Currency));
 
+        var historicalReceivablePayments = await LoadHistoricalReceivablePaymentsAsync(
+            query.CompanyId,
+            effectiveAsOfUtc,
+            invoiceRows,
+            cancellationToken);
+
+        var financeIntelligence = FinanceIntelligenceHeuristics.Evaluate(
+            new FinanceIntelligenceInputDto(
+                query.CompanyId,
+                effectiveAsOfUtc,
+                currentCash,
+                currency,
+                invoiceRows
+                    .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus))
+                    .Select(x => new FinanceOpenReceivableItemDto(
+                        x.Id,
+                        x.InvoiceNumber,
+                        x.CounterpartyName,
+                        x.DueUtc,
+                        CalculateRemainingBalance(x.Amount, completedIncomingByInvoice.GetValueOrDefault(x.Id)),
+                        x.Currency,
+                        x.Status,
+                        x.CounterpartyId))
+                    .Where(x => x.OutstandingAmount > 0m)
+                    .ToArray(),
+                billRows
+                    .Where(x => IsIncludedPayable(x.Status, x.SettlementStatus))
+                    .Select(x => new FinanceOpenPayableItemDto(
+                        x.Id,
+                        x.BillNumber,
+                        x.CounterpartyName,
+                        x.DueUtc,
+                        CalculateRemainingBalance(x.Amount, completedOutgoingByBill.GetValueOrDefault(x.Id)),
+                        x.Currency,
+                        x.Status,
+                        x.CounterpartyId))
+                    .Where(x => x.OutstandingAmount > 0m)
+                    .ToArray(),
+                [],
+                historicalReceivablePayments));
+
         var hasFinanceData =
             cashAccounts.Count > 0 ||
             invoiceRows.Count > 0 ||
@@ -226,7 +273,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             hasFinanceData,
             recentAssetPurchaseCount,
             recentAssetPurchaseTotalAmount,
-            recentAssetPurchases);
+            recentAssetPurchases,
+            financeIntelligence);
 
         if (!query.IncludeConsistencyCheck)
         {
@@ -337,6 +385,45 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             .GroupBy(x => x.BillId!.Value)
             .Select(group => new AllocationRow(group.Key, group.Sum(x => x.AllocatedAmount)))
             .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
+
+    private async Task<IReadOnlyList<FinanceHistoricalReceivablePaymentDto>> LoadHistoricalReceivablePaymentsAsync(
+        Guid companyId,
+        DateTime asOfUtc,
+        IReadOnlyList<InvoiceRow> invoiceRows,
+        CancellationToken cancellationToken)
+    {
+        var allocationRows = await _dbContext.PaymentAllocations
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x =>
+                x.CompanyId == companyId &&
+                x.InvoiceId.HasValue &&
+                x.Payment.Status == PaymentStatuses.Completed &&
+                x.Payment.PaymentType == PaymentTypes.Incoming &&
+                x.Payment.PaymentDate <= asOfUtc)
+            .Select(x => new InvoicePaymentHistoryAllocationRow(
+                x.InvoiceId!.Value,
+                x.Payment.PaymentDate,
+                x.AllocatedAmount))
+            .ToListAsync(cancellationToken);
+
+        var paymentHistoryByInvoice = allocationRows
+            .GroupBy(x => x.InvoiceId)
+            .ToDictionary(
+                group => group.Key,
+                group => new InvoicePaymentHistoryAggregation(
+                    group.Sum(x => x.AllocatedAmount),
+                    group.Max(x => x.PaymentDateUtc)));
+
+        return invoiceRows
+            .Where(x => paymentHistoryByInvoice.TryGetValue(x.Id, out var history) && history.TotalAllocatedAmount >= x.Amount)
+            .Select(x => paymentHistoryByInvoice[x.Id] is var history
+                ? new FinanceHistoricalReceivablePaymentDto(x.Id, x.CounterpartyName, x.DueUtc, history.PaidUtc, x.Amount, x.Currency, x.CounterpartyId)
+                : null)
+            .Where(x => x is not null)
+            .Cast<FinanceHistoricalReceivablePaymentDto>()
+            .ToArray();
+    }
 
     private async Task<DateTime> ResolveAsOfUtcAsync(
         Guid companyId,
@@ -468,7 +555,29 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
     private sealed record BalanceRow(Guid AccountId, DateTime AsOfUtc, decimal Amount);
     private sealed record TransactionRow(Guid AccountId, DateTime TransactionUtc, decimal Amount);
     private sealed record AllocationRow(Guid DocumentId, decimal Amount);
-    private sealed record InvoiceRow(Guid Id, DateTime IssuedUtc, DateTime DueUtc, decimal Amount, string Currency, string Status, string SettlementStatus);
-    private sealed record BillRow(Guid Id, DateTime ReceivedUtc, DateTime DueUtc, decimal Amount, string Currency, string Status, string SettlementStatus);
+    private sealed record InvoicePaymentHistoryAllocationRow(Guid InvoiceId, DateTime PaymentDateUtc, decimal AllocatedAmount);
+    private sealed record InvoicePaymentHistoryAggregation(decimal TotalAllocatedAmount, DateTime PaidUtc);
+    private sealed record InvoiceRow(
+        Guid Id,
+        string InvoiceNumber,
+        Guid CounterpartyId,
+        string CounterpartyName,
+        DateTime IssuedUtc,
+        DateTime DueUtc,
+        decimal Amount,
+        string Currency,
+        string Status,
+        string SettlementStatus);
+    private sealed record BillRow(
+        Guid Id,
+        string BillNumber,
+        Guid CounterpartyId,
+        string CounterpartyName,
+        DateTime ReceivedUtc,
+        DateTime DueUtc,
+        decimal Amount,
+        string Currency,
+        string Status,
+        string SettlementStatus);
     private sealed record AssetRow(Guid Id, string ReferenceNumber, string Name, string Category, DateTime PurchasedUtc, decimal Amount, string Currency, string FundingBehavior, string FundingSettlementStatus, string Status);
 }

@@ -16,7 +16,7 @@ namespace VirtualCompany.Api.Tests;
 public sealed class FinanceInsightsServiceTests
 {
     [Fact]
-    public async Task Insights_handle_sparse_data_without_throwing_and_emit_deterministic_narrative()
+    public async Task Insights_handle_sparse_data_without_throwing_and_emit_normalized_payload()
     {
         var companyId = Guid.NewGuid();
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -66,13 +66,17 @@ public sealed class FinanceInsightsServiceTests
             CancellationToken.None);
 
         Assert.Equal(companyId, result.CompanyId);
-        Assert.False(string.IsNullOrWhiteSpace(result.Headline));
-        Assert.False(string.IsNullOrWhiteSpace(result.Summary));
-        Assert.NotEmpty(result.Highlights);
-        Assert.Equal("insufficient_data", result.RevenueTrend.DirectionLabel);
-        Assert.NotEmpty(result.NarrativeHints);
-        Assert.Equal("clear", result.OverdueCustomerRisk.RiskLabel);
-        Assert.Equal("low", result.PayablePressure.RiskLabel);
+        Assert.True(result.GeneratedAt > DateTime.MinValue);
+        Assert.NotNull(result.Items);
+        Assert.All(result.Items, item => Assert.InRange(item.Confidence, 0m, 1m));
+        Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.CheckName)));
+        Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.EntityType)));
+        Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.EntityId)));
+        Assert.All(result.Items, item => Assert.True(item.ObservedAt > DateTime.MinValue));
+        Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.ConditionKey)));
+        Assert.Contains(result.Items, item => item.CheckCode == FinancialCheckDefinitions.SparseDataCoverage.Code);
+        Assert.Contains(result.Items, item => item.CheckCode == FinancialCheckDefinitions.ForecastGap.Code);
+        Assert.Contains(result.Items, item => item.CheckCode == FinancialCheckDefinitions.BudgetGap.Code);
     }
 
     [Fact]
@@ -97,6 +101,37 @@ public sealed class FinanceInsightsServiceTests
         var service = new CompanyFinanceReadService(dbContext);
         var result = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyA), CancellationToken.None);
         Assert.Equal(companyA, result.CompanyId);
+    }
+
+    [Fact]
+    public async Task Insights_can_be_filtered_to_a_single_entity_without_changing_response_shape()
+    {
+        var companyId = Guid.NewGuid();
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);
+        await dbContext.Database.EnsureCreatedAsync();
+
+        var company = new Company(companyId, "Entity Filter Company");
+        company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
+        dbContext.Companies.Add(company);
+        FinanceSeedData.AddMockFinanceData(dbContext, companyId);
+        await dbContext.SaveChangesAsync();
+
+        var service = new CompanyFinanceReadService(dbContext);
+        var fullResult = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyId), CancellationToken.None);
+        var sourceInsight = Assert.Single(fullResult.Items.Where(x => x.PrimaryEntity is not null));
+        var entityType = sourceInsight.PrimaryEntity!.EntityType;
+        var entityId = sourceInsight.PrimaryEntity.EntityId;
+
+        var filtered = await service.GetInsightsAsync(
+            new GetFinanceInsightsQuery(companyId, EntityType: entityType, EntityId: entityId, IncludeResolved: false, PreferSnapshot: false),
+            CancellationToken.None);
+
+        Assert.NotEmpty(filtered.Items);
+        Assert.All(filtered.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.ConditionKey)));
+        Assert.All(filtered.Items, item =>
+            Assert.Contains(item.AffectedEntities, entity => entity.EntityType == entityType && entity.EntityId == entityId));
     }
 
     [Fact]
@@ -125,6 +160,7 @@ public sealed class FinanceInsightsServiceTests
 
         Assert.True(refreshed.Refreshed);
         Assert.NotNull(refreshed.Insights);
+        Assert.NotNull(refreshed.Insights!.Items);
 
         var cached = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyId), CancellationToken.None);
         Assert.True(cached.FromSnapshot);

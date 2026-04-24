@@ -56,7 +56,7 @@ public partial class AnomalyDetailPage : FinancePageBase
         ? FinanceRoutes.BuildTransactionDetailPath(Detail.AffectedRecord.Id, AccessState.CompanyId)
         : FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, AccessState.CompanyId);
     private string? InvoiceHref => Detail?.RelatedInvoiceId is Guid invoiceId ? FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId) : null;
-    private string? BillHref => null;
+    private string? BillHref => Detail?.RelatedBillId is Guid billId ? FinanceRoutes.BuildBillDetailPath(billId, AccessState.CompanyId) : null;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -124,7 +124,7 @@ public partial class AnomalyDetailPage : FinancePageBase
             {
                 "transaction" => FinanceRoutes.BuildTransactionDetailPath(recordId, AccessState.CompanyId),
                 "invoice" => FinanceRoutes.BuildInvoiceDetailPath(recordId, AccessState.CompanyId),
-                "bill" => null,
+                "bill" => FinanceRoutes.BuildBillDetailPath(recordId, AccessState.CompanyId),
                 _ => null
             };
 }

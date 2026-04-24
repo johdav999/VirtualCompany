@@ -258,8 +258,9 @@ else
     private ActivityFeedItemViewModel? SelectedActivity =>
         selectedActivityEventId is Guid id ? items.FirstOrDefault(x => x.EventId == id) : null;
     private IReadOnlyList<ActivityLinkedEntityViewModel> SelectedLinkedEntities =>
-        selectedCorrelation?.SelectedActivityLinks?.ActivityEventId == selectedActivityEventId
-            ? selectedCorrelation.SelectedActivityLinks.LinkedEntities
+        selectedCorrelation?.SelectedActivityLinks is { } selectedLinks &&
+        selectedLinks.ActivityEventId == selectedActivityEventId
+            ? selectedLinks.LinkedEntities
             : [];
 
     protected override async Task OnParametersSetAsync()

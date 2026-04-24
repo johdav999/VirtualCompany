@@ -556,6 +556,11 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                 "finance_bill",
                 bill.Id, supplierBillPlan.BillNumber, null, dayEventSequence, SimulationEventDeterministicIdentity.CreateDeterministicKey(company.Id, command.Seed, command.StartSimulatedUtc, plan.DateUtc, "finance.bill.generated", "finance_bill", bill.Id, dayEventSequence, command.DeterministicConfigurationJson), null, null, null, plan.ReceivedUtc));
             billsCreated++;
+            FinanceDomainEvents.EnqueueBillCreated(
+                _outboxEnqueuer,
+                bill,
+                supplierBillPlan.SupplierName,
+                BuildDayCorrelationId(company.Id, plan.DateUtc));
             if (billApprovalRequired)
             {
                 await _financeApprovalTaskService.EnsureTaskAsync(
@@ -791,6 +796,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                     updatedUtc: payment.TransactionUtc,
                     sourceSimulationEventRecordId: paymentEvent.Id);
                 _dbContext.Payments.Add(simulatedPayment);
+                FinanceDomainEvents.EnqueuePaymentCreated(_outboxEnqueuer, simulatedPayment, BuildDayCorrelationId(company.Id, plan.DateUtc));
             }
 
             transaction = new FinanceTransaction(
@@ -1977,6 +1983,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
                 updatedUtc: transactionUtc,
                 sourceSimulationEventRecordId: paymentEvent.Id);
             _dbContext.Payments.Add(payment);
+            FinanceDomainEvents.EnqueuePaymentCreated(_outboxEnqueuer, payment, BuildDayCorrelationId(company.Id, plan.DateUtc));
         }
 
         var transaction = await _dbContext.FinanceTransactions

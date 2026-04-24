@@ -260,6 +260,7 @@ public static class DependencyInjection
         services.AddHostedService<FinanceApprovalTaskBackfillBackgroundService>();
         services.AddHostedService<CompanySimulationProgressionBackgroundService>();
         services.AddHostedService<FinanceInsightsSnapshotBackgroundService>();
+        services.AddHostedService<FinanceAnalyticsStartupRefreshBackgroundService>();
         services.AddHostedService<FinanceSeedBackgroundService>();
 
         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
@@ -379,6 +380,8 @@ public static class DependencyInjection
         services.AddScoped<InternalFinanceToolProvider>();
         services.AddScoped<MockFinanceToolProvider>();
         services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
+        services.AddScoped<IFinanceAgentInsightRepository, FinanceAgentInsightRepository>();
+        services.AddScoped<IFinanceInsightPersistenceService, FinanceInsightPersistenceService>();
         services.AddScoped<IFinancePaymentCommandService, CompanyFinanceCommandService>();
         services.AddScoped<IFinanceCashSettlementPostingService, CompanyCashSettlementPostingService>();
         services.AddScoped<IFinanceApprovalTaskService, CompanyFinanceApprovalTaskService>();
@@ -418,6 +421,8 @@ public static class DependencyInjection
                 ? provider.GetRequiredService<MockFinanceToolProvider>()
                 : provider.GetRequiredService<InternalFinanceToolProvider>();
         });
+        services.AddSingleton<IFinanceWorkflowTriggerRegistry, StaticFinanceWorkflowTriggerRegistry>();
+        services.AddScoped<IFinanceWorkflowTriggerService, FinanceWorkflowTriggerService>();
         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();

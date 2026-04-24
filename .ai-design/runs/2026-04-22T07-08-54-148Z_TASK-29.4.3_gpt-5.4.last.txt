@@ -1,0 +1,560 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceInsightPresentation.cs b/src/VirtualCompany.Application/Finance/FinanceInsightPresentation.cs
+new file mode 100644
+index 0000000..2a0c4a8
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/FinanceInsightPresentation.cs
+@@ -0,0 +1,127 @@
++namespace VirtualCompany.Application.Finance;
++
++public static class FinanceInsightPresentation
++{
++    public static string BuildDashboardGroupKey(
++        string checkCode,
++        string? conditionKey,
++        string entityType,
++        string entityId)
++    {
++        var normalizedCheckCode = NormalizeToken(checkCode);
++        var normalizedConditionKey = NormalizeOptionalToken(conditionKey);
++        if (!string.IsNullOrWhiteSpace(normalizedConditionKey))
++        {
++            return $"{normalizedCheckCode}|{normalizedConditionKey}";
++        }
++
++        return $"{normalizedCheckCode}|{NormalizeEntityType(entityType)}|{NormalizeToken(entityId)}";
++    }
++
++    public static IReadOnlySet<string> BuildEntityTypeCandidates(string entityType)
++    {
++        var normalized = NormalizeEntityType(entityType);
++
++        return normalized switch
++        {
++            "invoice" or "finance_invoice" => new HashSet<string>(StringComparer.OrdinalIgnoreCase)
++            {
++                "invoice",
++                "finance_invoice"
++            },
++            "bill" or "finance_bill" => new HashSet<string>(StringComparer.OrdinalIgnoreCase)
++            {
++                "bill",
++                "finance_bill"
++            },
++            "payment" or "finance_payment" => new HashSet<string>(StringComparer.OrdinalIgnoreCase)
++            {
++                "payment",
++                "finance_payment"
++            },
++            _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase)
++            {
++                normalized
++            }
++        };
++    }
++
++    public static FinanceInsightDashboardText BuildDashboardText(
++        string checkCode,
++        string? entityDisplayName,
++        string rawMessage,
++        string rawRecommendation,
++        int occurrenceCount,
++        int relatedEntityCount)
++    {
++        var normalizedCheckCode = NormalizeToken(checkCode);
++        var entityLabel = string.IsNullOrWhiteSpace(entityDisplayName) ? "this record" : entityDisplayName.Trim();
++        var occurrenceSuffix = occurrenceCount > 1
++            ? $" Seen on {occurrenceCount} items."
++            : relatedEntityCount > 1
++                ? $" Affects {relatedEntityCount} related records."
++                : string.Empty;
++
++        return normalizedCheckCode switch
++        {
++            "overdue_receivables" => new FinanceInsightDashboardText(
++                "Collections need attention",
++                occurrenceCount > 1
++                    ? $"Overdue receivables are building across related customer records.{occurrenceSuffix}"
++                    : $"{entityLabel} has overdue receivables that need follow-up.{occurrenceSuffix}",
++                "Review overdue invoices and assign collections follow-up."),
++            "payables_pressure" => new FinanceInsightDashboardText(
++                "Supplier payments need attention",
++                occurrenceCount > 1
++                    ? $"Supplier payment pressure is affecting multiple payables.{occurrenceSuffix}"
++                    : $"{entityLabel} needs payment follow-up.{occurrenceSuffix}",
++                "Review due dates and schedule the next supplier payment."),
++            "cash_risk" => new FinanceInsightDashboardText(
++                "Cash position needs review",
++                occurrenceCount > 1
++                    ? $"Cash pressure is showing up across related records.{occurrenceSuffix}"
++                    : $"{NormalizeSentence(rawMessage)}{occurrenceSuffix}",
++                "Review cash commitments and near-term collections."),
++            "transaction_anomaly" => new FinanceInsightDashboardText(
++                occurrenceCount > 1 ? "Transactions need review" : "Transaction needs review",
++                occurrenceCount > 1
++                    ? $"Related transaction exceptions are still open.{occurrenceSuffix}"
++                    : $"{NormalizeSentence(rawMessage)}{occurrenceSuffix}",
++                "Review the flagged transaction activity and confirm the next action."),
++            _ => new FinanceInsightDashboardText(
++                FinancialCheckDefinitions.Resolve(checkCode).Name,
++                $"{NormalizeSentence(rawMessage)}{occurrenceSuffix}",
++                NormalizeSentence(rawRecommendation))
++        };
++    }
++
++    private static string NormalizeEntityType(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace('-', '_').ToLowerInvariant();
++
++    private static string NormalizeToken(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++
++    private static string? NormalizeOptionalToken(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? null
++            : NormalizeToken(value);
++
++    private static string NormalizeSentence(string value)
++    {
++        var trimmed = value?.Trim() ?? string.Empty;
++        if (string.IsNullOrWhiteSpace(trimmed))
++        {
++            return string.Empty;
++        }
++
++        return trimmed.EndsWith('.', StringComparison.Ordinal) ||
++               trimmed.EndsWith('!', StringComparison.Ordinal) ||
++               trimmed.EndsWith('?', StringComparison.Ordinal)
++            ? trimmed
++            : $"{trimmed}.";
++    }
++}
++
++public sealed record FinanceInsightDashboardText(
++    string Title,
++    string Summary,
++    string Recommendation);
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyDashboardFinanceSnapshotService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyDashboardFinanceSnapshotService.cs
+index 47e3ddb..5695464 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyDashboardFinanceSnapshotService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyDashboardFinanceSnapshotService.cs
+@@ -297,6 +297,13 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
+             .ThenBy(x => x.EntityType, StringComparer.OrdinalIgnoreCase)
+             .ThenBy(x => x.EntityId, StringComparer.OrdinalIgnoreCase)
+             .ToArray();
++        var presentation = FinanceInsightPresentation.BuildDashboardText(
++            representative.CheckCode,
++            primaryEntity?.DisplayName ?? representative.EntityDisplayName,
++            representative.Message,
++            representative.Recommendation,
++            group.Count(),
++            relatedEntities.Length);
+         var primaryEntity = relatedEntities.FirstOrDefault(x => x.IsPrimary);
+ 
+         return new GroupedFinanceInsightDto(
+@@ -304,9 +311,9 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
+-            definition.Name,
+-            representative.Message,
+-            representative.Recommendation,
++            presentation.Title,
++            presentation.Summary,
++            presentation.Recommendation,
+             severity,
+             representative.CheckCode,
+             group.Max(x => x.ObservedUtc >= x.UpdatedUtc ? x.ObservedUtc : x.UpdatedUtc),
+@@ -334,7 +341,9 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
+             .Take(3)
+             .Select(x => new FinanceActionDto(
+                 x.Title,
+-                string.IsNullOrWhiteSpace(x.Recommendation) ? x.Summary : x.Recommendation,
++                string.IsNullOrWhiteSpace(x.Recommendation)
++                    ? x.Summary
++                    : x.Recommendation,
+                 x.Severity,
+                 x.PrimaryEntity?.EntityType,
+                 x.PrimaryEntity?.EntityId,
+@@ -367,9 +376,11 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
+                 currency);
+         }
+ 
+-        var activeInsightCount = insightFeed.Count;
+-        var criticalInsightCount = insightFeed.Count(x => string.Equals(x.Severity, "critical", StringComparison.OrdinalIgnoreCase));
+-        var highInsightCount = insightFeed.Count(x => string.Equals(x.Severity, "high", StringComparison.OrdinalIgnoreCase));
++        var activeInsightCount = insightFeed.Sum(x => x.OccurrenceCount);
++        var criticalInsightCount = insightFeed
++            .Where(x => string.Equals(x.Severity, "critical", StringComparison.OrdinalIgnoreCase))
++            .Sum(x => x.OccurrenceCount);
++        var highInsightCount = insightFeed.Where(x => string.Equals(x.Severity, "high", StringComparison.OrdinalIgnoreCase)).Sum(x => x.OccurrenceCount);
+         var status = ResolveFinancialHealthStatus(riskLevel, criticalInsightCount, highInsightCount, activeInsightCount);
+         var score = Math.Max(0, 100
+             - ResolveRiskPenalty(riskLevel)
+@@ -485,10 +496,15 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
+     private static string BuildGroupKey(DashboardInsightRow row) =>
+-        string.Create(
+-            CultureInfo.InvariantCulture,
+-            $"{row.CheckCode.Trim().ToLowerInvariant()}|{row.ConditionKey.Trim().ToLowerInvariant()}");
++        FinanceInsightPresentation.BuildDashboardGroupKey(
++            row.CheckCode,
++            row.ConditionKey,
++            row.EntityType,
++            row.EntityId);
+ 
+     private static string BuildActionLabel(FinanceInsightEntityReferenceDto? primaryEntity) =>
+         primaryEntity?.EntityType?.Trim().ToLowerInvariant() switch
+         {
+             "invoice" => "Open invoice",
++            "finance_invoice" => "Open invoice",
++            "bill" => "Open bill",
++            "finance_bill" => "Open bill",
+             "payment" => "Open payment",
++            "finance_payment" => "Open payment",
+             _ => "Open finance"
+         };
+@@ -502,7 +518,10 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
+         return primaryEntity.EntityType.Trim().ToLowerInvariant() switch
+         {
+             "invoice" => $"/finance/invoices/{entityId:D}?companyId={companyId:D}",
++            "finance_invoice" => $"/finance/invoices/{entityId:D}?companyId={companyId:D}",
++            "bill" => $"/finance/bills/{entityId:D}?companyId={companyId:D}",
++            "finance_bill" => $"/finance/bills/{entityId:D}?companyId={companyId:D}",
+             "payment" => $"/finance/payments/{entityId:D}?companyId={companyId:D}",
++            "finance_payment" => $"/finance/payments/{entityId:D}?companyId={companyId:D}",
+             _ => $"/finance?companyId={companyId:D}"
+         };
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
+index 22d65b7..01f47c3 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
+@@ -96,9 +96,8 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
+             lowCashAlert,
+             insightDashboard.FinancialHealth,
+             insightDashboard.TopActions,
+-            insightDashboard.FeedItems,
+-                BuildCashPositionRoute(companyId)),
+             await BuildActionsAsync(companyId, membership.MembershipRole.ToStorageValue(), cancellationToken),
++            insightDashboard.FeedItems,
+             BuildDeepLinks(companyId));
+     }
+@@ -385,8 +384,16 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
+             _ => $"{group.Count()} related records"
+         };
+ 
++        var presentation = FinanceInsightPresentation.BuildDashboardText(
++            representative.CheckCode,
++            primaryEntity?.DisplayName ?? representative.EntityDisplayName,
++            representative.Message,
++            representative.Recommendation,
++            group.Count(),
++            relatedEntities.Length);
++
+         return new ExecutiveCockpitFinanceInsightFeedItemDto(
+             group.Key,
+             representative.Severity.ToStorageValue(),
+-            FinancialCheckDefinitions.Resolve(representative.CheckCode).Name,
+-            representative.Message,
+-            representative.Recommendation,
++            presentation.Title,
++            presentation.Summary,
++            presentation.Recommendation,
+             group.Count(),
+             entitySummary,
+             group.Max(x => x.UpdatedUtc),
+@@ -395,10 +402,12 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
+     }
+ 
+     private static string BuildDashboardInsightGroupKey(FinanceAgentInsight insight) =>
+-        string.IsNullOrWhiteSpace(insight.ConditionKey)
+-            ? $"{insight.CheckCode}:{insight.EntityType}"
+-            : $"{insight.CheckCode}:{insight.ConditionKey}";
+-
++        FinanceInsightPresentation.BuildDashboardGroupKey(
++            insight.CheckCode,
++            insight.ConditionKey,
++            insight.EntityType,
++            insight.EntityId);
++    
+     private static FinanceInsightEntityReferenceDto? BuildPrimaryEntityReference(FinanceAgentInsight insight)
+     {
+         var affectedEntities = DeserializeInsightEntities(insight.AffectedEntitiesJson);
+@@ -483,5 +492,5 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
+     private sealed record FinanceInsightDashboardProjection(
+         ExecutiveCockpitFinancialHealthDto FinancialHealth,
+-        IReadOnlyList<ExecutiveCockpitFinanceInsightFeedItemDto> TopActions,
+-        IReadOnlyList<ExecutiveCockpitFinanceInsightFeedItemDto> FeedItems);
++        IReadOnlyList<ExecutiveCockpitFinanceActionDto> TopActions,
++        IReadOnlyList<ExecutiveCockpitFinanceInsightFeedItemDto> FeedItems);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.AgentInsights.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.AgentInsights.cs
+index cec6f7b..32bdc98 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.AgentInsights.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.AgentInsights.cs
+@@ -61,6 +61,7 @@ public sealed partial class CompanyFinanceReadService
+         string entityType,
+         Guid entityId,
+         CancellationToken cancellationToken)
+     {
+-        var normalizedEntityType = entityType.Trim().ToLowerInvariant();
++        var entityTypeCandidates = FinanceInsightPresentation.BuildEntityTypeCandidates(entityType);
+         var candidateIds = BuildEntityIdCandidates(entityId);
+ 
+         var insights = await _dbContext.FinanceAgentInsights
+@@ -72,14 +73,14 @@ public sealed partial class CompanyFinanceReadService
+         return insights
+             .Select(MapNormalizedInsight)
+-            .Where(x => MatchesEntityInsight(x, normalizedEntityType, candidateIds))
++            .Where(x => MatchesEntityInsight(x, entityTypeCandidates, candidateIds))
+             .OrderBy(x => string.Equals(x.Status, "resolved", StringComparison.OrdinalIgnoreCase))
+             .ThenByDescending(x => GetInsightSeverityRank(x.Severity))
+             .ThenByDescending(x => x.UpdatedAt)
+             .ThenByDescending(x => x.CreatedAt)
+             .ThenBy(x => x.Id)
+             .ToArray();
+     }
+ 
+     private static bool MatchesEntityInsight(
+         NormalizedFinanceInsightDto insight,
+-        string entityType,
++        IReadOnlySet<string> entityTypes,
+         IReadOnlySet<string> candidateIds) =>
+-        MatchesEntityReference(insight.EntityReference, entityType, candidateIds) ||
+-        insight.AffectedEntities.Any(x => MatchesEntityReference(x, entityType, candidateIds));
++        MatchesEntityReference(insight.EntityReference, entityTypes, candidateIds) ||
++        insight.AffectedEntities.Any(x => MatchesEntityReference(x, entityTypes, candidateIds));
+ 
+     private static bool MatchesEntityReference(
+         FinanceInsightEntityReferenceDto entity,
+-        string entityType,
++        IReadOnlySet<string> entityTypes,
+         IReadOnlySet<string> candidateIds) =>
+-        string.Equals(entity.EntityType, entityType, StringComparison.OrdinalIgnoreCase) &&
++        entityTypes.Contains(entity.EntityType) &&
+         candidateIds.Contains(entity.EntityId);
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+index 0cb8d73..ea5360a 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardPageTests.cs
+@@ -149,6 +149,29 @@ public sealed class ExecutiveCockpitDashboardPageTests
+         cut.WaitForAssertion(() => Assert.NotNull(cut.Find("[data-testid='business-signals-panel']")));
+     }
+ 
++    [Fact]
++    public void Executive_cockpit_renders_financial_health_top_actions_and_grouped_finance_feed()
++    {
++        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
++        var dashboard = CreateDashboard(companyId, CreateFinanceSection(companyId, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "warning", "Warning", "65 days"));
++
++        dashboard.Finance!.TopActions[0].OccurrenceCount = 2;
++        dashboard.Finance.InsightsFeed[0].OccurrenceCount = 3;
++
++        using var harness = CreateDashboardHarness(companyId, dashboard);
++        var cut = RenderDashboard(harness, companyId, dashboard.CompanyName);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.NotNull(cut.Find("[data-testid='executive-cockpit-financial-health']"));
++            Assert.NotNull(cut.Find("[data-testid='executive-cockpit-top-finance-actions']"));
++            Assert.NotNull(cut.Find("[data-testid='executive-cockpit-finance-insights-feed']"));
++            Assert.Contains("2 occurrences", cut.Find("[data-testid='executive-cockpit-top-finance-actions']").TextContent);
++            Assert.Contains("3 occurrences", cut.Find("[data-testid='executive-cockpit-finance-insights-feed']").TextContent);
++            Assert.Contains("Financial health", cut.Markup);
++            Assert.Contains("Top finance actions", cut.Markup);
++        });
++    }
++
+     [Fact]
+     public void Executive_cockpit_finance_actions_call_backend_orchestration_endpoints_and_follow_routes()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceAgentInsightDetailEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceAgentInsightDetailEndpointsIntegrationTests.cs
+index a14cb93..db20a25 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceAgentInsightDetailEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceAgentInsightDetailEndpointsIntegrationTests.cs
+@@ -37,9 +37,9 @@ public sealed class FinanceAgentInsightDetailEndpointsIntegrationTests : IClassF
+         Assert.NotNull(bill);
+         Assert.NotNull(payment);
+ 
+-        Assert.Equal(new[] { seed.InvoiceInsightId }.OrderBy(x => x).ToArray(), invoice!.AgentInsights.Select(x => x.Id).OrderBy(x => x).ToArray());
+-        Assert.Equal(new[] { seed.BillInsightId }.OrderBy(x => x).ToArray(), bill!.AgentInsights.Select(x => x.Id).OrderBy(x => x).ToArray());
+-        Assert.Equal(new[] { seed.PaymentInsightId }.OrderBy(x => x).ToArray(), payment!.AgentInsights.Select(x => x.Id).OrderBy(x => x).ToArray());
++        Assert.Equal(new[] { seed.InvoiceInsightId, seed.InvoiceAliasInsightId }.OrderBy(x => x).ToArray(), invoice!.AgentInsights.Select(x => x.Id).OrderBy(x => x).ToArray());
++        Assert.Equal(new[] { seed.BillInsightId, seed.BillAliasInsightId }.OrderBy(x => x).ToArray(), bill!.AgentInsights.Select(x => x.Id).OrderBy(x => x).ToArray());
++        Assert.Equal(new[] { seed.PaymentInsightId, seed.PaymentAliasInsightId }.OrderBy(x => x).ToArray(), payment!.AgentInsights.Select(x => x.Id).OrderBy(x => x).ToArray());
+     }
+ 
+     [Fact]
+@@ -73,6 +73,9 @@ public sealed class FinanceAgentInsightDetailEndpointsIntegrationTests : IClassF
+         var invoiceInsightId = Guid.NewGuid();
+         var billInsightId = Guid.NewGuid();
+         var paymentInsightId = Guid.NewGuid();
++        var invoiceAliasInsightId = Guid.NewGuid();
++        var billAliasInsightId = Guid.NewGuid();
++        var paymentAliasInsightId = Guid.NewGuid();
+         var otherCompanyInvoiceInsightId = Guid.NewGuid();
+ 
+         var invoiceId = Guid.Empty;
+@@ -158,6 +161,69 @@ public sealed class FinanceAgentInsightDetailEndpointsIntegrationTests : IClassF
+                     "{\"source\":\"detail-test\"}",
+                     FinanceInsightStatus.Active,
+                     new DateTime(2026, 4, 22, 10, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 10, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 10, 5, 0, DateTimeKind.Utc)),
++                new FinanceAgentInsight(
++                    invoiceAliasInsightId,
++                    companyId,
++                    FinancialCheckDefinitions.TransactionAnomaly.Code,
++                    "invoice:detail-review-prefixed",
++                    "finance_invoice",
++                    invoiceId.ToString("D"),
++                    FinancialCheckSeverity.Medium,
++                    "Invoice detail still needs a second review.",
++                    "Keep the invoice in the review queue.",
++                    0.73m,
++                    "Invoice detail alias",
++                    JsonSerializer.Serialize(new[]
++                    {
++                        new FinanceInsightEntityReferenceDto("finance_invoice", invoiceId.ToString("D"), "Invoice detail alias", true)
++                    }),
++                    "{\"source\":\"detail-test\"}",
++                    FinanceInsightStatus.Active,
++                    new DateTime(2026, 4, 22, 8, 30, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 8, 30, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 8, 35, 0, DateTimeKind.Utc)),
++                new FinanceAgentInsight(
++                    billAliasInsightId,
++                    companyId,
++                    FinancialCheckDefinitions.PayablesPressure.Code,
++                    "bill:priority-payment-prefixed",
++                    "finance_bill",
++                    billId.ToString("D"),
++                    FinancialCheckSeverity.High,
++                    "Bill alias insight should still appear on the selected bill.",
++                    "Confirm the supplier payment plan.",
++                    0.84m,
++                    "Bill detail alias",
++                    JsonSerializer.Serialize(new[]
++                    {
++                        new FinanceInsightEntityReferenceDto("finance_bill", billId.ToString("D"), "Bill detail alias", true)
++                    }),
++                    "{\"source\":\"detail-test\"}",
++                    FinanceInsightStatus.Active,
++                    new DateTime(2026, 4, 22, 9, 30, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 9, 30, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 9, 40, 0, DateTimeKind.Utc)),
++                new FinanceAgentInsight(
++                    paymentAliasInsightId,
++                    companyId,
++                    FinancialCheckDefinitions.CashRisk.Code,
++                    "payment:reconciliation-prefixed",
++                    "finance_payment",
++                    paymentId.ToString("D"),
++                    FinancialCheckSeverity.Low,
++                    "Payment alias insight should still surface on the selected payment.",
++                    "Confirm whether the payment needs follow-up.",
++                    0.66m,
++                    "Payment detail alias",
++                    JsonSerializer.Serialize(new[]
++                    {
++                        new FinanceInsightEntityReferenceDto("finance_payment", paymentId.ToString("D"), "Payment detail alias", true)
++                    }),
++                    "{\"source\":\"detail-test\"}",
++                    FinanceInsightStatus.Active,
++                    new DateTime(2026, 4, 22, 10, 15, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 10, 15, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 10, 16, 0, DateTimeKind.Utc)),
++                new FinanceAgentInsight(
++                    Guid.NewGuid(),
++                    companyId,
++                    FinancialCheckDefinitions.CashRisk.Code,
++                    "payment:other-detail",
++                    "payment",
++                    financeSeed.PaymentIds[1].ToString("D"),
++                    FinancialCheckSeverity.Low,
++                    "Different payment insight should not be included.",
++                    "Ignore for the selected payment.",
++                    0.62m,
++                    "Other payment",
++                    JsonSerializer.Serialize(new[]
++                    {
++                        new FinanceInsightEntityReferenceDto("payment", financeSeed.PaymentIds[1].ToString("D"), "Other payment", true)
++                    }),
++                    null,
++                    FinanceInsightStatus.Active,
++                    new DateTime(2026, 4, 22, 10, 30, 0, DateTimeKind.Utc),
+                     new DateTime(2026, 4, 22, 10, 0, 0, DateTimeKind.Utc),
+                     new DateTime(2026, 4, 22, 10, 5, 0, DateTimeKind.Utc)),
+                 new FinanceAgentInsight(
+@@ -224,6 +290,9 @@ public sealed class FinanceAgentInsightDetailEndpointsIntegrationTests : IClassF
+             invoiceId,
+             billId,
+             paymentId,
++            invoiceAliasInsightId,
++            billAliasInsightId,
++            paymentAliasInsightId,
+             invoiceInsightId,
+             billInsightId,
+             paymentInsightId,
+@@ -237,6 +306,9 @@ public sealed class FinanceAgentInsightDetailEndpointsIntegrationTests : IClassF
+         Guid InvoiceId,
+         Guid BillId,
+         Guid PaymentId,
++        Guid InvoiceAliasInsightId,
++        Guid BillAliasInsightId,
++        Guid PaymentAliasInsightId,
+         Guid InvoiceInsightId,
+         Guid BillInsightId,
+         Guid PaymentInsightId,
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightPresentationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightPresentationTests.cs
+new file mode 100644
+index 0000000..7cb6113
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceInsightPresentationTests.cs
+@@ -0,0 +1,45 @@
++using VirtualCompany.Application.Finance;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceInsightPresentationTests
++{
++    [Fact]
++    public void BuildDashboardGroupKey_uses_condition_key_when_present()
++    {
++        var key = FinanceInsightPresentation.BuildDashboardGroupKey(
++            FinancialCheckDefinitions.OverdueReceivables.Code,
++            "collections:customer-contoso",
++            "invoice",
++            "invoice-1");
++
++        Assert.Equal("overdue_receivables|collections:customer_contoso", key);
++    }
++
++    [Fact]
++    public void BuildDashboardGroupKey_falls_back_to_entity_scope_when_condition_key_is_missing()
++    {
++        var key = FinanceInsightPresentation.BuildDashboardGroupKey(
++            FinancialCheckDefinitions.TransactionAnomaly.Code,
++            null,
++            "finance_invoice",
++            "INV-9");
++
++        Assert.Equal("transaction_anomaly|finance_invoice|inv_9", key);
++    }
++
++    [Fact]
++    public void BuildEntityTypeCandidates_includes_prefixed_finance_aliases()
++    {
++        var invoiceCandidates = FinanceInsightPresentation.BuildEntityTypeCandidates("invoice");
++        var billCandidates = FinanceInsightPresentation.BuildEntityTypeCandidates("finance_bill");
++        var paymentCandidates = FinanceInsightPresentation.BuildEntityTypeCandidates("payment");
++
++        Assert.Contains("invoice", invoiceCandidates);
++        Assert.Contains("finance_invoice", invoiceCandidates);
++        Assert.Contains("bill", billCandidates);
++        Assert.Contains("finance_bill", billCandidates);
++        Assert.Contains("payment", paymentCandidates);
++        Assert.Contains("finance_payment", paymentCandidates);
++    }
++}
++END_OF_PATCH

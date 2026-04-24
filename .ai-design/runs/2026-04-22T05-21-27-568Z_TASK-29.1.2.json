@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-29.1.2",
+  "promptPath": ".ai-design/prompts/TASK-29.1.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-22T05:21:27.568Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-22T05-21-27-568Z_TASK-29.1.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-22T05-21-27-568Z_TASK-29.1.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-22T05:26:38.884Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ontext =>\n         {\n-            dbContext.CompanyOutboxMessages.Add(CreatePlatformEventOutboxMessage(secondOutboxId, companyId, utcNow.AddMinutes(1), correlationId, eventId, paymentId, \"payment-outbox-002\"));\n+            dbContext.CompanyOutboxMessages.Add(CreatePlatformEventOutboxMessage(secondOutboxId, companyId, utcNow.AddMinutes(1), correlationId, eventId, paymentId, sourceEntityVersion, \"payment-outbox-002\"));\n             return Task.CompletedTask;\n         });\n@@ -127,8 +128,10 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW\n             Assert.Single(executions);\n             Assert.Equal(companyId, execution.CompanyId);\n             Assert.Equal(\"payment\", execution.TriggerType);\n+            Assert.Equal(correlationId, execution.CorrelationId);\n             Assert.Equal(paymentId.ToString(\"N\"), execution.SourceEntityId);\n             Assert.NotEqual(default, execution.StartedAtUtc);\n+            Assert.Equal(sourceEntityVersion, execution.SourceEntityVersion);\n             Assert.NotNull(execution.CompletedAtUtc);\n             Assert.Equal(\"succeeded\", execution.Outcome);\n             Assert.Contains(\"refresh_insights_snapshot\", execution.GetExecutedChecks());\n@@ -145,6 +148,7 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW\n         DateTime occurredAtUtc,\n         string correlationId,\n         string eventId,\n         Guid paymentId,\n+        string sourceEntityVersion,\n         string idempotencyKey)\n     {\n         var payload = JsonSerializer.Serialize(new PlatformEventEnvelope(\n@@ -160,6 +164,7 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW\n             {\n                 [\"paymentId\"] = JsonValue.Create(paymentId),\n                 [\"amount\"] = JsonValue.Create(640.10m),\n+                [\"sourceEntityVersion\"] = JsonValue.Create(sourceEntityVersion),\n                 [\"currency\"] = JsonValue.Create(\"USD\")\n             }));\n \nEND_OF_PATCH\n",
+  "stderrTail": "\n-            dbContext.CompanyOutboxMessages.Add(CreatePlatformEventOutboxMessage(secondOutboxId, companyId, utcNow.AddMinutes(1), correlationId, eventId, paymentId, \"payment-outbox-002\"));\n+            dbContext.CompanyOutboxMessages.Add(CreatePlatformEventOutboxMessage(secondOutboxId, companyId, utcNow.AddMinutes(1), correlationId, eventId, paymentId, sourceEntityVersion, \"payment-outbox-002\"));\n             return Task.CompletedTask;\n         });\n@@ -127,8 +128,10 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW\n             Assert.Single(executions);\n             Assert.Equal(companyId, execution.CompanyId);\n             Assert.Equal(\"payment\", execution.TriggerType);\n+            Assert.Equal(correlationId, execution.CorrelationId);\n             Assert.Equal(paymentId.ToString(\"N\"), execution.SourceEntityId);\n             Assert.NotEqual(default, execution.StartedAtUtc);\n+            Assert.Equal(sourceEntityVersion, execution.SourceEntityVersion);\n             Assert.NotNull(execution.CompletedAtUtc);\n             Assert.Equal(\"succeeded\", execution.Outcome);\n             Assert.Contains(\"refresh_insights_snapshot\", execution.GetExecutedChecks());\n@@ -145,6 +148,7 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW\n         DateTime occurredAtUtc,\n         string correlationId,\n         string eventId,\n         Guid paymentId,\n+        string sourceEntityVersion,\n         string idempotencyKey)\n     {\n         var payload = JsonSerializer.Serialize(new PlatformEventEnvelope(\n@@ -160,6 +164,7 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW\n             {\n                 [\"paymentId\"] = JsonValue.Create(paymentId),\n                 [\"amount\"] = JsonValue.Create(640.10m),\n+                [\"sourceEntityVersion\"] = JsonValue.Create(sourceEntityVersion),\n                 [\"currency\"] = JsonValue.Create(\"USD\")\n             }));\n \nEND_OF_PATCH\ntokens used\n143,239\n",
+  "verbosityMode": "summary"
+}

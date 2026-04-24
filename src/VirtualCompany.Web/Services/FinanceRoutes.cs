@@ -20,6 +20,8 @@ public static class FinanceRoutes
     public const string Transactions = "/finance/transactions";
     public const string Payments = "/finance/payments";
     public const string PaymentDetail = "/finance/payments/{paymentId:guid}";
+    public const string Bills = "/finance/bills";
+    public const string BillDetail = "/finance/bills/{billId:guid}";
     public const string TransactionDetail = "/finance/transactions/{transactionId:guid}";
     public const string Invoices = "/finance/invoices";
     public const string Reviews = "/finance/reviews";
@@ -54,6 +56,7 @@ public static class FinanceRoutes
             new("Cash position", CashPosition, "Review cash coverage and company liquidity in the active tenant context."),
             new("Transactions", Transactions, "Inspect transaction activity and categorization work for the selected company."),
             new("Payments", Payments, "Inspect incoming and outgoing cash movement records for the selected company."),
+            new("Bills", Bills, "Inspect supplier bills and tenant-scoped bill detail workflows."),
             new("Invoice reviews", Reviews, "Review finance workflow recommendations and actions for invoice workbench items."),
             new("Invoices", Invoices, "Track invoice review and collection workflows inside the active company."),
             new("Balances", Balances, "Browse account balances with explicit tenant-scoped routing."),
@@ -71,6 +74,9 @@ public static class FinanceRoutes
 
     public static string BuildPaymentDetailPath(Guid paymentId, Guid? companyId) =>
         WithCompanyContext($"/finance/payments/{paymentId:D}", companyId);
+
+    public static string BuildBillDetailPath(Guid billId, Guid? companyId) =>
+        WithCompanyContext($"/finance/bills/{billId:D}", companyId);
 
     public static string BuildInvoiceDetailPath(Guid invoiceId, Guid? companyId) =>
         WithCompanyContext($"/finance/invoices/{invoiceId:D}", companyId);

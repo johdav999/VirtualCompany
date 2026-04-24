@@ -26,7 +26,11 @@ public sealed partial class CompanyFinanceReadService
             query.PayableWindowDays,
             FinanceInsightSnapshotKeys.Default);
 
-        if (query.PreferSnapshot)
+        var useSnapshot = query.PreferSnapshot &&
+                          query.IncludeResolved &&
+                          string.IsNullOrWhiteSpace(query.EntityType) &&
+                          string.IsNullOrWhiteSpace(query.EntityId);
+        if (useSnapshot)
         {
             var cached = await TryGetCachedInsightsAsync(parameters, cancellationToken);
             if (cached is not null)
@@ -35,7 +39,14 @@ public sealed partial class CompanyFinanceReadService
             }
         }
 
-        return await BuildInsightsAsync(parameters, fromSnapshot: false, snapshotExpiresAtUtc: null, cancellationToken);
+        return await BuildInsightsAsync(
+            parameters,
+            fromSnapshot: false,
+            snapshotExpiresAtUtc: null,
+            entityType: query.EntityType,
+            entityId: query.EntityId,
+            includeResolved: query.IncludeResolved,
+            cancellationToken: cancellationToken);
     }
 
     public async Task<FinanceInsightsSnapshotRefreshResultDto> RefreshInsightsSnapshotAsync(
@@ -53,7 +64,14 @@ public sealed partial class CompanyFinanceReadService
             command.PayableWindowDays,
             command.SnapshotKey);
 
-        var refreshed = await BuildInsightsAsync(parameters, fromSnapshot: false, snapshotExpiresAtUtc: null, cancellationToken);
+        var refreshed = await BuildInsightsAsync(
+            parameters,
+            fromSnapshot: false,
+            snapshotExpiresAtUtc: null,
+            entityType: null,
+            entityId: null,
+            includeResolved: true,
+            cancellationToken: cancellationToken);
         var retention = NormalizeSnapshotRetention(command.Retention);
         var expiresAtUtc = GetUtcNow().Add(retention);
 
@@ -160,133 +178,53 @@ public sealed partial class CompanyFinanceReadService
     private async Task<FinanceInsightsDto> BuildInsightsAsync(
         FinanceInsightQueryParameters parameters,
         bool fromSnapshot,
+        string? entityType,
+        string? entityId,
+        bool includeResolved,
         DateTime? snapshotExpiresAtUtc,
         CancellationToken cancellationToken)
     {
         var generatedAt = parameters.GeneratedAtUtc;
         var asOfUtc = parameters.AsOfUtc;
-        var expenseWindowDays = parameters.ExpenseWindowDays;
-        var trendWindowDays = parameters.TrendWindowDays;
-        var payableWindowDays = parameters.PayableWindowDays;
-
-        var cashBalance = await GetCashBalanceAsync(new GetFinanceCashBalanceQuery(parameters.CompanyId, asOfUtc), cancellationToken);
-        var expenseWindowStartUtc = asOfUtc.Date.AddDays(-expenseWindowDays + 1);
-        var trendWindowStartUtc = asOfUtc.Date.AddDays(-trendWindowDays + 1);
-        var previousTrendWindowStartUtc = trendWindowStartUtc.AddDays(-trendWindowDays);
-        var payableWindowEndUtc = asOfUtc.Date.AddDays(payableWindowDays + 1);
-
-        var expenseRows = await _dbContext.FinanceTransactions
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x =>
-                x.CompanyId == parameters.CompanyId &&
-                x.TransactionUtc >= expenseWindowStartUtc &&
-                x.TransactionUtc <= asOfUtc &&
-                x.Amount < 0m)
-            .Select(x => new InsightExpenseRow(
-                x.Id,
-                x.TransactionUtc,
-                x.TransactionType,
-                x.Amount,
-                x.Currency,
-                x.Counterparty == null ? null : x.Counterparty.Name))
-            .ToListAsync(cancellationToken);
-
-        var revenueRows = await _dbContext.FinanceInvoices
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x =>
-                x.CompanyId == parameters.CompanyId &&
-                x.IssuedUtc >= previousTrendWindowStartUtc &&
-                x.IssuedUtc < payableWindowEndUtc)
-            .Select(x => new InsightRevenueRow(x.Id, x.IssuedUtc, x.Amount, x.Currency))
-            .ToListAsync(cancellationToken);
-
-        var invoiceRows = await _dbContext.FinanceInvoices
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x => x.CompanyId == parameters.CompanyId)
-            .Select(x => new InsightInvoiceRow(
-                x.Id,
-                x.CounterpartyId,
-                x.Counterparty == null ? MissingCounterpartyName : x.Counterparty.Name,
-                x.DueUtc,
-                x.Amount,
-                x.Currency,
-                x.Status,
-                x.SettlementStatus))
-            .ToListAsync(cancellationToken);
-
-        var billRows = await _dbContext.FinanceBills
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x => x.CompanyId == parameters.CompanyId)
-            .Select(x => new InsightBillRow(
-                x.Id,
-                x.CounterpartyId,
-                x.Counterparty == null ? MissingCounterpartyName : x.Counterparty.Name,
-                x.DueUtc,
-                x.Amount,
-                x.Currency,
-                x.Status,
-                x.SettlementStatus))
-            .ToListAsync(cancellationToken);
-
-        var completedIncomingByInvoice = await _dbContext.PaymentAllocations
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x =>
-                x.CompanyId == parameters.CompanyId &&
-                x.InvoiceId.HasValue &&
-                x.Payment.Status == PaymentStatuses.Completed &&
-                x.Payment.PaymentType == PaymentTypes.Incoming &&
-                x.Payment.PaymentDate <= asOfUtc)
-            .GroupBy(x => x.InvoiceId!.Value)
-            .Select(x => new InsightAllocationRow(x.Key, x.Sum(allocation => allocation.AllocatedAmount)))
-            .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
-
-        var completedOutgoingByBill = await _dbContext.PaymentAllocations
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x =>
-                x.CompanyId == parameters.CompanyId &&
-                x.BillId.HasValue &&
-                x.Payment.Status == PaymentStatuses.Completed &&
-                x.Payment.PaymentType == PaymentTypes.Outgoing &&
-                x.Payment.PaymentDate <= asOfUtc)
-            .GroupBy(x => x.BillId!.Value)
-            .Select(x => new InsightAllocationRow(x.Key, x.Sum(allocation => allocation.AllocatedAmount)))
-            .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
-
-        var currency = ResolveCurrency(
-            expenseRows.Select(x => new FinanceAmountRow(x.Amount, x.Currency))
-                .Concat(revenueRows.Select(x => new FinanceAmountRow(x.Amount, x.Currency))));
-
-        var topExpenses = BuildTopExpensesInsight(expenseRows, expenseWindowStartUtc, asOfUtc, currency);
-        var revenueTrend = BuildRevenueTrendInsight(revenueRows, previousTrendWindowStartUtc, trendWindowStartUtc, asOfUtc, currency, trendWindowDays);
-        var burnRate = BuildBurnRateInsight(expenseRows, revenueRows, expenseWindowDays, cashBalance.Amount, currency, trendWindowStartUtc, asOfUtc);
-        var overdueCustomerRisk = BuildOverdueCustomerRiskInsight(invoiceRows, completedIncomingByInvoice, asOfUtc, currency);
-        var payablePressure = BuildPayablePressureInsight(billRows, completedOutgoingByBill, asOfUtc, payableWindowEndUtc, payableWindowDays, cashBalance.Amount, currency);
-        var dataCoverageNote = BuildCoverageNote(expenseRows.Count, revenueRows.Count, invoiceRows.Count, billRows.Count);
-        var highlights = BuildHighlights(topExpenses, revenueTrend, burnRate, overdueCustomerRisk, payablePressure);
-        var hints = BuildNarrativeHints(topExpenses, revenueTrend, burnRate, overdueCustomerRisk, payablePressure);
-
-        return new FinanceInsightsDto(
+        var context = new FinancialCheckContext(
             parameters.CompanyId,
-            generatedAt,
-            string.Equals(currency, "USD", StringComparison.OrdinalIgnoreCase) ? cashBalance.Currency : currency,
-            BuildHeadline(revenueTrend, burnRate, overdueCustomerRisk, payablePressure),
-            BuildSummary(topExpenses, revenueTrend, burnRate, overdueCustomerRisk, payablePressure),
-            dataCoverageNote,
-            fromSnapshot,
-            snapshotExpiresAtUtc,
-            highlights,
-            hints,
-            topExpenses,
-            revenueTrend,
-            burnRate,
-            overdueCustomerRisk,
-            payablePressure);
+            asOfUtc,
+            parameters.ExpenseWindowDays,
+            parameters.TrendWindowDays,
+            parameters.PayableWindowDays);
+        var computed = await ComputeOperationalAnalyticsAsync(parameters, cancellationToken);
+        var currentResults = new List<FinancialCheckResult>();
+
+        foreach (var check in _financialChecks.OrderBy(x => x.CheckCode, StringComparer.OrdinalIgnoreCase))
+        {
+            var checkResults = await check.ExecuteAsync(context, cancellationToken);
+            if (checkResults.Count > 0)
+            {
+                currentResults.AddRange(checkResults);
+            }
+        }
+
+        currentResults.AddRange(await BuildDerivedOperationalCheckResultsAsync(parameters, computed, cancellationToken));
+
+        var knownCheckCodes = _financialChecks
+            .Select(x => x.CheckCode)
+            .Concat(currentResults.Select(x => x.CheckCode))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        await _financeInsightPersistenceService.ReconcileAsync(
+            context,
+            knownCheckCodes,
+            currentResults,
+            cancellationToken);
+
+        var items = await _financeInsightPersistenceService.ListAsync(
+            parameters.CompanyId,
+            entityType,
+            entityId,
+            includeResolved,
+            cancellationToken);
+        return new FinanceInsightsDto(parameters.CompanyId, generatedAt, fromSnapshot, snapshotExpiresAtUtc, items);
     }
 
     private async Task<FinanceInsightsDto?> TryGetCachedInsightsAsync(
@@ -299,6 +237,7 @@ public sealed partial class CompanyFinanceReadService
         }
 
         var payload = await _insightSnapshotCache.GetStringAsync(parameters.CacheKey, cancellationToken);
+
         if (string.IsNullOrWhiteSpace(payload))
         {
             return null;

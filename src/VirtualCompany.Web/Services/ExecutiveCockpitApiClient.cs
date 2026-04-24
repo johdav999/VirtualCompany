@@ -240,6 +240,30 @@ public sealed class ExecutiveCockpitApiClient
                     StatusLabel = "Healthy",
                     Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)
                 },
+                FinancialHealth = new ExecutiveCockpitFinancialHealthViewModel
+                {
+                    Status = "healthy",
+                    Title = "Financial health is stable",
+                    Summary = "No persisted finance insights are available in offline mode.",
+                    ActiveInsightCount = 0,
+                    CriticalInsightCount = 0,
+                    HighInsightCount = 0
+                },
+                TopActions = [],
+                InsightsFeed =
+                [
+                    new ExecutiveCockpitFinanceInsightFeedItemViewModel
+                    {
+                        GroupKey = "offline-finance",
+                        Severity = "low",
+                        Title = "Finance insight feed",
+                        Summary = "Persisted finance insights appear here when the live backend is connected.",
+                        Recommendation = "Open the finance workspace after the backend is available.",
+                        OccurrenceCount = 1,
+                        EntitySummary = "Offline workspace",
+                        LatestUpdatedUtc = DateTime.UtcNow
+                    }
+                ],
                 AvailableActions =
                 [
                     new ExecutiveCockpitFinanceActionViewModel
@@ -530,6 +554,9 @@ public sealed class ExecutiveCockpitFinanceViewModel
     public ExecutiveCockpitFinanceCashWidgetViewModel CashPosition { get; set; } = new();
     public ExecutiveCockpitFinanceRunwayWidgetViewModel Runway { get; set; } = new();
     public ExecutiveCockpitFinanceAlertDetailViewModel? LowCashAlert { get; set; }
+    public ExecutiveCockpitFinancialHealthViewModel FinancialHealth { get; set; } = new();
+    public List<ExecutiveCockpitFinanceInsightFeedItemViewModel> TopActions { get; set; } = [];
+    public List<ExecutiveCockpitFinanceInsightFeedItemViewModel> InsightsFeed { get; set; } = [];
     public List<ExecutiveCockpitFinanceActionViewModel> AvailableActions { get; set; } = [];
     public List<ExecutiveCockpitDeepLinkViewModel> DeepLinks { get; set; } = [];
 }
@@ -566,6 +593,30 @@ public sealed class ExecutiveCockpitFinanceAlertDetailViewModel
     public List<ExecutiveCockpitFinanceActionViewModel> AvailableActions { get; set; } = [];
     public List<ExecutiveCockpitDeepLinkViewModel> Links { get; set; } = [];
     public string Route { get; set; } = string.Empty;
+}
+
+public sealed class ExecutiveCockpitFinancialHealthViewModel
+{
+    public string Status { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public int ActiveInsightCount { get; set; }
+    public int CriticalInsightCount { get; set; }
+    public int HighInsightCount { get; set; }
+    public DateTime? LastUpdatedUtc { get; set; }
+}
+
+public sealed class ExecutiveCockpitFinanceInsightFeedItemViewModel
+{
+    public string GroupKey { get; set; } = string.Empty;
+    public string Severity { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public string Recommendation { get; set; } = string.Empty;
+    public int OccurrenceCount { get; set; }
+    public string EntitySummary { get; set; } = string.Empty;
+    public DateTime LatestUpdatedUtc { get; set; }
+    public string? Route { get; set; }
 }
 
 public sealed class ExecutiveCockpitFinanceActionViewModel

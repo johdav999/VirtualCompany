@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-29.2.3",
+  "promptPath": ".ai-design/prompts/TASK-29.2.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-22T06:05:11.838Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-22T06-05-11-838Z_TASK-29.2.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-22T06-05-11-838Z_TASK-29.2.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-22T06:11:52.738Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": " @@ public sealed class FinanceInsightPersistenceServiceTests\n                 new FinancialCheckResult(\n                     FinancialCheckDefinitions.PayablesPressure,\n                     \"payables_pressure:supplier-7\",\n+                    fabrikam.EntityType,\n+                    fabrikam.EntityId,\n                     FinancialCheckSeverity.Medium,\n                     \"Fabrikam has bills due soon.\",\n                     \"Sequence the payment run.\",\n@@ -131,6 +144,9 @@ public sealed class FinanceInsightPersistenceServiceTests\n         var insight = Assert.Single(filtered);\n         Assert.Equal(\"Overdue receivables\", insight.CheckName);\n         Assert.Equal(\"overdue_receivables:customer-1\", insight.ConditionKey);\n+        Assert.Equal(\"counterparty\", insight.EntityType);\n+        Assert.Equal(\"customer-1\", insight.EntityId);\n+        Assert.True(insight.ObservedAt > DateTime.MinValue);\n         Assert.Equal(\"counterparty\", insight.PrimaryEntity!.EntityType);\n     }\n \ndiff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs\nindex 0c84453..e62d9d2 100644\n--- a/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs\n@@ -70,6 +70,9 @@ public sealed class FinanceInsightsServiceTests\n         Assert.NotNull(result.Items);\n         Assert.All(result.Items, item => Assert.InRange(item.Confidence, 0m, 1m));\n         Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.CheckName)));\n+        Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.EntityType)));\n+        Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.EntityId)));\n+        Assert.All(result.Items, item => Assert.True(item.ObservedAt > DateTime.MinValue));\n         Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.ConditionKey)));\n     }\n END_OF_PATCH\n",
+  "stderrTail": "ass FinanceInsightPersistenceServiceTests\n                 new FinancialCheckResult(\n                     FinancialCheckDefinitions.PayablesPressure,\n                     \"payables_pressure:supplier-7\",\n+                    fabrikam.EntityType,\n+                    fabrikam.EntityId,\n                     FinancialCheckSeverity.Medium,\n                     \"Fabrikam has bills due soon.\",\n                     \"Sequence the payment run.\",\n@@ -131,6 +144,9 @@ public sealed class FinanceInsightPersistenceServiceTests\n         var insight = Assert.Single(filtered);\n         Assert.Equal(\"Overdue receivables\", insight.CheckName);\n         Assert.Equal(\"overdue_receivables:customer-1\", insight.ConditionKey);\n+        Assert.Equal(\"counterparty\", insight.EntityType);\n+        Assert.Equal(\"customer-1\", insight.EntityId);\n+        Assert.True(insight.ObservedAt > DateTime.MinValue);\n         Assert.Equal(\"counterparty\", insight.PrimaryEntity!.EntityType);\n     }\n \ndiff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs\nindex 0c84453..e62d9d2 100644\n--- a/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs\n@@ -70,6 +70,9 @@ public sealed class FinanceInsightsServiceTests\n         Assert.NotNull(result.Items);\n         Assert.All(result.Items, item => Assert.InRange(item.Confidence, 0m, 1m));\n         Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.CheckName)));\n+        Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.EntityType)));\n+        Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.EntityId)));\n+        Assert.All(result.Items, item => Assert.True(item.ObservedAt > DateTime.MinValue));\n         Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.ConditionKey)));\n     }\n END_OF_PATCH\ntokens used\n114,722\n",
+  "verbosityMode": "summary"
+}

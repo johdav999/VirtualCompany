@@ -85,7 +85,11 @@ else
                                     @if (approval.CurrentStep is not null)
                                     {
                                         <div class="mt-3">
-                                            <textarea class="form-control mb-2" rows="2" placeholder="Decision comment" @bind="approvalComments[approval.Id]"></textarea>
+                                            <textarea class="form-control mb-2"
+                                                      rows="2"
+                                                      placeholder="Decision comment"
+                                                      value="@GetApprovalComment(approval.Id)"
+                                                      @onchange='args => SetApprovalComment(approval.Id, args.Value?.ToString())'></textarea>
                                             <div class="dashboard-actions">
                                                 <button class="btn btn-primary" @onclick='() => DecideAsync(approval, "approve")' disabled="@isDeciding">Approve</button>
                                                 <button class="btn btn-outline-secondary" @onclick='() => DecideAsync(approval, "reject")' disabled="@isDeciding">Reject</button>
@@ -284,4 +288,20 @@ else
 
     private static string FormatStepApprover(ApprovalStepViewModel? step) =>
         step is null ? "current approver" : $"{step.ApproverType} {step.ApproverRef}";
+
+    private string GetApprovalComment(Guid approvalId) =>
+        approvalComments.TryGetValue(approvalId, out var comment)
+            ? comment ?? string.Empty
+            : string.Empty;
+
+    private void SetApprovalComment(Guid approvalId, string? comment)
+    {
+        if (string.IsNullOrWhiteSpace(comment))
+        {
+            approvalComments.Remove(approvalId);
+            return;
+        }
+
+        approvalComments[approvalId] = comment;
+    }
 }

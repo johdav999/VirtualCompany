@@ -390,6 +390,25 @@ public sealed class FinanceApiClient
             ? Task.FromResult<FinancePaymentResponse?>(null)
             : GetAsync<FinancePaymentResponse>(companyId, $"internal/companies/{companyId}/finance/payments/{paymentId}", allowNotFound: true, cancellationToken);
 
+    public Task<IReadOnlyList<FinanceBillResponse>> GetBillsAsync(
+        Guid companyId,
+        int limit = 100,
+        CancellationToken cancellationToken = default)
+    {
+        if (_useOfflineMode)
+        {
+            return Task.FromResult<IReadOnlyList<FinanceBillResponse>>([]);
+        }
+
+        var uri = $"internal/companies/{companyId}/finance/bills{BuildQuery(("limit", limit.ToString(CultureInfo.InvariantCulture)))}";
+        return GetListAsync<FinanceBillResponse>(companyId, uri, cancellationToken);
+    }
+
+    public Task<FinanceBillDetailResponse?> GetBillDetailAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult<FinanceBillDetailResponse?>(null)
+            : GetAsync<FinanceBillDetailResponse>(companyId, $"internal/companies/{companyId}/finance/bills/{billId}", allowNotFound: true, cancellationToken);
+
     public Task<FinancePaymentResponse> CreatePaymentAsync(
         Guid companyId,
         CreateFinancePaymentRequest request,
@@ -945,6 +964,7 @@ public sealed class FinancePaymentResponse
     public string CounterpartyReference { get; set; } = string.Empty;
     public DateTime CreatedUtc { get; set; }
     public DateTime UpdatedUtc { get; set; }
+    public List<NormalizedFinanceInsightResponse> AgentInsights { get; set; } = [];
 }
 
 public sealed class FinanceTransactionDetailResponse
@@ -1015,6 +1035,36 @@ public sealed class FinanceInvoiceDetailResponse
     public FinanceInvoiceWorkflowContextResponse? WorkflowContext { get; set; }
     public FinanceActionPermissionsResponse Permissions { get; set; } = new();
     public FinanceLinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
+    public List<NormalizedFinanceInsightResponse> AgentInsights { get; set; } = [];
+}
+
+public sealed class FinanceBillResponse
+{
+    public Guid Id { get; set; }
+    public Guid CounterpartyId { get; set; }
+    public string CounterpartyName { get; set; } = string.Empty;
+    public string BillNumber { get; set; } = string.Empty;
+    public DateTime ReceivedUtc { get; set; }
+    public DateTime DueUtc { get; set; }
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+}
+
+public sealed class FinanceBillDetailResponse
+{
+    public Guid Id { get; set; }
+    public Guid CounterpartyId { get; set; }
+    public string CounterpartyName { get; set; } = string.Empty;
+    public string BillNumber { get; set; } = string.Empty;
+    public DateTime ReceivedUtc { get; set; }
+    public DateTime DueUtc { get; set; }
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public FinanceActionPermissionsResponse Permissions { get; set; } = new();
+    public FinanceLinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
+    public List<NormalizedFinanceInsightResponse> AgentInsights { get; set; } = [];
 }
 
 public sealed class FinanceInvoiceReviewListItemResponse
@@ -1207,6 +1257,32 @@ public sealed class FinanceInvoiceWorkflowContextResponse
     public string? ApprovalAssigneeSummary { get; set; }
     public bool CanNavigateToWorkflow { get; set; }
     public bool CanNavigateToApproval { get; set; }
+}
+
+public sealed class NormalizedFinanceInsightResponse
+{
+    public Guid Id { get; set; }
+    public string Severity { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public string Recommendation { get; set; } = string.Empty;
+    public FinanceInsightEntityReferenceResponse EntityReference { get; set; } = new();
+    public string Status { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+    public string CheckCode { get; set; } = string.Empty;
+    public string CheckName { get; set; } = string.Empty;
+    public string ConditionKey { get; set; } = string.Empty;
+    public List<FinanceInsightEntityReferenceResponse> AffectedEntities { get; set; } = [];
+    public DateTime ObservedAt { get; set; }
+    public DateTime? ResolvedAt { get; set; }
+}
+
+public sealed class FinanceInsightEntityReferenceResponse
+{
+    public string EntityType { get; set; } = string.Empty;
+    public string EntityId { get; set; } = string.Empty;
+    public string? DisplayName { get; set; }
+    public bool IsPrimary { get; set; }
 }
 
 public sealed class FinanceActionPermissionsResponse

@@ -96,8 +96,11 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<FinancePolicyConfiguration> FinancePolicyConfigurations => Set<FinancePolicyConfiguration>();
     public DbSet<FinanceSeedAnomaly> FinanceSeedAnomalies => Set<FinanceSeedAnomaly>();
     public DbSet<FinanceSimulationStepLog> FinanceSimulationStepLogs => Set<FinanceSimulationStepLog>();
+    public DbSet<FinanceWorkflowTriggerExecution> FinanceWorkflowTriggerExecutions => Set<FinanceWorkflowTriggerExecution>();
+    public DbSet<FinanceWorkflowTriggerCheckExecution> FinanceWorkflowTriggerCheckExecutions => Set<FinanceWorkflowTriggerCheckExecution>();
     public DbSet<FinanceSeedBackfillRun> FinanceSeedBackfillRuns => Set<FinanceSeedBackfillRun>();
     public DbSet<FinanceSeedBackfillAttempt> FinanceSeedBackfillAttempts => Set<FinanceSeedBackfillAttempt>();
+    public DbSet<FinanceAgentInsight> FinanceAgentInsights => Set<FinanceAgentInsight>();
     public DbSet<FiscalPeriod> FiscalPeriods => Set<FiscalPeriod>();
     public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
     public DbSet<LedgerEntrySourceMapping> LedgerEntrySourceMappings => Set<LedgerEntrySourceMapping>();
@@ -228,6 +231,7 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is FinanceSeedAnomaly ||
                 entry.Entity is FinanceSimulationStepLog ||
                 entry.Entity is FiscalPeriod ||
+                entry.Entity is FinanceAgentInsight ||
                 entry.Entity is LedgerEntry ||
                 entry.Entity is LedgerEntrySourceMapping ||
                 entry.Entity is LedgerEntryLine ||
@@ -448,6 +452,15 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinanceSimulationStepLog>()
             .HasQueryFilter(log =>
                 CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceAgentInsight>()
+            .HasQueryFilter(insight =>
+                CurrentCompanyId.HasValue && insight.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceWorkflowTriggerExecution>()
+            .HasQueryFilter(execution =>
+                CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceWorkflowTriggerCheckExecution>()
+            .HasQueryFilter(execution =>
+                CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<FiscalPeriod>()
             .HasQueryFilter(period =>
                 CurrentCompanyId.HasValue && period.CompanyId == CurrentCompanyId.Value);

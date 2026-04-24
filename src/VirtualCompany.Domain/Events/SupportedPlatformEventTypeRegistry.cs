@@ -40,6 +40,9 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
     public const string AgentStatusUpdated = "agent_status_updated";
     public const string FinanceTransactionCreated = "finance.transaction.created";
     public const string FinanceInvoiceCreated = "finance.invoice.created";
+    public const string FinanceBillCreated = "finance.bill.created";
+    public const string FinancePaymentCreated = "finance.payment.created";
+    public const string FinanceSimulationDayAdvanced = "finance.simulation.day_advanced";
     public const string FinanceThresholdBreached = "finance.threshold.breached";
 
     private static readonly string[] EventTypes =
@@ -74,6 +77,9 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
         ,
         FinanceTransactionCreated,
         FinanceInvoiceCreated,
+        FinanceBillCreated,
+        FinancePaymentCreated,
+        FinanceSimulationDayAdvanced,
         FinanceThresholdBreached
     ];
 

@@ -21,6 +21,9 @@ public static class CompanyOutboxTopics
     public const string AgentStatusUpdated = SupportedPlatformEventTypeRegistry.AgentStatusUpdated;
     public const string FinanceTransactionCreated = SupportedPlatformEventTypeRegistry.FinanceTransactionCreated;
     public const string FinanceInvoiceCreated = SupportedPlatformEventTypeRegistry.FinanceInvoiceCreated;
+    public const string FinanceBillCreated = SupportedPlatformEventTypeRegistry.FinanceBillCreated;
+    public const string FinancePaymentCreated = SupportedPlatformEventTypeRegistry.FinancePaymentCreated;
+    public const string FinanceSimulationDayAdvanced = SupportedPlatformEventTypeRegistry.FinanceSimulationDayAdvanced;
     public const string FinanceThresholdBreached = SupportedPlatformEventTypeRegistry.FinanceThresholdBreached;
 }
 

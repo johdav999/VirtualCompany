@@ -45,7 +45,20 @@ public sealed class FinancePaymentsPageTests
                 Status = "pending",
                 CounterpartyReference = "VENDOR-PAYOUT-12",
                 CreatedUtc = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc),
-                UpdatedUtc = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc)
+                UpdatedUtc = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc),
+                AgentInsights =
+                [
+                    new NormalizedFinanceInsightResponse
+                    {
+                        Id = Guid.NewGuid(),
+                        Severity = "high",
+                        Status = "active",
+                        CheckName = "Transaction anomaly",
+                        Message = "Payment requires reconciliation review.",
+                        Recommendation = "Review the linked payment allocations before release.",
+                        UpdatedAt = new DateTime(2026, 4, 19, 9, 0, 0, DateTimeKind.Utc)
+                    }
+                ]
             }
         };
 
@@ -65,6 +78,9 @@ public sealed class FinancePaymentsPageTests
             Assert.Contains("pending", cut.Markup, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("ach", cut.Markup, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("outgoing", cut.Markup, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Agent insights", cut.Markup);
+            Assert.Contains("Payment requires reconciliation review.", cut.Markup);
+            Assert.Contains("Review the linked payment allocations before release.", cut.Markup);
         });
     }
 

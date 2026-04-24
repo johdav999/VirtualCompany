@@ -8,7 +8,7 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Finance;
 
-public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateResolver
+public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateResolver, IFinanceSeedingStateService
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyContextAccessor? _companyContextAccessor;

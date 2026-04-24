@@ -82,6 +82,77 @@
                         </section>
                     }
 
+                    <section class="wizard-card mt-3 finance-dashboard-section" data-testid="executive-cockpit-financial-health">
+                        <div class="d-flex justify-content-between align-items-start gap-3">
+                            <div>
+                                <span class="dashboard-kicker">Financial health</span>
+                                <h4 class="h6 mt-2 mb-1">@dashboard.Finance.FinancialHealth.Title</h4>
+                                <p class="mb-0 text-body-secondary">@dashboard.Finance.FinancialHealth.Summary</p>
+                            </div>
+                            <span class="finance-risk-pill finance-risk-pill--@NormalizeCssToken(dashboard.Finance.FinancialHealth.Status)">
+                                @FormatLabel(dashboard.Finance.FinancialHealth.Status)
+                            </span>
+                        </div>
+                        <dl class="cockpit-kpi-list mb-0 mt-3">
+                            <div>
+                                <dt>Active insights</dt>
+                                <dd>@dashboard.Finance.FinancialHealth.ActiveInsightCount</dd>
+                            </div>
+                            <div>
+                                <dt>Critical</dt>
+                                <dd>@dashboard.Finance.FinancialHealth.CriticalInsightCount</dd>
+                            </div>
+                            <div>
+                                <dt>High</dt>
+                                <dd>@dashboard.Finance.FinancialHealth.HighInsightCount</dd>
+                            </div>
+                            <div>
+                                <dt>Last updated</dt>
+                                <dd>@FormatOptionalDateTime(dashboard.Finance.FinancialHealth.LastUpdatedUtc)</dd>
+                            </div>
+                        </dl>
+                    </section>
+
+                    <section class="wizard-card mt-3 finance-dashboard-section" data-testid="executive-cockpit-top-finance-actions">
+                        <div class="cockpit-card__header">
+                            <div>
+                                <span class="dashboard-kicker">Top-3 actions</span>
+                                <h4 class="h6 mt-2 mb-1">Top finance actions</h4>
+                                <p class="mb-0 text-body-secondary">Highest-severity persisted finance insights ordered for follow-up.</p>
+                            </div>
+                        </div>
+                        @if (dashboard.Finance.TopActions.Count == 0)
+                        {
+                            <p class="text-body-secondary mt-3 mb-0">No persisted finance actions need attention right now.</p>
+                        }
+                        else
+                        {
+                            <div class="finance-insight-feed mt-3">
+                                @foreach (var item in dashboard.Finance.TopActions)
+                                {
+                                    <article class="finance-insight-card">
+                                        <div class="d-flex justify-content-between align-items-start gap-3">
+                                            <div>
+                                                <div class="d-flex flex-wrap gap-2 align-items-center">
+                                                    <span class="finance-risk-pill finance-risk-pill--@NormalizeCssToken(item.Severity)">@FormatLabel(item.Severity)</span>
+                                                    @if (item.OccurrenceCount > 1)
+                                                    {
+                                                        <span class="badge text-bg-light">@FormatOccurrenceCount(item.OccurrenceCount)</span>
+                                                    }
+                                                </div>
+                                                <strong class="d-block mt-2">@item.Title</strong>
+                                                <div class="text-body-secondary mt-1">@item.Summary</div>
+                                                <div class="small mt-2">@item.Recommendation</div>
+                                                <small class="text-body-secondary d-block mt-2">@item.EntitySummary | @item.LatestUpdatedUtc.ToLocalTime():g</small>
+                                            </div>
+                                            <a class="btn btn-sm btn-outline-primary" href="@ResolveRoute(item.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId))">Open</a>
+                                        </div>
+                                    </article>
+                                }
+                            </div>
+                        }
+                    </section>
+
                     @if (dashboard.Finance.DeepLinks.Count > 0)
                     {
                         <div class="dashboard-actions mt-3">
@@ -120,6 +191,49 @@
                             }
                         </div>
                     }
+                }
+
+                @if (dashboard.Finance is not null)
+                {
+                    <section class="wizard-card mt-3 finance-dashboard-section" data-testid="executive-cockpit-finance-insights-feed">
+                        <div class="cockpit-card__header">
+                            <div>
+                                <span class="dashboard-kicker">Insights feed</span>
+                                <h4 class="h6 mt-2 mb-1">Persisted finance insights</h4>
+                                <p class="mb-0 text-body-secondary">Duplicate conditions are grouped and rendered once with an occurrence count.</p>
+                            </div>
+                        </div>
+                        @if (dashboard.Finance.InsightsFeed.Count == 0)
+                        {
+                            <p class="text-body-secondary mt-3 mb-0">No persisted finance insights are available for this company.</p>
+                        }
+                        else
+                        {
+                            <div class="finance-insight-feed mt-3">
+                                @foreach (var item in dashboard.Finance.InsightsFeed)
+                                {
+                                    <article class="finance-insight-card">
+                                        <div class="d-flex justify-content-between align-items-start gap-3">
+                                            <div>
+                                                <div class="d-flex flex-wrap gap-2 align-items-center">
+                                                    <span class="finance-risk-pill finance-risk-pill--@NormalizeCssToken(item.Severity)">@FormatLabel(item.Severity)</span>
+                                                    @if (item.OccurrenceCount > 1)
+                                                    {
+                                                        <span class="badge text-bg-light">@FormatOccurrenceCount(item.OccurrenceCount)</span>
+                                                    }
+                                                </div>
+                                                <strong class="d-block mt-2">@item.Title</strong>
+                                                <div class="text-body-secondary mt-1">@item.Summary</div>
+                                                <div class="small mt-2">@item.Recommendation</div>
+                                                <small class="text-body-secondary d-block mt-2">@item.EntitySummary | @item.LatestUpdatedUtc.ToLocalTime():g</small>
+                                            </div>
+                                            <a class="btn btn-sm btn-outline-secondary" href="@ResolveRoute(item.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId))">Open</a>
+                                        </div>
+                                    </article>
+                                }
+                            </div>
+                        }
+                    </section>
                 }
 
                 @if (!string.IsNullOrWhiteSpace(financeActionStatusMessage))
@@ -601,6 +715,19 @@
             "warning" => "badge text-bg-warning",
             _ => "badge text-bg-secondary"
         };
+
+    private static string FormatOccurrenceCount(int count) =>
+        count == 1 ? "1 occurrence" : $"{count} occurrences";
+
+    private static string FormatOptionalDateTime(DateTime? value) =>
+        value.HasValue
+            ? value.Value.ToLocalTime().ToString("g")
+            : "n/a";
+
+    private static string FormatLabel(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "n/a"
+            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
     private RenderFragment AlertContent(ExecutiveCockpitAlertViewModel alert) => builder =>
     {

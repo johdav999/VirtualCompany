@@ -1,0 +1,1367 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -61,10 +61,29 @@ public static class ExecutiveCockpitTrendDirections
+ public sealed record ExecutiveCockpitFinanceDto(
+     ExecutiveCockpitFinanceCashWidgetDto CashPosition,
+     ExecutiveCockpitFinanceRunwayWidgetDto Runway,
+     ExecutiveCockpitFinanceAlertDetailDto? LowCashAlert,
++    ExecutiveCockpitFinancialHealthDto FinancialHealth,
++    IReadOnlyList<ExecutiveCockpitFinanceInsightFeedItemDto> TopActions,
++    IReadOnlyList<ExecutiveCockpitFinanceInsightFeedItemDto> InsightsFeed,
+     IReadOnlyList<ExecutiveCockpitFinanceActionDto> AvailableActions,
+     IReadOnlyList<ExecutiveCockpitDeepLinkDto> DeepLinks);
++
++public sealed record ExecutiveCockpitFinancialHealthDto(
++    string Status,
++    string Title,
++    string Summary,
++    int ActiveInsightCount,
++    int CriticalInsightCount,
++    int HighInsightCount,
++    DateTime? LastUpdatedUtc);
++
++public sealed record ExecutiveCockpitFinanceInsightFeedItemDto(
++    string GroupKey,
++    string Severity,
++    string Title,
++    string Summary,
++    string Recommendation,
++    int OccurrenceCount,
++    string EntitySummary,
++    DateTime LatestUpdatedUtc,
++    string? Route);
+ 
+ public sealed record ExecutiveCockpitFinanceCashWidgetDto(
+     decimal Amount,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyExecutiveCockpitFinanceAdapter.cs
+@@ -1,5 +1,6 @@
+ using System.Globalization;
++using System.Text.Json;
+ using System.Text.Json.Nodes;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Http;
+ using Microsoft.EntityFrameworkCore;
+@@ -14,6 +15,7 @@ namespace VirtualCompany.Infrastructure.Finance;
+ 
+ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFinanceAdapter
+ {
++    private static readonly JsonSerializerOptions InsightSerializerOptions = new(JsonSerializerDefaults.Web);
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly IFinanceReadService _financeReadService;
+     private readonly IFinanceCashPositionWorkflowService _cashPositionWorkflowService;
+@@ -60,6 +62,7 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
+         var lowCashAlert = current.AlertState.AlertId.HasValue
+             ? await GetAlertDetailAsync(companyId, current.AlertState.AlertId.Value, cancellationToken)
+             : null;
++        var insightDashboard = await BuildInsightDashboardAsync(companyId, cancellationToken);
+ 
+         return new ExecutiveCockpitFinanceDto(
+             new ExecutiveCockpitFinanceCashWidgetDto(
+@@ -81,6 +84,9 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
+                 $"{current.EstimatedRunwayDays.Value} days" : "Runway unavailable",
+                 runwayStatus,
+                 runwayStatus.ToString(),
++                BuildCashPositionRoute(companyId)),
++            lowCashAlert,
++            insightDashboard.FinancialHealth,
++            insightDashboard.TopActions,
++            insightDashboard.FeedItems,
+                 BuildCashPositionRoute(companyId)),
+-            lowCashAlert,
+             await BuildActionsAsync(companyId, membership.MembershipRole.ToStorageValue(), cancellationToken),
+             BuildDeepLinks(companyId));
+     }
+@@ -239,6 +245,165 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
+     private static bool TryGetDecimal(IReadOnlyDictionary<string, JsonNode?>? values, string key, out decimal value) =>
+         decimal.TryParse(TryGetString(values, key), NumberStyles.Number, CultureInfo.InvariantCulture, out value);
++
++    private async Task<FinanceInsightDashboardProjection> BuildInsightDashboardAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var activeInsights = await _dbContext.FinanceAgentInsights
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Status == FinanceInsightStatus.Active)
++            .ToListAsync(cancellationToken);
++
++        if (activeInsights.Count == 0)
++        {
++            return new FinanceInsightDashboardProjection(
++                new ExecutiveCockpitFinancialHealthDto(
++                    "healthy",
++                    "Financial health is stable",
++                    "No active finance insights are currently persisted for this company.",
++                    0,
++                    0,
++                    0,
++                    null),
++                [],
++                []);
++        }
++
++        // Persisted condition keys are the stable identity for the underlying condition.
++        var groupedInsights = activeInsights
++            .GroupBy(BuildDashboardInsightGroupKey, StringComparer.OrdinalIgnoreCase)
++            .Select(group => BuildDashboardInsightFeedItem(companyId, group))
++            .OrderByDescending(x => GetSeverityRank(x.Severity))
++            .ThenByDescending(x => x.LatestUpdatedUtc)
++            .ThenBy(x => x.GroupKey, StringComparer.Ordinal)
++            .ToArray();
++
++        var criticalCount = activeInsights.Count(x => x.Severity == FinancialCheckSeverity.Critical);
++        var highCount = activeInsights.Count(x => x.Severity == FinancialCheckSeverity.High);
++        var overallStatus = activeInsights.Any(x => x.Severity == FinancialCheckSeverity.Critical)
++            ? "critical"
++            : activeInsights.Any(x => x.Severity == FinancialCheckSeverity.High)
++                ? "high"
++                : activeInsights.Any(x => x.Severity == FinancialCheckSeverity.Medium)
++                    ? "medium"
++                    : "low";
++
++        var title = overallStatus switch
++        {
++            "critical" => "Immediate finance attention required",
++            "high" => "Finance follow-up is building",
++            "medium" => "Finance watch items are active",
++            _ => "Finance posture is manageable"
++        };
++
++        var summary = $"{activeInsights.Count} active insight(s), {criticalCount} critical and {highCount} high.";
++        var lastUpdatedUtc = activeInsights.Max(x => x.UpdatedUtc);
++
++        return new FinanceInsightDashboardProjection(
++            new ExecutiveCockpitFinancialHealthDto(
++                overallStatus,
++                title,
++                summary,
++                activeInsights.Count,
++                criticalCount,
++                highCount,
++                lastUpdatedUtc),
++            groupedInsights.Take(3).ToArray(),
++            groupedInsights);
++    }
++
++    private static ExecutiveCockpitFinanceInsightFeedItemDto BuildDashboardInsightFeedItem(
++        Guid companyId,
++        IGrouping<string, FinanceAgentInsight> group)
++    {
++        var representative = group
++            .OrderByDescending(x => GetSeverityRank(x.Severity))
++            .ThenByDescending(x => x.UpdatedUtc)
++            .ThenByDescending(x => x.CreatedUtc)
++            .ThenBy(x => x.Id)
++            .First();
++
++        var primaryEntity = BuildPrimaryEntityReference(representative);
++        var relatedEntities = group
++            .Select(BuildPrimaryEntityReference)
++            .Where(x => x is not null)
++            .DistinctBy(x => $"{x!.EntityType}:{x.EntityId}", StringComparer.OrdinalIgnoreCase)
++            .Take(3)
++            .Cast<FinanceInsightEntityReferenceDto>()
++            .ToArray();
++
++        var entitySummary = relatedEntities.Length switch
++        {
++            0 => "Company-level condition",
++            1 => relatedEntities[0].DisplayName ?? $"{FormatToken(relatedEntities[0].EntityType)} {relatedEntities[0].EntityId}",
++            _ => $"{group.Count()} related records"
++        };
++
++        return new ExecutiveCockpitFinanceInsightFeedItemDto(
++            group.Key,
++            representative.Severity.ToStorageValue(),
++            FinancialCheckDefinitions.Resolve(representative.CheckCode).Name,
++            representative.Message,
++            representative.Recommendation,
++            group.Count(),
++            entitySummary,
++            group.Max(x => x.UpdatedUtc),
++            BuildInsightRoute(companyId, primaryEntity));
++    }
++
++    private static string BuildDashboardInsightGroupKey(FinanceAgentInsight insight) =>
++        string.IsNullOrWhiteSpace(insight.ConditionKey)
++            ? $"{insight.CheckCode}:{insight.EntityType}"
++            : $"{insight.CheckCode}:{insight.ConditionKey}";
++
++    private static FinanceInsightEntityReferenceDto? BuildPrimaryEntityReference(FinanceAgentInsight insight)
++    {
++        var affectedEntities = DeserializeInsightEntities(insight.AffectedEntitiesJson);
++        return affectedEntities.FirstOrDefault(x => x.IsPrimary)
++            ?? new FinanceInsightEntityReferenceDto(insight.EntityType, insight.EntityId, insight.EntityDisplayName, true);
++    }
++
++    private static IReadOnlyList<FinanceInsightEntityReferenceDto> DeserializeInsightEntities(string payload)
++    {
++        if (string.IsNullOrWhiteSpace(payload))
++        {
++            return [];
++        }
++
++        return JsonSerializer.Deserialize<List<FinanceInsightEntityReferenceDto>>(payload, InsightSerializerOptions) ?? [];
++    }
++
++    private static string? BuildInsightRoute(Guid companyId, FinanceInsightEntityReferenceDto? entityReference)
++    {
++        if (entityReference is null)
++        {
++            return null;
++        }
++
++        if (!Guid.TryParse(entityReference.EntityId, out var entityId))
++        {
++            return null;
++        }
++
++        return entityReference.EntityType.Trim().ToLowerInvariant() switch
++        {
++            "invoice" or "finance_invoice" => FinanceRoutes.BuildInvoiceDetailPath(entityId, companyId),
++            "bill" or "finance_bill" => FinanceRoutes.BuildBillDetailPath(entityId, companyId),
++            "payment" or "finance_payment" => FinanceRoutes.BuildPaymentDetailPath(entityId, companyId),
++            "transaction" or "finance_transaction" => FinanceRoutes.BuildTransactionDetailPath(entityId, companyId),
++            "anomaly" or "finance_anomaly" => FinanceRoutes.BuildAnomalyDetailPath(entityId, companyId),
++            _ => null
++        };
++    }
++
++    private static int GetSeverityRank(FinancialCheckSeverity severity) =>
++        severity switch
++        {
++            FinancialCheckSeverity.Critical => 4,
++            FinancialCheckSeverity.High => 3,
++            FinancialCheckSeverity.Medium => 2,
++            FinancialCheckSeverity.Low => 1,
++            _ => 0
++        };
++
++    private static int GetSeverityRank(string severity) =>
++        severity.Trim().ToLowerInvariant() switch
++        {
++            "critical" => 4,
++            "high" => 3,
++            "medium" => 2,
++            "low" => 1,
++            _ => 0
++        };
++
++    private static string FormatToken(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "Record"
++            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
++
++    private sealed record FinanceInsightDashboardProjection(
++        ExecutiveCockpitFinancialHealthDto FinancialHealth,
++        IReadOnlyList<ExecutiveCockpitFinanceInsightFeedItemDto> TopActions,
++        IReadOnlyList<ExecutiveCockpitFinanceInsightFeedItemDto> FeedItems);
+ }
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -221,6 +221,25 @@ public sealed class ExecutiveCockpitApiClient
+                 {
+                     EstimatedRunwayDays = null,
+                     EstimatedRunwayMonths = null,
+                     DisplayValue = "Runway unavailable",
+                     Status = "missing",
+                     StatusLabel = "Healthy",
+                     Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId)
+                 },
++                FinancialHealth = new ExecutiveCockpitFinancialHealthViewModel
++                {
++                    Status = "healthy",
++                    Title = "Financial health is stable",
++                    Summary = "No persisted finance insights are available in offline mode.",
++                    ActiveInsightCount = 0,
++                    CriticalInsightCount = 0,
++                    HighInsightCount = 0
++                },
++                TopActions = [],
++                InsightsFeed =
++                [
++                    new ExecutiveCockpitFinanceInsightFeedItemViewModel
++                    {
++                        GroupKey = "offline-finance",
++                        Severity = "low",
++                        Title = "Finance insight feed",
++                        Summary = "Persisted finance insights appear here when the live backend is connected.",
++                        Recommendation = "Open the finance workspace after the backend is available.",
++                        OccurrenceCount = 1,
++                        EntitySummary = "Offline workspace",
++                        LatestUpdatedUtc = DateTime.UtcNow
++                    }
++                ],
+                 AvailableActions =
+                 [
+                     new ExecutiveCockpitFinanceActionViewModel
+@@ -531,6 +550,9 @@ public sealed class ExecutiveCockpitFinanceViewModel
+     public ExecutiveCockpitFinanceCashWidgetViewModel CashPosition { get; set; } = new();
+     public ExecutiveCockpitFinanceRunwayWidgetViewModel Runway { get; set; } = new();
+     public ExecutiveCockpitFinanceAlertDetailViewModel? LowCashAlert { get; set; }
++    public ExecutiveCockpitFinancialHealthViewModel FinancialHealth { get; set; } = new();
++    public List<ExecutiveCockpitFinanceInsightFeedItemViewModel> TopActions { get; set; } = [];
++    public List<ExecutiveCockpitFinanceInsightFeedItemViewModel> InsightsFeed { get; set; } = [];
+     public List<ExecutiveCockpitFinanceActionViewModel> AvailableActions { get; set; } = [];
+     public List<ExecutiveCockpitDeepLinkViewModel> DeepLinks { get; set; } = [];
+ }
+@@ -568,6 +590,26 @@ public sealed class ExecutiveCockpitFinanceAlertDetailViewModel
+     public string Route { get; set; } = string.Empty;
+ }
+ 
++public sealed class ExecutiveCockpitFinancialHealthViewModel
++{
++    public string Status { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Summary { get; set; } = string.Empty;
++    public int ActiveInsightCount { get; set; }
++    public int CriticalInsightCount { get; set; }
++    public int HighInsightCount { get; set; }
++    public DateTime? LastUpdatedUtc { get; set; }
++}
++
++public sealed class ExecutiveCockpitFinanceInsightFeedItemViewModel
++{
++    public string GroupKey { get; set; } = string.Empty;
++    public string Severity { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Summary { get; set; } = string.Empty;
++    public string Recommendation { get; set; } = string.Empty;
++    public int OccurrenceCount { get; set; }
++    public string EntitySummary { get; set; } = string.Empty;
++    public DateTime LatestUpdatedUtc { get; set; }
++    public string? Route { get; set; }
++}
++
+ public sealed class ExecutiveCockpitFinanceActionViewModel
+ {
+     public string Key { get; set; } = string.Empty;
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -76,6 +76,68 @@
+                             }
+                         </section>
+                     }
++
++                    <section class="wizard-card mt-3 finance-dashboard-section" data-testid="executive-cockpit-financial-health">
++                        <div class="d-flex justify-content-between align-items-start gap-3">
++                            <div>
++                                <span class="dashboard-kicker">Financial health</span>
++                                <h4 class="h6 mt-2 mb-1">@dashboard.Finance.FinancialHealth.Title</h4>
++                                <p class="mb-0 text-body-secondary">@dashboard.Finance.FinancialHealth.Summary</p>
++                            </div>
++                            <span class="finance-risk-pill finance-risk-pill--@NormalizeCssToken(dashboard.Finance.FinancialHealth.Status)">
++                                @FormatLabel(dashboard.Finance.FinancialHealth.Status)
++                            </span>
++                        </div>
++                        <dl class="cockpit-kpi-list mb-0 mt-3">
++                            <div>
++                                <dt>Active insights</dt>
++                                <dd>@dashboard.Finance.FinancialHealth.ActiveInsightCount</dd>
++                            </div>
++                            <div>
++                                <dt>Critical</dt>
++                                <dd>@dashboard.Finance.FinancialHealth.CriticalInsightCount</dd>
++                            </div>
++                            <div>
++                                <dt>High</dt>
++                                <dd>@dashboard.Finance.FinancialHealth.HighInsightCount</dd>
++                            </div>
++                            <div>
++                                <dt>Last updated</dt>
++                                <dd>@FormatOptionalDateTime(dashboard.Finance.FinancialHealth.LastUpdatedUtc)</dd>
++                            </div>
++                        </dl>
++                    </section>
++
++                    <section class="wizard-card mt-3 finance-dashboard-section" data-testid="executive-cockpit-top-finance-actions">
++                        <div class="cockpit-card__header">
++                            <div>
++                                <span class="dashboard-kicker">Top-3 actions</span>
++                                <h4 class="h6 mt-2 mb-1">Top finance actions</h4>
++                                <p class="mb-0 text-body-secondary">Highest-severity persisted finance insights ordered for follow-up.</p>
++                            </div>
++                        </div>
++                        @if (dashboard.Finance.TopActions.Count == 0)
++                        {
++                            <p class="text-body-secondary mt-3 mb-0">No persisted finance actions need attention right now.</p>
++                        }
++                        else
++                        {
++                            <div class="finance-insight-feed mt-3">
++                                @foreach (var item in dashboard.Finance.TopActions)
++                                {
++                                    <article class="finance-insight-card">
++                                        <div class="d-flex justify-content-between align-items-start gap-3">
++                                            <div>
++                                                <div class="d-flex flex-wrap gap-2 align-items-center">
++                                                    <span class="finance-risk-pill finance-risk-pill--@NormalizeCssToken(item.Severity)">@FormatLabel(item.Severity)</span>
++                                                    @if (item.OccurrenceCount > 1)
++                                                    {
++                                                        <span class="badge text-bg-light">@FormatOccurrenceCount(item.OccurrenceCount)</span>
++                                                    }
++                                                </div>
++                                                <strong class="d-block mt-2">@item.Title</strong>
++                                                <div class="text-body-secondary mt-1">@item.Summary</div>
++                                                <div class="small mt-2">@item.Recommendation</div>
++                                                <small class="text-body-secondary d-block mt-2">@item.EntitySummary | @item.LatestUpdatedUtc.ToLocalTime():g</small>
++                                            </div>
++                                            <a class="btn btn-sm btn-outline-primary" href="@ResolveRoute(item.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId))">Open</a>
++                                        </div>
++                                    </article>
++                                }
++                            </div>
++                        }
++                    </section>
+ 
+                     @if (dashboard.Finance.DeepLinks.Count > 0)
+                     {
+@@ -118,6 +180,36 @@
+                     }
+                 }
+ 
++                @if (dashboard.Finance is not null)
++                {
++                    <section class="wizard-card mt-3 finance-dashboard-section" data-testid="executive-cockpit-finance-insights-feed">
++                        <div class="cockpit-card__header">
++                            <div>
++                                <span class="dashboard-kicker">Insights feed</span>
++                                <h4 class="h6 mt-2 mb-1">Persisted finance insights</h4>
++                                <p class="mb-0 text-body-secondary">Duplicate conditions are grouped and rendered once with an occurrence count.</p>
++                            </div>
++                        </div>
++                        @if (dashboard.Finance.InsightsFeed.Count == 0)
++                        {
++                            <p class="text-body-secondary mt-3 mb-0">No persisted finance insights are available for this company.</p>
++                        }
++                        else
++                        {
++                            <div class="finance-insight-feed mt-3">
++                                @foreach (var item in dashboard.Finance.InsightsFeed)
++                                {
++                                    <article class="finance-insight-card">
++                                        <div class="d-flex justify-content-between align-items-start gap-3">
++                                            <div>
++                                                <div class="d-flex flex-wrap gap-2 align-items-center">
++                                                    <span class="finance-risk-pill finance-risk-pill--@NormalizeCssToken(item.Severity)">@FormatLabel(item.Severity)</span>
++                                                    @if (item.OccurrenceCount > 1)
++                                                    {
++                                                        <span class="badge text-bg-light">@FormatOccurrenceCount(item.OccurrenceCount)</span>
++                                                    }
++                                                </div>
++                                                <strong class="d-block mt-2">@item.Title</strong>
++                                                <div class="text-body-secondary mt-1">@item.Summary</div>
++                                                <div class="small mt-2">@item.Recommendation</div>
++                                                <small class="text-body-secondary d-block mt-2">@item.EntitySummary | @item.LatestUpdatedUtc.ToLocalTime():g</small>
++                                            </div>
++                                            <a class="btn btn-sm btn-outline-secondary" href="@ResolveRoute(item.Route, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId))">Open</a>
++                                        </div>
++                                    </article>
++                                }
++                            </div>
++                        }
++                    </section>
++                }
++
+                 @if (!string.IsNullOrWhiteSpace(financeActionStatusMessage))
+                 {
+                     <div class="alert alert-success mt-3 mb-0">@financeActionStatusMessage</div>
+@@ -602,6 +694,16 @@
+             _ => "badge text-bg-secondary"
+         };
+ 
++    private static string FormatOccurrenceCount(int count) =>
++        count == 1 ? "1 occurrence" : $"{count} occurrences";
++
++    private static string FormatOptionalDateTime(DateTime? value) =>
++        value.HasValue
++            ? value.Value.ToLocalTime().ToString("g")
++            : "n/a";
++
++    private static string FormatLabel(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "n/a"
++            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
++
+     private RenderFragment AlertContent(ExecutiveCockpitAlertViewModel alert) => builder =>
+     {
+         var sequence = 0;
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -390,6 +390,18 @@ public sealed class FinanceApiClient
+         _useOfflineMode
+             ? Task.FromResult<FinancePaymentResponse?>(null)
+             : GetAsync<FinancePaymentResponse>(companyId, $"internal/companies/{companyId}/finance/payments/{paymentId}", allowNotFound: true, cancellationToken);
++
++    public Task<IReadOnlyList<FinanceBillResponse>> GetBillsAsync(
++        Guid companyId,
++        int limit = 100,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<IReadOnlyList<FinanceBillResponse>>([]);
++        }
++
++        var uri = $"internal/companies/{companyId}/finance/bills{BuildQuery(("limit", limit.ToString(CultureInfo.InvariantCulture)))}";
++        return GetListAsync<FinanceBillResponse>(companyId, uri, cancellationToken);
++    }
+ 
+     public Task<FinanceBillDetailResponse?> GetBillDetailAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+@@ -1012,6 +1024,18 @@ public sealed class FinanceInvoiceDetailResponse
+     public List<NormalizedFinanceInsightResponse> AgentInsights { get; set; } = [];
+ }
+ 
++public sealed class FinanceBillResponse
++{
++    public Guid Id { get; set; }
++    public Guid CounterpartyId { get; set; }
++    public string CounterpartyName { get; set; } = string.Empty;
++    public string BillNumber { get; set; } = string.Empty;
++    public DateTime ReceivedUtc { get; set; }
++    public DateTime DueUtc { get; set; }
++    public decimal Amount { get; set; }
++    public string Currency { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++}
++
+ public sealed class FinanceBillDetailResponse
+ {
+     public Guid Id { get; set; }
+diff --git a/src/VirtualCompany.Web/Services/FinanceRoutes.cs b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+--- a/src/VirtualCompany.Web/Services/FinanceRoutes.cs
++++ b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+@@ -17,6 +17,8 @@ public static class FinanceRoutes
+     public const string Transactions = "/finance/transactions";
+     public const string Payments = "/finance/payments";
+     public const string PaymentDetail = "/finance/payments/{paymentId:guid}";
++    public const string Bills = "/finance/bills";
++    public const string BillDetail = "/finance/bills/{billId:guid}";
+     public const string TransactionDetail = "/finance/transactions/{transactionId:guid}";
+     public const string Invoices = "/finance/invoices";
+     public const string Reviews = "/finance/reviews";
+@@ -56,6 +58,7 @@ public static class FinanceRoutes
+             new("Cash position", CashPosition, "Review cash coverage and company liquidity in the active tenant context."),
+             new("Transactions", Transactions, "Inspect transaction activity and categorization work for the selected company."),
+             new("Payments", Payments, "Inspect incoming and outgoing cash movement records for the selected company."),
++            new("Bills", Bills, "Inspect supplier bills and tenant-scoped bill detail workflows."),
+             new("Invoice reviews", Reviews, "Review finance workflow recommendations and actions for invoice workbench items."),
+             new("Invoices", Invoices, "Track invoice review and collection workflows inside the active company."),
+             new("Balances", Balances, "Browse account balances with explicit tenant-scoped routing."),
+@@ -73,6 +76,9 @@ public static class FinanceRoutes
+     public static string BuildPaymentDetailPath(Guid paymentId, Guid? companyId) =>
+         WithCompanyContext($"/finance/payments/{paymentId:D}", companyId);
+ 
++    public static string BuildBillDetailPath(Guid billId, Guid? companyId) =>
++        WithCompanyContext($"/finance/bills/{billId:D}", companyId);
++
+     public static string BuildInvoiceDetailPath(Guid invoiceId, Guid? companyId) =>
+         WithCompanyContext($"/finance/invoices/{invoiceId:D}", companyId);
+diff --git a/src/VirtualCompany.Web/Components/Finance/AgentInsightsPanel.razor b/src/VirtualCompany.Web/Components/Finance/AgentInsightsPanel.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Finance/AgentInsightsPanel.razor
+@@ -0,0 +1,85 @@
++@using System.Globalization
++@using VirtualCompany.Web.Services
++
++<section class="wizard-card wizard-card--compact finance-agent-insights-panel" data-testid="@TestId">
++    <div class="cockpit-card__header">
++        <div>
++            <span class="dashboard-kicker">Agent insights</span>
++            <h3 class="h6 mt-2 mb-1">@Title</h3>
++            @if (!string.IsNullOrWhiteSpace(Subtitle))
++            {
++                <p class="text-body-secondary mb-0">@Subtitle</p>
++            }
++        </div>
++    </div>
++
++    @if (Items.Count == 0)
++    {
++        <p class="text-body-secondary mt-3 mb-0">@EmptyMessage</p>
++    }
++    else
++    {
++        <div class="finance-agent-insights-list mt-3">
++            @foreach (var insight in Items)
++            {
++                <article class="finance-insight-card">
++                    <div class="d-flex justify-content-between align-items-start gap-3">
++                        <div>
++                            <div class="d-flex flex-wrap gap-2 align-items-center">
++                                <span class="@SeverityClass(insight.Severity)">@FormatLabel(insight.Severity)</span>
++                                <span class="badge text-bg-light">@FormatLabel(insight.Status)</span>
++                            </div>
++                            <strong class="d-block mt-2">@insight.CheckName</strong>
++                            <div class="text-body-secondary mt-1">@insight.Message</div>
++                            <div class="small mt-2">@insight.Recommendation</div>
++                            <small class="text-body-secondary d-block mt-2">
++                                @ResolveEntitySummary(insight) | Updated @FormatDateTime(insight.UpdatedAt)
++                            </small>
++                        </div>
++                    </div>
++                </article>
++            }
++        </div>
++    }
++</section>
++
++@code {
++    [Parameter] public string Title { get; set; } = "Agent insights";
++    [Parameter] public string? Subtitle { get; set; } = "Persisted finance agent insights for the selected entity.";
++    [Parameter] public string EmptyMessage { get; set; } = "No agent insights are linked to this record.";
++    [Parameter] public string TestId { get; set; } = "agent-insights-panel";
++    [Parameter] public IReadOnlyList<NormalizedFinanceInsightResponse> Items { get; set; } = [];
++
++    private static string SeverityClass(string severity) =>
++        $"finance-risk-pill finance-risk-pill--{NormalizeToken(severity)}";
++
++    private static string ResolveEntitySummary(NormalizedFinanceInsightResponse insight)
++    {
++        var entity = insight.EntityReference;
++        if (!string.IsNullOrWhiteSpace(entity.DisplayName))
++        {
++            return entity.DisplayName!;
++        }
++
++        return $"{FormatLabel(entity.EntityType)} {entity.EntityId}";
++    }
++
++    private static string FormatDateTime(DateTime value) =>
++        value == default
++            ? "n/a"
++            : value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
++
++    private static string FormatLabel(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "n/a"
++            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
++
++    private static string NormalizeToken(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "neutral"
++            : value.Trim().ToLowerInvariant().Replace('_', '-');
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/InvoicesPage.razor
+@@ -167,6 +167,12 @@
+                         ResourceTitle="@SelectedInvoice.LinkedDocument.Document?.Title"
+                         SecondaryText="@SelectedInvoice.LinkedDocument.Document?.OriginalFileName"
+                         TypeText="@SelectedInvoice.LinkedDocument.Document?.ContentType"
+                         CanNavigate="@SelectedInvoice.LinkedDocument.CanNavigate"
+                         NavigateHref="@(SelectedInvoice.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedInvoice.LinkedDocument.Document.Id))"
+                         ActionText="Open linked document" />
++
++                    <AgentInsightsPanel
++                        Title="Agent insights"
++                        Subtitle="Persisted finance agent insights linked to this invoice."
++                        EmptyMessage="No agent insights are linked to this invoice."
++                        TestId="invoice-agent-insights-panel"
++                        Items="@SelectedInvoice.AgentInsights" />
+                 }
+             </div>
+         </div>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/PaymentsPage.razor b/src/VirtualCompany.Web/Pages/Finance/PaymentsPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/PaymentsPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/PaymentsPage.razor
+@@ -99,6 +99,13 @@
+                         <dt>Created</dt>
+                         <dd>@FormatDate(SelectedPayment.CreatedUtc)</dd>
+                     </dl>
++
++                    <div class="mt-4">
++                        <AgentInsightsPanel
++                            Title="Agent insights"
++                            Subtitle="Persisted finance agent insights linked to this payment."
++                            EmptyMessage="No agent insights are linked to this payment."
++                            TestId="payment-agent-insights-panel"
++                            Items="@SelectedPayment.AgentInsights" />
++                    </div>
+                 }
+             </div>
+         </div>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/BillsPage.razor b/src/VirtualCompany.Web/Pages/Finance/BillsPage.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/BillsPage.razor
+@@ -0,0 +1,99 @@
++@page "/finance/bills"
++@page "/finance/bills/{BillId:guid}"
++@inherits FinancePageBase
++
++<PageTitle>Bills</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Bills"
++    Description="Inspect supplier bills and their linked agent insights inside the active company."
++    LoadingMessage="Loading bills workspace...">
++    <div class="row g-4 align-items-start">
++        <div class="col-lg-7">
++            <div class="wizard-card wizard-card--compact">
++                <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
++                    <div>
++                        <h2 class="h5 mb-1">Bill list</h2>
++                        <p class="text-body-secondary mb-0">Supplier bills remain tenant-scoped and route-driven.</p>
++                    </div>
++                    <span class="badge text-bg-light">@Bills.Count item@(Bills.Count == 1 ? string.Empty : "s")</span>
++                </div>
++
++                <FinanceDataState
++                    IsLoading="@IsListLoading"
++                    IsEmpty="@IsListEmpty"
++                    ErrorMessage="@ListErrorMessage"
++                    LoadingTitle="Loading bills"
++                    LoadingMessage="Fetching tenant-scoped bills."
++                    EmptyTitle="No bills available"
++                    EmptyMessage="The active company does not currently have supplier bills to inspect."
++                    OnRetry="@ReloadAsync">
++                    <div class="list-group">
++                        @foreach (var bill in Bills)
++                        {
++                            <a class="@GetBillListItemClass(bill.Id)" href="@BuildBillHref(bill.Id)">
++                                <div class="d-flex w-100 justify-content-between gap-3">
++                                    <div>
++                                        <strong>@bill.BillNumber</strong>
++                                        <div class="text-body-secondary small mt-1">Supplier: @bill.CounterpartyName</div>
++                                        <div class="small mt-2">Received @FormatDate(bill.ReceivedUtc) | Due @FormatDate(bill.DueUtc)</div>
++                                    </div>
++                                    <div class="text-end">
++                                        <div class="fw-semibold">@FormatCurrency(bill.Amount, bill.Currency)</div>
++                                        <div class="mt-2"><span class="badge text-bg-light">@FormatLabel(bill.Status)</span></div>
++                                    </div>
++                                </div>
++                            </a>
++                        }
++                    </div>
++                </FinanceDataState>
++            </div>
++        </div>
++
++        <div class="col-lg-5">
++            <div class="wizard-card wizard-card--compact">
++                @if (IsDetailLoading)
++                {
++                    <FinanceLoadingState Title="Loading bill detail" Message="Resolving the selected bill from the route." />
++                }
++                else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
++                {
++                    <FinanceErrorState Title="Bill detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
++                }
++                else if (SelectedBill is null)
++                {
++                    <FinanceEmptyState Title="No bill selected" Message="Select a bill to inspect its detail panel." />
++                }
++                else
++                {
++                    <h2 class="h5">Bill detail</h2>
++                    <dl class="mb-4">
++                        <dt>Bill</dt>
++                        <dd>@SelectedBill.BillNumber</dd>
++                        <dt>Supplier</dt>
++                        <dd>@SelectedBill.CounterpartyName</dd>
++                        <dt>Status</dt>
++                        <dd><span class="badge text-bg-light">@FormatLabel(SelectedBill.Status)</span></dd>
++                        <dt>Amount</dt>
++                        <dd>@FormatCurrency(SelectedBill.Amount, SelectedBill.Currency)</dd>
++                        <dt>Received</dt>
++                        <dd>@FormatDate(SelectedBill.ReceivedUtc)</dd>
++                        <dt>Due</dt>
++                        <dd>@FormatDate(SelectedBill.DueUtc)</dd>
++                    </dl>
++
++                    <FinanceLinkedResourceState
++                        Availability="@SelectedBill.LinkedDocument.Availability"
++                        Message="@SelectedBill.LinkedDocument.Message"
++                        ResourceTitle="@SelectedBill.LinkedDocument.Document?.Title"
++                        SecondaryText="@SelectedBill.LinkedDocument.Document?.OriginalFileName"
++                        TypeText="@SelectedBill.LinkedDocument.Document?.ContentType"
++                        CanNavigate="@SelectedBill.LinkedDocument.CanNavigate"
++                        NavigateHref="@(SelectedBill.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedBill.LinkedDocument.Document.Id))"
++                        ActionText="Open linked document" />
++
++                    <AgentInsightsPanel
++                        Title="Agent insights"
++                        Subtitle="Persisted finance agent insights linked to this bill."
++                        EmptyMessage="No agent insights are linked to this bill."
++                        TestId="bill-agent-insights-panel"
++                        Items="@SelectedBill.AgentInsights" />
++                }
++            </div>
++        </div>
++    </div>
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/BillsPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/BillsPage.razor.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/BillsPage.razor.cs
+@@ -0,0 +1,104 @@
++using System.Globalization;
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class BillsPage : FinancePageBase
++{
++    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
++
++    [Parameter]
++    public Guid? BillId { get; set; }
++
++    private IReadOnlyList<FinanceBillResponse> Bills { get; set; } = [];
++    private FinanceBillDetailResponse? SelectedBill { get; set; }
++    private bool IsListLoading { get; set; }
++    private bool IsDetailLoading { get; set; }
++    private string? ListErrorMessage { get; set; }
++    private string? DetailErrorMessage { get; set; }
++
++    private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Bills.Count == 0;
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        Bills = [];
++        SelectedBill = null;
++        ListErrorMessage = null;
++        DetailErrorMessage = null;
++
++        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadBillsAsync(companyId);
++        if (BillId is Guid billId)
++        {
++            await LoadDetailAsync(companyId, billId);
++        }
++    }
++
++    private async Task ReloadAsync()
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadBillsAsync(companyId);
++        if (BillId is Guid billId)
++        {
++            await LoadDetailAsync(companyId, billId);
++        }
++    }
++
++    private async Task LoadBillsAsync(Guid companyId)
++    {
++        IsListLoading = true;
++        ListErrorMessage = null;
++
++        try
++        {
++            Bills = await FinanceApiClient.GetBillsAsync(companyId, 200);
++        }
++        catch (FinanceApiException ex)
++        {
++            Bills = [];
++            ListErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsListLoading = false;
++        }
++    }
++
++    private async Task LoadDetailAsync(Guid companyId, Guid billId)
++    {
++        IsDetailLoading = true;
++        DetailErrorMessage = null;
++
++        try
++        {
++            SelectedBill = await FinanceApiClient.GetBillDetailAsync(companyId, billId);
++            if (SelectedBill is null)
++            {
++                DetailErrorMessage = "The selected bill could not be found in the active company context.";
++            }
++        }
++        catch (FinanceApiException ex)
++        {
++            SelectedBill = null;
++            DetailErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsDetailLoading = false;
++        }
++    }
++
++    private string BuildBillHref(Guid billId) => FinanceRoutes.BuildBillDetailPath(billId, AccessState.CompanyId);
++    private string BuildDocumentHref(Guid documentId) => $"/api/companies/{AccessState.CompanyId}/documents/{documentId}";
++
++    private string GetBillListItemClass(Guid billId) =>
++        BillId == billId
++            ? "list-group-item list-group-item-action active"
++            : "list-group-item list-group-item-action";
++
++    private static string FormatCurrency(decimal amount, string currency) => $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
++    private static string FormatDate(DateTime value) => value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
++    private static string FormatLabel(string? value) => string.IsNullOrWhiteSpace(value) ? "n/a" : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/AnomalyDetailPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/AnomalyDetailPage.razor.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/AnomalyDetailPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/AnomalyDetailPage.razor.cs
+@@ -48,7 +48,7 @@ public partial class AnomalyDetailPage : FinancePageBase
+     private string TransactionHref => Detail?.AffectedRecord is not null
+         ? FinanceRoutes.BuildTransactionDetailPath(Detail.AffectedRecord.Id, AccessState.CompanyId)
+         : FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, AccessState.CompanyId);
+     private string? InvoiceHref => Detail?.RelatedInvoiceId is Guid invoiceId ? FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId) : null;
+-    private string? BillHref => null;
++    private string? BillHref => Detail?.RelatedBillId is Guid billId ? FinanceRoutes.BuildBillDetailPath(billId, AccessState.CompanyId) : null;
+@@ -123,7 +123,7 @@ public partial class AnomalyDetailPage : FinancePageBase
+             : record.RecordType.Trim().ToLowerInvariant() switch
+             {
+                 "transaction" => FinanceRoutes.BuildTransactionDetailPath(recordId, AccessState.CompanyId),
+                 "invoice" => FinanceRoutes.BuildInvoiceDetailPath(recordId, AccessState.CompanyId),
+-                "bill" => null,
++                "bill" => FinanceRoutes.BuildBillDetailPath(recordId, AccessState.CompanyId),
+                 _ => null
+             };
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Finance/FinanceTransparencyPageBase.cs b/src/VirtualCompany.Web/Pages/Finance/FinanceTransparencyPageBase.cs
+--- a/src/VirtualCompany.Web/Pages/Finance/FinanceTransparencyPageBase.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/FinanceTransparencyPageBase.cs
+@@ -43,6 +43,8 @@ public abstract class FinanceTransparencyPageBase : FinancePageBase
+         return NormalizeToken(entityType) switch
+         {
+             "finance_transaction" or "transaction" => FinanceRoutes.BuildTransactionDetailPath(parsedEntityId, CompanyScopeId),
++            "finance_bill" or "bill" => FinanceRoutes.BuildBillDetailPath(parsedEntityId, CompanyScopeId),
++            "finance_payment" or "payment" => FinanceRoutes.BuildPaymentDetailPath(parsedEntityId, CompanyScopeId),
+             "finance_invoice" or "invoice" => FinanceRoutes.BuildInvoiceDetailPath(parsedEntityId, CompanyScopeId),
+             "finance_anomaly" or "anomaly" => FinanceRoutes.BuildAnomalyDetailPath(parsedEntityId, CompanyScopeId),
+             "finance_alert" or "alert" => FinanceRoutes.BuildAlertDetailPath(parsedEntityId, CompanyScopeId),
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -1710,3 +1710,38 @@ code {
+ .invoice-review-status-badge--review {
+     background: rgba(37, 99, 235, 0.12);
+     color: #1d4ed8;
+ }
++
++.finance-dashboard-section + .finance-dashboard-section {
++    border-top: 1px solid rgba(15, 23, 42, 0.08);
++    padding-top: 1rem;
++}
++
++.finance-insight-feed,
++.finance-agent-insights-list {
++    display: grid;
++    gap: 0.85rem;
++}
++
++.finance-insight-card {
++    background: #f8fafc;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 0.9rem;
++    padding: 0.95rem 1rem;
++}
++
++.finance-agent-insights-panel {
++    margin-top: 1.5rem;
++}
++
++@media (max-width: 767.98px) {
++    .finance-insight-card {
++        padding: 0.85rem;
++    }
++
++    .finance-insight-card .btn {
++        width: 100%;
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitFinanceIntegrationTests.cs
+@@ -36,6 +36,14 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+         Assert.NotNull(dashboard.Finance.LowCashAlert);
+         Assert.False(string.IsNullOrWhiteSpace(dashboard.Finance.LowCashAlert!.Summary));
+         Assert.NotEmpty(dashboard.Finance.LowCashAlert!.ContributingFactors);
++        Assert.NotNull(dashboard.Finance.FinancialHealth);
++        Assert.Equal("critical", dashboard.Finance.FinancialHealth.Status, ignoreCase: true);
++        Assert.Equal(4, dashboard.Finance.FinancialHealth.ActiveInsightCount);
++        Assert.Equal(2, dashboard.Finance.FinancialHealth.CriticalInsightCount);
++        Assert.Equal(1, dashboard.Finance.TopActions.Count);
++        Assert.Equal(3, dashboard.Finance.InsightsFeed.Count);
++        Assert.Equal("transaction_anomaly:duplicate-payment-risk", dashboard.Finance.InsightsFeed[0].GroupKey);
++        Assert.Equal(2, dashboard.Finance.InsightsFeed[0].OccurrenceCount);
++        Assert.Contains("/finance/payments/", dashboard.Finance.InsightsFeed[0].Route, StringComparison.OrdinalIgnoreCase);
+         Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "finance_workspace" && x.Route.Contains("/finance?companyId=", StringComparison.OrdinalIgnoreCase));
+         Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "anomaly_workbench" && x.Route.Contains("/finance/anomalies", StringComparison.OrdinalIgnoreCase));
+         Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "finance_summary" && x.Route.Contains("/finance/monthly-summary", StringComparison.OrdinalIgnoreCase));
+@@ -153,9 +161,12 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+         await _factory.SeedAsync(dbContext =>
+         {
+             var accountId = Guid.NewGuid();
+             var counterpartyId = Guid.NewGuid();
+             var invoiceId = Guid.NewGuid();
++            var billId = Guid.NewGuid();
++            var paymentAId = Guid.NewGuid();
++            var paymentBId = Guid.NewGuid();
+             var transactionId = Guid.NewGuid();
+ 
+             dbContext.Users.AddRange(
+                 new User(ownerUserId, ownerEmail, ownerDisplayName, "dev-header", ownerSubject),
+@@ -206,6 +217,62 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+                 "INV-COCKPIT-001",
+                 new DateTime(2026, 3, 18, 0, 0, 0, DateTimeKind.Utc),
+                 new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
+                 950m,
+                 "USD",
+                 "open"));
++            dbContext.FinanceBills.Add(new FinanceBill(
++                billId,
++                companyId,
++                counterpartyId,
++                "BILL-COCKPIT-001",
++                new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
++                725m,
++                "USD",
++                "open"));
++            dbContext.Payments.AddRange(
++                new Payment(paymentAId, companyId, "outgoing", 315m, "USD", new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc), "bank_transfer", "pending", "PAY-COCKPIT-001"),
++                new Payment(paymentBId, companyId, "outgoing", 335m, "USD", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), "bank_transfer", "pending", "PAY-COCKPIT-002"));
++            dbContext.FinanceAgentInsights.AddRange(
++                new FinanceAgentInsight(
++                    Guid.NewGuid(),
++                    companyId,
++                    FinancialCheckDefinitions.TransactionAnomaly.Code,
++                    "duplicate-payment-risk",
++                    "payment",
++                    paymentAId.ToString("D"),
++                    FinancialCheckSeverity.Critical,
++                    "Two outgoing payments appear to represent the same underlying condition.",
++                    "Review both payments before releasing funds.",
++                    0.96m,
++                    "PAY-COCKPIT-001",
++                    """[{"entityType":"payment","entityId":"PAYMENT_A","displayName":"PAY-COCKPIT-001","isPrimary":true}]""".Replace("PAYMENT_A", paymentAId.ToString("D")),
++                    null,
++                    FinanceInsightStatus.Active,
++                    new DateTime(2026, 4, 22, 10, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 10, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 10, 5, 0, DateTimeKind.Utc)),
++                new FinanceAgentInsight(
++                    Guid.NewGuid(),
++                    companyId,
++                    FinancialCheckDefinitions.TransactionAnomaly.Code,
++                    "duplicate-payment-risk",
++                    "payment",
++                    paymentBId.ToString("D"),
++                    FinancialCheckSeverity.Critical,
++                    "Two outgoing payments appear to represent the same underlying condition.",
++                    "Review both payments before releasing funds.",
++                    0.94m,
++                    "PAY-COCKPIT-002",
++                    """[{"entityType":"payment","entityId":"PAYMENT_B","displayName":"PAY-COCKPIT-002","isPrimary":true}]""".Replace("PAYMENT_B", paymentBId.ToString("D")),
++                    null,
++                    FinanceInsightStatus.Active,
++                    new DateTime(2026, 4, 22, 10, 10, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 10, 10, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 10, 15, 0, DateTimeKind.Utc)),
++                new FinanceAgentInsight(
++                    Guid.NewGuid(),
++                    companyId,
++                    FinancialCheckDefinitions.PayablesPressure.Code,
++                    "bill-cash-pressure",
++                    "bill",
++                    billId.ToString("D"),
++                    FinancialCheckSeverity.High,
++                    "A supplier bill is overdue and cash pressure is rising.",
++                    "Prioritize the overdue bill and confirm payment timing.",
++                    0.89m,
++                    "BILL-COCKPIT-001",
++                    """[{"entityType":"bill","entityId":"BILL_ID","displayName":"BILL-COCKPIT-001","isPrimary":true}]""".Replace("BILL_ID", billId.ToString("D")),
++                    null,
++                    FinanceInsightStatus.Active,
++                    new DateTime(2026, 4, 22, 9, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 9, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 9, 30, 0, DateTimeKind.Utc)),
++                new FinanceAgentInsight(
++                    Guid.NewGuid(),
++                    companyId,
++                    FinancialCheckDefinitions.CashRisk.Code,
++                    "invoice-follow-up",
++                    "invoice",
++                    invoiceId.ToString("D"),
++                    FinancialCheckSeverity.Medium,
++                    "An open invoice needs collection follow-up.",
++                    "Review the invoice and schedule outreach.",
++                    0.78m,
++                    "INV-COCKPIT-001",
++                    """[{"entityType":"invoice","entityId":"INV_ID","displayName":"INV-COCKPIT-001","isPrimary":true}]""".Replace("INV_ID", invoiceId.ToString("D")),
++                    null,
++                    FinanceInsightStatus.Active,
++                    new DateTime(2026, 4, 22, 8, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 8, 0, 0, DateTimeKind.Utc),
++                    new DateTime(2026, 4, 22, 8, 15, 0, DateTimeKind.Utc)));
+             dbContext.FinanceSeedAnomalies.Add(new FinanceSeedAnomaly(
+                 Guid.NewGuid(),
+                 companyId,
+                 "missing_receipt",
+@@ -272,6 +339,19 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
+         public FinanceCockpitRunwayResponse Runway { get; set; } = new();
+         public FinanceAlertDetailResponse? LowCashAlert { get; set; }
++        public FinanceHealthResponse FinancialHealth { get; set; } = new();
++        public List<FinanceInsightFeedItemResponse> TopActions { get; set; } = [];
++        public List<FinanceInsightFeedItemResponse> InsightsFeed { get; set; } = [];
+         public List<FinanceCockpitActionResponse> AvailableActions { get; set; } = [];
+         public List<FinanceCockpitLinkResponse> DeepLinks { get; set; } = [];
+     }
++
++    private sealed class FinanceHealthResponse
++    {
++        public string Status { get; set; } = string.Empty;
++        public int ActiveInsightCount { get; set; }
++        public int CriticalInsightCount { get; set; }
++        public int HighInsightCount { get; set; }
++    }
++
++    private sealed class FinanceInsightFeedItemResponse
++    {
++        public string GroupKey { get; set; } = string.Empty;
++        public int OccurrenceCount { get; set; }
++        public string? Route { get; set; }
++    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinancePaymentsPageTests.cs b/tests/VirtualCompany.Api.Tests/FinancePaymentsPageTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinancePaymentsPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinancePaymentsPageTests.cs
+@@ -39,7 +39,18 @@ public sealed class FinancePaymentsPageTests
+                 Method = "ach",
+                 Status = "pending",
+                 CounterpartyReference = "VENDOR-PAYOUT-12",
+                 CreatedUtc = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc),
+-                UpdatedUtc = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc)
++                UpdatedUtc = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc),
++                AgentInsights =
++                [
++                    new NormalizedFinanceInsightResponse
++                    {
++                        Id = Guid.NewGuid(),
++                        Severity = "high",
++                        Status = "active",
++                        CheckName = "Transaction anomaly",
++                        Message = "Payment requires reconciliation review.",
++                        Recommendation = "Review the linked payment allocations before release.",
++                        UpdatedAt = new DateTime(2026, 4, 19, 9, 0, 0, DateTimeKind.Utc)
++                    }
++                ]
+             }
+         };
+ 
+@@ -57,6 +68,9 @@ public sealed class FinancePaymentsPageTests
+             Assert.Contains("pending", cut.Markup, StringComparison.OrdinalIgnoreCase);
+             Assert.Contains("ach", cut.Markup, StringComparison.OrdinalIgnoreCase);
+             Assert.Contains("outgoing", cut.Markup, StringComparison.OrdinalIgnoreCase);
++            Assert.Contains("Agent insights", cut.Markup);
++            Assert.Contains("Payment requires reconciliation review.", cut.Markup);
++            Assert.Contains("Review the linked payment allocations before release.", cut.Markup);
+         });
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceBillsPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceBillsPageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceBillsPageTests.cs
+@@ -0,0 +1,157 @@
++using System.Net;
++using System.Net.Http.Json;
++using Bunit;
++using Bunit.TestDoubles;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Shared;
++using VirtualCompany.Web.Pages.Finance;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceBillsPageTests
++{
++    [Fact]
++    public void Bills_page_renders_list_selected_detail_and_agent_insights()
++    {
++        var companyId = Guid.Parse("d53590ef-f7ff-4b98-a372-a9f3133e0f6c");
++        var billId = Guid.Parse("8dbde10a-cbd7-4fb3-aab8-459f0f55ed1f");
++        var bills = new List<FinanceBillResponse>
++        {
++            new()
++            {
++                Id = billId,
++                CounterpartyId = Guid.NewGuid(),
++                CounterpartyName = "Northwind Supplies",
++                BillNumber = "BILL-24018",
++                ReceivedUtc = new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
++                DueUtc = new DateTime(2026, 4, 22, 0, 0, 0, DateTimeKind.Utc),
++                Amount = 845.30m,
++                Currency = "USD",
++                Status = "open"
++            }
++        };
++
++        var billDetail = new FinanceBillDetailResponse
++        {
++            Id = billId,
++            CounterpartyId = bills[0].CounterpartyId,
++            CounterpartyName = bills[0].CounterpartyName,
++            BillNumber = bills[0].BillNumber,
++            ReceivedUtc = bills[0].ReceivedUtc,
++            DueUtc = bills[0].DueUtc,
++            Amount = bills[0].Amount,
++            Currency = bills[0].Currency,
++            Status = bills[0].Status,
++            LinkedDocument = new FinanceLinkedDocumentAccessResponse
++            {
++                Availability = "missing",
++                Message = "No linked document."
++            },
++            AgentInsights =
++            [
++                new NormalizedFinanceInsightResponse
++                {
++                    Id = Guid.NewGuid(),
++                    Severity = "critical",
++                    Status = "active",
++                    CheckName = "Payables pressure",
++                    Message = "This bill is overdue and needs attention.",
++                    Recommendation = "Prioritize payment timing with treasury.",
++                    UpdatedAt = new DateTime(2026, 4, 22, 8, 30, 0, DateTimeKind.Utc)
++                }
++            ]
++        };
++
++        using var harness = CreateHarness(companyId, bills, billDetail);
++        harness.Navigation.NavigateTo($"http://localhost/finance/bills/{billId:D}?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<BillsPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId)
++            .Add(x => x.BillId, billId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Bill list", cut.Markup);
++            Assert.Contains("Bill detail", cut.Markup);
++            Assert.Contains("BILL-24018", cut.Markup);
++            Assert.Contains("Northwind Supplies", cut.Markup);
++            Assert.Contains("USD 845.30", cut.Markup);
++            Assert.Contains("Agent insights", cut.Markup);
++            Assert.Contains("This bill is overdue and needs attention.", cut.Markup);
++            Assert.Contains("Prioritize payment timing with treasury.", cut.Markup);
++        });
++    }
++
++    private static BillsPageHarness CreateHarness(Guid companyId, List<FinanceBillResponse> bills, FinanceBillDetailResponse billDetail)
++    {
++        var context = new TestContext();
++        context.Services.AddOptions();
++        context.Services.AddSingleton(new FinanceAccessResolver());
++
++        context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            return Task.FromResult(request.RequestUri?.AbsolutePath switch
++            {
++                "/api/auth/me" => CreateJsonResponse(CreateCurrentUser(companyId, "owner")),
++                _ => CreateNotFoundResponse()
++            });
++        }))
++        {
++            BaseAddress = new Uri("http://localhost/")
++        }));
++
++        context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            var path = request.RequestUri?.AbsolutePath;
++            if (path == $"/internal/companies/{companyId:D}/finance/bills" && request.Method == HttpMethod.Get)
++            {
++                return Task.FromResult(CreateJsonResponse(bills));
++            }
++
++            if (path == $"/internal/companies/{companyId:D}/finance/bills/{billDetail.Id:D}" && request.Method == HttpMethod.Get)
++            {
++                return Task.FromResult(CreateJsonResponse(billDetail));
++            }
++
++            return Task.FromResult(CreateNotFoundResponse());
++        }))
++        {
++            BaseAddress = new Uri("http://localhost/")
++        }));
++
++        return new BillsPageHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
++    }
++
++    private static CurrentUserContextViewModel CreateCurrentUser(Guid companyId, string membershipRole) =>
++        new()
++        {
++            Memberships =
++            [
++                new CompanyMembershipViewModel
++                {
++                    MembershipId = Guid.NewGuid(),
++                    CompanyId = companyId,
++                    CompanyName = "Contoso Finance",
++                    MembershipRole = membershipRole,
++                    Status = "active"
++                }
++            ],
++            ActiveCompany = new ResolvedCompanyContextViewModel
++            {
++                MembershipId = Guid.NewGuid(),
++                CompanyId = companyId,
++                CompanyName = "Contoso Finance",
++                MembershipRole = membershipRole,
++                Status = "active"
++            }
++        };
++
++    private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>
++        new(HttpStatusCode.OK)
++        {
++            Content = JsonContent.Create(payload)
++        };
++
++    private static HttpResponseMessage CreateNotFoundResponse() =>
++        new(HttpStatusCode.NotFound)
++        {
++            Content = JsonContent.Create(new { title = "Not found", detail = "Not found." })
++        };
++
++    private sealed record BillsPageHarness(TestContext Context, FakeNavigationManager Navigation) : IDisposable
++    {
++        public void Dispose() => Context.Dispose();
++    }
++
++    private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler
++    {
++        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
++
++        public AsyncStubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
++        {
++            _handler = handler;
++        }
++
++        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
++            _handler(request, cancellationToken);
++    }
++}
+END_OF_PATCH

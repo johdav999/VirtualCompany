@@ -187,6 +187,7 @@ public sealed class FinancePaymentsIntegrationTests : IClassFixture<TestWebAppli
         public string CounterpartyReference { get; set; } = string.Empty;
         public DateTime CreatedUtc { get; set; }
         public DateTime UpdatedUtc { get; set; }
+        public List<InsightResponse> AgentInsights { get; set; } = [];
     }
 
     private sealed class CreateFinancePaymentRequest
@@ -198,5 +199,11 @@ public sealed class FinancePaymentsIntegrationTests : IClassFixture<TestWebAppli
         public string Method { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
         public string CounterpartyReference { get; set; } = string.Empty;
+    }
+
+    private sealed class InsightResponse
+    {
+        public Guid Id { get; set; }
+        public string ConditionKey { get; set; } = string.Empty;
     }
 }

@@ -1,0 +1,108 @@
+@page "/finance/bills"
+@page "/finance/bills/{BillId:guid}"
+@inherits FinancePageBase
+
+<PageTitle>Bills</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Bills"
+    Description="Inspect supplier bills and their linked agent insights inside the active company."
+    LoadingMessage="Loading bills workspace...">
+    <div class="row g-4 align-items-start">
+        <div class="col-lg-7">
+            <div class="wizard-card wizard-card--compact">
+                <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
+                    <div>
+                        <h2 class="h5 mb-1">Bill list</h2>
+                        <p class="text-body-secondary mb-0">Supplier bills remain tenant-scoped and route-driven.</p>
+                    </div>
+                    <span class="badge text-bg-light">@Bills.Count item@(Bills.Count == 1 ? string.Empty : "s")</span>
+                </div>
+
+                <FinanceDataState
+                    IsLoading="@IsListLoading"
+                    IsEmpty="@IsListEmpty"
+                    ErrorMessage="@ListErrorMessage"
+                    LoadingTitle="Loading bills"
+                    LoadingMessage="Fetching tenant-scoped bills."
+                    EmptyTitle="No bills available"
+                    EmptyMessage="The active company does not currently have supplier bills to inspect."
+                    OnRetry="@ReloadAsync">
+                    <div class="list-group">
+                        @foreach (var bill in Bills)
+                        {
+                            <a class="@GetBillListItemClass(bill.Id)" href="@BuildBillHref(bill.Id)">
+                                <div class="d-flex w-100 justify-content-between gap-3">
+                                    <div>
+                                        <strong>@bill.BillNumber</strong>
+                                        <div class="text-body-secondary small mt-1">Supplier: @bill.CounterpartyName</div>
+                                        <div class="small mt-2">Received @FormatDate(bill.ReceivedUtc) | Due @FormatDate(bill.DueUtc)</div>
+                                    </div>
+                                    <div class="text-end">
+                                        <div class="fw-semibold">@FormatCurrency(bill.Amount, bill.Currency)</div>
+                                        <div class="mt-2"><span class="badge text-bg-light">@FormatLabel(bill.Status)</span></div>
+                                    </div>
+                                </div>
+                            </a>
+                        }
+                    </div>
+                </FinanceDataState>
+            </div>
+        </div>
+
+        <div class="col-lg-5">
+            <div class="wizard-card wizard-card--compact">
+                @if (IsDetailLoading)
+                {
+                    <FinanceLoadingState Title="Loading bill detail" Message="Resolving the selected bill from the route." />
+                }
+                else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
+                {
+                    <FinanceErrorState Title="Bill detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                }
+                else if (SelectedBill is null)
+                {
+                    <FinanceEmptyState Title="No bill selected" Message="Select a bill to inspect its detail panel." />
+                }
+                else
+                {
+                    <h2 class="h5">Bill detail</h2>
+                    <dl class="mb-4">
+                        <dt>Bill</dt>
+                        <dd>@SelectedBill.BillNumber</dd>
+                        <dt>Supplier</dt>
+                        <dd>@SelectedBill.CounterpartyName</dd>
+                        <dt>Status</dt>
+                        <dd><span class="badge text-bg-light">@FormatLabel(SelectedBill.Status)</span></dd>
+                        <dt>Amount</dt>
+                        <dd>@FormatCurrency(SelectedBill.Amount, SelectedBill.Currency)</dd>
+                        <dt>Received</dt>
+                        <dd>@FormatDate(SelectedBill.ReceivedUtc)</dd>
+                        <dt>Due</dt>
+                        <dd>@FormatDate(SelectedBill.DueUtc)</dd>
+                    </dl>
+
+                    <FinanceLinkedResourceState
+                        Availability="@SelectedBill.LinkedDocument.Availability"
+                        Message="@SelectedBill.LinkedDocument.Message"
+                        ResourceTitle="@SelectedBill.LinkedDocument.Document?.Title"
+                        SecondaryText="@SelectedBill.LinkedDocument.Document?.OriginalFileName"
+                        TypeText="@SelectedBill.LinkedDocument.Document?.ContentType"
+                        CanNavigate="@SelectedBill.LinkedDocument.CanNavigate"
+                        NavigateHref="@(SelectedBill.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedBill.LinkedDocument.Document.Id))"
+                        ActionText="Open linked document" />
+
+                    <AgentInsightsPanel
+                        Title="Agent insights"
+                        Subtitle="Persisted finance agent insights linked to this bill."
+                        EmptyMessage="No agent insights are linked to this bill."
+                        TestId="bill-agent-insights-panel"
+                        Items="@SelectedBill.AgentInsights" />
+                }
+            </div>
+        </div>
+    </div>
+</FinancePageLayout>

@@ -1,0 +1,777 @@
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceWorkflowTriggerCheckExecution.cs b/src/VirtualCompany.Domain/Entities/FinanceWorkflowTriggerCheckExecution.cs
+new file mode 100644
+index 0000000..1d8a3a1
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/FinanceWorkflowTriggerCheckExecution.cs
+@@ -0,0 +1,137 @@
++using System.Text.Json;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class FinanceWorkflowTriggerCheckExecution : ICompanyOwnedEntity
++{
++    private FinanceWorkflowTriggerCheckExecution()
++    {
++    }
++
++    public FinanceWorkflowTriggerCheckExecution(
++        Guid id,
++        Guid companyId,
++        Guid triggerExecutionId,
++        string triggerType,
++        string sourceEntityType,
++        string sourceEntityId,
++        string sourceEntityVersion,
++        string checkType,
++        DateTime startedAtUtc,
++        string? correlationId = null,
++        string? eventId = null,
++        string? causationId = null,
++        string? triggerMessageId = null,
++        string? metadataJson = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (triggerExecutionId == Guid.Empty)
++        {
++            throw new ArgumentException("TriggerExecutionId is required.", nameof(triggerExecutionId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        TriggerExecutionId = triggerExecutionId;
++        TriggerType = NormalizeRequired(triggerType, nameof(triggerType), 64);
++        SourceEntityType = NormalizeRequired(sourceEntityType, nameof(sourceEntityType), 128);
++        SourceEntityId = NormalizeRequired(sourceEntityId, nameof(sourceEntityId), 128);
++        SourceEntityVersion = NormalizeRequired(sourceEntityVersion, nameof(sourceEntityVersion), 256);
++        CheckType = NormalizeRequired(checkType, nameof(checkType), 128);
++        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
++        EventId = NormalizeOptional(eventId, nameof(eventId), 200);
++        CausationId = NormalizeOptional(causationId, nameof(causationId), 128);
++        TriggerMessageId = NormalizeOptional(triggerMessageId, nameof(triggerMessageId), 64);
++        StartedAtUtc = EntityTimestampNormalizer.NormalizeUtc(startedAtUtc, nameof(startedAtUtc));
++        MetadataJson = NormalizeJson(metadataJson, "{}");
++        Outcome = "pending";
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid TriggerExecutionId { get; private set; }
++    public string TriggerType { get; private set; } = null!;
++    public string SourceEntityType { get; private set; } = null!;
++    public string SourceEntityId { get; private set; } = null!;
++    public string SourceEntityVersion { get; private set; } = null!;
++    public string CheckType { get; private set; } = null!;
++    public string? CorrelationId { get; private set; }
++    public string? EventId { get; private set; }
++    public string? CausationId { get; private set; }
++    public string? TriggerMessageId { get; private set; }
++    public DateTime StartedAtUtc { get; private set; }
++    public DateTime? CompletedAtUtc { get; private set; }
++    public string Outcome { get; private set; } = null!;
++    public string MetadataJson { get; private set; } = "{}";
++    public string? ErrorDetails { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FinanceWorkflowTriggerExecution TriggerExecution { get; private set; } = null!;
++
++    public void Complete(
++        string outcome,
++        DateTime completedAtUtc,
++        string? errorDetails = null)
++    {
++        Outcome = NormalizeRequired(outcome, nameof(outcome), 32);
++        CompletedAtUtc = EntityTimestampNormalizer.NormalizeUtc(completedAtUtc, nameof(completedAtUtc));
++        ErrorDetails = NormalizeOptional(errorDetails, nameof(errorDetails), 4000);
++    }
++
++    public void UpdateMetadataJson(string? metadataJson)
++    {
++        MetadataJson = NormalizeJson(metadataJson, "{}");
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string NormalizeJson(string? value, string defaultValue)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return defaultValue;
++        }
++
++        using var document = JsonDocument.Parse(value);
++        var normalized = document.RootElement.GetRawText();
++        return string.IsNullOrWhiteSpace(normalized)
++            ? defaultValue
++            : normalized;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceWorkflowTriggerService.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceWorkflowTriggerService.cs
+index 16b2c6c..1b155aa 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceWorkflowTriggerService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceWorkflowTriggerService.cs
+@@ -46,6 +46,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+         var normalizedSourceEntityId = command.SourceEntityId.Trim();
+         var normalizedSourceEntityVersion = command.SourceEntityVersion.Trim();
+         var normalizedCorrelationId = NormalizeCorrelationId(command.CorrelationId, command.EventId);
++        var duplicateChecks = new List<string>();
+         var registeredChecks = _triggerRegistry.GetChecks(normalizedTriggerType);
+ 
+         var startedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
+@@ -67,48 +68,35 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+                 normalizedSourceEntityId,
+                 normalizedSourceEntityVersion,
+                 normalizedCorrelationId,
+-                registeredChecks,
+-                []));
++                registeredChecks,
++                [],
++                []));
+         _dbContext.FinanceWorkflowTriggerExecutions.Add(execution);
+         var executedChecks = new List<string>();
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+-        var existing = await FindExistingEffectiveAsync(
+-            command.CompanyId,
+-            normalizedTriggerType,
+-            normalizedSourceEntityId,
+-            normalizedSourceEntityVersion,
+-            execution.Id,
+-            cancellationToken);
+-        if (existing is not null)
+-        {
+-            execution.UpdateMetadataJson(
+-                BuildMetadataJson(
+-                    command,
+-                    normalizedTriggerType,
+-                    normalizedSourceEntityType,
+-                    normalizedSourceEntityId,
+-                    normalizedSourceEntityVersion,
+-                    normalizedCorrelationId,
+-                    registeredChecks,
+-                    executedChecks,
+-                    existing));
+-            execution.Complete(
+-                executedChecks,
+-                FinanceWorkflowTriggerOutcomes.DuplicateSkipped,
+-                _timeProvider.GetUtcNow().UtcDateTime,
+-                $"Skipped duplicate finance workflow trigger execution because execution '{existing.Id}' already processed source version '{normalizedSourceEntityVersion}'.");
+-            await _dbContext.SaveChangesAsync(cancellationToken);
+-            return Map(execution);
+-        }
+-
+         try
+         {
+             foreach (var checkCode in registeredChecks)
+             {
+-                await ExecuteRegisteredCheckAsync(
++                var checkExecution = await TryStartCheckExecutionAsync(
++                    execution,
++                    command,
++                    normalizedTriggerType,
++                    normalizedSourceEntityType,
++                    normalizedSourceEntityId,
++                    normalizedSourceEntityVersion,
++                    normalizedCorrelationId,
++                    checkCode,
++                    cancellationToken);
++                if (checkExecution is null)
++                {
++                    duplicateChecks.Add(checkCode);
++                    continue;
++                }
++
++                try
++                {
++                    var executed = await ExecuteRegisteredCheckAsync(
+                     checkCode,
+                     command,
+                     normalizedTriggerType,
+@@ -116,18 +104,43 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+                     normalizedSourceEntityVersion,
+                     normalizedCorrelationId,
+                     executedChecks,
+-                    cancellationToken);
++                    cancellationToken);
++
++                    checkExecution.UpdateMetadataJson(
++                        BuildCheckMetadataJson(
++                            command,
++                            execution,
++                            normalizedTriggerType,
++                            normalizedSourceEntityType,
++                            normalizedSourceEntityId,
++                            normalizedSourceEntityVersion,
++                            normalizedCorrelationId,
++                            checkCode));
++                    checkExecution.Complete(
++                        executed
++                            ? FinanceWorkflowTriggerOutcomes.Succeeded
++                            : FinanceWorkflowTriggerOutcomes.NoOp,
++                        _timeProvider.GetUtcNow().UtcDateTime);
++                    await _dbContext.SaveChangesAsync(cancellationToken);
++                }
++                catch (Exception ex)
++                {
++                    checkExecution.UpdateMetadataJson(
++                        BuildCheckMetadataJson(
++                            command,
++                            execution,
++                            normalizedTriggerType,
++                            normalizedSourceEntityType,
++                            normalizedSourceEntityId,
++                            normalizedSourceEntityVersion,
++                            normalizedCorrelationId,
++                            checkCode));
++                    checkExecution.Complete(FinanceWorkflowTriggerOutcomes.Failed, _timeProvider.GetUtcNow().UtcDateTime, ex.Message);
++                    await _dbContext.SaveChangesAsync(cancellationToken);
++                    throw;
++                }
+             }
+ 
++            var finalOutcome = ResolveExecutionOutcome(executedChecks, duplicateChecks, registeredChecks.Count);
+             execution.UpdateMetadataJson(
+                 BuildMetadataJson(
+-                    command,
+-                    normalizedTriggerType,
+-                    normalizedSourceEntityType,
+-                    normalizedSourceEntityId,
+-                    normalizedSourceEntityVersion,
+-                    normalizedCorrelationId,
+-                    registeredChecks,
+-                    executedChecks));
++                    command, normalizedTriggerType, normalizedSourceEntityType, normalizedSourceEntityId, normalizedSourceEntityVersion, normalizedCorrelationId, registeredChecks, executedChecks, duplicateChecks));
+             execution.Complete(
+                 executedChecks,
+-                executedChecks.Count == 0
+-                    ? FinanceWorkflowTriggerOutcomes.NoOp
+-                    : FinanceWorkflowTriggerOutcomes.Succeeded,
+-                _timeProvider.GetUtcNow().UtcDateTime);
++                finalOutcome,
++                _timeProvider.GetUtcNow().UtcDateTime,
++                finalOutcome == FinanceWorkflowTriggerOutcomes.DuplicateSkipped
++                    ? $"Skipped duplicate finance workflow trigger execution because all registered checks were already processed for source version '{normalizedSourceEntityVersion}'."
++                    : null);
+             await _dbContext.SaveChangesAsync(cancellationToken);
+             return Map(execution);
+         }
+@@ -141,18 +154,39 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+                     normalizedSourceEntityVersion,
+                     normalizedCorrelationId,
+                     registeredChecks,
+-                    executedChecks));
++                    executedChecks,
++                    duplicateChecks));
+             execution.Complete(
+                 executedChecks,
+                 FinanceWorkflowTriggerOutcomes.Failed,
+                 _timeProvider.GetUtcNow().UtcDateTime,
+                 ex.Message);
+             await _dbContext.SaveChangesAsync(cancellationToken);
+             throw;
+         }
+     }
+ 
+-    private Task ExecuteRegisteredCheckAsync(
++    private async Task<FinanceWorkflowTriggerCheckExecution?> TryStartCheckExecutionAsync(
++        FinanceWorkflowTriggerExecution execution,
++        ProcessFinanceWorkflowTriggerCommand command,
++        string triggerType,
++        string sourceEntityType,
++        string sourceEntityId,
++        string sourceEntityVersion,
++        string correlationId,
++        string checkCode,
++        CancellationToken cancellationToken)
++    {
++        var checkExecution = new FinanceWorkflowTriggerCheckExecution(
++            Guid.NewGuid(),
++            command.CompanyId,
++            execution.Id,
++            triggerType,
++            sourceEntityType,
++            sourceEntityId,
++            sourceEntityVersion,
++            checkCode,
++            _timeProvider.GetUtcNow().UtcDateTime,
++            correlationId,
++            command.EventId,
++            command.CausationId,
++            command.TriggerMessageId,
++            BuildCheckMetadataJson(command, execution, triggerType, sourceEntityType, sourceEntityId, sourceEntityVersion, correlationId, checkCode));
++        _dbContext.FinanceWorkflowTriggerCheckExecutions.Add(checkExecution);
++
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return checkExecution;
++        }
++        catch (DbUpdateException ex) when (IsDuplicateCheckExecution(ex))
++        {
++            _dbContext.Entry(checkExecution).State = EntityState.Detached;
++            return null;
++        }
++    }
++
++    private Task<bool> ExecuteRegisteredCheckAsync(
+         string checkCode,
+         ProcessFinanceWorkflowTriggerCommand command,
+         string triggerType,
+@@ -174,7 +208,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+             _ => throw new InvalidOperationException($"Unsupported finance workflow trigger check '{checkCode}'.")
+         };
+ 
+-    private async Task TryRefreshInsightsSnapshotAsync(
++    private async Task<bool> TryRefreshInsightsSnapshotAsync(
+         Guid companyId,
+         DateTime occurredAtUtc,
+         string correlationId,
+@@ -189,7 +223,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+                     occurredAtUtc,
+                     SnapshotKey: FinanceInsightSnapshotKeys.Default,
+                     CorrelationId: correlationId),
+                 cancellationToken);
+             executedChecks.Add(FinanceWorkflowExecutedChecks.RefreshInsightsSnapshot);
++            return true;
+         }
+         catch (FinanceNotInitializedException ex)
+         {
+@@ -198,10 +232,11 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+                 "Skipped finance insights refresh for company {CompanyId} because finance data is not initialized.",
+                 companyId);
+         }
++        return false;
+     }
+ 
+-    private async Task TryEvaluateCashPositionAsync(
++    private async Task<bool> TryEvaluateCashPositionAsync(
+         Guid companyId,
+         string correlationId,
+         string? eventId,
+@@ -221,7 +256,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+                     SourceEntityVersion: sourceEntityVersion),
+                 cancellationToken);
+             executedChecks.Add(FinanceWorkflowExecutedChecks.EvaluateCashPosition);
++            return true;
+         }
+         catch (FinanceNotInitializedException ex)
+         {
+@@ -230,10 +265,11 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+                 "Skipped finance cash position evaluation for company {CompanyId} because finance data is not initialized.",
+                 companyId);
+         }
++        return false;
+     }
+ 
+-    private async Task TryEnsureApprovalTaskAsync(
++    private async Task<bool> TryEnsureApprovalTaskAsync(
+         Guid companyId,
+         string triggerType,
+         string sourceEntityId,
+@@ -244,7 +280,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+         CancellationToken cancellationToken)
+     {
+         if (!Guid.TryParse(sourceEntityId, out var targetId))
+         {
+-            return;
++            return false;
+         }
+ 
+         switch (triggerType)
+@@ -257,7 +293,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+                     .AsNoTracking()
+                     .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == targetId, cancellationToken);
+                 if (bill is null)
+                 {
+-                    return;
++                    return false;
+                 }
+ 
+                 await _financeApprovalTaskService.EnsureTaskAsync(
+@@ -273,6 +309,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+                         sourceEntityVersion),
+                     cancellationToken);
+                 executedChecks.Add(FinanceWorkflowExecutedChecks.EnsureApprovalTask);
++                return true;
+                 break;
+             }
+             case FinanceWorkflowTriggerTypes.Payment:
+@@ -283,7 +320,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+                     .AsNoTracking()
+                     .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == targetId, cancellationToken);
+                 if (payment is null)
+                 {
+-                    return;
++                    return false;
+                 }
+ 
+                 await _financeApprovalTaskService.EnsureTaskAsync(
+@@ -299,26 +336,16 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+                         sourceEntityVersion),
+                     cancellationToken);
+                 executedChecks.Add(FinanceWorkflowExecutedChecks.EnsureApprovalTask);
++                return true;
+                 break;
+             }
+         }
+-    }
+ 
+-    private Task<FinanceWorkflowTriggerExecution?> FindExistingEffectiveAsync(
+-        Guid companyId,
+-        string triggerType,
+-        string sourceEntityId,
+-        string sourceEntityVersion,
+-        Guid currentExecutionId,
+-        CancellationToken cancellationToken) =>
+-        _dbContext.FinanceWorkflowTriggerExecutions
+-            .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .Where(
+-                x => x.CompanyId == companyId &&
+-                     x.Id != currentExecutionId &&
+-                     x.TriggerType == triggerType &&
+-                     x.SourceEntityId == sourceEntityId &&
+-                     x.SourceEntityVersion == sourceEntityVersion &&
+-                     (x.Outcome == FinanceWorkflowTriggerOutcomes.Succeeded ||
+-                      x.Outcome == FinanceWorkflowTriggerOutcomes.NoOp))
+-            .OrderByDescending(x => x.CompletedAtUtc ?? x.StartedAtUtc)
+-            .FirstOrDefaultAsync(cancellationToken);
++        return false;
++    }
++
++    private static string ResolveExecutionOutcome(
++        IReadOnlyCollection<string> executedChecks,
++        IReadOnlyCollection<string> duplicateChecks,
++        int registeredCheckCount) =>
++        executedChecks.Count > 0
++            ? FinanceWorkflowTriggerOutcomes.Succeeded
++            : registeredCheckCount > 0 && duplicateChecks.Count == registeredCheckCount
++                ? FinanceWorkflowTriggerOutcomes.DuplicateSkipped
++                : FinanceWorkflowTriggerOutcomes.NoOp;
+ 
+     private static FinanceWorkflowTriggerExecutionDto Map(FinanceWorkflowTriggerExecution execution) =>
+         new(
+@@ -362,12 +389,27 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+         return Guid.NewGuid().ToString("N");
+     }
+ 
++    private static bool IsDuplicateCheckExecution(DbUpdateException exception)
++    {
++        var message = exception.ToString();
++        return message.Contains("duplicate key value violates unique constraint", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains("finance_workflow_trigger_check_executions", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains("IX_finance_workflow_trigger_check_exec_dedupe", StringComparison.OrdinalIgnoreCase);
++    }
++
+     private static string BuildMetadataJson(
+         ProcessFinanceWorkflowTriggerCommand command,
+         string triggerType,
+         string sourceEntityType,
+         string sourceEntityId,
+         string sourceEntityVersion,
+         string correlationId,
+         IReadOnlyCollection<string> registeredChecks,
+         IReadOnlyCollection<string> executedChecks,
+-        FinanceWorkflowTriggerExecution? duplicateOfExecution = null)
++        IReadOnlyCollection<string> duplicateChecks)
+     {
+         var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+         if (command.Metadata is not null)
+@@ -386,10 +428,35 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+         metadata["triggerMessageId"] = JsonValue.Create(command.TriggerMessageId);
+         metadata["registeredChecks"] = BuildJsonArray(registeredChecks);
+         metadata["executedChecks"] = BuildJsonArray(executedChecks);
+-        metadata["duplicateOfExecutionId"] = duplicateOfExecution is null ? null : JsonValue.Create(duplicateOfExecution.Id);
++        metadata["duplicateChecks"] = BuildJsonArray(duplicateChecks);
+ 
+         return JsonSerializer.Serialize(metadata);
+     }
+ 
++    private static string BuildCheckMetadataJson(
++        ProcessFinanceWorkflowTriggerCommand command,
++        FinanceWorkflowTriggerExecution execution,
++        string triggerType,
++        string sourceEntityType,
++        string sourceEntityId,
++        string sourceEntityVersion,
++        string correlationId,
++        string checkCode)
++    {
++        var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        if (command.Metadata is not null)
++        {
++            foreach (var pair in command.Metadata)
++            {
++                metadata[pair.Key] = pair.Value?.DeepClone();
++            }
++        }
++
++        metadata["triggerExecutionId"] = JsonValue.Create(execution.Id);
++        metadata["triggerType"] = JsonValue.Create(triggerType);
++        metadata["sourceEntityType"] = JsonValue.Create(sourceEntityType);
++        metadata["sourceEntityId"] = JsonValue.Create(sourceEntityId);
++        metadata["sourceEntityVersion"] = JsonValue.Create(sourceEntityVersion);
++        metadata["checkType"] = JsonValue.Create(checkCode);
++        metadata["correlationId"] = JsonValue.Create(correlationId);
++        metadata["eventId"] = JsonValue.Create(command.EventId);
++        metadata["causationId"] = JsonValue.Create(command.CausationId);
++        metadata["triggerMessageId"] = JsonValue.Create(command.TriggerMessageId);
++        return JsonSerializer.Serialize(metadata);
++    }
++
+     private static JsonArray BuildJsonArray(IEnumerable<string> values)
+     {
+         var array = new JsonArray();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceWorkflowTriggerCheckExecutionEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceWorkflowTriggerCheckExecutionEntityConfiguration.cs
+new file mode 100644
+index 0000000..de055ca
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceWorkflowTriggerCheckExecutionEntityConfiguration.cs
+@@ -0,0 +1,47 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class FinanceWorkflowTriggerCheckExecutionEntityConfiguration : IEntityTypeConfiguration<FinanceWorkflowTriggerCheckExecution>
++{
++    public void Configure(EntityTypeBuilder<FinanceWorkflowTriggerCheckExecution> builder)
++    {
++        builder.ToTable("finance_workflow_trigger_check_executions");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.TriggerExecutionId).HasColumnName("trigger_execution_id").IsRequired();
++        builder.Property(x => x.TriggerType).HasColumnName("trigger_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.SourceEntityType).HasColumnName("source_entity_type").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.SourceEntityId).HasColumnName("source_entity_id").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.SourceEntityVersion).HasColumnName("source_entity_version").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.CheckType).HasColumnName("check_type").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
++        builder.Property(x => x.EventId).HasColumnName("event_id").HasMaxLength(200);
++        builder.Property(x => x.CausationId).HasColumnName("causation_id").HasMaxLength(128);
++        builder.Property(x => x.TriggerMessageId).HasColumnName("trigger_message_id").HasMaxLength(64);
++        builder.Property(x => x.StartedAtUtc).HasColumnName("started_at").IsRequired();
++        builder.Property(x => x.CompletedAtUtc).HasColumnName("completed_at");
++        builder.Property(x => x.Outcome).HasColumnName("outcome").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.MetadataJson).HasColumnName("metadata_json").HasColumnType("nvarchar(max)").HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault).IsRequired();
++        builder.Property(x => x.ErrorDetails).HasColumnName("error_details").HasMaxLength(4000);
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.TriggerExecutionId);
++        builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
++        builder.HasIndex(x => new { x.CompanyId, x.EventId });
++        builder.HasIndex(x => new { x.CompanyId, x.TriggerType, x.SourceEntityType, x.SourceEntityId, x.SourceEntityVersion, x.CheckType })
++            .IsUnique()
++            .HasDatabaseName("IX_finance_workflow_trigger_check_exec_dedupe");
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++
++        builder.HasOne(x => x.TriggerExecution)
++            .WithMany()
++            .HasForeignKey(x => x.TriggerExecutionId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260422190000_AddFinanceWorkflowTriggerCheckExecutions.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260422190000_AddFinanceWorkflowTriggerCheckExecutions.cs
+new file mode 100644
+index 0000000..dd162c8
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260422190000_AddFinanceWorkflowTriggerCheckExecutions.cs
+@@ -0,0 +1,103 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddFinanceWorkflowTriggerCheckExecutions : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
++            var string200Type = isPostgres ? "character varying(200)" : "nvarchar(200)";
++            var string256Type = isPostgres ? "character varying(256)" : "nvarchar(256)";
++            var string4000Type = isPostgres ? "character varying(4000)" : "nvarchar(4000)";
++            var textType = isPostgres ? "text" : "nvarchar(max)";
++            var jsonObjectDefault = isPostgres ? "'{}'" : "N'{}'";
++
++            migrationBuilder.CreateTable(
++                name: "finance_workflow_trigger_check_executions",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    trigger_execution_id = table.Column<Guid>(type: guidType, nullable: false),
++                    trigger_type = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    source_entity_type = table.Column<string>(type: string128Type, maxLength: 128, nullable: false),
++                    source_entity_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: false),
++                    source_entity_version = table.Column<string>(type: string256Type, maxLength: 256, nullable: false),
++                    check_type = table.Column<string>(type: string128Type, maxLength: 128, nullable: false),
++                    correlation_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: true),
++                    event_id = table.Column<string>(type: string200Type, maxLength: 200, nullable: true),
++                    causation_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: true),
++                    trigger_message_id = table.Column<string>(type: string64Type, maxLength: 64, nullable: true),
++                    started_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    completed_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                    outcome = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    metadata_json = table.Column<string>(type: textType, nullable: false, defaultValueSql: jsonObjectDefault),
++                    error_details = table.Column<string>(type: string4000Type, maxLength: 4000, nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_workflow_trigger_check_executions", x => x.id);
++                    table.UniqueConstraint("AK_finance_workflow_trigger_check_executions_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(
++                        name: "FK_finance_workflow_trigger_check_executions_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_finance_workflow_trigger_check_executions_finance_workflow_trigger_executions_trigger_execution_id",
++                        column: x => x.trigger_execution_id,
++                        principalTable: "finance_workflow_trigger_executions",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_workflow_trigger_check_executions_company_id",
++                table: "finance_workflow_trigger_check_executions",
++                column: "company_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_workflow_trigger_check_executions_company_id_correlation_id",
++                table: "finance_workflow_trigger_check_executions",
++                columns: new[] { "company_id", "correlation_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_workflow_trigger_check_executions_company_id_event_id",
++                table: "finance_workflow_trigger_check_executions",
++                columns: new[] { "company_id", "event_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_workflow_trigger_check_exec_dedupe",
++                table: "finance_workflow_trigger_check_executions",
++                columns: new[] { "company_id", "trigger_type", "source_entity_type", "source_entity_id", "source_entity_version", "check_type" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_workflow_trigger_check_executions_trigger_execution_id",
++                table: "finance_workflow_trigger_check_executions",
++                column: "trigger_execution_id");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "finance_workflow_trigger_check_executions");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 4900cb5..57b9f55 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -97,6 +97,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<FinanceSeedAnomaly> FinanceSeedAnomalies => Set<FinanceSeedAnomaly>();
+     public DbSet<FinanceSimulationStepLog> FinanceSimulationStepLogs => Set<FinanceSimulationStepLog>();
+     public DbSet<FinanceWorkflowTriggerExecution> FinanceWorkflowTriggerExecutions => Set<FinanceWorkflowTriggerExecution>();
++    public DbSet<FinanceWorkflowTriggerCheckExecution> FinanceWorkflowTriggerCheckExecutions => Set<FinanceWorkflowTriggerCheckExecution>();
+     public DbSet<FinanceSeedBackfillRun> FinanceSeedBackfillRuns => Set<FinanceSeedBackfillRun>();
+     public DbSet<FinanceSeedBackfillAttempt> FinanceSeedBackfillAttempts => Set<FinanceSeedBackfillAttempt>();
+     public DbSet<FiscalPeriod> FiscalPeriods => Set<FiscalPeriod>();
+@@ -451,6 +452,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FinanceWorkflowTriggerExecution>()
+             .HasQueryFilter(execution =>
+                 CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceWorkflowTriggerCheckExecution>()
++            .HasQueryFilter(execution =>
++                CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<FiscalPeriod>()
+             .HasQueryFilter(period =>
+                 CurrentCompanyId.HasValue && period.CompanyId == CurrentCompanyId.Value);
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceWorkflowTriggerIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceWorkflowTriggerIntegrationTests.cs
+index 77a18c9..59348ca 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceWorkflowTriggerIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceWorkflowTriggerIntegrationTests.cs
+@@ -156,6 +156,18 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW
+             Assert.Contains("evaluate_cash_position", successful.GetExecutedChecks());
+             Assert.Contains("ensure_approval_task", successful.GetExecutedChecks());
+             Assert.Contains(eventId, successful.MetadataJson, StringComparison.Ordinal);
++            Assert.Contains("payment", successful.MetadataJson, StringComparison.Ordinal);
++
++            var checkExecutions = await dbContext.FinanceWorkflowTriggerCheckExecutions
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == companyId && x.TriggerType == "payment" && x.SourceEntityId == paymentId.ToString("N"))
++                .OrderBy(x => x.CheckType)
++                .ToListAsync();
++            Assert.Equal(3, checkExecutions.Count);
++            Assert.All(checkExecutions, x => Assert.Equal("succeeded", x.Outcome));
++            Assert.Collection(
++                checkExecutions.Select(x => x.CheckType),
++                value => Assert.Equal("ensure_approval_task", value),
++                value => Assert.Equal("evaluate_cash_position", value),
++                value => Assert.Equal("refresh_insights_snapshot", value));
+ 
+             var duplicate = Assert.Single(executions.Where(x => x.Outcome == "duplicate_skipped"));
+             Assert.Equal(correlationId, duplicate.CorrelationId);
+@@ -164,8 +176,8 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW
+             Assert.Equal(secondOutboxId.ToString("N"), duplicate.TriggerMessageId);
+             Assert.NotNull(duplicate.CompletedAtUtc);
+             Assert.Empty(duplicate.GetExecutedChecks());
+-            Assert.Contains(successful.Id.ToString("D"), duplicate.ErrorDetails ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+-            Assert.Contains(successful.Id.ToString("D"), duplicate.MetadataJson, StringComparison.OrdinalIgnoreCase);
++            Assert.Contains(sourceEntityVersion, duplicate.ErrorDetails ?? string.Empty, StringComparison.OrdinalIgnoreCase);
++            Assert.Contains("duplicateChecks", duplicate.MetadataJson, StringComparison.OrdinalIgnoreCase);
+             return 0;
+         });
+     }
+END_OF_PATCH

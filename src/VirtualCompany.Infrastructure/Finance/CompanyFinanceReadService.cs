@@ -25,6 +25,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
     private readonly IFinanceSeedingStateService? _financeSeedingStateService;
     private readonly IDistributedCache? _insightSnapshotCache;
     private readonly TimeProvider? _timeProvider;
+    private readonly IFinanceInsightPersistenceService _financeInsightPersistenceService;
+    private readonly IReadOnlyList<IFinancialCheck> _financialChecks;
 
     public CompanyFinanceReadService(VirtualCompanyDbContext dbContext)
         : this(dbContext, null, null, null, null, null, null)
@@ -43,7 +45,30 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         ICompanyContextAccessor? companyContextAccessor,
         ICompanyDocumentService? documentService,
         IKnowledgeAccessPolicyEvaluator? accessPolicyEvaluator,
+        IFinanceSeedingStateService? financeSeedingStateService,
+        IDistributedCache? insightSnapshotCache,
+        TimeProvider? timeProvider)
+        : this(
+            dbContext,
+            companyContextAccessor,
+            documentService,
+            accessPolicyEvaluator,
+            financeSeedingStateService,
+            financialChecks: null,
+            financeInsightPersistenceService: null,
+            insightSnapshotCache,
+            timeProvider)
+    {
+    }
+
+    public CompanyFinanceReadService(
+        VirtualCompanyDbContext dbContext,
+        ICompanyContextAccessor? companyContextAccessor,
+        ICompanyDocumentService? documentService,
+        IKnowledgeAccessPolicyEvaluator? accessPolicyEvaluator,
         IFinanceSeedingStateService? financeSeedingStateService = null,
+        IEnumerable<IFinancialCheck>? financialChecks = null,
+        IFinanceInsightPersistenceService? financeInsightPersistenceService = null,
         IDistributedCache? insightSnapshotCache = null,
         TimeProvider? timeProvider = null)
     {
@@ -53,7 +78,18 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         _accessPolicyEvaluator = accessPolicyEvaluator;
         _financeSeedingStateService = financeSeedingStateService;
         _insightSnapshotCache = insightSnapshotCache;
-        _timeProvider = timeProvider;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _financeInsightPersistenceService = financeInsightPersistenceService ??
+            new FinanceInsightPersistenceService(
+                new FinanceAgentInsightRepository(_dbContext), _timeProvider);
+        _financialChecks = financialChecks?.ToArray() ??
+            [
+                new CashRiskFinancialCheck((context, cancellationToken) =>
+                    GetCashPositionAsync(new GetFinanceCashPositionQuery(context.CompanyId, context.AsOfUtc), cancellationToken)),
+                new TransactionAnomalyFinancialCheck(_dbContext),
+                new OverdueReceivablesFinancialCheck(_dbContext),
+                new PayablesFinancialCheck(_dbContext)
+            ];
     }
 
     public async Task<FinanceCashBalanceDto> GetCashBalanceAsync(
@@ -501,7 +537,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.Status,
                 x.CounterpartyReference,
                 x.CreatedUtc,
-                x.UpdatedUtc))
+                x.UpdatedUtc,
+                Array.Empty<NormalizedFinanceInsightDto>()))
             .ToListAsync(cancellationToken);
     }
 
@@ -516,7 +553,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             throw new ArgumentException("Payment id is required.", nameof(query));
         }
 
-        return await _dbContext.Payments
+        var row = await _dbContext.Payments
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == query.CompanyId && x.Id == query.PaymentId)
@@ -531,8 +568,20 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.Status,
                 x.CounterpartyReference,
                 x.CreatedUtc,
-                x.UpdatedUtc))
+                x.UpdatedUtc,
+                Array.Empty<NormalizedFinanceInsightDto>()))
             .SingleOrDefaultAsync(cancellationToken);
+
+        if (row is null)
+        {
+            return null;
+        }
+
+        var agentInsights = await LoadEntityAgentInsightsAsync(query.CompanyId, "payment", row.Id, cancellationToken);
+        return row with
+        {
+            AgentInsights = agentInsights
+        };
     }
 
     public async Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByPaymentAsync(
@@ -879,7 +928,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             row.Status,
             null,
             BuildActionPermissions(),
-            documentAccess);
+            documentAccess,
+            await LoadEntityAgentInsightsAsync(query.CompanyId, "invoice", row.Id, cancellationToken));
     }
 
     private async Task<Dictionary<Guid, List<FinanceSeedAnomalyDto>>> LoadTransactionAnomalyLookupAsync(
@@ -3656,7 +3706,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 record.CashAfter);
 
     private static FinancePaymentDto MapPayment(Payment payment) =>
-        new(payment.Id, payment.CompanyId, payment.PaymentType, payment.Amount, payment.Currency, payment.PaymentDate, payment.Method, payment.Status, payment.CounterpartyReference, payment.CreatedUtc, payment.UpdatedUtc);
+        new(payment.Id, payment.CompanyId, payment.PaymentType, payment.Amount, payment.Currency, payment.PaymentDate, payment.Method, payment.Status, payment.CounterpartyReference, payment.CreatedUtc, payment.UpdatedUtc, Array.Empty<NormalizedFinanceInsightDto>());
 
     private static string NormalizeCounterpartyType(string value) =>
         FinanceCounterparty.NormalizeCounterpartyKind(value);
@@ -3712,4 +3762,47 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         DateTime WindowEndUtc,
         DateTime? ComparisonStartUtc,
         DateTime? ComparisonEndUtc);
+
+    private static bool IsMissingPlanningSchemaTable(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException!)
+        {
+            if (ContainsMissingPlanningTableName(current.Message) &&
+                (current.Message.Contains("does not exist", StringComparison.OrdinalIgnoreCase) ||
+                 current.Message.Contains("invalid object name", StringComparison.OrdinalIgnoreCase) ||
+                 current.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsMissingPlanningTableName(string message) =>
+        message.Contains("budgets", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("forecasts", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMissingLedgerReportingSchemaTable(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException!)
+        {
+            if (ContainsMissingLedgerReportingTableName(current.Message) &&
+                (current.Message.Contains("does not exist", StringComparison.OrdinalIgnoreCase) ||
+                 current.Message.Contains("invalid object name", StringComparison.OrdinalIgnoreCase) ||
+                 current.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsMissingLedgerReportingTableName(string message) =>
+        message.Contains("finance_fiscal_periods", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("ledger_entries", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("ledger_entry_lines", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("ledger_entry_source_mappings", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("trial_balance_snapshots", StringComparison.OrdinalIgnoreCase);
 }

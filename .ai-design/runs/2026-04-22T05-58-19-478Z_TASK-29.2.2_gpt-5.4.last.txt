@@ -1,0 +1,602 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -123,7 +123,10 @@ public sealed record GetFinanceInsightsQuery(
+     DateTime? AsOfUtc = null,
+     int ExpenseWindowDays = 90,
+     int TrendWindowDays = 30,
+-    int PayableWindowDays = 14,
++    int PayableWindowDays = 14,
++    string? EntityType = null,
++    string? EntityId = null,
++    bool IncludeResolved = true,
+     bool PreferSnapshot = true);
+ 
+ public sealed record RefreshFinanceInsightsSnapshotCommand(
+@@ -269,7 +272,9 @@ public sealed record FinanceInsightsDto(
+ 
+ public sealed record FinanceInsightDto(
+     Guid Id,
+-    string CheckCode,
++    string CheckCode,
++    string CheckName,
++    string ConditionKey,
+     string Severity,
+     string Message,
+     string Recommendation,
+@@ -294,17 +299,58 @@ public sealed record FinancialCheckContext(
+     int ExpenseWindowDays,
+     int TrendWindowDays,
+     int PayableWindowDays);
+ 
++public sealed record FinancialCheckDefinition(
++    string Code,
++    string Name,
++    string EntityScope);
++
++public static class FinancialCheckDefinitions
++{
++    public static readonly FinancialCheckDefinition CashRisk = new("cash_risk", "Cash risk", "company");
++    public static readonly FinancialCheckDefinition TransactionAnomaly = new("transaction_anomaly", "Transaction anomaly", "finance_transaction");
++    public static readonly FinancialCheckDefinition OverdueReceivables = new("overdue_receivables", "Overdue receivables", "counterparty");
++    public static readonly FinancialCheckDefinition PayablesPressure = new("payables_pressure", "Payables pressure", "counterparty");
++
++    private static readonly IReadOnlyDictionary<string, FinancialCheckDefinition> ByCode =
++        new ReadOnlyDictionary<string, FinancialCheckDefinition>(
++            new Dictionary<string, FinancialCheckDefinition>(StringComparer.OrdinalIgnoreCase)
++            {
++                [CashRisk.Code] = CashRisk,
++                [TransactionAnomaly.Code] = TransactionAnomaly,
++                [OverdueReceivables.Code] = OverdueReceivables,
++                [PayablesPressure.Code] = PayablesPressure
++            });
++
++    public static FinancialCheckDefinition Resolve(string checkCode)
++    {
++        if (string.IsNullOrWhiteSpace(checkCode))
++        {
++            throw new ArgumentException("Check code is required.", nameof(checkCode));
++        }
++
++        var normalizedCode = checkCode.Trim().ToLowerInvariant();
++        return ByCode.TryGetValue(normalizedCode, out var definition)
++            ? definition
++            : new FinancialCheckDefinition(
++                normalizedCode,
++                normalizedCode.Replace("_", " ", StringComparison.Ordinal),
++                "mixed");
++    }
++}
++
+ public sealed record FinancialCheckResult(
+-    string CheckCode,
+-    string InsightKey,
++    FinancialCheckDefinition Definition,
++    string ConditionKey,
+     FinancialCheckSeverity Severity,
+     string Message,
+     string Recommendation,
+     decimal Confidence,
+     FinanceInsightEntityReferenceDto? PrimaryEntity,
+-    IReadOnlyList<FinanceInsightEntityReferenceDto> AffectedEntities);
++    IReadOnlyList<FinanceInsightEntityReferenceDto> AffectedEntities)
++{
++    public string CheckCode => Definition.Code;
++    public string CheckName => Definition.Name;
++    public string InsightKey => ConditionKey;
++}
+ 
+ public interface IFinancialCheck
+ {
++    FinancialCheckDefinition Definition { get; }
+     string CheckCode { get; }
+     Task<IReadOnlyList<FinancialCheckResult>> ExecuteAsync(FinancialCheckContext context, CancellationToken cancellationToken);
+ }
+@@ -1606,8 +1652,11 @@ public interface IFinanceInsightPersistenceService
+         CancellationToken cancellationToken);
+ 
+     Task<IReadOnlyList<FinanceInsightDto>> ListAsync(
+-        Guid companyId,
++        Guid companyId,
++        string? entityType,
++        string? entityId,
++        bool includeResolved,
+         CancellationToken cancellationToken);
+ }
+ 
+ public interface IFinanceCashPositionWorkflowService
+diff --git a/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs b/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs
+--- a/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs
++++ b/src/VirtualCompany.Api/Controllers/FinanceInsightsController.cs
+@@ -23,6 +23,9 @@ public sealed class FinanceInsightsController : ControllerBase
+         [FromQuery] int expenseWindowDays = 90,
+         [FromQuery] int trendWindowDays = 30,
+         [FromQuery] int payableWindowDays = 14,
++        [FromQuery] string? entityType = null,
++        [FromQuery] string? entityId = null,
++        [FromQuery] bool includeResolved = true,
+         [FromQuery] bool refreshSnapshot = false,
+         CancellationToken cancellationToken = default)
+     {
+@@ -30,7 +33,16 @@ public sealed class FinanceInsightsController : ControllerBase
+         {
+             var result = await _financeReadService.GetInsightsAsync(
+-                new GetFinanceInsightsQuery(companyId, asOfUtc, expenseWindowDays, trendWindowDays, payableWindowDays, PreferSnapshot: !refreshSnapshot),
++                new GetFinanceInsightsQuery(
++                    companyId,
++                    asOfUtc,
++                    expenseWindowDays,
++                    trendWindowDays,
++                    payableWindowDays,
++                    entityType,
++                    entityId,
++                    includeResolved,
++                    PreferSnapshot: !refreshSnapshot),
+                 cancellationToken);
+             return Ok(result);
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Insights.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Insights.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Insights.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.Insights.cs
+@@ -25,7 +25,9 @@ public sealed partial class CompanyFinanceReadService
+             query.PayableWindowDays,
+             FinanceInsightSnapshotKeys.Default);
+ 
+-        if (query.PreferSnapshot)
++        var useSnapshot = query.PreferSnapshot &&
++                          query.IncludeResolved &&
++                          string.IsNullOrWhiteSpace(query.EntityType) &&
++                          string.IsNullOrWhiteSpace(query.EntityId);
++        if (useSnapshot)
+         {
+             var cached = await TryGetCachedInsightsAsync(parameters, cancellationToken);
+             if (cached is not null)
+@@ -35,7 +37,14 @@ public sealed partial class CompanyFinanceReadService
+             }
+         }
+ 
+-        return await BuildInsightsAsync(parameters, fromSnapshot: false, snapshotExpiresAtUtc: null, cancellationToken);
++        return await BuildInsightsAsync(
++            parameters,
++            fromSnapshot: false,
++            snapshotExpiresAtUtc: null,
++            query.EntityType,
++            query.EntityId,
++            query.IncludeResolved,
++            cancellationToken);
+     }
+ 
+     public async Task<FinanceInsightsSnapshotRefreshResultDto> RefreshInsightsSnapshotAsync(
+@@ -53,7 +62,14 @@ public sealed partial class CompanyFinanceReadService
+             command.PayableWindowDays,
+             command.SnapshotKey);
+ 
+-        var refreshed = await BuildInsightsAsync(parameters, fromSnapshot: false, snapshotExpiresAtUtc: null, cancellationToken);
++        var refreshed = await BuildInsightsAsync(
++            parameters,
++            fromSnapshot: false,
++            snapshotExpiresAtUtc: null,
++            entityType: null,
++            entityId: null,
++            includeResolved: true,
++            cancellationToken);
+         var retention = NormalizeSnapshotRetention(command.Retention);
+         var expiresAtUtc = GetUtcNow().Add(retention);
+ 
+@@ -160,6 +176,9 @@ public sealed partial class CompanyFinanceReadService
+     private async Task<FinanceInsightsDto> BuildInsightsAsync(
+         FinanceInsightQueryParameters parameters,
+         bool fromSnapshot,
++        string? entityType,
++        string? entityId,
++        bool includeResolved,
+         DateTime? snapshotExpiresAtUtc,
+         CancellationToken cancellationToken)
+     {
+@@ -188,13 +207,26 @@ public sealed partial class CompanyFinanceReadService
+             currentResults,
+             cancellationToken);
+ 
+-        var items = await _financeInsightPersistenceService.ListAsync(parameters.CompanyId, cancellationToken);
++        var items = await _financeInsightPersistenceService.ListAsync(
++            parameters.CompanyId,
++            entityType,
++            entityId,
++            includeResolved,
++            cancellationToken);
+         return new FinanceInsightsDto(parameters.CompanyId, generatedAt, fromSnapshot, snapshotExpiresAtUtc, items);
++    }
++
++    private async Task<FinanceInsightsDto?> TryGetCachedInsightsAsync(
++        FinanceInsightQueryParameters parameters,
++        CancellationToken cancellationToken)
++    {
++        if (_insightSnapshotCache is null)
+         {
+             return null;
+         }
+ 
+         var payload = await _insightSnapshotCache.GetStringAsync(parameters.CacheKey, cancellationToken);
++
+         if (string.IsNullOrWhiteSpace(payload))
+         {
+             return null;
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceReadService.cs
+@@ -41,6 +41,20 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
+         : this(dbContext, companyContextAccessor, null, null, null, null, null)
+     {
+     }
++
++    public CompanyFinanceReadService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor? companyContextAccessor,
++        ICompanyDocumentService? documentService,
++        IKnowledgeAccessPolicyEvaluator? accessPolicyEvaluator,
++        IFinanceSeedingStateService? financeSeedingStateService,
++        IDistributedCache? insightSnapshotCache,
++        TimeProvider? timeProvider)
++        : this(
++            dbContext,
++            companyContextAccessor,
++            documentService,
++            accessPolicyEvaluator,
++            financeSeedingStateService,
++            financialChecks: null,
++            financeInsightPersistenceService: null,
++            insightSnapshotCache,
++            timeProvider)
++    {
++    }
+ 
+     public CompanyFinanceReadService(
+         VirtualCompanyDbContext dbContext,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceInsightPersistenceService.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceInsightPersistenceService.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceInsightPersistenceService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceInsightPersistenceService.cs
+@@ -98,18 +98,45 @@ public sealed class FinanceInsightPersistenceService : IFinanceInsightPersistence
+     }
+ 
+     public async Task<IReadOnlyList<FinanceInsightDto>> ListAsync(
+-        Guid companyId,
++        Guid companyId,
++        string? entityType,
++        string? entityId,
++        bool includeResolved,
+         CancellationToken cancellationToken)
+     {
+-        var insights = await _dbContext.FinanceAgentInsights
++        var insightsQuery = _dbContext.FinanceAgentInsights
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId)
++            .Where(x => x.CompanyId == companyId);
++
++        if (!includeResolved)
++        {
++            insightsQuery = insightsQuery.Where(x => x.Status == FinanceInsightStatus.Active);
++        }
++
++        var insights = await insightsQuery
+             .OrderBy(x => x.Status == FinanceInsightStatus.Resolved)
+             .ThenByDescending(x => x.UpdatedUtc)
+             .ThenBy(x => x.CheckCode)
+             .ToListAsync(cancellationToken);
+ 
+-        return insights.Select(Map).ToArray();
++        var normalizedEntityType = NormalizeFilter(entityType);
++        var normalizedEntityId = NormalizeFilter(entityId);
++
++        return insights
++            .Select(Map)
++            .Where(x => MatchesEntityFilter(x, normalizedEntityType, normalizedEntityId))
++            .ToArray();
+     }
+ 
+     private static FinanceInsightDto Map(FinanceAgentInsight insight)
+     {
++        var definition = FinancialCheckDefinitions.Resolve(insight.CheckCode);
+         var affectedEntities = DeserializeAffectedEntities(insight.AffectedEntitiesJson);
+         var primaryEntity = affectedEntities.FirstOrDefault(x => x.IsPrimary)
+             ?? (insight.PrimaryEntityType is not null && insight.PrimaryEntityId is not null
+                 ? new FinanceInsightEntityReferenceDto(insight.PrimaryEntityType, insight.PrimaryEntityId, insight.PrimaryEntityDisplayName, true)
+                 : null);
+ 
+         return new FinanceInsightDto(
+             insight.Id,
+             insight.CheckCode,
++            definition.Name,
++            insight.InsightKey,
+             insight.Severity.ToStorageValue(),
+             insight.Message,
+             insight.Recommendation,
+@@ -132,6 +159,31 @@ public sealed class FinanceInsightPersistenceService : IFinanceInsightPersistence
+             insight.CreatedUtc,
+             insight.UpdatedUtc);
+     }
++
++    private static bool MatchesEntityFilter(
++        FinanceInsightDto insight,
++        string? entityType,
++        string? entityId)
++    {
++        if (entityType is null && entityId is null)
++        {
++            return true;
++        }
++
++        return (insight.PrimaryEntity is not null && MatchesEntity(insight.PrimaryEntity, entityType, entityId)) ||
++               insight.AffectedEntities.Any(x => MatchesEntity(x, entityType, entityId));
++    }
++
++    private static bool MatchesEntity(
++        FinanceInsightEntityReferenceDto entity,
++        string? entityType,
++        string? entityId) =>
++        (entityType is null || string.Equals(entity.EntityType, entityType, StringComparison.OrdinalIgnoreCase)) &&
++        (entityId is null || string.Equals(entity.EntityId, entityId, StringComparison.OrdinalIgnoreCase));
++
++    private static string? NormalizeFilter(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? null
++            : value.Trim();
+ 
+     private static IReadOnlyList<FinanceInsightEntityReferenceDto> DeserializeAffectedEntities(string payload)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinancialChecks.cs b/src/VirtualCompany.Infrastructure/Finance/FinancialChecks.cs
+--- a/src/VirtualCompany.Infrastructure/Finance/FinancialChecks.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinancialChecks.cs
+@@ -17,7 +17,8 @@ internal sealed class CashRiskFinancialCheck : IFinancialCheck
+         _loadCashPosition = loadCashPosition;
+     }
+ 
+-    public string CheckCode => "cash_risk";
++    public FinancialCheckDefinition Definition => FinancialCheckDefinitions.CashRisk;
++    public string CheckCode => Definition.Code;
+ 
+     public async Task<IReadOnlyList<FinancialCheckResult>> ExecuteAsync(FinancialCheckContext context, CancellationToken cancellationToken)
+     {
+@@ -30,7 +31,7 @@ internal sealed class CashRiskFinancialCheck : IFinancialCheck
+         return
+         [
+             new FinancialCheckResult(
+-                CheckCode,
++                Definition,
+                 $"{CheckCode}:{context.CompanyId:N}",
+                 ParseSeverity(position.AlertState.RiskLevel),
+                 position.AlertState.Message,
+@@ -61,7 +62,8 @@ internal sealed class TransactionAnomalyFinancialCheck : IFinancialCheck
+         _dbContext = dbContext;
+     }
+ 
+-    public string CheckCode => "transaction_anomaly";
++    public FinancialCheckDefinition Definition => FinancialCheckDefinitions.TransactionAnomaly;
++    public string CheckCode => Definition.Code;
+ 
+     public async Task<IReadOnlyList<FinancialCheckResult>> ExecuteAsync(FinancialCheckContext context, CancellationToken cancellationToken)
+     {
+@@ -100,7 +102,7 @@ internal sealed class TransactionAnomalyFinancialCheck : IFinancialCheck
+         var confidence = ReadDecimal(alert.Metadata, "confidence") ?? ReadDecimal(alert.Evidence, "confidence") ?? 0.75m;
+ 
+         return new FinancialCheckResult(
+-            CheckCode,
++            Definition,
+             $"{CheckCode}:{alert.Fingerprint}",
+             MapSeverity(alert.Severity),
+             alert.Summary,
+@@ -151,7 +153,8 @@ internal sealed class OverdueReceivablesFinancialCheck : IFinancialCheck
+         _dbContext = dbContext;
+     }
+ 
+-    public string CheckCode => "overdue_receivables";
++    public FinancialCheckDefinition Definition => FinancialCheckDefinitions.OverdueReceivables;
++    public string CheckCode => Definition.Code;
+ 
+     public async Task<IReadOnlyList<FinancialCheckResult>> ExecuteAsync(FinancialCheckContext context, CancellationToken cancellationToken)
+     {
+@@ -208,7 +211,7 @@ internal sealed class OverdueReceivablesFinancialCheck : IFinancialCheck
+                     new FinanceInsightEntityReferenceDto("invoice", x.Invoice.Id.ToString("N"), x.Invoice.InvoiceNumber)));
+ 
+                 return new FinancialCheckResult(
+-                    CheckCode,
++                    Definition,
+                     $"{CheckCode}:{group.Key.CounterpartyId:N}",
+                     ResolveReceivablesSeverity(totalOutstanding, maxDaysOverdue),
+                     $"{group.Key.CounterpartyName} has {totalOutstanding:0.00} {invoiceItems[0].Invoice.Currency} overdue across {invoiceItems.Length} receivable(s).",
+@@ -264,7 +267,8 @@ internal sealed class PayablesFinancialCheck : IFinancialCheck
+         _dbContext = dbContext;
+     }
+ 
+-    public string CheckCode => "payables_pressure";
++    public FinancialCheckDefinition Definition => FinancialCheckDefinitions.PayablesPressure;
++    public string CheckCode => Definition.Code;
+ 
+     public async Task<IReadOnlyList<FinancialCheckResult>> ExecuteAsync(FinancialCheckContext context, CancellationToken cancellationToken)
+     {
+@@ -323,7 +327,7 @@ internal sealed class PayablesFinancialCheck : IFinancialCheck
+                     new FinanceInsightEntityReferenceDto("bill", x.Bill.Id.ToString("N"), x.Bill.BillNumber)));
+ 
+                 return new FinancialCheckResult(
+-                    CheckCode,
++                    Definition,
+                     $"{CheckCode}:{group.Key.CounterpartyId:N}",
+                     ResolvePayablesSeverity(totalOutstanding, overdueCount),
+                     $"{group.Key.CounterpartyName} has {totalOutstanding:0.00} {billItems[0].Bill.Currency} due or overdue within the next {context.PayableWindowDays} days.",
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightPersistenceServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightPersistenceServiceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceInsightPersistenceServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceInsightPersistenceServiceTests.cs
+@@ -33,7 +33,7 @@ public sealed class FinanceInsightPersistenceServiceTests
+             [
+                 new FinancialCheckResult(
+-                    "overdue_receivables",
++                    FinancialCheckDefinitions.OverdueReceivables,
+                     "overdue_receivables:customer-1",
+                     FinancialCheckSeverity.High,
+                     "Contoso has overdue receivables.",
+@@ -54,7 +54,7 @@ public sealed class FinanceInsightPersistenceServiceTests
+             [
+                 new FinancialCheckResult(
+-                    "overdue_receivables",
++                    FinancialCheckDefinitions.OverdueReceivables,
+                     "overdue_receivables:customer-1",
+                     FinancialCheckSeverity.Critical,
+                     "Contoso now has severely overdue receivables.",
+@@ -76,6 +76,52 @@ public sealed class FinanceInsightPersistenceServiceTests
+         var resolved = await dbContext.FinanceAgentInsights.IgnoreQueryFilters().SingleAsync();
+         Assert.Equal(FinanceInsightStatus.Resolved, resolved.Status);
+     }
++
++    [Fact]
++    public async Task List_filters_by_entity_reference_and_returns_shared_metadata()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        dbContext.Companies.Add(new Company(companyId, "Insight Filter Company"));
++        await dbContext.SaveChangesAsync();
++
++        var timeProvider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 22, 8, 0, 0, TimeSpan.Zero));
++        var service = new FinanceInsightPersistenceService(dbContext, timeProvider);
++        var context = new FinancialCheckContext(companyId, timeProvider.GetUtcNow().UtcDateTime, 90, 30, 14);
++        var contoso = new FinanceInsightEntityReferenceDto("counterparty", "customer-1", "Contoso", true);
++        var fabrikam = new FinanceInsightEntityReferenceDto("counterparty", "supplier-7", "Fabrikam", true);
++
++        await service.ReconcileAsync(
++            context,
++            ["overdue_receivables", "payables_pressure"],
++            [
++                new FinancialCheckResult(
++                    FinancialCheckDefinitions.OverdueReceivables,
++                    "overdue_receivables:customer-1",
++                    FinancialCheckSeverity.High,
++                    "Contoso has overdue receivables.",
++                    "Start collections outreach.",
++                    0.81m,
++                    contoso,
++                    [contoso]),
++                new FinancialCheckResult(
++                    FinancialCheckDefinitions.PayablesPressure,
++                    "payables_pressure:supplier-7",
++                    FinancialCheckSeverity.Medium,
++                    "Fabrikam has bills due soon.",
++                    "Sequence the payment run.",
++                    0.75m,
++                    fabrikam,
++                    [fabrikam])
++            ],
++            CancellationToken.None);
++
++        var filtered = await service.ListAsync(companyId, "counterparty", "customer-1", includeResolved: false, CancellationToken.None);
++
++        var insight = Assert.Single(filtered);
++        Assert.Equal("Overdue receivables", insight.CheckName);
++        Assert.Equal("overdue_receivables:customer-1", insight.ConditionKey);
++        Assert.Equal("counterparty", insight.PrimaryEntity!.EntityType);
++    }
+ 
+     private sealed class MutableTimeProvider : TimeProvider
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceInsightsIntegrationTests.cs
+@@ -34,6 +34,8 @@ public sealed class FinanceInsightsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+ 
+         var first = payload["items"]!.AsArray()[0]!.AsObject();
+         Assert.False(string.IsNullOrWhiteSpace(first["checkCode"]!.GetValue<string>()));
++        Assert.False(string.IsNullOrWhiteSpace(first["checkName"]!.GetValue<string>()));
++        Assert.False(string.IsNullOrWhiteSpace(first["conditionKey"]!.GetValue<string>()));
+         Assert.False(string.IsNullOrWhiteSpace(first["severity"]!.GetValue<string>()));
+         Assert.False(string.IsNullOrWhiteSpace(first["message"]!.GetValue<string>()));
+         Assert.False(string.IsNullOrWhiteSpace(first["recommendation"]!.GetValue<string>()));
+@@ -42,6 +44,33 @@ public sealed class FinanceInsightsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+         Assert.True(first["confidence"]!.GetValue<decimal>() <= 1m);
+         Assert.NotNull(first["affectedEntities"]);
+     }
++
++    [Fact]
++    public async Task Finance_insights_endpoint_supports_entity_filtered_reads_with_the_same_payload_shape()
++    {
++        var seed = await SeedCompanyAsync(includeOtherCompanyMembership: false);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var fullResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/finance/insights");
++        var fullPayload = await fullResponse.Content.ReadFromJsonAsync<JsonObject>();
++        var sourceInsight = fullPayload!["items"]!.AsArray()
++            .Select(x => x!.AsObject())
++            .First(x => x["primaryEntity"] is JsonObject);
++        var primaryEntity = sourceInsight["primaryEntity"]!.AsObject();
++        var entityType = primaryEntity["entityType"]!.GetValue<string>();
++        var entityId = primaryEntity["entityId"]!.GetValue<string>();
++
++        var response = await client.GetAsync(
++            $"/api/companies/{seed.CompanyId}/finance/insights?entityType={Uri.EscapeDataString(entityType)}&entityId={Uri.EscapeDataString(entityId)}&includeResolved=false");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<JsonObject>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!["companyId"]!.GetValue<Guid>());
++        Assert.True(payload["items"]!.AsArray().Count > 0);
++        Assert.All(payload["items"]!.AsArray(), item => Assert.False(string.IsNullOrWhiteSpace(item!["conditionKey"]!.GetValue<string>())));
++        Assert.All(payload["items"]!.AsArray(), item =>
++            Assert.Contains(item!["affectedEntities"]!.AsArray(), entity =>
++                string.Equals(entity!["entityType"]!.GetValue<string>(), entityType, StringComparison.OrdinalIgnoreCase) &&
++                string.Equals(entity!["entityId"]!.GetValue<string>(), entityId, StringComparison.OrdinalIgnoreCase)));
++    }
+ 
+     [Fact]
+     public async Task Finance_insight_refresh_endpoint_primes_snapshot_cache_for_subsequent_reads()
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs b/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceInsightsServiceTests.cs
+@@ -60,6 +60,8 @@ public sealed class FinanceInsightsServiceTests
+         Assert.True(result.GeneratedAt > DateTime.MinValue);
+         Assert.NotNull(result.Items);
+         Assert.All(result.Items, item => Assert.InRange(item.Confidence, 0m, 1m));
++        Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.CheckName)));
++        Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.ConditionKey)));
+     }
+ 
+     [Fact]
+@@ -84,6 +86,35 @@ public sealed class FinanceInsightsServiceTests
+         var result = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyA), CancellationToken.None);
+         Assert.Equal(companyA, result.CompanyId);
+     }
++
++    [Fact]
++    public async Task Insights_can_be_filtered_to_a_single_entity_without_changing_response_shape()
++    {
++        var companyId = Guid.NewGuid();
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        await using var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var company = new Company(companyId, "Entity Filter Company");
++        company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
++        dbContext.Companies.Add(company);
++        FinanceSeedData.AddMockFinanceData(dbContext, companyId);
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyFinanceReadService(dbContext);
++        var fullResult = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyId), CancellationToken.None);
++        var sourceInsight = Assert.Single(fullResult.Items.Where(x => x.PrimaryEntity is not null));
++        var entityType = sourceInsight.PrimaryEntity!.EntityType;
++        var entityId = sourceInsight.PrimaryEntity.EntityId;
++
++        var filtered = await service.GetInsightsAsync(
++            new GetFinanceInsightsQuery(companyId, EntityType: entityType, EntityId: entityId, IncludeResolved: false, PreferSnapshot: false),
++            CancellationToken.None);
++
++        Assert.NotEmpty(filtered.Items);
++        Assert.All(filtered.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.ConditionKey)));
++        Assert.All(filtered.Items, item =>
++            Assert.Contains(item.AffectedEntities, entity => entity.EntityType == entityType && entity.EntityId == entityId));
++    }
+ 
+     [Fact]
+     public async Task Refresh_snapshot_is_idempotent_per_company_and_served_from_cache_until_retention_expires()
+END_OF_PATCH

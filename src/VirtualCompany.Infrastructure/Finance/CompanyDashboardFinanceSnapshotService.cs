@@ -1,6 +1,9 @@
+using System.Globalization;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Cockpit;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
@@ -10,6 +13,8 @@ namespace VirtualCompany.Infrastructure.Finance;
 public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSnapshotService
 {
     private const int DefaultUpcomingWindowDays = 30;
+    private static readonly JsonSerializerOptions InsightSerializerOptions = new(JsonSerializerDefaults.Web);
+    private const string StableTrend = "stable";
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly TimeProvider _timeProvider;
@@ -225,6 +230,11 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
             : runwayDays <= 90 ? "warning"
             : "healthy";
 
+        var insightFeed = await BuildGroupedInsightFeedAsync(companyId, cancellationToken);
+        var topFinanceActions = BuildTopFinanceActions(companyId, insightFeed);
+        var financialHealth = BuildFinancialHealthSummary(
+            currentCashBalance, expectedIncomingCash, expectedOutgoingCash, overdueReceivables, upcomingPayables, currency, riskLevel, hasFinanceData, insightFeed);
+
         return new DashboardFinanceSnapshotDto(
             companyId,
             currentCashBalance,
@@ -239,7 +249,219 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
             burnRate,
             runwayDays,
             riskLevel,
-            hasFinanceData);
+            hasFinanceData,
+            financialHealth,
+            topFinanceActions,
+            insightFeed);
+    }
+
+    private async Task<IReadOnlyList<GroupedFinanceInsightDto>> BuildGroupedInsightFeedAsync(
+        Guid companyId,
+        CancellationToken cancellationToken)
+    {
+        var insights = await _dbContext.FinanceAgentInsights
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.Status == FinanceInsightStatus.Active)
+            .Select(x => new DashboardInsightRow(
+                x.Id,
+                x.CheckCode,
+                x.ConditionKey,
+                x.EntityType,
+                x.EntityId,
+                x.EntityDisplayName,
+                x.Severity,
+                x.Message,
+                x.Recommendation,
+                x.AffectedEntitiesJson,
+                x.ObservedUtc,
+                x.UpdatedUtc))
+            .ToListAsync(cancellationToken);
+
+        return insights
+            .GroupBy(BuildGroupKey, StringComparer.OrdinalIgnoreCase)
+            .Select(MapGroupedInsight)
+            .OrderByDescending(x => GetSeverityRank(x.Severity))
+            .ThenByDescending(x => x.LatestOccurredUtc)
+            .ThenBy(x => x.GroupKey, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static GroupedFinanceInsightDto MapGroupedInsight(IGrouping<string, DashboardInsightRow> group)
+    {
+        var ordered = group
+            .OrderByDescending(x => x.ObservedUtc)
+            .ThenByDescending(x => x.UpdatedUtc)
+            .ThenBy(x => x.Id)
+            .ToArray();
+        var representative = ordered[0];
+        var severity = group
+            .OrderByDescending(x => GetSeverityRank(x.Severity.ToStorageValue()))
+            .ThenByDescending(x => x.ObservedUtc)
+            .First()
+            .Severity
+            .ToStorageValue();
+        var definition = FinancialCheckDefinitions.Resolve(representative.CheckCode);
+        var relatedEntities = group
+            .SelectMany(GetInsightEntities)
+            .GroupBy(x => $"{x.EntityType}|{x.EntityId}", StringComparer.OrdinalIgnoreCase)
+            .Select(x => x.First())
+            .OrderByDescending(x => x.IsPrimary)
+            .ThenBy(x => x.EntityType, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.EntityId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var primaryEntity = relatedEntities.FirstOrDefault(x => x.IsPrimary);
+        var presentation = FinanceInsightPresentation.BuildDashboardText(
+            representative.CheckCode,
+            primaryEntity?.DisplayName ?? representative.EntityDisplayName,
+            representative.Message,
+            representative.Recommendation,
+            group.Count(),
+            relatedEntities.Length);
+
+        return new GroupedFinanceInsightDto(
+            group.Key,
+            presentation.Title,
+            presentation.Summary,
+            presentation.Recommendation,
+            severity,
+            representative.CheckCode,
+            group.Max(x => x.ObservedUtc >= x.UpdatedUtc ? x.ObservedUtc : x.UpdatedUtc),
+            group.Count(),
+            primaryEntity,
+            relatedEntities);
+    }
+
+    private static IReadOnlyList<FinanceActionDto> BuildTopFinanceActions(
+        Guid companyId,
+        IReadOnlyList<GroupedFinanceInsightDto> insightFeed) =>
+        insightFeed
+            .OrderByDescending(x => GetSeverityRank(x.Severity))
+            .ThenByDescending(x => x.LatestOccurredUtc)
+            .ThenBy(x => x.GroupKey, StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .Select(x => new FinanceActionDto(
+                x.Title,
+                string.IsNullOrWhiteSpace(x.Recommendation)
+                    ? x.Summary
+                    : x.Recommendation,
+                x.Severity,
+                x.PrimaryEntity?.EntityType,
+                x.PrimaryEntity?.EntityId,
+                BuildActionLabel(x.PrimaryEntity),
+                BuildNavigationTarget(companyId, x.PrimaryEntity)))
+            .ToArray();
+
+    private static FinancialHealthSummaryDto BuildFinancialHealthSummary(
+        decimal currentCashBalance,
+        decimal expectedIncomingCash,
+        decimal expectedOutgoingCash,
+        decimal overdueReceivables,
+        decimal upcomingPayables,
+        string currency,
+        string riskLevel,
+        bool hasFinanceData,
+        IReadOnlyList<GroupedFinanceInsightDto> insightFeed)
+    {
+        if (!hasFinanceData)
+        {
+            return new FinancialHealthSummaryDto(
+                "missing",
+                null,
+                StableTrend,
+                "Finance health will appear after cash, receivable, and payable data is available.",
+                0,
+                0,
+                0,
+                currentCashBalance,
+                expectedIncomingCash,
+                expectedOutgoingCash,
+                overdueReceivables,
+                upcomingPayables,
+                currency);
+        }
+
+        var activeInsightCount = insightFeed.Sum(x => x.OccurrenceCount);
+        var criticalInsightCount = insightFeed
+            .Where(x => string.Equals(x.Severity, "critical", StringComparison.OrdinalIgnoreCase))
+            .Sum(x => x.OccurrenceCount);
+        var highInsightCount = insightFeed.Where(x => string.Equals(x.Severity, "high", StringComparison.OrdinalIgnoreCase)).Sum(x => x.OccurrenceCount);
+        var status = ResolveFinancialHealthStatus(riskLevel, criticalInsightCount, highInsightCount, activeInsightCount);
+        var score = Math.Max(0, 100
+            - ResolveRiskPenalty(riskLevel)
+            - (criticalInsightCount * 20)
+            - (highInsightCount * 10)
+            - (Math.Max(0, activeInsightCount - criticalInsightCount - highInsightCount) * 4));
+        var summary = activeInsightCount == 0
+            ? $"Cash position is {riskLevel} with {currentCashBalance.ToString("N2", CultureInfo.InvariantCulture)} {currency} available."
+            : $"{activeInsightCount} active finance insight(s) need attention; overdue receivables total {overdueReceivables.ToString("N2", CultureInfo.InvariantCulture)} {currency}.";
+
+        return new FinancialHealthSummaryDto(
+            status,
+            score,
+            StableTrend,
+            summary,
+            activeInsightCount,
+            criticalInsightCount,
+            highInsightCount,
+            currentCashBalance,
+            expectedIncomingCash,
+            expectedOutgoingCash,
+            overdueReceivables,
+            upcomingPayables,
+            currency);
+    }
+
+    private static string ResolveFinancialHealthStatus(string riskLevel, int criticalInsightCount, int highInsightCount, int activeInsightCount)
+    {
+        if (string.Equals(riskLevel, "critical", StringComparison.OrdinalIgnoreCase) || criticalInsightCount > 0)
+        {
+            return "critical";
+        }
+
+        if (string.Equals(riskLevel, "warning", StringComparison.OrdinalIgnoreCase) || highInsightCount > 0 || activeInsightCount > 0)
+        {
+            return "warning";
+        }
+
+        return "healthy";
+    }
+
+    private static int ResolveRiskPenalty(string riskLevel) =>
+        riskLevel.Trim().ToLowerInvariant() switch
+        {
+            "critical" => 45,
+            "warning" => 25,
+            "missing" => 35,
+            _ => 0
+        };
+
+    private static IEnumerable<FinanceInsightEntityReferenceDto> GetInsightEntities(DashboardInsightRow row)
+    {
+        var entities = DeserializeEntities(row.AffectedEntitiesJson);
+        if (entities.Count > 0)
+        {
+            return entities;
+        }
+
+        return
+        [
+            new FinanceInsightEntityReferenceDto(
+                row.EntityType,
+                row.EntityId,
+                row.EntityDisplayName,
+                true)
+        ];
+    }
+
+    private static IReadOnlyList<FinanceInsightEntityReferenceDto> DeserializeEntities(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return [];
+        }
+
+        return JsonSerializer.Deserialize<List<FinanceInsightEntityReferenceDto>>(payload, InsightSerializerOptions) ?? [];
     }
 
     private async Task<Dictionary<Guid, decimal>> LoadInvoiceAllocationLookupAsync(
@@ -384,6 +606,68 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
         string.IsNullOrWhiteSpace(value)
             ? string.Empty
             : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
+
+    private static int GetSeverityRank(string severity) =>
+        severity.Trim().ToLowerInvariant() switch
+        {
+            "critical" => 4,
+            "high" => 3,
+            "medium" => 2,
+            "low" => 1,
+            _ => 0
+        };
+
+    private static string BuildGroupKey(DashboardInsightRow row) =>
+        FinanceInsightPresentation.BuildDashboardGroupKey(
+            row.CheckCode,
+            row.ConditionKey,
+            row.EntityType,
+            row.EntityId);
+
+    private static string BuildActionLabel(FinanceInsightEntityReferenceDto? primaryEntity) =>
+        primaryEntity?.EntityType?.Trim().ToLowerInvariant() switch
+        {
+            "invoice" => "Open invoice",
+            "finance_invoice" => "Open invoice",
+            "bill" => "Open bill",
+            "finance_bill" => "Open bill",
+            "payment" => "Open payment",
+            "finance_payment" => "Open payment",
+            _ => "Open finance"
+        };
+
+    private static string? BuildNavigationTarget(Guid companyId, FinanceInsightEntityReferenceDto? primaryEntity)
+    {
+        if (primaryEntity is null || !Guid.TryParse(primaryEntity.EntityId, out var entityId))
+        {
+            return $"/finance?companyId={companyId:D}";
+        }
+
+        return primaryEntity.EntityType.Trim().ToLowerInvariant() switch
+        {
+            "invoice" => $"/finance/invoices/{entityId:D}?companyId={companyId:D}",
+            "finance_invoice" => $"/finance/invoices/{entityId:D}?companyId={companyId:D}",
+            "bill" => $"/finance/bills/{entityId:D}?companyId={companyId:D}",
+            "finance_bill" => $"/finance/bills/{entityId:D}?companyId={companyId:D}",
+            "payment" => $"/finance/payments/{entityId:D}?companyId={companyId:D}",
+            "finance_payment" => $"/finance/payments/{entityId:D}?companyId={companyId:D}",
+            _ => $"/finance?companyId={companyId:D}"
+        };
+    }
+
+    private sealed record DashboardInsightRow(
+        Guid Id,
+        string CheckCode,
+        string ConditionKey,
+        string EntityType,
+        string EntityId,
+        string? EntityDisplayName,
+        FinancialCheckSeverity Severity,
+        string Message,
+        string Recommendation,
+        string AffectedEntitiesJson,
+        DateTime ObservedUtc,
+        DateTime UpdatedUtc);
 
     private sealed record FinanceAccountSnapshotRow(
         Guid Id,

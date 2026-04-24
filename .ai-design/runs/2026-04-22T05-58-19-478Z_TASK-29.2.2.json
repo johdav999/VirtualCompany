@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-29.2.2",
+  "promptPath": ".ai-design/prompts/TASK-29.2.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-22T05:58:19.478Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-22T05-58-19-478Z_TASK-29.2.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-22T05-58-19-478Z_TASK-29.2.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-22T06:04:24.460Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "sert.Equal(companyA, result.CompanyId);\n     }\n+\n+    [Fact]\n+    public async Task Insights_can_be_filtered_to_a_single_entity_without_changing_response_shape()\n+    {\n+        var companyId = Guid.NewGuid();\n+        await using var connection = new SqliteConnection(\"Data Source=:memory:\");\n+        await connection.OpenAsync();\n+        await using var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);\n+        await dbContext.Database.EnsureCreatedAsync();\n+\n+        var company = new Company(companyId, \"Entity Filter Company\");\n+        company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);\n+        dbContext.Companies.Add(company);\n+        FinanceSeedData.AddMockFinanceData(dbContext, companyId);\n+        await dbContext.SaveChangesAsync();\n+\n+        var service = new CompanyFinanceReadService(dbContext);\n+        var fullResult = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyId), CancellationToken.None);\n+        var sourceInsight = Assert.Single(fullResult.Items.Where(x => x.PrimaryEntity is not null));\n+        var entityType = sourceInsight.PrimaryEntity!.EntityType;\n+        var entityId = sourceInsight.PrimaryEntity.EntityId;\n+\n+        var filtered = await service.GetInsightsAsync(\n+            new GetFinanceInsightsQuery(companyId, EntityType: entityType, EntityId: entityId, IncludeResolved: false, PreferSnapshot: false),\n+            CancellationToken.None);\n+\n+        Assert.NotEmpty(filtered.Items);\n+        Assert.All(filtered.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.ConditionKey)));\n+        Assert.All(filtered.Items, item =>\n+            Assert.Contains(item.AffectedEntities, entity => entity.EntityType == entityType && entity.EntityId == entityId));\n+    }\n \n     [Fact]\n     public async Task Refresh_snapshot_is_idempotent_per_company_and_served_from_cache_until_retention_expires()\nEND_OF_PATCH\n",
+  "stderrTail": ", result.CompanyId);\n     }\n+\n+    [Fact]\n+    public async Task Insights_can_be_filtered_to_a_single_entity_without_changing_response_shape()\n+    {\n+        var companyId = Guid.NewGuid();\n+        await using var connection = new SqliteConnection(\"Data Source=:memory:\");\n+        await connection.OpenAsync();\n+        await using var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);\n+        await dbContext.Database.EnsureCreatedAsync();\n+\n+        var company = new Company(companyId, \"Entity Filter Company\");\n+        company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);\n+        dbContext.Companies.Add(company);\n+        FinanceSeedData.AddMockFinanceData(dbContext, companyId);\n+        await dbContext.SaveChangesAsync();\n+\n+        var service = new CompanyFinanceReadService(dbContext);\n+        var fullResult = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyId), CancellationToken.None);\n+        var sourceInsight = Assert.Single(fullResult.Items.Where(x => x.PrimaryEntity is not null));\n+        var entityType = sourceInsight.PrimaryEntity!.EntityType;\n+        var entityId = sourceInsight.PrimaryEntity.EntityId;\n+\n+        var filtered = await service.GetInsightsAsync(\n+            new GetFinanceInsightsQuery(companyId, EntityType: entityType, EntityId: entityId, IncludeResolved: false, PreferSnapshot: false),\n+            CancellationToken.None);\n+\n+        Assert.NotEmpty(filtered.Items);\n+        Assert.All(filtered.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.ConditionKey)));\n+        Assert.All(filtered.Items, item =>\n+            Assert.Contains(item.AffectedEntities, entity => entity.EntityType == entityType && entity.EntityId == entityId));\n+    }\n \n     [Fact]\n     public async Task Refresh_snapshot_is_idempotent_per_company_and_served_from_cache_until_retention_expires()\nEND_OF_PATCH\ntokens used\n89,063\n",
+  "verbosityMode": "summary"
+}

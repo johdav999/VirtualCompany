@@ -1,0 +1,1178 @@
+diff --git a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+index 6167fd2..f1b1b8a 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+@@ -19,6 +19,9 @@ public static class CompanyOutboxTopics
+     public const string AgentStatusUpdated = SupportedPlatformEventTypeRegistry.AgentStatusUpdated;
+     public const string FinanceTransactionCreated = SupportedPlatformEventTypeRegistry.FinanceTransactionCreated;
+     public const string FinanceInvoiceCreated = SupportedPlatformEventTypeRegistry.FinanceInvoiceCreated;
++    public const string FinanceBillCreated = SupportedPlatformEventTypeRegistry.FinanceBillCreated;
++    public const string FinancePaymentCreated = SupportedPlatformEventTypeRegistry.FinancePaymentCreated;
++    public const string FinanceSimulationDayAdvanced = SupportedPlatformEventTypeRegistry.FinanceSimulationDayAdvanced;
+     public const string FinanceThresholdBreached = SupportedPlatformEventTypeRegistry.FinanceThresholdBreached;
+ }
+ 
+diff --git a/src/VirtualCompany.Application/Finance/FinanceWorkflowTriggerContracts.cs b/src/VirtualCompany.Application/Finance/FinanceWorkflowTriggerContracts.cs
+new file mode 100644
+index 0000000..70cd04d
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/FinanceWorkflowTriggerContracts.cs
+@@ -0,0 +1,62 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Finance;
++
++public sealed record ProcessFinanceWorkflowTriggerCommand(
++    Guid CompanyId,
++    string TriggerType,
++    string SourceEntityType,
++    string SourceEntityId,
++    string SourceEntityVersion,
++    DateTime OccurredAtUtc,
++    string? CorrelationId = null,
++    IReadOnlyDictionary<string, JsonNode?>? Metadata = null);
++
++public sealed record FinanceWorkflowTriggerExecutionDto(
++    Guid Id,
++    Guid CompanyId,
++    string TriggerType,
++    string SourceEntityType,
++    string SourceEntityId,
++    string SourceEntityVersion,
++    IReadOnlyList<string> ExecutedChecks,
++    DateTime StartedAtUtc,
++    DateTime? CompletedAtUtc,
++    string Outcome,
++    string? ErrorDetails);
++
++public interface IFinanceWorkflowTriggerService
++{
++    Task<FinanceWorkflowTriggerExecutionDto> ProcessAsync(
++        ProcessFinanceWorkflowTriggerCommand command,
++        CancellationToken cancellationToken);
++}
++
++public static class FinanceWorkflowTriggerTypes
++{
++    public const string Invoice = "invoice";
++    public const string Bill = "bill";
++    public const string Payment = "payment";
++    public const string Cash = "cash";
++    public const string SimulationDayAdvanced = "simulation_day_advanced";
++
++    public static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? throw new ArgumentException("Trigger type is required.", nameof(value))
++            : value.Trim().Replace('-', '_').Replace(' ', '_').ToLowerInvariant();
++}
++
++public static class FinanceWorkflowExecutedChecks
++{
++    public const string RefreshInsightsSnapshot = "refresh_insights_snapshot";
++    public const string EvaluateCashPosition = "evaluate_cash_position";
++    public const string EnsureApprovalTask = "ensure_approval_task";
++}
++
++public static class FinanceWorkflowTriggerOutcomes
++{
++    public const string Pending = "pending";
++    public const string Succeeded = "succeeded";
++    public const string Failed = "failed";
++}
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceWorkflowTriggerExecution.cs b/src/VirtualCompany.Domain/Entities/FinanceWorkflowTriggerExecution.cs
+new file mode 100644
+index 0000000..1b8269b
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/FinanceWorkflowTriggerExecution.cs
+@@ -0,0 +1,122 @@
++using System.Text.Json;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class FinanceWorkflowTriggerExecution : ICompanyOwnedEntity
++{
++    private FinanceWorkflowTriggerExecution()
++    {
++    }
++
++    public FinanceWorkflowTriggerExecution(
++        Guid id,
++        Guid companyId,
++        string triggerType,
++        string sourceEntityType,
++        string sourceEntityId,
++        string sourceEntityVersion,
++        DateTime occurredAtUtc,
++        DateTime startedAtUtc,
++        string? correlationId = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        TriggerType = NormalizeRequired(triggerType, nameof(triggerType), 64);
++        SourceEntityType = NormalizeRequired(sourceEntityType, nameof(sourceEntityType), 128);
++        SourceEntityId = NormalizeRequired(sourceEntityId, nameof(sourceEntityId), 128);
++        SourceEntityVersion = NormalizeRequired(sourceEntityVersion, nameof(sourceEntityVersion), 256);
++        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
++        OccurredAtUtc = EntityTimestampNormalizer.NormalizeUtc(occurredAtUtc, nameof(occurredAtUtc));
++        StartedAtUtc = EntityTimestampNormalizer.NormalizeUtc(startedAtUtc, nameof(startedAtUtc));
++        ExecutedChecksJson = "[]";
++        Outcome = "pending";
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string TriggerType { get; private set; } = null!;
++    public string SourceEntityType { get; private set; } = null!;
++    public string SourceEntityId { get; private set; } = null!;
++    public string SourceEntityVersion { get; private set; } = null!;
++    public string? CorrelationId { get; private set; }
++    public DateTime OccurredAtUtc { get; private set; }
++    public DateTime StartedAtUtc { get; private set; }
++    public DateTime? CompletedAtUtc { get; private set; }
++    public string ExecutedChecksJson { get; private set; } = "[]";
++    public string Outcome { get; private set; } = null!;
++    public string? ErrorDetails { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    public void Complete(
++        IReadOnlyCollection<string> executedChecks,
++        string outcome,
++        DateTime completedAtUtc,
++        string? errorDetails = null)
++    {
++        ExecutedChecksJson = JsonSerializer.Serialize(
++            executedChecks
++                .Where(value => !string.IsNullOrWhiteSpace(value))
++                .Select(value => value.Trim())
++                .Distinct(StringComparer.OrdinalIgnoreCase)
++                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
++                .ToArray());
++        Outcome = NormalizeRequired(outcome, nameof(outcome), 32);
++        CompletedAtUtc = EntityTimestampNormalizer.NormalizeUtc(completedAtUtc, nameof(completedAtUtc));
++        ErrorDetails = NormalizeOptional(errorDetails, nameof(errorDetails), 4000);
++    }
++
++    public IReadOnlyList<string> GetExecutedChecks()
++    {
++        try
++        {
++            return JsonSerializer.Deserialize<string[]>(ExecutedChecksJson) ?? [];
++        }
++        catch (JsonException)
++        {
++            return [];
++        }
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+index bd12b46..35c7c8a 100644
+--- a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
++++ b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+@@ -30,6 +30,9 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
+     public const string AgentStatusUpdated = "agent_status_updated";
+     public const string FinanceTransactionCreated = "finance.transaction.created";
+     public const string FinanceInvoiceCreated = "finance.invoice.created";
++    public const string FinanceBillCreated = "finance.bill.created";
++    public const string FinancePaymentCreated = "finance.payment.created";
++    public const string FinanceSimulationDayAdvanced = "finance.simulation.day_advanced";
+     public const string FinanceThresholdBreached = "finance.threshold.breached";
+ 
+     private static readonly string[] EventTypes =
+@@ -63,8 +66,10 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
+         ConversationMessageSent
+         ,
+         FinanceTransactionCreated,
+         FinanceInvoiceCreated,
++        FinanceBillCreated,
++        FinancePaymentCreated,
++        FinanceSimulationDayAdvanced,
+         FinanceThresholdBreached
+     ];
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index e1ed7d4..1d4f892 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Application.Finance;
+ using VirtualCompany.Application.Briefings;
+ using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Application.Agents;
+@@ -156,6 +157,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     private readonly ICompanyInvitationDeliveryDispatcher _invitationDeliveryDispatcher;
+     private readonly ICompanyNotificationDispatcher _notificationDispatcher;
+     private readonly IInternalWorkflowEventTriggerService _workflowEventTriggerService;
++    private readonly IFinanceWorkflowTriggerService _financeWorkflowTriggerService;
+     private readonly ITriggerExecutionService _triggerExecutionService;
+     private readonly IExecutiveCockpitDashboardCacheInvalidator _cockpitCacheInvalidator;
+     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
+@@ -171,6 +173,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         ICompanyInvitationDeliveryDispatcher invitationDeliveryDispatcher,
+         ICompanyNotificationDispatcher notificationDispatcher,
+         ITriggerExecutionService triggerExecutionService,
++        IFinanceWorkflowTriggerService financeWorkflowTriggerService,
+         IInternalWorkflowEventTriggerService workflowEventTriggerService,
+         IExecutiveCockpitDashboardCacheInvalidator cockpitCacheInvalidator,
+         IOptions<CompanyOutboxDispatcherOptions> options,
+@@ -184,6 +187,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
+         _notificationDispatcher = notificationDispatcher;
+         _triggerExecutionService = triggerExecutionService;
++        _financeWorkflowTriggerService = financeWorkflowTriggerService;
+         _workflowEventTriggerService = workflowEventTriggerService;
+         _cockpitCacheInvalidator = cockpitCacheInvalidator;
+         _options = options;
+@@ -446,6 +450,9 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+             case CompanyOutboxTopics.DocumentUploaded:
+             case CompanyOutboxTopics.WorkflowStateChanged:
+             case CompanyOutboxTopics.FinanceTransactionCreated:
+             case CompanyOutboxTopics.FinanceInvoiceCreated:
++            case CompanyOutboxTopics.FinanceBillCreated:
++            case CompanyOutboxTopics.FinancePaymentCreated:
++            case CompanyOutboxTopics.FinanceSimulationDayAdvanced:
+             case CompanyOutboxTopics.FinanceThresholdBreached:
+             {
+                 var payload = Deserialize<PlatformEventEnvelope>(message);
+@@ -460,6 +467,14 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     throw new CompanyOutboxPermanentException($"Platform event payload type '{payload.EventType}' does not match outbox topic '{message.Topic}'.");
+                 }
+ 
++                var financeTriggerCommand = BuildFinanceWorkflowTriggerCommand(message, payload);
++                if (financeTriggerCommand is not null)
++                {
++                    await _financeWorkflowTriggerService.ProcessAsync(
++                        financeTriggerCommand with
++                        {
++                            CorrelationId = string.IsNullOrWhiteSpace(financeTriggerCommand.CorrelationId) ? message.CorrelationId ?? payload.EventId : financeTriggerCommand.CorrelationId
++                        },
++                        cancellationToken);
++                }
+                 await _workflowEventTriggerService.HandleAsync(
+                     payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId },
+                     cancellationToken);
+@@ -548,6 +563,37 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         return await _dbContext.CompanyOutboxMessages
+             .Where(x => x.ClaimToken == claimToken && x.Status == CompanyOutboxMessageStatus.InProgress)
+             .OrderBy(x => x.AvailableUtc)
+             .ThenBy(x => x.CreatedUtc)
+             .ToArrayAsync(cancellationToken);
+     }
++
++    private static ProcessFinanceWorkflowTriggerCommand? BuildFinanceWorkflowTriggerCommand(
++        CompanyOutboxMessage message,
++        PlatformEventEnvelope payload)
++    {
++        var triggerType = message.Topic switch
++        {
++            CompanyOutboxTopics.FinanceInvoiceCreated => FinanceWorkflowTriggerTypes.Invoice,
++            CompanyOutboxTopics.FinanceBillCreated => FinanceWorkflowTriggerTypes.Bill,
++            CompanyOutboxTopics.FinancePaymentCreated => FinanceWorkflowTriggerTypes.Payment,
++            CompanyOutboxTopics.FinanceTransactionCreated => FinanceWorkflowTriggerTypes.Cash,
++            CompanyOutboxTopics.FinanceSimulationDayAdvanced => FinanceWorkflowTriggerTypes.SimulationDayAdvanced,
++            _ => null
++        };
++
++        if (triggerType is null)
++        {
++            return null;
++        }
++
++        return new ProcessFinanceWorkflowTriggerCommand(
++            payload.CompanyId,
++            triggerType,
++            payload.SourceEntityType,
++            payload.SourceEntityId,
++            payload.EventId,
++            payload.OccurredAtUtc,
++            string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId,
++            payload.Metadata);
++    }
+ 
+     private async Task DispatchAsync(CompanyOutboxMessage message, CancellationToken cancellationToken)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index c33514d..f386441 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -418,6 +418,7 @@ public static class DependencyInjection
+         services.AddScoped<IFinanceTransactionAnomalyDetectionService, CompanyFinanceTransactionAnomalyDetectionService>();
+         services.AddScoped<IFinanceCashPositionWorkflowService, CompanyFinanceCashPositionWorkflowService>();
+         services.AddScoped<IFinanceToolProvider>(provider =>
+         {
+             var options = provider.GetRequiredService<IOptions<FinanceToolProviderOptions>>().Value;
+             return options.Provider.Equals(FinanceToolProviderOptions.MockProvider, StringComparison.OrdinalIgnoreCase)
+                 ? provider.GetRequiredService<MockFinanceToolProvider>()
+                 : provider.GetRequiredService<InternalFinanceToolProvider>();
+         });
++        services.AddScoped<IFinanceWorkflowTriggerService, FinanceWorkflowTriggerService>();
+         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
+         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
+         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+index c5f7fc3..f9071cb 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceCommandService.cs
+@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging.Abstractions;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Shared;
+ using VirtualCompany.Domain.Entities;
+@@ -17,6 +18,7 @@ public sealed partial class CompanyFinanceCommandService : IFinanceCommandServic
+     private readonly FinancePaymentAllocationService _paymentAllocationService;
+     private readonly IFinanceApprovalTaskService _approvalTaskService;
+     private readonly IFinanceCashSettlementPostingService _cashSettlementPostingService;
++    private readonly ICompanyOutboxEnqueuer? _outboxEnqueuer;
+ 
+     public CompanyFinanceCommandService(VirtualCompanyDbContext dbContext)
+         : this(dbContext, null, null)
+@@ -38,6 +40,7 @@ public sealed partial class CompanyFinanceCommandService : IFinanceCommandServic
+         _serviceProvider = serviceProvider;
+         _cashSettlementPostingService = serviceProvider?.GetService<IFinanceCashSettlementPostingService>() ?? new CompanyCashSettlementPostingService(dbContext, companyContextAccessor);
+         _paymentAllocationService = new FinancePaymentAllocationService(dbContext, _cashSettlementPostingService);
++        _outboxEnqueuer = serviceProvider?.GetService<ICompanyOutboxEnqueuer>();
+         _approvalTaskService = serviceProvider?.GetService<IFinanceApprovalTaskService>() ??
+             new CompanyFinanceApprovalTaskService(dbContext, companyContextAccessor, NullLogger<CompanyFinanceApprovalTaskService>.Instance);
+     }
+@@ -59,6 +62,7 @@ public sealed partial class CompanyFinanceCommandService : IFinanceCommandServic
+             command.Payment.CounterpartyReference);
+ 
+         _dbContext.Payments.Add(payment);
++        FinanceDomainEvents.EnqueuePaymentCreated(_outboxEnqueuer, payment);
+         await _approvalTaskService.EnsureTaskAsync(
+             new EnsureFinanceApprovalTaskCommand(
+                 command.CompanyId,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+index f4a67d6..9ca67d7 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSeedBootstrapService.cs
+@@ -444,6 +444,18 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
+             FinanceDomainEvents.EnqueueInvoiceCreated(
+                 _outboxEnqueuer,
+                 invoice,
+                 invoice.InvoiceNumber);
+         }
++
++        var bills = _dbContext.ChangeTracker.Entries<FinanceBill>()
++            .Where(entry => entry.State == EntityState.Added)
++            .Select(entry => entry.Entity)
++            .ToList();
++        foreach (var bill in bills)
++        {
++            FinanceDomainEvents.EnqueueBillCreated(
++                _outboxEnqueuer,
++                bill,
++                bill.BillNumber);
++        }
+ 
+         var transactions = _dbContext.ChangeTracker.Entries<FinanceTransaction>()
+             .Where(entry => entry.State == EntityState.Added)
+             .Select(entry => entry.Entity)
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+index 47b26cb..2a31013 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationFinanceGenerationService.cs
+@@ -550,6 +550,11 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                     null, null, null, plan.ReceivedUtc));
+             billsCreated++;
++            FinanceDomainEvents.EnqueueBillCreated(
++                _outboxEnqueuer,
++                bill,
++                supplierBillPlan.SupplierName,
++                BuildDayCorrelationId(company.Id, plan.DateUtc));
+             if (billApprovalRequired)
+             {
+                 await _financeApprovalTaskService.EnsureTaskAsync(
+@@ -790,6 +795,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                     updatedUtc: payment.TransactionUtc,
+                     sourceSimulationEventRecordId: paymentEvent.Id);
+                 _dbContext.Payments.Add(simulatedPayment);
++                FinanceDomainEvents.EnqueuePaymentCreated(_outboxEnqueuer, simulatedPayment, BuildDayCorrelationId(company.Id, plan.DateUtc));
+             }
+ 
+             transaction = new FinanceTransaction(
+@@ -1976,6 +1982,7 @@ public sealed class CompanySimulationFinanceGenerationService : IFinanceGenerati
+                 updatedUtc: transactionUtc,
+                 sourceSimulationEventRecordId: paymentEvent.Id);
+             _dbContext.Payments.Add(payment);
++            FinanceDomainEvents.EnqueuePaymentCreated(_outboxEnqueuer, payment, BuildDayCorrelationId(company.Id, plan.DateUtc));
+         }
+ 
+         var transaction = await _dbContext.FinanceTransactions
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs
+index 80ed70c..0553697 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanySimulationService.cs
+@@ -121,6 +121,14 @@ public sealed class CompanySimulationService : ICompanySimulationService
+                 recurringExpenseInstancesGenerated += step.RecurringExpenseInstancesGenerated;
+                 eventsEmitted += step.EventsEmitted;
+                 cursorUtc = stepEndUtc;
++                FinanceDomainEvents.EnqueueSimulationDayAdvanced(
++                    _outboxEnqueuer,
++                    command.CompanyId,
++                    step.WindowStartUtc,
++                    step.WindowEndUtc,
++                    (int)Math.Max(1d, Math.Round((step.WindowEndUtc - step.WindowStartUtc).TotalHours, MidpointRounding.AwayFromZero)),
++                    $"finance-simulation:{command.CompanyId:N}:{step.WindowEndUtc:yyyyMMddHHmm}");
++                eventsEmitted++;
+             }
+ 
+             state.CurrentUtc = targetUtc;
+@@ -153,6 +161,14 @@ public sealed class CompanySimulationService : ICompanySimulationService
+                 recurringExpenseInstancesGenerated += step.RecurringExpenseInstancesGenerated;
+                 eventsEmitted += step.EventsEmitted;
+                 cursorUtc = stepEndUtc;
++                FinanceDomainEvents.EnqueueSimulationDayAdvanced(
++                    _outboxEnqueuer,
++                    command.CompanyId,
++                    step.WindowStartUtc,
++                    step.WindowEndUtc,
++                    (int)Math.Max(1d, Math.Round((step.WindowEndUtc - step.WindowStartUtc).TotalHours, MidpointRounding.AwayFromZero)),
++                    $"finance-simulation:{command.CompanyId:N}:{step.WindowEndUtc:yyyyMMddHHmm}");
++                eventsEmitted++;
+             }
+ 
+             state.CurrentUtc = targetUtc;
+@@ -366,6 +382,7 @@ public sealed class CompanySimulationService : ICompanySimulationService
+                     "open",
+                     createdUtc: occurrenceUtc,
+                     updatedUtc: occurrenceUtc);
+                 _dbContext.FinanceBills.Add(bill);
++                FinanceDomainEvents.EnqueueBillCreated(_outboxEnqueuer, bill, rule.Name);
+                 billCount++;
+                 recurringExpenseCount++;
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceDomainEvents.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceDomainEvents.cs
+index 27d6f49..af8fe37 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceDomainEvents.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceDomainEvents.cs
+@@ -47,6 +47,80 @@ internal static class FinanceDomainEvents
+             idempotencyKey: $"platform-event:{transaction.CompanyId:N}:{eventId}",
+             causationId: transaction.Id.ToString("N"));
+     }
++
++    public static void EnqueueBillCreated(
++        ICompanyOutboxEnqueuer? outboxEnqueuer,
++        FinanceBill bill,
++        string supplierReference,
++        string? correlationId = null)
++    {
++        if (outboxEnqueuer is null)
++        {
++            return;
++        }
++
++        var eventType = SupportedPlatformEventTypeRegistry.FinanceBillCreated;
++        var eventId = $"{eventType}:{bill.Id:N}";
++        var effectiveCorrelationId = ResolveCorrelationId(correlationId, eventId);
++        var occurredAtUtc = NormalizeUtc(bill.CreatedUtc);
++
++        outboxEnqueuer.Enqueue(
++            bill.CompanyId,
++            eventType,
++            new PlatformEventEnvelope(
++                eventId,
++                eventType,
++                occurredAtUtc,
++                bill.CompanyId,
++                effectiveCorrelationId,
++                "finance_bill",
++                bill.Id.ToString("N"),
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["companyId"] = JsonValue.Create(bill.CompanyId),
++                    ["billId"] = JsonValue.Create(bill.Id),
++                    ["billNumber"] = JsonValue.Create(bill.BillNumber),
++                    ["supplierReference"] = JsonValue.Create(supplierReference),
++                    ["amount"] = JsonValue.Create(bill.Amount),
++                    ["dueDateUtc"] = JsonValue.Create(bill.DueUtc),
++                    ["receivedUtc"] = JsonValue.Create(bill.ReceivedUtc)
++                }),
++            effectiveCorrelationId,
++            idempotencyKey: $"platform-event:{bill.CompanyId:N}:{eventId}",
++            causationId: bill.Id.ToString("N"));
++    }
++
++    public static void EnqueuePaymentCreated(
++        ICompanyOutboxEnqueuer? outboxEnqueuer,
++        Payment payment,
++        string? correlationId = null)
++    {
++        if (outboxEnqueuer is null)
++        {
++            return;
++        }
++
++        var eventType = SupportedPlatformEventTypeRegistry.FinancePaymentCreated;
++        var eventId = $"{eventType}:{payment.Id:N}";
++        var effectiveCorrelationId = ResolveCorrelationId(correlationId, eventId);
++        var occurredAtUtc = NormalizeUtc(payment.CreatedUtc);
++
++        outboxEnqueuer.Enqueue(
++            payment.CompanyId,
++            eventType,
++            new PlatformEventEnvelope(
++                eventId,
++                eventType,
++                occurredAtUtc,
++                payment.CompanyId,
++                effectiveCorrelationId,
++                "payment",
++                payment.Id.ToString("N"),
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["companyId"] = JsonValue.Create(payment.CompanyId),
++                    ["paymentId"] = JsonValue.Create(payment.Id),
++                    ["paymentType"] = JsonValue.Create(payment.PaymentType),
++                    ["amount"] = JsonValue.Create(payment.Amount),
++                    ["currency"] = JsonValue.Create(payment.Currency),
++                    ["paymentDate"] = JsonValue.Create(payment.PaymentDate),
++                    ["status"] = JsonValue.Create(payment.Status),
++                    ["counterpartyReference"] = JsonValue.Create(payment.CounterpartyReference)
++                }),
++            effectiveCorrelationId,
++            idempotencyKey: $"platform-event:{payment.CompanyId:N}:{eventId}",
++            causationId: payment.Id.ToString("N"));
++    }
+ 
+     public static void EnqueueInvoiceCreated(
+         ICompanyOutboxEnqueuer? outboxEnqueuer,
+@@ -84,6 +158,43 @@ internal static class FinanceDomainEvents
+             idempotencyKey: $"platform-event:{invoice.CompanyId:N}:{eventId}",
+             causationId: invoice.Id.ToString("N"));
+     }
++
++    public static void EnqueueSimulationDayAdvanced(
++        ICompanyOutboxEnqueuer? outboxEnqueuer,
++        Guid companyId,
++        DateTime windowStartUtc,
++        DateTime windowEndUtc,
++        int hoursAdvanced,
++        string? correlationId = null)
++    {
++        if (outboxEnqueuer is null || companyId == Guid.Empty)
++        {
++            return;
++        }
++
++        var eventType = SupportedPlatformEventTypeRegistry.FinanceSimulationDayAdvanced;
++        var normalizedWindowStartUtc = NormalizeUtc(windowStartUtc);
++        var normalizedWindowEndUtc = NormalizeUtc(windowEndUtc);
++        var eventId = $"{eventType}:{companyId:N}:{normalizedWindowEndUtc:yyyyMMddHHmm}";
++        var effectiveCorrelationId = ResolveCorrelationId(correlationId, eventId);
++
++        outboxEnqueuer.Enqueue(
++            companyId,
++            eventType,
++            new PlatformEventEnvelope(
++                eventId,
++                eventType,
++                normalizedWindowEndUtc,
++                companyId,
++                effectiveCorrelationId,
++                "company_simulation",
++                companyId.ToString("N"),
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["companyId"] = JsonValue.Create(companyId),
++                    ["windowStartUtc"] = JsonValue.Create(normalizedWindowStartUtc),
++                    ["windowEndUtc"] = JsonValue.Create(normalizedWindowEndUtc),
++                    ["hoursAdvanced"] = JsonValue.Create(hoursAdvanced)
++                }),
++            effectiveCorrelationId,
++            idempotencyKey: $"platform-event:{companyId:N}:{eventId}",
++            causationId: companyId.ToString("N"));
++    }
+ 
+     public static void EnqueueThresholdBreached(
+         ICompanyOutboxEnqueuer? outboxEnqueuer,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceWorkflowTriggerService.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceWorkflowTriggerService.cs
+new file mode 100644
+index 0000000..545ad28
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceWorkflowTriggerService.cs
+@@ -0,0 +1,252 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IFinanceReadService _financeReadService;
++    private readonly IFinanceApprovalTaskService _financeApprovalTaskService;
++    private readonly IFinanceCashPositionWorkflowService _financeCashPositionWorkflowService;
++    private readonly TimeProvider _timeProvider;
++    private readonly ILogger<FinanceWorkflowTriggerService> _logger;
++
++    public FinanceWorkflowTriggerService(
++        VirtualCompanyDbContext dbContext,
++        IFinanceReadService financeReadService,
++        IFinanceApprovalTaskService financeApprovalTaskService,
++        IFinanceCashPositionWorkflowService financeCashPositionWorkflowService,
++        TimeProvider timeProvider,
++        ILogger<FinanceWorkflowTriggerService> logger)
++    {
++        _dbContext = dbContext;
++        _financeReadService = financeReadService;
++        _financeApprovalTaskService = financeApprovalTaskService;
++        _financeCashPositionWorkflowService = financeCashPositionWorkflowService;
++        _timeProvider = timeProvider;
++        _logger = logger;
++    }
++
++    public async Task<FinanceWorkflowTriggerExecutionDto> ProcessAsync(
++        ProcessFinanceWorkflowTriggerCommand command,
++        CancellationToken cancellationToken)
++    {
++        Validate(command);
++
++        var normalizedTriggerType = FinanceWorkflowTriggerTypes.Normalize(command.TriggerType);
++        var normalizedSourceEntityType = command.SourceEntityType.Trim();
++        var normalizedSourceEntityId = command.SourceEntityId.Trim();
++        var normalizedSourceEntityVersion = command.SourceEntityVersion.Trim();
++        var existing = await FindExistingAsync(
++            command.CompanyId,
++            normalizedTriggerType,
++            normalizedSourceEntityId,
++            normalizedSourceEntityVersion,
++            cancellationToken);
++        if (existing is not null)
++        {
++            return Map(existing);
++        }
++
++        var startedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var execution = new FinanceWorkflowTriggerExecution(
++            Guid.NewGuid(),
++            command.CompanyId,
++            normalizedTriggerType,
++            normalizedSourceEntityType,
++            normalizedSourceEntityId,
++            normalizedSourceEntityVersion,
++            command.OccurredAtUtc,
++            startedAtUtc,
++            command.CorrelationId);
++        _dbContext.FinanceWorkflowTriggerExecutions.Add(execution);
++
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++        catch (DbUpdateException ex) when (IsDuplicateExecutionException(ex))
++        {
++            _dbContext.Entry(execution).State = EntityState.Detached;
++            var duplicate = await FindExistingAsync(
++                command.CompanyId,
++                normalizedTriggerType,
++                normalizedSourceEntityId,
++                normalizedSourceEntityVersion,
++                cancellationToken);
++            return duplicate is null ? throw : Map(duplicate);
++        }
++
++        var executedChecks = new List<string>();
++        try
++        {
++            await TryRefreshInsightsSnapshotAsync(command.CompanyId, command.OccurredAtUtc, executedChecks, cancellationToken);
++            await TryEvaluateCashPositionAsync(command.CompanyId, executedChecks, cancellationToken);
++            await TryEnsureApprovalTaskAsync(command.CompanyId, normalizedTriggerType, normalizedSourceEntityId, executedChecks, cancellationToken);
++
++            execution.Complete(
++                executedChecks,
++                FinanceWorkflowTriggerOutcomes.Succeeded,
++                _timeProvider.GetUtcNow().UtcDateTime);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return Map(execution);
++        }
++        catch (Exception ex)
++        {
++            execution.Complete(
++                executedChecks,
++                FinanceWorkflowTriggerOutcomes.Failed,
++                _timeProvider.GetUtcNow().UtcDateTime,
++                ex.Message);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            throw;
++        }
++    }
++
++    private async Task TryRefreshInsightsSnapshotAsync(
++        Guid companyId,
++        DateTime occurredAtUtc,
++        ICollection<string> executedChecks,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            await _financeReadService.RefreshInsightsSnapshotAsync(
++                new RefreshFinanceInsightsSnapshotCommand(
++                    companyId,
++                    occurredAtUtc,
++                    SnapshotKey: FinanceInsightSnapshotKeys.Default),
++                cancellationToken);
++            executedChecks.Add(FinanceWorkflowExecutedChecks.RefreshInsightsSnapshot);
++        }
++        catch (FinanceNotInitializedException ex)
++        {
++            _logger.LogDebug(
++                ex,
++                "Skipped finance insights refresh for company {CompanyId} because finance data is not initialized.",
++                companyId);
++        }
++    }
++
++    private async Task TryEvaluateCashPositionAsync(
++        Guid companyId,
++        ICollection<string> executedChecks,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            await _financeCashPositionWorkflowService.EvaluateAsync(
++                new EvaluateFinanceCashPositionWorkflowCommand(companyId),
++                cancellationToken);
++            executedChecks.Add(FinanceWorkflowExecutedChecks.EvaluateCashPosition);
++        }
++        catch (FinanceNotInitializedException ex)
++        {
++            _logger.LogDebug(
++                ex,
++                "Skipped finance cash position evaluation for company {CompanyId} because finance data is not initialized.",
++                companyId);
++        }
++    }
++
++    private async Task TryEnsureApprovalTaskAsync(
++        Guid companyId,
++        string triggerType,
++        string sourceEntityId,
++        ICollection<string> executedChecks,
++        CancellationToken cancellationToken)
++    {
++        if (!Guid.TryParse(sourceEntityId, out var targetId))
++        {
++            return;
++        }
++
++        switch (triggerType)
++        {
++            case FinanceWorkflowTriggerTypes.Bill:
++            {
++                var bill = await _dbContext.FinanceBills
++                    .IgnoreQueryFilters()
++                    .AsNoTracking()
++                    .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == targetId, cancellationToken);
++                if (bill is null)
++                {
++                    return;
++                }
++
++                await _financeApprovalTaskService.EnsureTaskAsync(
++                    new EnsureFinanceApprovalTaskCommand(
++                        companyId,
++                        ApprovalTargetType.Bill,
++                        bill.Id,
++                        bill.Amount,
++                        bill.Currency,
++                        bill.DueUtc),
++                    cancellationToken);
++                executedChecks.Add(FinanceWorkflowExecutedChecks.EnsureApprovalTask);
++                break;
++            }
++            case FinanceWorkflowTriggerTypes.Payment:
++            {
++                var payment = await _dbContext.Payments
++                    .IgnoreQueryFilters()
++                    .AsNoTracking()
++                    .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == targetId, cancellationToken);
++                if (payment is null)
++                {
++                    return;
++                }
++
++                await _financeApprovalTaskService.EnsureTaskAsync(
++                    new EnsureFinanceApprovalTaskCommand(
++                        companyId,
++                        ApprovalTargetType.Payment,
++                        payment.Id,
++                        payment.Amount,
++                        payment.Currency,
++                        payment.PaymentDate),
++                    cancellationToken);
++                executedChecks.Add(FinanceWorkflowExecutedChecks.EnsureApprovalTask);
++                break;
++            }
++        }
++    }
++
++    private Task<FinanceWorkflowTriggerExecution?> FindExistingAsync(
++        Guid companyId,
++        string triggerType,
++        string sourceEntityId,
++        string sourceEntityVersion,
++        CancellationToken cancellationToken) =>
++        _dbContext.FinanceWorkflowTriggerExecutions
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == companyId &&
++                     x.TriggerType == triggerType &&
++                     x.SourceEntityId == sourceEntityId &&
++                     x.SourceEntityVersion == sourceEntityVersion,
++                cancellationToken);
++
++    private static FinanceWorkflowTriggerExecutionDto Map(FinanceWorkflowTriggerExecution execution) =>
++        new(
++            execution.Id,
++            execution.CompanyId,
++            execution.TriggerType,
++            execution.SourceEntityType,
++            execution.SourceEntityId,
++            execution.SourceEntityVersion,
++            execution.GetExecutedChecks(),
++            execution.StartedAtUtc,
++            execution.CompletedAtUtc,
++            execution.Outcome,
++            execution.ErrorDetails);
++
++    private static void Validate(ProcessFinanceWorkflowTriggerCommand command)
++    {
++        if (command.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(command));
++        }
++
++        if (string.IsNullOrWhiteSpace(command.SourceEntityType) ||
++            string.IsNullOrWhiteSpace(command.SourceEntityId) ||
++            string.IsNullOrWhiteSpace(command.SourceEntityVersion))
++        {
++            throw new ArgumentException("Source entity metadata is required.", nameof(command));
++        }
++    }
++
++    private static bool IsDuplicateExecutionException(DbUpdateException exception)
++    {
++        var message = exception.InnerException?.Message ?? exception.Message;
++        return message.Contains("IX_finance_workflow_trigger_executions_company_id_trigger_type_source_entity_id_source_entity_version", StringComparison.OrdinalIgnoreCase) ||
++               (message.Contains("finance_workflow_trigger_executions", StringComparison.OrdinalIgnoreCase) &&
++                message.Contains("unique", StringComparison.OrdinalIgnoreCase));
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceWorkflowTriggerExecutionEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceWorkflowTriggerExecutionEntityConfiguration.cs
+new file mode 100644
+index 0000000..4ffbfc3
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceWorkflowTriggerExecutionEntityConfiguration.cs
+@@ -0,0 +1,42 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class FinanceWorkflowTriggerExecutionEntityConfiguration : IEntityTypeConfiguration<FinanceWorkflowTriggerExecution>
++{
++    public void Configure(EntityTypeBuilder<FinanceWorkflowTriggerExecution> builder)
++    {
++        builder.ToTable("finance_workflow_trigger_executions");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.TriggerType).HasColumnName("trigger_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.SourceEntityType).HasColumnName("source_entity_type").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.SourceEntityId).HasColumnName("source_entity_id").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.SourceEntityVersion).HasColumnName("source_entity_version").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
++        builder.Property(x => x.OccurredAtUtc).HasColumnName("occurred_at").IsRequired();
++        builder.Property(x => x.StartedAtUtc).HasColumnName("started_at").IsRequired();
++        builder.Property(x => x.CompletedAtUtc).HasColumnName("completed_at");
++        builder.Property(x => x.ExecutedChecksJson).HasColumnName("executed_checks").HasMaxLength(4000).IsRequired();
++        builder.Property(x => x.Outcome).HasColumnName("outcome").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.ErrorDetails).HasColumnName("error_details").HasMaxLength(4000);
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.TriggerType, x.OccurredAtUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.SourceEntityType, x.SourceEntityId });
++        builder.HasIndex(x => new { x.CompanyId, x.TriggerType, x.SourceEntityId, x.SourceEntityVersion })
++            .IsUnique();
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 5711480..18151cc 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -92,6 +92,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<FinancePolicyConfiguration> FinancePolicyConfigurations => Set<FinancePolicyConfiguration>();
+     public DbSet<FinanceSeedAnomaly> FinanceSeedAnomalies => Set<FinanceSeedAnomaly>();
+     public DbSet<FinanceSimulationStepLog> FinanceSimulationStepLogs => Set<FinanceSimulationStepLog>();
++    public DbSet<FinanceWorkflowTriggerExecution> FinanceWorkflowTriggerExecutions => Set<FinanceWorkflowTriggerExecution>();
+     public DbSet<FinanceSeedBackfillRun> FinanceSeedBackfillRuns => Set<FinanceSeedBackfillRun>();
+     public DbSet<FinanceSeedBackfillAttempt> FinanceSeedBackfillAttempts => Set<FinanceSeedBackfillAttempt>();
+     public DbSet<FiscalPeriod> FiscalPeriods => Set<FiscalPeriod>();
+@@ -370,6 +371,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FinanceSimulationStepLog>()
+             .HasQueryFilter(log =>
+                 CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceWorkflowTriggerExecution>()
++            .HasQueryFilter(execution =>
++                CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<FiscalPeriod>()
+             .HasQueryFilter(period =>
+                 CurrentCompanyId.HasValue && period.CompanyId == CurrentCompanyId.Value);
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceWorkflowTriggerIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceWorkflowTriggerIntegrationTests.cs
+new file mode 100644
+index 0000000..bf12f28
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceWorkflowTriggerIntegrationTests.cs
+@@ -0,0 +1,181 @@
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Workflows;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public FinanceWorkflowTriggerIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Payment_event_runs_finance_trigger_pipeline_and_replay_is_idempotent()
++    {
++        var companyId = Guid.NewGuid();
++        var companyName = "Finance Trigger Company";
++        var paymentId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var accountId = Guid.NewGuid();
++        var firstOutboxId = Guid.NewGuid();
++        var secondOutboxId = Guid.NewGuid();
++        var utcNow = new DateTime(2026, 4, 22, 9, 0, 0, DateTimeKind.Utc);
++        var paymentDate = utcNow.AddHours(-1);
++        var correlationId = "finance-trigger-payment-001";
++        var eventId = $"finance.payment.created:{paymentId:N}";
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            var company = new Company(companyId, companyName);
++            company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, utcNow, utcNow);
++
++            dbContext.Companies.Add(company);
++            dbContext.Users.Add(new User(userId, "approver@virtualcompany.test", "Finance Approver"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.FinanceApprover,
++                status: CompanyMembershipStatus.Active));
++            dbContext.FinanceAccounts.Add(new FinanceAccount(
++                accountId,
++                companyId,
++                "1000",
++                "Operating Cash",
++                "asset",
++                "USD",
++                1000m,
++                utcNow.AddDays(-30)));
++            dbContext.FinanceBalances.Add(new FinanceBalance(
++                Guid.NewGuid(),
++                companyId,
++                accountId,
++                utcNow,
++                50m,
++                "USD",
++                utcNow));
++            dbContext.FinancePolicyConfigurations.Add(new FinancePolicyConfiguration(
++                Guid.NewGuid(),
++                companyId,
++                "USD",
++                10000m,
++                500m,
++                true,
++                -10000m,
++                10000m,
++                90,
++                30));
++            dbContext.Payments.Add(new Payment(
++                paymentId,
++                companyId,
++                PaymentTypes.Outgoing,
++                640.10m,
++                "USD",
++                paymentDate,
++                PaymentMethods.BankTransfer,
++                PaymentStatuses.Pending,
++                "SUP-001",
++                createdUtc: paymentDate,
++                updatedUtc: paymentDate));
++            dbContext.FinanceTransactions.Add(new FinanceTransaction(
++                Guid.NewGuid(),
++                companyId,
++                accountId,
++                null,
++                null,
++                null,
++                utcNow.AddDays(-5),
++                "operating_expense",
++                -300m,
++                "USD",
++                "Recent operating expense",
++                "TXN-LOW-CASH-001",
++                createdUtc: utcNow.AddDays(-5)));
++
++            dbContext.CompanyOutboxMessages.Add(CreatePlatformEventOutboxMessage(firstOutboxId, companyId, utcNow, correlationId, eventId, paymentId, "payment-outbox-001"));
++            return Task.CompletedTask;
++        });
++
++        await using (var scope = _factory.Services.CreateAsyncScope())
++        {
++            var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
++            while (await processor.DispatchPendingAsync(CancellationToken.None) > 0)
++            {
++            }
++        }
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.CompanyOutboxMessages.Add(CreatePlatformEventOutboxMessage(secondOutboxId, companyId, utcNow.AddMinutes(1), correlationId, eventId, paymentId, "payment-outbox-002"));
++            return Task.CompletedTask;
++        });
++
++        await using (var replayScope = _factory.Services.CreateAsyncScope())
++        {
++            var processor = replayScope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
++            while (await processor.DispatchPendingAsync(CancellationToken.None) > 0)
++            {
++            }
++        }
++
++        await _factory.ExecuteDbContextAsync(async dbContext =>
++        {
++            var approvalTasks = await dbContext.ApprovalTasks
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == companyId && x.TargetType == ApprovalTargetType.Payment && x.TargetId == paymentId)
++                .ToListAsync();
++            Assert.Single(approvalTasks);
++
++            var alerts = await dbContext.Alerts
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == companyId && x.Fingerprint == $"finance-cash-position:{companyId:N}:low-cash")
++                .ToListAsync();
++            Assert.Single(alerts);
++
++            var executions = await dbContext.FinanceWorkflowTriggerExecutions
++                .IgnoreQueryFilters()
++                .Where(x => x.CompanyId == companyId && x.TriggerType == "payment" && x.SourceEntityId == paymentId.ToString("N"))
++                .ToListAsync();
++            var execution = Assert.Single(executions);
++            Assert.Equal(companyId, execution.CompanyId);
++            Assert.Equal("payment", execution.TriggerType);
++            Assert.Equal(paymentId.ToString("N"), execution.SourceEntityId);
++            Assert.NotEqual(default, execution.StartedAtUtc);
++            Assert.NotNull(execution.CompletedAtUtc);
++            Assert.Equal("succeeded", execution.Outcome);
++            Assert.Contains("refresh_insights_snapshot", execution.GetExecutedChecks());
++            Assert.Contains("evaluate_cash_position", execution.GetExecutedChecks());
++            Assert.Contains("ensure_approval_task", execution.GetExecutedChecks());
++            return 0;
++        });
++    }
++
++    private static CompanyOutboxMessage CreatePlatformEventOutboxMessage(
++        Guid outboxMessageId,
++        Guid companyId,
++        DateTime occurredAtUtc,
++        string correlationId,
++        string eventId,
++        Guid paymentId,
++        string idempotencyKey)
++    {
++        var payload = JsonSerializer.Serialize(new PlatformEventEnvelope(
++            eventId,
++            CompanyOutboxTopics.FinancePaymentCreated,
++            occurredAtUtc,
++            companyId,
++            correlationId,
++            "payment",
++            paymentId.ToString("N"),
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["paymentId"] = JsonValue.Create(paymentId),
++                ["amount"] = JsonValue.Create(640.10m),
++                ["currency"] = JsonValue.Create("USD")
++            }));
++
++        return new CompanyOutboxMessage(
++            outboxMessageId,
++            companyId,
++            CompanyOutboxTopics.FinancePaymentCreated,
++            payload,
++            correlationId: correlationId,
++            idempotencyKey: idempotencyKey);
++    }
++}
+END_OF_PATCH

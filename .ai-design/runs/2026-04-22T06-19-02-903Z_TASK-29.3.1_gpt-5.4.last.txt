@@ -1,0 +1,686 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceContracts.cs b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+index 1f4d0b1..d8a53a7 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceContracts.cs
+@@ -861,7 +861,64 @@ public sealed record FinanceSummaryDto(
+     int RecentAssetPurchaseCount,
+     decimal RecentAssetPurchaseTotalAmount,
+     IReadOnlyList<FinanceSummaryAssetPurchaseDto> RecentAssetPurchases,
++    FinanceIntelligenceSnapshotDto? Intelligence = null,
+     FinanceSummaryConsistencyResultDto? ConsistencyCheck = null);
++
++public sealed record FinanceIntelligenceSnapshotDto(
++    DateTime AsOfUtc,
++    FinanceCashProjectionDto SevenDayProjection,
++    FinanceCashProjectionDto ThirtyDayProjection,
++    FinanceObligationCoverageDto ObligationCoverage,
++    IReadOnlyList<FinanceOverdueInvoiceRecommendationDto> OverdueInvoices,
++    IReadOnlyList<FinanceDueSoonBillRecommendationDto> DueSoonBills);
++
++public sealed record FinanceCashProjectionDto(
++    int HorizonDays,
++    decimal StartingCash,
++    decimal ProjectedInflows,
++    decimal ProjectedOutflows,
++    decimal EndingCash);
++
++public sealed record FinanceObligationCoverageDto(
++    int HorizonDays,
++    decimal AvailableCash,
++    decimal NearTermObligations,
++    decimal CoverageRatio,
++    string Severity,
++    string RecommendationCode,
++    string RecommendationText);
++
++public sealed record FinanceOverdueInvoiceRecommendationDto(
++    int Rank,
++    Guid InvoiceId,
++    string InvoiceNumber,
++    string CustomerName,
++    DateTime DueUtc,
++    decimal OutstandingAmount,
++    string Currency,
++    int OverdueDays,
++    string Severity,
++    string RecommendationCode,
++    string RecommendationText);
++
++public sealed record FinanceDueSoonBillRecommendationDto(
++    int Rank,
++    Guid BillId,
++    string BillNumber,
++    string SupplierName,
++    DateTime DueUtc,
++    decimal OutstandingAmount,
++    string Currency,
++    int DaysUntilDue,
++    string CashImpact,
++    string Severity,
++    string RecommendationCode,
++    string RecommendationText);
++
++public sealed record FinanceIntelligenceInputDto(
++    Guid CompanyId,
++    DateTime AsOfUtc,
++    decimal CurrentCash,
++    string Currency,
++    IReadOnlyList<FinanceOpenReceivableItemDto> OpenInvoices,
++    IReadOnlyList<FinanceOpenPayableItemDto> OpenBills,
++    IReadOnlyList<FinanceRecurringOutflowItemDto> RecurringOutflows);
+ 
+ public sealed record FinanceMonthlyProfitAndLossDto(
+     Guid CompanyId,
+@@ -876,6 +933,31 @@ public sealed record FinanceMonthlyProfitAndLossDto(
+     decimal NetResult,
+     string Currency);
+ 
++public sealed record FinanceOpenReceivableItemDto(
++    Guid InvoiceId,
++    string InvoiceNumber,
++    string CustomerName,
++    DateTime DueUtc,
++    decimal OutstandingAmount,
++    string Currency,
++    string Status);
++
++public sealed record FinanceOpenPayableItemDto(
++    Guid BillId,
++    string BillNumber,
++    string SupplierName,
++    DateTime DueUtc,
++    decimal OutstandingAmount,
++    string Currency,
++    string Status);
++
++public sealed record FinanceRecurringOutflowItemDto(
++    string Name,
++    DateTime DueUtc,
++    decimal Amount,
++    string Currency,
++    string Cadence = "scheduled",
++    string? Reference = null);
++
+ public sealed record FinanceExpenseBreakdownDto(
+     Guid CompanyId,
+     DateTime StartUtc,
+diff --git a/src/VirtualCompany.Application/Finance/FinanceIntelligenceHeuristics.cs b/src/VirtualCompany.Application/Finance/FinanceIntelligenceHeuristics.cs
+new file mode 100644
+index 0000000..de5ba85
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/FinanceIntelligenceHeuristics.cs
+@@ -0,0 +1,299 @@
++using System.Globalization;
++
++namespace VirtualCompany.Application.Finance;
++
++public static class FinanceIntelligenceHeuristics
++{
++    public static FinanceIntelligenceSnapshotDto Evaluate(FinanceIntelligenceInputDto input)
++    {
++        ArgumentNullException.ThrowIfNull(input);
++
++        var sevenDayProjection = BuildProjection(input, 7);
++        var thirtyDayProjection = BuildProjection(input, 30);
++        var overdueInvoices = BuildOverdueInvoices(input);
++        var dueSoonBills = BuildDueSoonBills(input, sevenDayProjection);
++        var obligationCoverage = BuildObligationCoverage(input, sevenDayProjection);
++
++        return new FinanceIntelligenceSnapshotDto(
++            input.AsOfUtc,
++            sevenDayProjection,
++            thirtyDayProjection,
++            obligationCoverage,
++            overdueInvoices,
++            dueSoonBills);
++    }
++
++    private static FinanceCashProjectionDto BuildProjection(FinanceIntelligenceInputDto input, int horizonDays)
++    {
++        var horizonEndDate = input.AsOfUtc.Date.AddDays(horizonDays);
++
++        // The projection is intentionally deterministic: it only considers currently open
++        // receivables, bills, and scheduled recurring outflows that are due inside the horizon.
++        var projectedInflows = Round(input.OpenInvoices
++            .Where(x => x.OutstandingAmount > 0m && x.DueUtc.Date <= horizonEndDate)
++            .Sum(x => x.OutstandingAmount));
++
++        var projectedOutflows = Round(
++            input.OpenBills
++                .Where(x => x.OutstandingAmount > 0m && x.DueUtc.Date <= horizonEndDate)
++                .Sum(x => x.OutstandingAmount) +
++            input.RecurringOutflows
++                .Where(x => x.Amount > 0m && x.DueUtc.Date <= horizonEndDate)
++                .Sum(x => x.Amount));
++
++        return new FinanceCashProjectionDto(
++            horizonDays,
++            Round(input.CurrentCash),
++            projectedInflows,
++            projectedOutflows,
++            Round(input.CurrentCash + projectedInflows - projectedOutflows));
++    }
++
++    private static FinanceObligationCoverageDto BuildObligationCoverage(
++        FinanceIntelligenceInputDto input,
++        FinanceCashProjectionDto sevenDayProjection)
++    {
++        var nearTermObligations = sevenDayProjection.ProjectedOutflows;
++        var availableCash = Round(input.CurrentCash + sevenDayProjection.ProjectedInflows);
++        var coverageRatio = nearTermObligations <= 0m
++            ? 999m
++            : Round(availableCash / nearTermObligations, 4);
++
++        var severity = nearTermObligations <= 0m
++            ? "healthy"
++            : sevenDayProjection.EndingCash < 0m || coverageRatio < 0.75m
++                ? "critical"
++                : coverageRatio < 1m
++                    ? "at_risk"
++                    : coverageRatio < 1.25m
++                        ? "watch"
++                        : "healthy";
++
++        var recommendation = severity switch
++        {
++            "critical" => new Recommendation("coverage_critical", "Projected cash turns negative inside the next 7 days. Delay non-critical bills immediately and escalate collections today."),
++            "at_risk" => new Recommendation("coverage_at_risk", "Near-term obligations are not fully covered over the next 7 days. Delay non-critical bills and accelerate collections today."),
++            "watch" => new Recommendation("coverage_watch_cash_buffer", "Near-term obligations are covered with a thin 7-day buffer. Delay non-urgent bills and confirm expected receipts."),
++            _ when nearTermObligations <= 0m => new Recommendation("coverage_clear", "No bills or recurring outflows fall due in the next 7 days."),
++            _ => new Recommendation("coverage_healthy", "Near-term obligations are covered for the next 7 days. Pay overdue bills now and keep collections moving.")
++        };
++
++        return new FinanceObligationCoverageDto(
++            7,
++            availableCash,
++            nearTermObligations,
++            coverageRatio,
++            severity,
++            recommendation.Code,
++            recommendation.Text);
++    }
++
++    private static IReadOnlyList<FinanceOverdueInvoiceRecommendationDto> BuildOverdueInvoices(FinanceIntelligenceInputDto input)
++    {
++        var asOfDate = input.AsOfUtc.Date;
++        var ranked = input.OpenInvoices
++            .Where(x => x.OutstandingAmount > 0m && x.DueUtc.Date < asOfDate)
++            .Select(x => new
++            {
++                Invoice = x,
++                OverdueDays = Math.Max(1, (int)(asOfDate - x.DueUtc.Date).TotalDays),
++                Severity = ResolveInvoiceSeverity(Math.Max(1, (int)(asOfDate - x.DueUtc.Date).TotalDays), x.OutstandingAmount)
++            })
++            .OrderByDescending(x => x.OverdueDays)
++            .ThenByDescending(x => x.Invoice.OutstandingAmount)
++            .ThenBy(x => x.Invoice.InvoiceNumber, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.Invoice.InvoiceId)
++            .Select((x, index) =>
++            {
++                var recommendation = BuildInvoiceRecommendation(x.Invoice, x.OverdueDays, x.Severity);
++                return new FinanceOverdueInvoiceRecommendationDto(
++                    index + 1,
++                    x.Invoice.InvoiceId,
++                    x.Invoice.InvoiceNumber,
++                    x.Invoice.CustomerName,
++                    x.Invoice.DueUtc,
++                    Round(x.Invoice.OutstandingAmount),
++                    NormalizeCurrency(x.Invoice.Currency, input.Currency),
++                    x.OverdueDays,
++                    x.Severity,
++                    recommendation.Code,
++                    recommendation.Text);
++            })
++            .ToArray();
++
++        return ranked;
++    }
++
++    private static IReadOnlyList<FinanceDueSoonBillRecommendationDto> BuildDueSoonBills(
++        FinanceIntelligenceInputDto input,
++        FinanceCashProjectionDto sevenDayProjection)
++    {
++        var asOfDate = input.AsOfUtc.Date;
++        var horizonEndDate = asOfDate.AddDays(30);
++
++        return input.OpenBills
++            .Where(x => x.OutstandingAmount > 0m && x.DueUtc.Date <= horizonEndDate)
++            .Select(x =>
++            {
++                var daysUntilDue = (int)(x.DueUtc.Date - asOfDate).TotalDays;
++                var cashImpact = ResolveCashImpact(x.OutstandingAmount, input.CurrentCash);
++                var severity = ResolveBillSeverity(daysUntilDue, cashImpact);
++                return new
++                {
++                    Bill = x,
++                    DaysUntilDue = daysUntilDue,
++                    CashImpact = cashImpact,
++                    Severity = severity
++                };
++            })
++            .OrderBy(x => x.DaysUntilDue)
++            .ThenByDescending(x => CashImpactWeight(x.CashImpact))
++            .ThenByDescending(x => x.Bill.OutstandingAmount)
++            .ThenBy(x => x.Bill.BillNumber, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.Bill.BillId)
++            .Select((x, index) =>
++            {
++                var recommendation = BuildBillRecommendation(x.Bill, x.DaysUntilDue, sevenDayProjection);
++                return new FinanceDueSoonBillRecommendationDto(
++                    index + 1,
++                    x.Bill.BillId,
++                    x.Bill.BillNumber,
++                    x.Bill.SupplierName,
++                    x.Bill.DueUtc,
++                    Round(x.Bill.OutstandingAmount),
++                    NormalizeCurrency(x.Bill.Currency, input.Currency),
++                    x.DaysUntilDue,
++                    x.CashImpact,
++                    x.Severity,
++                    recommendation.Code,
++                    recommendation.Text);
++            })
++            .ToArray();
++    }
++
++    private static string ResolveInvoiceSeverity(int overdueDays, decimal outstandingAmount) =>
++        overdueDays >= 45 || (overdueDays >= 30 && outstandingAmount >= 1000m)
++            ? "critical"
++            : overdueDays >= 14 || (overdueDays >= 7 && outstandingAmount >= 250m)
++                ? "at_risk"
++                : overdueDays >= 7
++                    ? "watch"
++                    : "healthy";
++
++    private static string ResolveBillSeverity(int daysUntilDue, string cashImpact) =>
++        daysUntilDue <= 0
++            ? "critical"
++            : daysUntilDue <= 3 || (string.Equals(cashImpact, "high", StringComparison.OrdinalIgnoreCase) && daysUntilDue <= 14)
++                ? "at_risk"
++                : daysUntilDue <= 14 || string.Equals(cashImpact, "high", StringComparison.OrdinalIgnoreCase)
++                    ? "watch"
++                    : "healthy";
++
++    private static string ResolveCashImpact(decimal outstandingAmount, decimal currentCash)
++    {
++        if (outstandingAmount <= 0m)
++        {
++            return "low";
++        }
++
++        if (currentCash <= 0m)
++        {
++            return "high";
++        }
++
++        var ratio = outstandingAmount / currentCash;
++        return ratio switch
++        {
++            >= 0.5m => "high",
++            >= 0.2m => "medium",
++            _ => "low"
++        };
++    }
++
++    private static Recommendation BuildInvoiceRecommendation(FinanceOpenReceivableItemDto invoice, int overdueDays, string severity)
++    {
++        var amount = FormatAmount(invoice.OutstandingAmount);
++        var currency = NormalizeCurrency(invoice.Currency, null);
++
++        return severity switch
++        {
++            "critical" => new Recommendation(
++                "call_customer_escalate",
++                $"Call {invoice.CustomerName} today about {invoice.InvoiceNumber}. It is {overdueDays} day(s) overdue for {amount} {currency}; escalate if no payment date is confirmed."),
++            "at_risk" => new Recommendation(
++                "call_customer_confirm_date",
++                $"Call {invoice.CustomerName} today about {invoice.InvoiceNumber} and confirm a payment date. It is {overdueDays} day(s) overdue for {amount} {currency}."),
++            _ => new Recommendation(
++                "send_payment_reminder",
++                $"Send a reminder today for {invoice.InvoiceNumber}. It is {overdueDays} day(s) overdue for {amount} {currency}.")
++        };
++    }
++
++    private static Recommendation BuildBillRecommendation(
++        FinanceOpenPayableItemDto bill,
++        int daysUntilDue,
++        FinanceCashProjectionDto sevenDayProjection)
++    {
++        var amount = FormatAmount(bill.OutstandingAmount);
++        var currency = NormalizeCurrency(bill.Currency, null);
++
++        if (daysUntilDue <= 0)
++        {
++            return new Recommendation(
++                "pay_now",
++                $"Pay now. {bill.BillNumber} is overdue by {Math.Abs(daysUntilDue)} day(s) and the outstanding amount is {amount} {currency}.");
++        }
++
++        if (daysUntilDue <= 3 || (daysUntilDue <= 7 && sevenDayProjection.EndingCash >= 0m))
++        {
++            return new Recommendation(
++                "pay_now",
++                $"Pay now. {bill.BillNumber} is due in {daysUntilDue} day(s) and the outstanding amount is {amount} {currency}.");
++        }
++
++        var reviewDate = bill.DueUtc.Date.AddDays(-2);
++        return new Recommendation(
++            "delay_and_recheck",
++            $"Delay. {bill.BillNumber} is due in {daysUntilDue} day(s); preserve cash for earlier obligations and review it again on {reviewDate:yyyy-MM-dd}.");
++    }
++
++    private static int CashImpactWeight(string value) =>
++        value switch
++        {
++            "high" => 2,
++            "medium" => 1,
++            _ => 0
++        };
++
++    private static string NormalizeCurrency(string? primaryCurrency, string? fallbackCurrency)
++    {
++        if (!string.IsNullOrWhiteSpace(primaryCurrency))
++        {
++            return primaryCurrency.Trim().ToUpperInvariant();
++        }
++
++        if (!string.IsNullOrWhiteSpace(fallbackCurrency))
++        {
++            return fallbackCurrency.Trim().ToUpperInvariant();
++        }
++
++        return "USD";
++    }
++
++    private static string FormatAmount(decimal amount) =>
++        Round(amount).ToString("0.00", CultureInfo.InvariantCulture);
++
++    private static decimal Round(decimal value, int decimals = 2) =>
++        Math.Round(value, decimals, MidpointRounding.AwayFromZero);
++
++    private sealed record Recommendation(string Code, string Text);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSummaryQueryService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSummaryQueryService.cs
+index a4cefd2..61c3e73 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSummaryQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceSummaryQueryService.cs
+@@ -73,6 +73,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
+             .Where(x => x.CompanyId == query.CompanyId && x.IssuedUtc <= effectiveAsOfUtc)
+             .Select(x => new InvoiceRow(
+                 x.Id,
++                x.InvoiceNumber,
++                x.Counterparty.Name,
+                 x.IssuedUtc,
+                 x.DueUtc,
+                 x.Amount,
+@@ -85,6 +87,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
+             .Where(x => x.CompanyId == query.CompanyId && x.ReceivedUtc <= effectiveAsOfUtc)
+             .Select(x => new BillRow(
+                 x.Id,
++                x.BillNumber,
++                x.Counterparty.Name,
+                 x.ReceivedUtc,
+                 x.DueUtc,
+                 x.Amount,
+@@ -183,6 +187,32 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
+             1 => currencies[0],
+             _ => "MIXED"
+         };
++        var financeIntelligence = FinanceIntelligenceHeuristics.Evaluate(
++            new FinanceIntelligenceInputDto(
++                query.CompanyId,
++                effectiveAsOfUtc,
++                currentCash,
++                currency,
++                invoiceRows
++                    .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus))
++                    .Select(x => new FinanceOpenReceivableItemDto(
++                        x.Id,
++                        x.InvoiceNumber,
++                        x.CounterpartyName,
++                        x.DueUtc,
++                        CalculateRemainingBalance(x.Amount, completedIncomingByInvoice.GetValueOrDefault(x.Id)),
++                        x.Currency,
++                        x.Status))
++                    .Where(x => x.OutstandingAmount > 0m)
++                    .ToArray(),
++                billRows
++                    .Where(x => IsIncludedPayable(x.Status, x.SettlementStatus))
++                    .Select(x => new FinanceOpenPayableItemDto(
++                        x.Id,
++                        x.BillNumber,
++                        x.CounterpartyName,
++                        x.DueUtc,
++                        CalculateRemainingBalance(x.Amount, completedOutgoingByBill.GetValueOrDefault(x.Id)),
++                        x.Currency,
++                        x.Status))
++                    .Where(x => x.OutstandingAmount > 0m)
++                    .ToArray(),
++                // The current normalized finance model does not persist recurring schedules yet.
++                // When those records are added, they can be passed into the same deterministic engine.
++                []));
+ 
+         var hasFinanceData =
+             cashAccounts.Count > 0 ||
+@@ -201,7 +231,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
+             hasFinanceData,
+             recentAssetPurchaseCount,
+             recentAssetPurchaseTotalAmount,
+-            recentAssetPurchases);
++            recentAssetPurchases,
++            financeIntelligence);
+ 
+         if (!query.IncludeConsistencyCheck)
+         {
+@@ -396,8 +427,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
+     private sealed record BalanceRow(Guid AccountId, DateTime AsOfUtc, decimal Amount);
+     private sealed record TransactionRow(Guid AccountId, DateTime TransactionUtc, decimal Amount);
+     private sealed record AllocationRow(Guid DocumentId, decimal Amount);
+-    private sealed record InvoiceRow(Guid Id, DateTime IssuedUtc, DateTime DueUtc, decimal Amount, string Currency, string Status, string SettlementStatus);
+-    private sealed record BillRow(Guid Id, DateTime ReceivedUtc, DateTime DueUtc, decimal Amount, string Currency, string Status, string SettlementStatus);
++    private sealed record InvoiceRow(Guid Id, string InvoiceNumber, string CounterpartyName, DateTime IssuedUtc, DateTime DueUtc, decimal Amount, string Currency, string Status, string SettlementStatus);
++    private sealed record BillRow(Guid Id, string BillNumber, string CounterpartyName, DateTime ReceivedUtc, DateTime DueUtc, decimal Amount, string Currency, string Status, string SettlementStatus);
+     private sealed record AssetRow(Guid Id, string ReferenceNumber, string Name, string Category, DateTime PurchasedUtc, decimal Amount, string Currency, string FundingBehavior, string FundingSettlementStatus, string Status);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceIntelligenceHeuristicsTests.cs b/tests/VirtualCompany.Api.Tests/FinanceIntelligenceHeuristicsTests.cs
+new file mode 100644
+index 0000000..be48567
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceIntelligenceHeuristicsTests.cs
+@@ -0,0 +1,141 @@
++using VirtualCompany.Application.Finance;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceIntelligenceHeuristicsTests
++{
++    [Fact]
++    public void Evaluate_returns_deterministic_rankings_projection_values_and_recommendation_text()
++    {
++        var companyId = Guid.Parse("11111111-1111-1111-1111-111111111111");
++        var asOfUtc = new DateTime(2026, 4, 22, 0, 0, 0, DateTimeKind.Utc);
++        var input = new FinanceIntelligenceInputDto(
++            companyId,
++            asOfUtc,
++            1000m,
++            "USD",
++            [
++                new FinanceOpenReceivableItemDto(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"), "INV-100", "Northwind", new DateTime(2026, 3, 8, 0, 0, 0, DateTimeKind.Utc), 800m, "USD", "open"),
++                new FinanceOpenReceivableItemDto(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2"), "INV-200", "Northwind", new DateTime(2026, 4, 4, 0, 0, 0, DateTimeKind.Utc), 450m, "USD", "open"),
++                new FinanceOpenReceivableItemDto(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3"), "INV-210", "Northwind", new DateTime(2026, 4, 4, 0, 0, 0, DateTimeKind.Utc), 450m, "USD", "open"),
++                new FinanceOpenReceivableItemDto(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa4"), "INV-300", "Tailspin", new DateTime(2026, 4, 25, 0, 0, 0, DateTimeKind.Utc), 600m, "USD", "open"),
++                new FinanceOpenReceivableItemDto(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa5"), "INV-400", "Tailspin", new DateTime(2026, 5, 15, 0, 0, 0, DateTimeKind.Utc), 900m, "USD", "open")
++            ],
++            [
++                new FinanceOpenPayableItemDto(Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1"), "BILL-100", "Fabrikam", new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc), 250m, "USD", "open"),
++                new FinanceOpenPayableItemDto(Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2"), "BILL-200", "Fabrikam", new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc), 700m, "USD", "open"),
++                new FinanceOpenPayableItemDto(Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3"), "BILL-210", "Fabrikam", new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc), 700m, "USD", "open"),
++                new FinanceOpenPayableItemDto(Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4"), "BILL-300", "Litware", new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc), 400m, "USD", "open"),
++                new FinanceOpenPayableItemDto(Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb5"), "BILL-400", "Litware", new DateTime(2026, 5, 10, 0, 0, 0, DateTimeKind.Utc), 150m, "USD", "open")
++            ],
++            [
++                new FinanceRecurringOutflowItemDto("Payroll", new DateTime(2026, 4, 28, 0, 0, 0, DateTimeKind.Utc), 300m, "USD", "monthly", "PAYROLL"),
++                new FinanceRecurringOutflowItemDto("Office rent", new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc), 500m, "USD", "monthly", "RENT")
++            ]);
++
++        var first = FinanceIntelligenceHeuristics.Evaluate(input);
++        var second = FinanceIntelligenceHeuristics.Evaluate(input);
++
++        Assert.Equivalent(first, second);
++
++        Assert.Equal(1000m, first.SevenDayProjection.StartingCash);
++        Assert.Equal(2300m, first.SevenDayProjection.ProjectedInflows);
++        Assert.Equal(1950m, first.SevenDayProjection.ProjectedOutflows);
++        Assert.Equal(1350m, first.SevenDayProjection.EndingCash);
++
++        Assert.Equal(1000m, first.ThirtyDayProjection.StartingCash);
++        Assert.Equal(3200m, first.ThirtyDayProjection.ProjectedInflows);
++        Assert.Equal(3000m, first.ThirtyDayProjection.ProjectedOutflows);
++        Assert.Equal(1200m, first.ThirtyDayProjection.EndingCash);
++
++        Assert.Equal("healthy", first.ObligationCoverage.Severity);
++        Assert.Equal("coverage_healthy", first.ObligationCoverage.RecommendationCode);
++        Assert.Equal("Near-term obligations are covered for the next 7 days. Pay overdue bills now and keep collections moving.", first.ObligationCoverage.RecommendationText);
++
++        Assert.Equal(new[] { "INV-100", "INV-200", "INV-210" }, first.OverdueInvoices.Select(x => x.InvoiceNumber).ToArray());
++        Assert.Equal(new[] { "critical", "at_risk", "at_risk" }, first.OverdueInvoices.Select(x => x.Severity).ToArray());
++        Assert.Equal(
++            "Call Northwind today about INV-100. It is 45 day(s) overdue for 800.00 USD; escalate if no payment date is confirmed.",
++            first.OverdueInvoices[0].RecommendationText);
++        Assert.Equal(
++            "Call Northwind today about INV-200 and confirm a payment date. It is 18 day(s) overdue for 450.00 USD.",
++            first.OverdueInvoices[1].RecommendationText);
++        Assert.Equal(
++            "Call Northwind today about INV-210 and confirm a payment date. It is 18 day(s) overdue for 450.00 USD.",
++            first.OverdueInvoices[2].RecommendationText);
++
++        Assert.Equal(new[] { "BILL-100", "BILL-200", "BILL-210", "BILL-300", "BILL-400" }, first.DueSoonBills.Select(x => x.BillNumber).ToArray());
++        Assert.Equal(new[] { "pay_now", "pay_now", "pay_now", "delay_and_recheck", "delay_and_recheck" }, first.DueSoonBills.Select(x => x.RecommendationCode).ToArray());
++        Assert.Equal(
++            "Pay now. BILL-100 is overdue by 1 day(s) and the outstanding amount is 250.00 USD.",
++            first.DueSoonBills[0].RecommendationText);
++        Assert.Equal(
++            "Pay now. BILL-200 is due in 2 day(s) and the outstanding amount is 700.00 USD.",
++            first.DueSoonBills[1].RecommendationText);
++        Assert.Equal(
++            "Pay now. BILL-210 is due in 2 day(s) and the outstanding amount is 700.00 USD.",
++            first.DueSoonBills[2].RecommendationText);
++        Assert.Equal(
++            "Delay. BILL-300 is due in 10 day(s); preserve cash for earlier obligations and review it again on 2026-04-30.",
++            first.DueSoonBills[3].RecommendationText);
++        Assert.Equal(
++            "Delay. BILL-400 is due in 18 day(s); preserve cash for earlier obligations and review it again on 2026-05-08.",
++            first.DueSoonBills[4].RecommendationText);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceSummaryProjectionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceSummaryProjectionIntegrationTests.cs
+index 70fd090..4999e20 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceSummaryProjectionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceSummaryProjectionIntegrationTests.cs
+@@ -385,6 +385,31 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+         Assert.True(summary.HasFinanceData);
+         Assert.Equal(2, summary.RecentAssetPurchaseCount);
+         Assert.Equal(1150m, summary.RecentAssetPurchaseTotalAmount);
++        Assert.NotNull(summary.Intelligence);
++        Assert.Equal(1125m, summary.Intelligence!.SevenDayProjection.StartingCash);
++        Assert.Equal(1050m, summary.Intelligence.SevenDayProjection.ProjectedInflows);
++        Assert.Equal(280m, summary.Intelligence.SevenDayProjection.ProjectedOutflows);
++        Assert.Equal(1895m, summary.Intelligence.SevenDayProjection.EndingCash);
++        Assert.Equal(1125m, summary.Intelligence.ThirtyDayProjection.StartingCash);
++        Assert.Equal(1050m, summary.Intelligence.ThirtyDayProjection.ProjectedInflows);
++        Assert.Equal(955m, summary.Intelligence.ThirtyDayProjection.ProjectedOutflows);
++        Assert.Equal(1220m, summary.Intelligence.ThirtyDayProjection.EndingCash);
++        Assert.Equal("healthy", summary.Intelligence.ObligationCoverage.Severity);
++        Assert.Equal("coverage_healthy", summary.Intelligence.ObligationCoverage.RecommendationCode);
++        Assert.Equal("Near-term obligations are covered for the next 7 days. Pay overdue bills now and keep collections moving.", summary.Intelligence.ObligationCoverage.RecommendationText);
++        Assert.Equal(new[] { "INV-PRIOR-001", "INV-OVERDUE-001" }, summary.Intelligence.OverdueInvoices.Select(x => x.InvoiceNumber).ToArray());
++        Assert.Equal(new[] { "BILL-OVERDUE-001", "BILL-PRIOR-001", "BILL-PART-001", "BILL-FUTURE-001" }, summary.Intelligence.DueSoonBills.Select(x => x.BillNumber).ToArray());
++        Assert.Equal(
++            "Call Customer A today about INV-PRIOR-001 and confirm a payment date. It is 17 day(s) overdue for 150.00 USD.",
++            summary.Intelligence.OverdueInvoices[0].RecommendationText);
++        Assert.Equal(
++            "Call Customer A today about INV-OVERDUE-001 and confirm a payment date. It is 9 day(s) overdue for 300.00 USD.",
++            summary.Intelligence.OverdueInvoices[1].RecommendationText);
++        Assert.Equal(
++            "Pay now. BILL-OVERDUE-001 is overdue by 5 day(s) and the outstanding amount is 200.00 USD.",
++            summary.Intelligence.DueSoonBills[0].RecommendationText);
++        Assert.Equal(
++            "Delay. BILL-PART-001 is due in 11 day(s); preserve cash for earlier obligations and review it again on 2026-04-28.",
++            summary.Intelligence.DueSoonBills[2].RecommendationText);
+         Assert.All(summary.RecentAssetPurchases, asset => Assert.Equal(companyId, asset.CompanyId));
+         Assert.Collection(
+             summary.RecentAssetPurchases,
+@@ -440,6 +465,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+         public int RecentAssetPurchaseCount { get; set; }
+         public decimal RecentAssetPurchaseTotalAmount { get; set; }
+         public FinanceSummaryConsistencyResponse? ConsistencyCheck { get; set; }
++        public FinanceIntelligenceResponse? Intelligence { get; set; }
+         public List<FinanceSummaryAssetPurchaseResponse> RecentAssetPurchases { get; set; } = [];
+     }
+ 
+@@ -465,6 +491,54 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+         public List<FinanceSummaryConsistencyMetricResponse> Metrics { get; set; } = [];
+     }
+ 
++    private sealed class FinanceIntelligenceResponse
++    {
++        public DateTime AsOfUtc { get; set; }
++        public FinanceProjectionResponse SevenDayProjection { get; set; } = new();
++        public FinanceProjectionResponse ThirtyDayProjection { get; set; } = new();
++        public FinanceObligationCoverageResponse ObligationCoverage { get; set; } = new();
++        public List<FinanceOverdueInvoiceResponse> OverdueInvoices { get; set; } = [];
++        public List<FinanceDueSoonBillResponse> DueSoonBills { get; set; } = [];
++    }
++
++    private sealed class FinanceProjectionResponse
++    {
++        public int HorizonDays { get; set; }
++        public decimal StartingCash { get; set; }
++        public decimal ProjectedInflows { get; set; }
++        public decimal ProjectedOutflows { get; set; }
++        public decimal EndingCash { get; set; }
++    }
++
++    private sealed class FinanceObligationCoverageResponse
++    {
++        public int HorizonDays { get; set; }
++        public decimal AvailableCash { get; set; }
++        public decimal NearTermObligations { get; set; }
++        public decimal CoverageRatio { get; set; }
++        public string Severity { get; set; } = string.Empty;
++        public string RecommendationCode { get; set; } = string.Empty;
++        public string RecommendationText { get; set; } = string.Empty;
++    }
++
++    private sealed class FinanceOverdueInvoiceResponse
++    {
++        public int Rank { get; set; }
++        public string InvoiceNumber { get; set; } = string.Empty;
++        public int OverdueDays { get; set; }
++        public decimal OutstandingAmount { get; set; }
++        public string Severity { get; set; } = string.Empty;
++        public string RecommendationCode { get; set; } = string.Empty;
++        public string RecommendationText { get; set; } = string.Empty;
++    }
++
++    private sealed class FinanceDueSoonBillResponse
++    {
++        public int Rank { get; set; }
++        public string BillNumber { get; set; } = string.Empty;
++        public int DaysUntilDue { get; set; }
++        public string Severity { get; set; } = string.Empty;
++        public string RecommendationCode { get; set; } = string.Empty;
++        public string RecommendationText { get; set; } = string.Empty;
++    }
++
+     private sealed class FinanceSummaryConsistencyMetricResponse
+     {
+         public string MetricKey { get; set; } = string.Empty;
+@@ -473,4 +547,4 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
+         public decimal ActualValue { get; set; }
+         public bool IsMatch { get; set; }
+     }
+-}
++}
+END_OF_PATCH

@@ -73,7 +73,8 @@ public sealed record FinancePaymentDto(
     string Status,
     string CounterpartyReference,
     DateTime CreatedUtc,
-    DateTime UpdatedUtc);
+    DateTime UpdatedUtc,
+    IReadOnlyList<NormalizedFinanceInsightDto> AgentInsights);
 
 public sealed record FinancePaymentAllocationDto(
     Guid Id,

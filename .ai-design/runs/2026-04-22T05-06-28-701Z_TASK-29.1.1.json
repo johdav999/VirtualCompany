@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-29.1.1",
+  "promptPath": ".ai-design/prompts/TASK-29.1.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-22T05:06:28.701Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-22T05-06-28-701Z_TASK-29.1.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-22T05-06-28-701Z_TASK-29.1.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-22T05:20:51.760Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": " paymentId.ToString(\"N\"))\r\n+                .ToListAsync();\r\n+            var execution = Assert.Single(executions);\r\n+            Assert.Equal(companyId, execution.CompanyId);\r\n+            Assert.Equal(\"payment\", execution.TriggerType);\r\n+            Assert.Equal(paymentId.ToString(\"N\"), execution.SourceEntityId);\r\n+            Assert.NotEqual(default, execution.StartedAtUtc);\r\n+            Assert.NotNull(execution.CompletedAtUtc);\r\n+            Assert.Equal(\"succeeded\", execution.Outcome);\r\n+            Assert.Contains(\"refresh_insights_snapshot\", execution.GetExecutedChecks());\r\n+            Assert.Contains(\"evaluate_cash_position\", execution.GetExecutedChecks());\r\n+            Assert.Contains(\"ensure_approval_task\", execution.GetExecutedChecks());\r\n+            return 0;\r\n+        });\r\n+    }\r\n+\n+    private static CompanyOutboxMessage CreatePlatformEventOutboxMessage(\r\n+        Guid outboxMessageId,\r\n+        Guid companyId,\r\n+        DateTime occurredAtUtc,\r\n+        string correlationId,\r\n+        string eventId,\r\n+        Guid paymentId,\r\n+        string idempotencyKey)\r\n+    {\r\n+        var payload = JsonSerializer.Serialize(new PlatformEventEnvelope(\r\n+            eventId,\r\n+            CompanyOutboxTopics.FinancePaymentCreated,\r\n+            occurredAtUtc,\r\n+            companyId,\r\n+            correlationId,\r\n+            \"payment\",\r\n+            paymentId.ToString(\"N\"),\r\n+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\r\n+            {\r\n+                [\"paymentId\"] = JsonValue.Create(paymentId),\r\n+                [\"amount\"] = JsonValue.Create(640.10m),\r\n+                [\"currency\"] = JsonValue.Create(\"USD\")\r\n+            }));\r\n+\n+        return new CompanyOutboxMessage(\r\n+            outboxMessageId,\r\n+            companyId,\r\n+            CompanyOutboxTopics.FinancePaymentCreated,\r\n+            payload,\r\n+            correlationId: correlationId,\r\n+            idempotencyKey: idempotencyKey);\r\n+    }\r\n+}\r\nEND_OF_PATCH\n",
+  "stderrTail": "\"N\"))\r\n+                .ToListAsync();\r\n+            var execution = Assert.Single(executions);\r\n+            Assert.Equal(companyId, execution.CompanyId);\r\n+            Assert.Equal(\"payment\", execution.TriggerType);\r\n+            Assert.Equal(paymentId.ToString(\"N\"), execution.SourceEntityId);\r\n+            Assert.NotEqual(default, execution.StartedAtUtc);\r\n+            Assert.NotNull(execution.CompletedAtUtc);\r\n+            Assert.Equal(\"succeeded\", execution.Outcome);\r\n+            Assert.Contains(\"refresh_insights_snapshot\", execution.GetExecutedChecks());\r\n+            Assert.Contains(\"evaluate_cash_position\", execution.GetExecutedChecks());\r\n+            Assert.Contains(\"ensure_approval_task\", execution.GetExecutedChecks());\r\n+            return 0;\r\n+        });\r\n+    }\r\n+\n+    private static CompanyOutboxMessage CreatePlatformEventOutboxMessage(\r\n+        Guid outboxMessageId,\r\n+        Guid companyId,\r\n+        DateTime occurredAtUtc,\r\n+        string correlationId,\r\n+        string eventId,\r\n+        Guid paymentId,\r\n+        string idempotencyKey)\r\n+    {\r\n+        var payload = JsonSerializer.Serialize(new PlatformEventEnvelope(\r\n+            eventId,\r\n+            CompanyOutboxTopics.FinancePaymentCreated,\r\n+            occurredAtUtc,\r\n+            companyId,\r\n+            correlationId,\r\n+            \"payment\",\r\n+            paymentId.ToString(\"N\"),\r\n+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\r\n+            {\r\n+                [\"paymentId\"] = JsonValue.Create(paymentId),\r\n+                [\"amount\"] = JsonValue.Create(640.10m),\r\n+                [\"currency\"] = JsonValue.Create(\"USD\")\r\n+            }));\r\n+\n+        return new CompanyOutboxMessage(\r\n+            outboxMessageId,\r\n+            companyId,\r\n+            CompanyOutboxTopics.FinancePaymentCreated,\r\n+            payload,\r\n+            correlationId: correlationId,\r\n+            idempotencyKey: idempotencyKey);\r\n+    }\r\n+}\r\nEND_OF_PATCH\ntokens used\n345,473\n",
+  "verbosityMode": "summary"
+}

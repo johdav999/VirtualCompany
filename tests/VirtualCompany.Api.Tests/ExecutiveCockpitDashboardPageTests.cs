@@ -157,6 +157,30 @@ public sealed class ExecutiveCockpitDashboardPageTests
     }
 
     [Fact]
+    public void Executive_cockpit_renders_financial_health_top_actions_and_grouped_finance_feed()
+    {
+        var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
+        var dashboard = CreateDashboard(companyId, CreateFinanceSection(companyId, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "warning", "Warning", "65 days"));
+
+        dashboard.Finance!.TopActions[0].OccurrenceCount = 2;
+        dashboard.Finance.InsightsFeed[0].OccurrenceCount = 3;
+
+        using var harness = CreateDashboardHarness(companyId, dashboard);
+        var cut = RenderDashboard(harness, companyId, dashboard.CompanyName);
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.NotNull(cut.Find("[data-testid='executive-cockpit-financial-health']"));
+            Assert.NotNull(cut.Find("[data-testid='executive-cockpit-top-finance-actions']"));
+            Assert.NotNull(cut.Find("[data-testid='executive-cockpit-finance-insights-feed']"));
+            Assert.Contains("2 occurrences", cut.Find("[data-testid='executive-cockpit-top-finance-actions']").TextContent);
+            Assert.Contains("3 occurrences", cut.Find("[data-testid='executive-cockpit-finance-insights-feed']").TextContent);
+            Assert.Contains("Financial health", cut.Markup);
+            Assert.Contains("Top finance actions", cut.Markup);
+        });
+    }
+
+    [Fact]
     public void Executive_cockpit_finance_actions_call_backend_orchestration_endpoints_and_follow_routes()
     {
         var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");

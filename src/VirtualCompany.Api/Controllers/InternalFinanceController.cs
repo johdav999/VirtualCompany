@@ -621,7 +621,8 @@ public sealed partial class InternalFinanceController : ControllerBase
                 detail.Permissions,
                 detail.LinkedDocument,
                 recommendationDetails,
-                workflowHistory));
+                workflowHistory,
+                detail.AgentInsights));
         }
         catch (UnauthorizedAccessException)
         {
@@ -730,6 +731,17 @@ public sealed partial class InternalFinanceController : ControllerBase
             () => _financeReadService.GetBillsAsync(
                 new GetFinanceBillsQuery(companyId, startUtc, endUtc, limit),
                 cancellationToken));
+
+    [HttpGet("bills/{billId:guid}")]
+    public async Task<ActionResult<FinanceBillDetailDto>> GetBillDetailAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadOptionalAsync(
+            () => _financeReadService.GetBillDetailAsync(
+                new GetFinanceBillDetailQuery(companyId, billId),
+                cancellationToken),
+            "Finance bill was not found.");
 
     [HttpGet("bills/{billId:guid}/allocations")]
     public async Task<ActionResult<IReadOnlyList<FinancePaymentAllocationDto>>> GetBillAllocationsAsync(
@@ -3415,7 +3427,8 @@ public sealed record FinanceInvoiceDetailResponse(
     FinanceActionPermissionsDto Permissions,
     FinanceLinkedDocumentAccessDto LinkedDocument,
     FinanceInvoiceRecommendationDetailsResponse? RecommendationDetails = null,
-    IReadOnlyList<FinanceInvoiceWorkflowHistoryItemResponse>? WorkflowHistory = null);
+    IReadOnlyList<FinanceInvoiceWorkflowHistoryItemResponse>? WorkflowHistory = null,
+    IReadOnlyList<NormalizedFinanceInsightDto>? AgentInsights = null);
 
 public sealed record FinanceInvoiceReviewListItemResponse(
     Guid Id,

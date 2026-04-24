@@ -40,7 +40,9 @@ public sealed class CompanyFinanceCashPositionWorkflowService : IFinanceCashPosi
         var sourceAgentId = command.AgentId ?? await ResolveLauraAgentIdAsync(command.CompanyId, cancellationToken);
         var severity = ParseSeverity(position.RiskLevel);
         var fingerprint = BuildFingerprint(command.CompanyId);
-        var correlationId = $"{CorrelationPrefix}:{command.CompanyId:N}";
+        var correlationId = string.IsNullOrWhiteSpace(command.CorrelationId)
+            ? $"{CorrelationPrefix}:{command.CompanyId:N}"
+            : command.CorrelationId.Trim();
         var evidence = BuildEvidence(command, position);
         var metadata = BuildMetadata(command, position);
         var title = position.EstimatedRunwayDays.HasValue
@@ -125,6 +127,10 @@ public sealed class CompanyFinanceCashPositionWorkflowService : IFinanceCashPosi
         new(StringComparer.OrdinalIgnoreCase)
         {
             ["companyId"] = JsonValue.Create(command.CompanyId),
+            ["correlationId"] = JsonValue.Create(command.CorrelationId),
+            ["triggerEventId"] = JsonValue.Create(command.TriggerEventId),
+            ["sourceEntityId"] = JsonValue.Create(command.SourceEntityId),
+            ["sourceEntityVersion"] = JsonValue.Create(command.SourceEntityVersion),
             ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
             ["availableBalance"] = JsonValue.Create(position.AvailableBalance),
             ["currency"] = JsonValue.Create(position.Currency),
@@ -149,6 +155,10 @@ public sealed class CompanyFinanceCashPositionWorkflowService : IFinanceCashPosi
         new(StringComparer.OrdinalIgnoreCase)
         {
             ["source"] = JsonValue.Create(SourceWorkflow),
+            ["correlationId"] = JsonValue.Create(command.CorrelationId),
+            ["triggerEventId"] = JsonValue.Create(command.TriggerEventId),
+            ["sourceEntityId"] = JsonValue.Create(command.SourceEntityId),
+            ["sourceEntityVersion"] = JsonValue.Create(command.SourceEntityVersion),
             ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
             ["classification"] = JsonValue.Create(position.Classification),
             ["riskLevel"] = JsonValue.Create(position.RiskLevel),

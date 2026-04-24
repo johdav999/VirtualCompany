@@ -790,6 +790,7 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
         public Guid Id { get; set; }
         public string Status { get; set; } = string.Empty;
         public InvoiceWorkflowContextResponse? WorkflowContext { get; set; }
+        public List<NormalizedInsightResponse> AgentInsights { get; set; } = [];
         public LinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
     }
 
@@ -810,6 +811,16 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
         public bool RequiresHumanApproval { get; set; }
         public bool CanNavigateToWorkflow { get; set; }
         public bool CanNavigateToApproval { get; set; }
+    }
+
+    private sealed class NormalizedInsightResponse
+    {
+        public Guid Id { get; set; }
+        public string Severity { get; set; } = string.Empty;
+        public string CheckCode { get; set; } = string.Empty;
+        public string ConditionKey { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+        public string Recommendation { get; set; } = string.Empty;
     }
 
     private sealed class FinanceInitializationProblemResponse

@@ -1216,6 +1216,9 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
             """);
     }
 
+    await EnsureSqlServerFinancePlanningSchemaAsync(dbContext, connection);
+    await EnsureSqlServerLedgerReportingSchemaAsync(dbContext, connection);
+
     if (!await SqlServerTableExistsAsync(connection, "finance_counterparties"))
     {
         await dbContext.Database.ExecuteSqlRawAsync(
@@ -1554,6 +1557,452 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
             await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [payment_allocations] ADD [target_source_simulation_event_record_id] uniqueidentifier NULL;");
         }
     }
+
+    if (!await SqlServerTableExistsAsync(connection, "finance_workflow_trigger_executions"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [finance_workflow_trigger_executions] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_finance_workflow_trigger_executions] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [trigger_type] nvarchar(64) NOT NULL,
+                [source_entity_type] nvarchar(128) NOT NULL,
+                [source_entity_id] nvarchar(128) NOT NULL,
+                [source_entity_version] nvarchar(256) NOT NULL,
+                [correlation_id] nvarchar(128) NULL,
+                [event_id] nvarchar(200) NULL,
+                [causation_id] nvarchar(128) NULL,
+                [trigger_message_id] nvarchar(64) NULL,
+                [occurred_at] datetime2 NOT NULL,
+                [started_at] datetime2 NOT NULL,
+                [completed_at] datetime2 NULL,
+                [executed_checks] nvarchar(max) NOT NULL CONSTRAINT [DF_finance_workflow_trigger_executions_executed_checks] DEFAULT (N'[]'),
+                [outcome] nvarchar(32) NOT NULL,
+                [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_finance_workflow_trigger_executions_metadata_json] DEFAULT (N'{{}}'),
+                [error_details] nvarchar(4000) NULL,
+                CONSTRAINT [AK_finance_workflow_trigger_executions_company_id_id] UNIQUE ([company_id], [id]),
+                CONSTRAINT [FK_finance_workflow_trigger_executions_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+            );
+            """);
+    }
+    else
+    {
+        if (!await SqlServerColumnExistsAsync(connection, "finance_workflow_trigger_executions", "event_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_workflow_trigger_executions] ADD [event_id] nvarchar(200) NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_workflow_trigger_executions", "causation_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_workflow_trigger_executions] ADD [causation_id] nvarchar(128) NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_workflow_trigger_executions", "trigger_message_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_workflow_trigger_executions] ADD [trigger_message_id] nvarchar(64) NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_workflow_trigger_executions", "metadata_json"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_workflow_trigger_executions] ADD [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_finance_workflow_trigger_executions_metadata_json] DEFAULT (N'{{}}');");
+        }
+    }
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_workflow_trigger_executions_company_id'
+              AND object_id = OBJECT_ID(N'[finance_workflow_trigger_executions]'))
+        BEGIN
+            CREATE INDEX [IX_finance_workflow_trigger_executions_company_id]
+            ON [finance_workflow_trigger_executions] ([company_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_workflow_trigger_executions_company_id_correlation_id'
+              AND object_id = OBJECT_ID(N'[finance_workflow_trigger_executions]'))
+        BEGIN
+            CREATE INDEX [IX_finance_workflow_trigger_executions_company_id_correlation_id]
+            ON [finance_workflow_trigger_executions] ([company_id], [correlation_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_workflow_trigger_executions_company_id_event_id'
+              AND object_id = OBJECT_ID(N'[finance_workflow_trigger_executions]'))
+        BEGIN
+            CREATE INDEX [IX_finance_workflow_trigger_executions_company_id_event_id]
+            ON [finance_workflow_trigger_executions] ([company_id], [event_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_workflow_trigger_executions_company_id_trigger_type_occurred_at'
+              AND object_id = OBJECT_ID(N'[finance_workflow_trigger_executions]'))
+        BEGIN
+            CREATE INDEX [IX_finance_workflow_trigger_executions_company_id_trigger_type_occurred_at]
+            ON [finance_workflow_trigger_executions] ([company_id], [trigger_type], [occurred_at]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_workflow_trigger_executions_company_id_trigger_type_source_entity_id'
+              AND object_id = OBJECT_ID(N'[finance_workflow_trigger_executions]'))
+        BEGIN
+            CREATE INDEX [IX_finance_workflow_trigger_executions_company_id_trigger_type_source_entity_id]
+            ON [finance_workflow_trigger_executions] ([company_id], [trigger_type], [source_entity_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_workflow_trigger_executions_company_id_source_entity_type_source_entity_id'
+              AND object_id = OBJECT_ID(N'[finance_workflow_trigger_executions]'))
+        BEGIN
+            CREATE INDEX [IX_finance_workflow_trigger_executions_company_id_source_entity_type_source_entity_id]
+            ON [finance_workflow_trigger_executions] ([company_id], [source_entity_type], [source_entity_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_workflow_trigger_executions_company_id_trigger_type_source_entity_id_source_entity_version'
+              AND object_id = OBJECT_ID(N'[finance_workflow_trigger_executions]'))
+        BEGIN
+            CREATE INDEX [IX_finance_workflow_trigger_executions_company_id_trigger_type_source_entity_id_source_entity_version]
+            ON [finance_workflow_trigger_executions] ([company_id], [trigger_type], [source_entity_id], [source_entity_version]);
+        END
+        """);
+
+    if (!await SqlServerTableExistsAsync(connection, "finance_workflow_trigger_check_executions"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [finance_workflow_trigger_check_executions] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_finance_workflow_trigger_check_executions] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [trigger_execution_id] uniqueidentifier NOT NULL,
+                [trigger_type] nvarchar(64) NOT NULL,
+                [source_entity_type] nvarchar(128) NOT NULL,
+                [source_entity_id] nvarchar(128) NOT NULL,
+                [source_entity_version] nvarchar(256) NOT NULL,
+                [check_type] nvarchar(128) NOT NULL,
+                [correlation_id] nvarchar(128) NULL,
+                [event_id] nvarchar(200) NULL,
+                [causation_id] nvarchar(128) NULL,
+                [trigger_message_id] nvarchar(64) NULL,
+                [started_at] datetime2 NOT NULL,
+                [completed_at] datetime2 NULL,
+                [outcome] nvarchar(32) NOT NULL,
+                [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_finance_workflow_trigger_check_executions_metadata_json] DEFAULT (N'{{}}'),
+                [error_details] nvarchar(4000) NULL,
+                CONSTRAINT [AK_finance_workflow_trigger_check_executions_company_id_id] UNIQUE ([company_id], [id]),
+                CONSTRAINT [FK_finance_workflow_trigger_check_executions_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
+                CONSTRAINT [FK_finance_workflow_trigger_check_executions_finance_workflow_trigger_executions_trigger_execution_id] FOREIGN KEY ([trigger_execution_id]) REFERENCES [finance_workflow_trigger_executions] ([id])
+            );
+            """);
+    }
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_workflow_trigger_check_executions_company_id'
+              AND object_id = OBJECT_ID(N'[finance_workflow_trigger_check_executions]'))
+        BEGIN
+            CREATE INDEX [IX_finance_workflow_trigger_check_executions_company_id]
+            ON [finance_workflow_trigger_check_executions] ([company_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_workflow_trigger_check_executions_trigger_execution_id'
+              AND object_id = OBJECT_ID(N'[finance_workflow_trigger_check_executions]'))
+        BEGIN
+            CREATE INDEX [IX_finance_workflow_trigger_check_executions_trigger_execution_id]
+            ON [finance_workflow_trigger_check_executions] ([trigger_execution_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_workflow_trigger_check_executions_company_id_correlation_id'
+              AND object_id = OBJECT_ID(N'[finance_workflow_trigger_check_executions]'))
+        BEGIN
+            CREATE INDEX [IX_finance_workflow_trigger_check_executions_company_id_correlation_id]
+            ON [finance_workflow_trigger_check_executions] ([company_id], [correlation_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_workflow_trigger_check_executions_company_id_event_id'
+              AND object_id = OBJECT_ID(N'[finance_workflow_trigger_check_executions]'))
+        BEGIN
+            CREATE INDEX [IX_finance_workflow_trigger_check_executions_company_id_event_id]
+            ON [finance_workflow_trigger_check_executions] ([company_id], [event_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_workflow_trigger_check_exec_dedupe'
+              AND object_id = OBJECT_ID(N'[finance_workflow_trigger_check_executions]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_finance_workflow_trigger_check_exec_dedupe]
+            ON [finance_workflow_trigger_check_executions] ([company_id], [trigger_type], [source_entity_type], [source_entity_id], [source_entity_version], [check_type]);
+        END
+        """);
+
+    if (!await SqlServerTableExistsAsync(connection, "finance_agent_insights"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [finance_agent_insights] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_finance_agent_insights] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [check_code] nvarchar(128) NOT NULL,
+                [condition_key] nvarchar(256) NOT NULL,
+                [entity_type] nvarchar(64) NOT NULL,
+                [entity_id] nvarchar(128) NOT NULL,
+                [severity] nvarchar(32) NOT NULL,
+                [message] nvarchar(4000) NOT NULL,
+                [recommendation] nvarchar(4000) NOT NULL,
+                [confidence] decimal(5,4) NOT NULL,
+                [entity_display_name] nvarchar(256) NULL,
+                [affected_entities_json] nvarchar(max) NOT NULL CONSTRAINT [DF_finance_agent_insights_affected_entities_json] DEFAULT (N'[]'),
+                [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_finance_agent_insights_metadata_json] DEFAULT (N'{{}}'),
+                [status] nvarchar(32) NOT NULL,
+                [observed_at] datetime2 NOT NULL,
+                [created_at] datetime2 NOT NULL,
+                [updated_at] datetime2 NOT NULL,
+                [resolved_at] datetime2 NULL,
+                CONSTRAINT [AK_finance_agent_insights_company_id_id] UNIQUE ([company_id], [id]),
+                CONSTRAINT [CK_finance_agent_insights_severity] CHECK ([severity] IN (N'low', N'medium', N'high', N'critical')),
+                CONSTRAINT [CK_finance_agent_insights_status] CHECK ([status] IN (N'active', N'resolved')),
+                CONSTRAINT [CK_finance_agent_insights_confidence] CHECK ([confidence] >= 0 AND [confidence] <= 1),
+                CONSTRAINT [FK_finance_agent_insights_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+            );
+            """);
+    }
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_agent_insights_company_id_check_code_condition_key_entity_type_entity_id'
+              AND object_id = OBJECT_ID(N'[finance_agent_insights]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_finance_agent_insights_company_id_check_code_condition_key_entity_type_entity_id]
+            ON [finance_agent_insights] ([company_id], [check_code], [condition_key], [entity_type], [entity_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_agent_insights_company_id_status'
+              AND object_id = OBJECT_ID(N'[finance_agent_insights]'))
+        BEGIN
+            CREATE INDEX [IX_finance_agent_insights_company_id_status]
+            ON [finance_agent_insights] ([company_id], [status]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_agent_insights_company_id_status_updated_at'
+              AND object_id = OBJECT_ID(N'[finance_agent_insights]'))
+        BEGIN
+            CREATE INDEX [IX_finance_agent_insights_company_id_status_updated_at]
+            ON [finance_agent_insights] ([company_id], [status], [updated_at]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_agent_insights_company_id_check_code_status'
+              AND object_id = OBJECT_ID(N'[finance_agent_insights]'))
+        BEGIN
+            CREATE INDEX [IX_finance_agent_insights_company_id_check_code_status]
+            ON [finance_agent_insights] ([company_id], [check_code], [status]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_finance_agent_insights_company_id_entity_type_entity_id_status'
+              AND object_id = OBJECT_ID(N'[finance_agent_insights]'))
+        BEGIN
+            CREATE INDEX [IX_finance_agent_insights_company_id_entity_type_entity_id_status]
+            ON [finance_agent_insights] ([company_id], [entity_type], [entity_id], [status]);
+        END
+        """);
+
+    if (!await SqlServerTableExistsAsync(connection, "approval_tasks"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [approval_tasks] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_approval_tasks] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [target_type] nvarchar(32) NOT NULL,
+                [target_id] uniqueidentifier NOT NULL,
+                [assignee_id] uniqueidentifier NULL,
+                [status] nvarchar(32) NOT NULL,
+                [due_date] datetime2 NULL,
+                [created_at] datetime2 NOT NULL,
+                [updated_at] datetime2 NOT NULL,
+                CONSTRAINT [AK_approval_tasks_company_id_id] UNIQUE ([company_id], [id]),
+                CONSTRAINT [CK_approval_tasks_target_type] CHECK ([target_type] IN (N'bill', N'exception', N'payment')),
+                CONSTRAINT [CK_approval_tasks_status] CHECK ([status] IN (N'approved', N'escalated', N'pending', N'rejected')),
+                CONSTRAINT [FK_approval_tasks_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([id]) ON DELETE CASCADE,
+                CONSTRAINT [FK_approval_tasks_users_assignee_id] FOREIGN KEY ([assignee_id]) REFERENCES [users] ([id]) ON DELETE SET NULL
+            );
+            """);
+    }
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_approval_tasks_company_id'
+              AND object_id = OBJECT_ID(N'[approval_tasks]'))
+        BEGIN
+            CREATE INDEX [IX_approval_tasks_company_id]
+            ON [approval_tasks] ([company_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_approval_tasks_assignee_id'
+              AND object_id = OBJECT_ID(N'[approval_tasks]'))
+        BEGIN
+            CREATE INDEX [IX_approval_tasks_assignee_id]
+            ON [approval_tasks] ([assignee_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_approval_tasks_company_id_assignee_id_status'
+              AND object_id = OBJECT_ID(N'[approval_tasks]'))
+        BEGIN
+            CREATE INDEX [IX_approval_tasks_company_id_assignee_id_status]
+            ON [approval_tasks] ([company_id], [assignee_id], [status]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_approval_tasks_company_id_status_due_date'
+              AND object_id = OBJECT_ID(N'[approval_tasks]'))
+        BEGIN
+            CREATE INDEX [IX_approval_tasks_company_id_status_due_date]
+            ON [approval_tasks] ([company_id], [status], [due_date]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_approval_tasks_company_id_target_type_target_id'
+              AND object_id = OBJECT_ID(N'[approval_tasks]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_approval_tasks_company_id_target_type_target_id]
+            ON [approval_tasks] ([company_id], [target_type], [target_id]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_approval_tasks_status'
+              AND object_id = OBJECT_ID(N'[approval_tasks]'))
+        BEGIN
+            CREATE INDEX [IX_approval_tasks_status]
+            ON [approval_tasks] ([status]);
+        END
+        """);
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = N'IX_approval_tasks_due_date'
+              AND object_id = OBJECT_ID(N'[approval_tasks]'))
+        BEGIN
+            CREATE INDEX [IX_approval_tasks_due_date]
+            ON [approval_tasks] ([due_date]);
+        END
+        """);
 
     if (!await SqlServerTableExistsAsync(connection, "simulation_event_records"))
     {
@@ -1957,6 +2406,357 @@ static async Task EnsureSqlServerFinanceDomainSchemaAsync(VirtualCompanyDbContex
                 ELSE N'unpaid'
             END
             WHERE [settlement_status] IS NULL OR [settlement_status] = N'';
+        END
+        """);
+}
+
+static async Task EnsureSqlServerFinancePlanningSchemaAsync(VirtualCompanyDbContext dbContext, DbConnection connection)
+{
+    if (!await SqlServerTableExistsAsync(connection, "budgets"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [budgets] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_budgets] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [finance_account_id] uniqueidentifier NOT NULL,
+                [period_start_at] datetime2 NOT NULL,
+                [version] nvarchar(64) NOT NULL,
+                [cost_center_id] uniqueidentifier NULL,
+                [amount] decimal(18,2) NOT NULL,
+                [currency] nvarchar(3) NOT NULL,
+                [created_at] datetime2 NOT NULL,
+                [updated_at] datetime2 NOT NULL,
+                CONSTRAINT [AK_budgets_company_id_id] UNIQUE ([company_id], [id]),
+                CONSTRAINT [FK_budgets_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
+                CONSTRAINT [FK_budgets_finance_accounts_company_id_finance_account_id] FOREIGN KEY ([company_id], [finance_account_id]) REFERENCES [finance_accounts] ([company_id], [id])
+            );
+            """);
+    }
+
+    if (!await SqlServerTableExistsAsync(connection, "forecasts"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [forecasts] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_forecasts] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [finance_account_id] uniqueidentifier NOT NULL,
+                [period_start_at] datetime2 NOT NULL,
+                [version] nvarchar(64) NOT NULL,
+                [cost_center_id] uniqueidentifier NULL,
+                [amount] decimal(18,2) NOT NULL,
+                [currency] nvarchar(3) NOT NULL,
+                [created_at] datetime2 NOT NULL,
+                [updated_at] datetime2 NOT NULL,
+                CONSTRAINT [AK_forecasts_company_id_id] UNIQUE ([company_id], [id]),
+                CONSTRAINT [FK_forecasts_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
+                CONSTRAINT [FK_forecasts_finance_accounts_company_id_finance_account_id] FOREIGN KEY ([company_id], [finance_account_id]) REFERENCES [finance_accounts] ([company_id], [id])
+            );
+            """);
+    }
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_budgets_company_id_period_start_at' AND [object_id] = OBJECT_ID(N'[budgets]'))
+        BEGIN
+            CREATE INDEX [IX_budgets_company_id_period_start_at] ON [budgets] ([company_id], [period_start_at]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_budgets_company_id_period_start_at_version' AND [object_id] = OBJECT_ID(N'[budgets]'))
+        BEGIN
+            CREATE INDEX [IX_budgets_company_id_period_start_at_version] ON [budgets] ([company_id], [period_start_at], [version]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_budgets_company_id_finance_account_id_version_period_start_at' AND [object_id] = OBJECT_ID(N'[budgets]'))
+        BEGIN
+            CREATE INDEX [IX_budgets_company_id_finance_account_id_version_period_start_at] ON [budgets] ([company_id], [finance_account_id], [version], [period_start_at]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_budgets_company_id_period_start_at_finance_account_id_version_cost_center_id' AND [object_id] = OBJECT_ID(N'[budgets]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_budgets_company_id_period_start_at_finance_account_id_version_cost_center_id] ON [budgets] ([company_id], [period_start_at], [finance_account_id], [version], [cost_center_id]) WHERE [cost_center_id] IS NOT NULL;
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_budgets_company_id_period_start_at_finance_account_id_version_null_cost_center' AND [object_id] = OBJECT_ID(N'[budgets]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_budgets_company_id_period_start_at_finance_account_id_version_null_cost_center] ON [budgets] ([company_id], [period_start_at], [finance_account_id], [version]) WHERE [cost_center_id] IS NULL;
+        END
+
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_forecasts_company_id_period_start_at' AND [object_id] = OBJECT_ID(N'[forecasts]'))
+        BEGIN
+            CREATE INDEX [IX_forecasts_company_id_period_start_at] ON [forecasts] ([company_id], [period_start_at]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_forecasts_company_id_period_start_at_version' AND [object_id] = OBJECT_ID(N'[forecasts]'))
+        BEGIN
+            CREATE INDEX [IX_forecasts_company_id_period_start_at_version] ON [forecasts] ([company_id], [period_start_at], [version]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_forecasts_company_id_finance_account_id_version_period_start_at' AND [object_id] = OBJECT_ID(N'[forecasts]'))
+        BEGIN
+            CREATE INDEX [IX_forecasts_company_id_finance_account_id_version_period_start_at] ON [forecasts] ([company_id], [finance_account_id], [version], [period_start_at]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_forecasts_company_id_period_start_at_finance_account_id_version_cost_center_id' AND [object_id] = OBJECT_ID(N'[forecasts]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_forecasts_company_id_period_start_at_finance_account_id_version_cost_center_id] ON [forecasts] ([company_id], [period_start_at], [finance_account_id], [version], [cost_center_id]) WHERE [cost_center_id] IS NOT NULL;
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_forecasts_company_id_period_start_at_finance_account_id_version_null_cost_center' AND [object_id] = OBJECT_ID(N'[forecasts]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_forecasts_company_id_period_start_at_finance_account_id_version_null_cost_center] ON [forecasts] ([company_id], [period_start_at], [finance_account_id], [version]) WHERE [cost_center_id] IS NULL;
+        END
+        """);
+}
+
+static async Task EnsureSqlServerLedgerReportingSchemaAsync(VirtualCompanyDbContext dbContext, DbConnection connection)
+{
+    if (!await SqlServerTableExistsAsync(connection, "finance_fiscal_periods"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [finance_fiscal_periods] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_finance_fiscal_periods] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [name] nvarchar(128) NOT NULL,
+                [start_at] datetime2 NOT NULL,
+                [end_at] datetime2 NOT NULL,
+                [is_closed] bit NOT NULL CONSTRAINT [DF_finance_fiscal_periods_is_closed_startup] DEFAULT (0),
+                [is_reporting_locked] bit NOT NULL CONSTRAINT [DF_finance_fiscal_periods_is_reporting_locked_startup] DEFAULT (0),
+                [reporting_locked_at] datetime2 NULL,
+                [reporting_locked_by_user_id] uniqueidentifier NULL,
+                [reporting_unlocked_at] datetime2 NULL,
+                [reporting_unlocked_by_user_id] uniqueidentifier NULL,
+                [last_close_validated_at] datetime2 NULL,
+                [last_close_validated_by_user_id] uniqueidentifier NULL,
+                [closed_at] datetime2 NULL,
+                [created_at] datetime2 NOT NULL,
+                [updated_at] datetime2 NOT NULL,
+                CONSTRAINT [AK_finance_fiscal_periods_company_id_id] UNIQUE ([company_id], [id]),
+                CONSTRAINT [FK_finance_fiscal_periods_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+            );
+            """);
+    }
+    else
+    {
+        if (!await SqlServerColumnExistsAsync(connection, "finance_fiscal_periods", "is_reporting_locked"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_fiscal_periods] ADD [is_reporting_locked] bit NOT NULL CONSTRAINT [DF_finance_fiscal_periods_is_reporting_locked_startup] DEFAULT (0);");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_fiscal_periods", "reporting_locked_at"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_fiscal_periods] ADD [reporting_locked_at] datetime2 NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_fiscal_periods", "reporting_locked_by_user_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_fiscal_periods] ADD [reporting_locked_by_user_id] uniqueidentifier NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_fiscal_periods", "reporting_unlocked_at"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_fiscal_periods] ADD [reporting_unlocked_at] datetime2 NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_fiscal_periods", "reporting_unlocked_by_user_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_fiscal_periods] ADD [reporting_unlocked_by_user_id] uniqueidentifier NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_fiscal_periods", "last_close_validated_at"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_fiscal_periods] ADD [last_close_validated_at] datetime2 NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "finance_fiscal_periods", "last_close_validated_by_user_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [finance_fiscal_periods] ADD [last_close_validated_by_user_id] uniqueidentifier NULL;");
+        }
+    }
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.key_constraints
+            WHERE [type] = N'UQ'
+              AND [name] = N'AK_finance_fiscal_periods_company_id_id'
+              AND [parent_object_id] = OBJECT_ID(N'[finance_fiscal_periods]'))
+        BEGIN
+            ALTER TABLE [finance_fiscal_periods]
+            ADD CONSTRAINT [AK_finance_fiscal_periods_company_id_id] UNIQUE ([company_id], [id]);
+        END
+        """);
+
+    if (!await SqlServerTableExistsAsync(connection, "ledger_entries"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [ledger_entries] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_ledger_entries] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [fiscal_period_id] uniqueidentifier NOT NULL,
+                [entry_number] nvarchar(64) NOT NULL,
+                [entry_at] datetime2 NOT NULL,
+                [status] nvarchar(32) NOT NULL,
+                [source_type] nvarchar(64) NULL,
+                [source_id] nvarchar(128) NULL,
+                [posted_at] datetime2 NULL,
+                [description] nvarchar(500) NULL,
+                [created_at] datetime2 NOT NULL,
+                [updated_at] datetime2 NOT NULL,
+                CONSTRAINT [AK_ledger_entries_company_id_id] UNIQUE ([company_id], [id]),
+                CONSTRAINT [FK_ledger_entries_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
+                CONSTRAINT [FK_ledger_entries_finance_fiscal_periods_company_id_fiscal_period_id] FOREIGN KEY ([company_id], [fiscal_period_id]) REFERENCES [finance_fiscal_periods] ([company_id], [id])
+            );
+            """);
+    }
+    else
+    {
+        if (!await SqlServerColumnExistsAsync(connection, "ledger_entries", "source_type"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [ledger_entries] ADD [source_type] nvarchar(64) NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "ledger_entries", "source_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [ledger_entries] ADD [source_id] nvarchar(128) NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "ledger_entries", "posted_at"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [ledger_entries] ADD [posted_at] datetime2 NULL;");
+        }
+    }
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.key_constraints
+            WHERE [type] = N'UQ'
+              AND [name] = N'AK_ledger_entries_company_id_id'
+              AND [parent_object_id] = OBJECT_ID(N'[ledger_entries]'))
+        BEGIN
+            ALTER TABLE [ledger_entries]
+            ADD CONSTRAINT [AK_ledger_entries_company_id_id] UNIQUE ([company_id], [id]);
+        END
+        """);
+
+    if (!await SqlServerTableExistsAsync(connection, "ledger_entry_lines"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [ledger_entry_lines] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_ledger_entry_lines] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [ledger_entry_id] uniqueidentifier NOT NULL,
+                [finance_account_id] uniqueidentifier NOT NULL,
+                [cost_center_id] uniqueidentifier NULL,
+                [debit_amount] decimal(18,2) NOT NULL,
+                [credit_amount] decimal(18,2) NOT NULL,
+                [currency] nvarchar(3) NOT NULL,
+                [description] nvarchar(500) NULL,
+                [created_at] datetime2 NOT NULL,
+                CONSTRAINT [FK_ledger_entry_lines_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
+                CONSTRAINT [FK_ledger_entry_lines_ledger_entries_company_id_ledger_entry_id] FOREIGN KEY ([company_id], [ledger_entry_id]) REFERENCES [ledger_entries] ([company_id], [id]),
+                CONSTRAINT [FK_ledger_entry_lines_finance_accounts_company_id_finance_account_id] FOREIGN KEY ([company_id], [finance_account_id]) REFERENCES [finance_accounts] ([company_id], [id])
+            );
+            """);
+    }
+    else if (!await SqlServerColumnExistsAsync(connection, "ledger_entry_lines", "cost_center_id"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [ledger_entry_lines] ADD [cost_center_id] uniqueidentifier NULL;");
+    }
+
+    if (!await SqlServerTableExistsAsync(connection, "ledger_entry_source_mappings"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [ledger_entry_source_mappings] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_ledger_entry_source_mappings] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [ledger_entry_id] uniqueidentifier NOT NULL,
+                [source_type] nvarchar(64) NOT NULL,
+                [source_id] nvarchar(128) NOT NULL,
+                [posted_at] datetime2 NOT NULL,
+                [created_at] datetime2 NOT NULL,
+                CONSTRAINT [FK_ledger_entry_source_mappings_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
+                CONSTRAINT [FK_ledger_entry_source_mappings_ledger_entries_company_id_ledger_entry_id] FOREIGN KEY ([company_id], [ledger_entry_id]) REFERENCES [ledger_entries] ([company_id], [id])
+            );
+            """);
+    }
+
+    if (!await SqlServerTableExistsAsync(connection, "trial_balance_snapshots"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [trial_balance_snapshots] (
+                [id] uniqueidentifier NOT NULL CONSTRAINT [PK_trial_balance_snapshots] PRIMARY KEY,
+                [company_id] uniqueidentifier NOT NULL,
+                [fiscal_period_id] uniqueidentifier NOT NULL,
+                [finance_account_id] uniqueidentifier NOT NULL,
+                [balance_amount] decimal(18,2) NOT NULL,
+                [currency] nvarchar(3) NOT NULL,
+                [created_at] datetime2 NOT NULL,
+                CONSTRAINT [FK_trial_balance_snapshots_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
+                CONSTRAINT [FK_trial_balance_snapshots_finance_fiscal_periods_company_id_fiscal_period_id] FOREIGN KEY ([company_id], [fiscal_period_id]) REFERENCES [finance_fiscal_periods] ([company_id], [id]),
+                CONSTRAINT [FK_trial_balance_snapshots_finance_accounts_company_id_finance_account_id] FOREIGN KEY ([company_id], [finance_account_id]) REFERENCES [finance_accounts] ([company_id], [id])
+            );
+            """);
+    }
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_fiscal_periods_company_id_start_at_end_at' AND [object_id] = OBJECT_ID(N'[finance_fiscal_periods]'))
+        BEGIN
+            CREATE INDEX [IX_finance_fiscal_periods_company_id_start_at_end_at] ON [finance_fiscal_periods] ([company_id], [start_at], [end_at]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_fiscal_periods_company_id_is_closed_is_reporting_locked' AND [object_id] = OBJECT_ID(N'[finance_fiscal_periods]'))
+        BEGIN
+            CREATE INDEX [IX_finance_fiscal_periods_company_id_is_closed_is_reporting_locked] ON [finance_fiscal_periods] ([company_id], [is_closed], [is_reporting_locked]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_finance_fiscal_periods_company_id_name' AND [object_id] = OBJECT_ID(N'[finance_fiscal_periods]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_finance_fiscal_periods_company_id_name] ON [finance_fiscal_periods] ([company_id], [name]);
+        END
+
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_ledger_entries_company_id_fiscal_period_id_entry_at' AND [object_id] = OBJECT_ID(N'[ledger_entries]'))
+        BEGIN
+            CREATE INDEX [IX_ledger_entries_company_id_fiscal_period_id_entry_at] ON [ledger_entries] ([company_id], [fiscal_period_id], [entry_at]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_ledger_entries_company_id_source_type_source_id_posted_at' AND [object_id] = OBJECT_ID(N'[ledger_entries]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_ledger_entries_company_id_source_type_source_id_posted_at] ON [ledger_entries] ([company_id], [source_type], [source_id], [posted_at]) WHERE [source_type] IS NOT NULL AND [source_id] IS NOT NULL AND [posted_at] IS NOT NULL;
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_ledger_entries_company_id_entry_number' AND [object_id] = OBJECT_ID(N'[ledger_entries]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_ledger_entries_company_id_entry_number] ON [ledger_entries] ([company_id], [entry_number]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_ledger_entries_company_id_status_entry_at' AND [object_id] = OBJECT_ID(N'[ledger_entries]'))
+        BEGIN
+            CREATE INDEX [IX_ledger_entries_company_id_status_entry_at] ON [ledger_entries] ([company_id], [status], [entry_at]);
+        END
+
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_ledger_entry_lines_company_id_finance_account_id_cost_center_id' AND [object_id] = OBJECT_ID(N'[ledger_entry_lines]'))
+        BEGIN
+            CREATE INDEX [IX_ledger_entry_lines_company_id_finance_account_id_cost_center_id] ON [ledger_entry_lines] ([company_id], [finance_account_id], [cost_center_id]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_ledger_entry_lines_company_id_ledger_entry_id' AND [object_id] = OBJECT_ID(N'[ledger_entry_lines]'))
+        BEGIN
+            CREATE INDEX [IX_ledger_entry_lines_company_id_ledger_entry_id] ON [ledger_entry_lines] ([company_id], [ledger_entry_id]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_ledger_entry_lines_company_id_finance_account_id' AND [object_id] = OBJECT_ID(N'[ledger_entry_lines]'))
+        BEGIN
+            CREATE INDEX [IX_ledger_entry_lines_company_id_finance_account_id] ON [ledger_entry_lines] ([company_id], [finance_account_id]);
+        END
+
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_ledger_entry_source_mappings_company_id_ledger_entry_id' AND [object_id] = OBJECT_ID(N'[ledger_entry_source_mappings]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_ledger_entry_source_mappings_company_id_ledger_entry_id] ON [ledger_entry_source_mappings] ([company_id], [ledger_entry_id]);
+        END
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_ledger_entry_source_mappings_company_id_source_type_source_id_posted_at' AND [object_id] = OBJECT_ID(N'[ledger_entry_source_mappings]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_ledger_entry_source_mappings_company_id_source_type_source_id_posted_at] ON [ledger_entry_source_mappings] ([company_id], [source_type], [source_id], [posted_at]);
+        END
+
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = N'IX_trial_balance_snapshots_company_id_fiscal_period_id_finance_account_id' AND [object_id] = OBJECT_ID(N'[trial_balance_snapshots]'))
+        BEGIN
+            CREATE UNIQUE INDEX [IX_trial_balance_snapshots_company_id_fiscal_period_id_finance_account_id] ON [trial_balance_snapshots] ([company_id], [fiscal_period_id], [finance_account_id]);
         END
         """);
 }

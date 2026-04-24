@@ -42,24 +42,31 @@ public sealed partial class CompanyFinanceReadService
             budgets = budgets.Where(x => x.CostCenterId == query.CostCenterId.Value);
         }
 
-        return await budgets
-            .OrderBy(x => x.PeriodStartUtc)
-            .ThenBy(x => x.FinanceAccount.Code)
-            .ThenBy(x => x.Version)
-            .Select(x => new FinanceBudgetDto(
-                x.Id,
-                x.CompanyId,
-                x.FinanceAccountId,
-                x.FinanceAccount.Code,
-                x.FinanceAccount.Name,
-                x.PeriodStartUtc,
-                x.Version,
-                x.CostCenterId,
-                x.Amount,
-                x.Currency,
-                x.CreatedUtc,
-                x.UpdatedUtc))
-            .ToListAsync(cancellationToken);
+        try
+        {
+            return await budgets
+                .OrderBy(x => x.PeriodStartUtc)
+                .ThenBy(x => x.FinanceAccount.Code)
+                .ThenBy(x => x.Version)
+                .Select(x => new FinanceBudgetDto(
+                    x.Id,
+                    x.CompanyId,
+                    x.FinanceAccountId,
+                    x.FinanceAccount.Code,
+                    x.FinanceAccount.Name,
+                    x.PeriodStartUtc,
+                    x.Version,
+                    x.CostCenterId,
+                    x.Amount,
+                    x.Currency,
+                    x.CreatedUtc,
+                    x.UpdatedUtc))
+                .ToListAsync(cancellationToken);
+        }
+        catch (Exception ex) when (IsMissingPlanningSchemaTable(ex))
+        {
+            return [];
+        }
     }
 
     public async Task<IReadOnlyList<FinanceForecastDto>> GetForecastsAsync(
@@ -92,24 +99,31 @@ public sealed partial class CompanyFinanceReadService
             forecasts = forecasts.Where(x => x.Version == normalizedVersion);
         }
 
-        return await forecasts
-            .OrderBy(x => x.PeriodStartUtc)
-            .ThenBy(x => x.FinanceAccount.Code)
-            .ThenBy(x => x.Version)
-            .Select(x => new FinanceForecastDto(
-                x.Id,
-                x.CompanyId,
-                x.FinanceAccountId,
-                x.FinanceAccount.Code,
-                x.FinanceAccount.Name,
-                x.PeriodStartUtc,
-                x.Version,
-                x.CostCenterId,
-                x.Amount,
-                x.Currency,
-                x.CreatedUtc,
-                x.UpdatedUtc))
-            .ToListAsync(cancellationToken);
+        try
+        {
+            return await forecasts
+                .OrderBy(x => x.PeriodStartUtc)
+                .ThenBy(x => x.FinanceAccount.Code)
+                .ThenBy(x => x.Version)
+                .Select(x => new FinanceForecastDto(
+                    x.Id,
+                    x.CompanyId,
+                    x.FinanceAccountId,
+                    x.FinanceAccount.Code,
+                    x.FinanceAccount.Name,
+                    x.PeriodStartUtc,
+                    x.Version,
+                    x.CostCenterId,
+                    x.Amount,
+                    x.Currency,
+                    x.CreatedUtc,
+                    x.UpdatedUtc))
+                .ToListAsync(cancellationToken);
+        }
+        catch (Exception ex) when (IsMissingPlanningSchemaTable(ex))
+        {
+            return [];
+        }
     }
 
     private static DateTime NormalizePlanningPeriod(DateTime value)

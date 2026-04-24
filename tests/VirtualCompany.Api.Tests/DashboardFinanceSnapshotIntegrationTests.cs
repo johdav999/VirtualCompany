@@ -1,4 +1,7 @@
 using System.Net;
+using System.Text.Json;
+using VirtualCompany.Application.Cockpit;
+using VirtualCompany.Application.Finance;
 using System.Net.Http.Json;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -80,6 +83,107 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
         await AssertMetricAsync(client, $"{baseRoute}/expected-outgoing-cash?{query}", "expected_outgoing_cash", PrimaryWindow30Metrics.ExpectedOutgoingCash);
         await AssertMetricAsync(client, $"{baseRoute}/overdue-receivables?{query}", "overdue_receivables", PrimaryWindow30Metrics.OverdueReceivables);
         await AssertMetricAsync(client, $"{baseRoute}/upcoming-payables?{query}", "upcoming_payables", PrimaryWindow30Metrics.UpcomingPayables);
+    }
+
+    [Fact]
+    public async Task GetCashMetrics_ReturnsFinancialHealth_TopActions_AndGroupedInsightFeed()
+    {
+        var seed = await SeedFinanceDashboardScenarioAsync();
+
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+        var snapshot = await GetSnapshotAsync(client, seed.CompanyId, ScenarioAsOfUtc, 30);
+
+        Assert.NotNull(snapshot.FinancialHealth);
+        Assert.NotNull(snapshot.TopFinanceActions);
+        Assert.NotNull(snapshot.InsightFeed);
+        Assert.True(snapshot.TopFinanceActions.Count <= 3);
+        Assert.NotEmpty(snapshot.InsightFeed);
+
+        var groupedCollectionsInsight = Assert.Single(
+            snapshot.InsightFeed,
+            x => string.Equals(x.GroupKey, "overdue_receivables|collections:customer-contoso", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal(2, groupedCollectionsInsight.OccurrenceCount);
+        Assert.Equal("overdue_receivables", groupedCollectionsInsight.Category);
+        Assert.NotNull(groupedCollectionsInsight.PrimaryEntity);
+        Assert.True(snapshot.FinancialHealth.ActiveInsightCount >= snapshot.InsightFeed.Count);
+    }
+
+    [Fact]
+    public async Task GetCashMetrics_ReflectsNewlyPersistedInsights_OnNextRefresh()
+    {
+        var seed = await SeedFinanceDashboardScenarioAsync();
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+
+        var initial = await GetSnapshotAsync(client, seed.CompanyId, ScenarioAsOfUtc, 30);
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.FinanceAgentInsights.Add(new FinanceAgentInsight(
+                Guid.NewGuid(),
+                seed.CompanyId,
+                FinancialCheckDefinitions.CashRisk.Code,
+                "cash:bank-reconciliation-gap",
+                "payment",
+                Guid.NewGuid().ToString("D"),
+                FinancialCheckSeverity.High,
+                "A newly persisted payment insight now needs review.",
+                "Inspect the latest payment activity.",
+                0.88m,
+                "Payment review",
+                JsonSerializer.Serialize(new[] { new FinanceInsightEntityReferenceDto("payment", Guid.NewGuid().ToString("D"), "Payment review", true) }),
+                "{\"source\":\"refresh-test\"}",
+                FinanceInsightStatus.Active,
+                ScenarioAsOfUtc.AddMinutes(5),
+                ScenarioAsOfUtc.AddMinutes(5),
+                ScenarioAsOfUtc.AddMinutes(6)));
+            return dbContext.SaveChangesAsync();
+        });
+
+        var refreshed = await GetSnapshotAsync(client, seed.CompanyId, ScenarioAsOfUtc, 30);
+        Assert.True(refreshed.InsightFeed.Count > initial.InsightFeed.Count);
+    }
+
+    [Fact]
+    public async Task GetCashMetrics_RendersFriendlyDashboardPresentation_ForExpandedFinanceAnalyticsChecks()
+    {
+        var seed = await SeedFinanceDashboardScenarioAsync();
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.FinanceAgentInsights.Add(new FinanceAgentInsight(
+                Guid.NewGuid(),
+                seed.CompanyId,
+                FinancialCheckDefinitions.ForecastGap.Code,
+                "forecast_gap:missing_current_period",
+                "company",
+                seed.CompanyId.ToString("D"),
+                FinancialCheckSeverity.Low,
+                "No forecast entries were found for the current planning period.",
+                "Add at least one forecast version so actual-vs-forecast variance stays actionable.",
+                0.77m,
+                "Seeded Dashboard Finance Co",
+                JsonSerializer.Serialize(new[]
+                {
+                    new FinanceInsightEntityReferenceDto("company", seed.CompanyId.ToString("D"), "Seeded Dashboard Finance Co", true)
+                }),
+                "{}",
+                FinanceInsightStatus.Active,
+                ScenarioAsOfUtc.AddMinutes(3),
+                ScenarioAsOfUtc.AddMinutes(3),
+                ScenarioAsOfUtc.AddMinutes(3)));
+            return dbContext.SaveChangesAsync();
+        });
+
+        var snapshot = await GetSnapshotAsync(client, seed.CompanyId, ScenarioAsOfUtc, 30);
+        var forecastGap = Assert.Single(
+            snapshot.InsightFeed,
+            x => string.Equals(x.GroupKey, "forecast_gap|forecast_gap:missing_current_period", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("Forecast coverage is missing", forecastGap.Title);
+        Assert.Contains("current planning period", forecastGap.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("forecast", forecastGap.Recommendation, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task AssertMetricAsync(HttpClient client, string route, string key, decimal amount)
@@ -253,6 +357,106 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
                     "Future cash movement",
                     postedAtUtc: ScenarioAsOfUtc.AddDays(2)),
                 new LedgerEntry(
+            dbContext.FinanceAgentInsights.AddRange(
+                new FinanceAgentInsight(
+                    Guid.NewGuid(),
+                    companyId,
+                    FinancialCheckDefinitions.OverdueReceivables.Code,
+                    "collections:customer-contoso",
+                    "counterparty",
+                    customerId.ToString("D"),
+                    FinancialCheckSeverity.High,
+                    "Contoso collections need immediate follow-up.",
+                    "Start collections outreach.",
+                    0.92m,
+                    "Contoso",
+                    JsonSerializer.Serialize(new[]
+                    {
+                        new FinanceInsightEntityReferenceDto("counterparty", customerId.ToString("D"), "Contoso", true),
+                        new FinanceInsightEntityReferenceDto("invoice", overdueInvoiceId.ToString("D"), "INV-OVERDUE", false)
+                    }),
+                    "{\"source\":\"dashboard-test\"}",
+                    FinanceInsightStatus.Active,
+                    ScenarioAsOfUtc.AddHours(-4),
+                    ScenarioAsOfUtc.AddHours(-4),
+                    ScenarioAsOfUtc.AddHours(-3)),
+                new FinanceAgentInsight(
+                    Guid.NewGuid(),
+                    companyId,
+                    FinancialCheckDefinitions.OverdueReceivables.Code,
+                    "collections:customer-contoso",
+                    "invoice",
+                    overdueInvoiceId.ToString("D"),
+                    FinancialCheckSeverity.High,
+                    "A duplicate persisted collections condition exists for the same customer.",
+                    "Confirm owner follow-up and update expected payment date.",
+                    0.89m,
+                    "INV-OVERDUE",
+                    JsonSerializer.Serialize(new[]
+                    {
+                        new FinanceInsightEntityReferenceDto("invoice", overdueInvoiceId.ToString("D"), "INV-OVERDUE", true),
+                        new FinanceInsightEntityReferenceDto("counterparty", customerId.ToString("D"), "Contoso", false)
+                    }),
+                    "{\"source\":\"dashboard-test\"}",
+                    FinanceInsightStatus.Active,
+                    ScenarioAsOfUtc.AddHours(-2),
+                    ScenarioAsOfUtc.AddHours(-2),
+                    ScenarioAsOfUtc.AddHours(-1)),
+                new FinanceAgentInsight(
+                    Guid.NewGuid(),
+                    companyId,
+                    FinancialCheckDefinitions.PayablesPressure.Code,
+                    "payables:priority-vendor",
+                    "bill",
+                    overdueBillId.ToString("D"),
+                    FinancialCheckSeverity.Critical,
+                    "Priority vendor payment is overdue.",
+                    "Schedule the overdue vendor bill today.",
+                    0.95m,
+                    "BILL-OVERDUE",
+                    JsonSerializer.Serialize(new[] { new FinanceInsightEntityReferenceDto("bill", overdueBillId.ToString("D"), "BILL-OVERDUE", true) }),
+                    "{\"source\":\"dashboard-test\"}",
+                    FinanceInsightStatus.Active,
+                    ScenarioAsOfUtc.AddHours(-3),
+                    ScenarioAsOfUtc.AddHours(-3),
+                    ScenarioAsOfUtc.AddHours(-2)),
+                new FinanceAgentInsight(
+                    Guid.NewGuid(),
+                    companyId,
+                    FinancialCheckDefinitions.CashRisk.Code,
+                    "cash:runway-warning",
+                    "company",
+                    companyId.ToString("D"),
+                    FinancialCheckSeverity.Medium,
+                    "Cash runway is tightening.",
+                    "Review upcoming cash commitments and collections timing.",
+                    0.81m,
+                    "Operating cash",
+                    JsonSerializer.Serialize(new[] { new FinanceInsightEntityReferenceDto("company", companyId.ToString("D"), "Seeded Dashboard Finance Co", true) }),
+                    "{\"source\":\"dashboard-test\"}",
+                    FinanceInsightStatus.Active,
+                    ScenarioAsOfUtc.AddHours(-1),
+                    ScenarioAsOfUtc.AddHours(-1),
+                    ScenarioAsOfUtc),
+                new FinanceAgentInsight(
+                    Guid.NewGuid(),
+                    otherCompanyId,
+                    FinancialCheckDefinitions.PayablesPressure.Code,
+                    "payables:other-company",
+                    "bill",
+                    otherBillId.ToString("D"),
+                    FinancialCheckSeverity.Critical,
+                    "Other company insight should not leak.",
+                    "Ignore in primary company assertions.",
+                    0.99m,
+                    "OTHER-BILL",
+                    JsonSerializer.Serialize(new[] { new FinanceInsightEntityReferenceDto("bill", otherBillId.ToString("D"), "OTHER-BILL", true) }),
+                    null,
+                    FinanceInsightStatus.Active,
+                    ScenarioAsOfUtc,
+                    ScenarioAsOfUtc,
+                    ScenarioAsOfUtc));
+
                     accrualEntryId,
                     companyId,
                     fiscalPeriodId,
@@ -376,6 +580,9 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
         public int? RunwayDays { get; set; }
         public string RiskLevel { get; set; } = string.Empty;
         public bool HasFinanceData { get; set; }
+        public FinancialHealthResponse FinancialHealth { get; set; } = new();
+        public List<FinanceActionResponse> TopFinanceActions { get; set; } = [];
+        public List<GroupedInsightResponse> InsightFeed { get; set; } = [];
     }
 
     private sealed class FinanceDashboardMetricResponse
@@ -385,5 +592,41 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
         public string Currency { get; set; } = string.Empty;
         public DateTime AsOfUtc { get; set; }
         public int UpcomingWindowDays { get; set; }
+    }
+
+    private sealed class FinancialHealthResponse
+    {
+        public string Status { get; set; } = string.Empty;
+        public int? Score { get; set; }
+        public string Trend { get; set; } = string.Empty;
+        public string Summary { get; set; } = string.Empty;
+        public int ActiveInsightCount { get; set; }
+    }
+
+    private sealed class FinanceActionResponse
+    {
+        public string Title { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+        public string Priority { get; set; } = string.Empty;
+        public string? TargetEntityType { get; set; }
+        public string? TargetEntityId { get; set; }
+        public string ActionLabel { get; set; } = string.Empty;
+        public string? NavigationTarget { get; set; }
+    }
+
+    private sealed class GroupedInsightResponse
+    {
+        public string GroupKey { get; set; } = string.Empty;
+        public string Category { get; set; } = string.Empty;
+        public string Severity { get; set; } = string.Empty;
+        public int OccurrenceCount { get; set; }
+        public DateTime LatestOccurredUtc { get; set; }
+        public InsightEntityResponse? PrimaryEntity { get; set; }
+    }
+
+    private sealed class InsightEntityResponse
+    {
+        public string EntityType { get; set; } = string.Empty;
+        public string EntityId { get; set; } = string.Empty;
     }
 }

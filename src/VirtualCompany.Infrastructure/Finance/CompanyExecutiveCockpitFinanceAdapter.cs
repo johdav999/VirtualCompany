@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -17,6 +18,7 @@ namespace VirtualCompany.Infrastructure.Finance;
 
 public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFinanceAdapter
 {
+    private static readonly JsonSerializerOptions InsightSerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IFinanceReadService _financeReadService;
     private readonly IFinanceCashPositionWorkflowService _cashPositionWorkflowService;
@@ -72,6 +74,7 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
         var lowCashAlert = current.AlertState.AlertId.HasValue
             ? await GetAlertDetailAsync(companyId, current.AlertState.AlertId.Value, cancellationToken)
             : null;
+        var insightDashboard = await BuildInsightDashboardAsync(companyId, cancellationToken);
 
         return new ExecutiveCockpitFinanceDto(
             new ExecutiveCockpitFinanceCashWidgetDto(
@@ -91,6 +94,9 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
                 runwayStatus.ToString(),
                 BuildCashPositionRoute(companyId)),
             lowCashAlert,
+            insightDashboard.FinancialHealth,
+            insightDashboard.TopActions,
+            insightDashboard.FeedItems,
             await BuildActionsAsync(companyId, membership.MembershipRole.ToStorageValue(), cancellationToken),
             BuildDeepLinks(companyId));
     }
@@ -294,4 +300,194 @@ public sealed class CompanyExecutiveCockpitFinanceAdapter : IExecutiveCockpitFin
 
     private static bool TryGetDecimal(IReadOnlyDictionary<string, JsonNode?>? values, string key, out decimal value) =>
         decimal.TryParse(TryGetString(values, key), NumberStyles.Number, CultureInfo.InvariantCulture, out value);
+
+    private async Task<FinanceInsightDashboardProjection> BuildInsightDashboardAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        var activeInsights = await _dbContext.FinanceAgentInsights
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.Status == FinanceInsightStatus.Active)
+            .ToListAsync(cancellationToken);
+
+        if (activeInsights.Count == 0)
+        {
+            return new FinanceInsightDashboardProjection(
+                new ExecutiveCockpitFinancialHealthDto(
+                    "healthy",
+                    "Financial health is stable",
+                    "No active finance insights are currently persisted for this company.",
+                    0,
+                    0,
+                    0,
+                    null),
+                [],
+                []);
+        }
+
+        // Persisted condition keys are the stable identity for the underlying condition.
+        var groupedInsights = activeInsights
+            .GroupBy(BuildDashboardInsightGroupKey, StringComparer.OrdinalIgnoreCase)
+            .Select(group => BuildDashboardInsightFeedItem(companyId, group))
+            .OrderByDescending(x => GetSeverityRank(x.Severity))
+            .ThenByDescending(x => x.LatestUpdatedUtc)
+            .ThenBy(x => x.GroupKey, StringComparer.Ordinal)
+            .ToArray();
+
+        var criticalCount = activeInsights.Count(x => x.Severity == FinancialCheckSeverity.Critical);
+        var highCount = activeInsights.Count(x => x.Severity == FinancialCheckSeverity.High);
+        var overallStatus = activeInsights.Any(x => x.Severity == FinancialCheckSeverity.Critical)
+            ? "critical"
+            : activeInsights.Any(x => x.Severity == FinancialCheckSeverity.High)
+                ? "high"
+                : activeInsights.Any(x => x.Severity == FinancialCheckSeverity.Medium)
+                    ? "medium"
+                    : "low";
+
+        var title = overallStatus switch
+        {
+            "critical" => "Immediate finance attention required",
+            "high" => "Finance follow-up is building",
+            "medium" => "Finance watch items are active",
+            _ => "Finance posture is manageable"
+        };
+
+        var summary = $"{activeInsights.Count} active insight(s), {criticalCount} critical and {highCount} high.";
+        var lastUpdatedUtc = activeInsights.Max(x => x.UpdatedUtc);
+
+        return new FinanceInsightDashboardProjection(
+            new ExecutiveCockpitFinancialHealthDto(
+                overallStatus,
+                title,
+                summary,
+                activeInsights.Count,
+                criticalCount,
+                highCount,
+                lastUpdatedUtc),
+            groupedInsights.Take(3).ToArray(),
+            groupedInsights);
+    }
+
+    private static ExecutiveCockpitFinanceInsightFeedItemDto BuildDashboardInsightFeedItem(
+        Guid companyId,
+        IGrouping<string, FinanceAgentInsight> group)
+    {
+        var representative = group
+            .OrderByDescending(x => GetSeverityRank(x.Severity))
+            .ThenByDescending(x => x.UpdatedUtc)
+            .ThenByDescending(x => x.CreatedUtc)
+            .ThenBy(x => x.Id)
+            .First();
+
+        var primaryEntity = BuildPrimaryEntityReference(representative);
+        var relatedEntities = group
+            .Select(BuildPrimaryEntityReference)
+            .Where(x => x is not null)
+            .DistinctBy(x => $"{x!.EntityType}:{x.EntityId}", StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .Cast<FinanceInsightEntityReferenceDto>()
+            .ToArray();
+
+        var entitySummary = relatedEntities.Length switch
+        {
+            0 => "Company-level condition",
+            1 => relatedEntities[0].DisplayName ?? $"{FormatToken(relatedEntities[0].EntityType)} {relatedEntities[0].EntityId}",
+            _ => $"{group.Count()} related records"
+        };
+
+        var presentation = FinanceInsightPresentation.BuildDashboardText(
+            representative.CheckCode,
+            primaryEntity?.DisplayName ?? representative.EntityDisplayName,
+            representative.Message,
+            representative.Recommendation,
+            group.Count(),
+            relatedEntities.Length);
+
+        return new ExecutiveCockpitFinanceInsightFeedItemDto(
+            group.Key,
+            representative.Severity.ToStorageValue(),
+            presentation.Title,
+            presentation.Summary,
+            presentation.Recommendation,
+            group.Count(),
+            entitySummary,
+            group.Max(x => x.UpdatedUtc),
+            BuildInsightRoute(companyId, primaryEntity));
+    }
+
+    private static string BuildDashboardInsightGroupKey(FinanceAgentInsight insight) =>
+        FinanceInsightPresentation.BuildDashboardGroupKey(
+            insight.CheckCode,
+            insight.ConditionKey,
+            insight.EntityType,
+            insight.EntityId);
+
+    private static FinanceInsightEntityReferenceDto? BuildPrimaryEntityReference(FinanceAgentInsight insight)
+    {
+        var affectedEntities = DeserializeInsightEntities(insight.AffectedEntitiesJson);
+        return affectedEntities.FirstOrDefault(x => x.IsPrimary)
+            ?? new FinanceInsightEntityReferenceDto(insight.EntityType, insight.EntityId, insight.EntityDisplayName, true);
+    }
+
+    private static IReadOnlyList<FinanceInsightEntityReferenceDto> DeserializeInsightEntities(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return [];
+        }
+
+        return JsonSerializer.Deserialize<List<FinanceInsightEntityReferenceDto>>(payload, InsightSerializerOptions) ?? [];
+    }
+
+    private static string? BuildInsightRoute(Guid companyId, FinanceInsightEntityReferenceDto? entityReference)
+    {
+        if (entityReference is null)
+        {
+            return null;
+        }
+
+        if (!Guid.TryParse(entityReference.EntityId, out var entityId))
+        {
+            return null;
+        }
+
+        return entityReference.EntityType.Trim().ToLowerInvariant() switch
+        {
+            "invoice" or "finance_invoice" => $"/finance/invoices/{entityId:D}?companyId={companyId:D}",
+            "bill" or "finance_bill" => $"/finance/bills/{entityId:D}?companyId={companyId:D}",
+            "payment" or "finance_payment" => $"/finance/payments/{entityId:D}?companyId={companyId:D}",
+            "transaction" or "finance_transaction" => $"/finance/transactions/{entityId:D}?companyId={companyId:D}",
+            "anomaly" or "finance_anomaly" => $"/finance/anomalies/{entityId:D}?companyId={companyId:D}",
+            _ => null
+        };
+    }
+
+    private static int GetSeverityRank(FinancialCheckSeverity severity) =>
+        severity switch
+        {
+            FinancialCheckSeverity.Critical => 4,
+            FinancialCheckSeverity.High => 3,
+            FinancialCheckSeverity.Medium => 2,
+            FinancialCheckSeverity.Low => 1,
+            _ => 0
+        };
+
+    private static int GetSeverityRank(string severity) =>
+        severity.Trim().ToLowerInvariant() switch
+        {
+            "critical" => 4,
+            "high" => 3,
+            "medium" => 2,
+            "low" => 1,
+            _ => 0
+        };
+
+    private static string FormatToken(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "Record"
+            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+    private sealed record FinanceInsightDashboardProjection(
+        ExecutiveCockpitFinancialHealthDto FinancialHealth,
+        IReadOnlyList<ExecutiveCockpitFinanceInsightFeedItemDto> TopActions,
+        IReadOnlyList<ExecutiveCockpitFinanceInsightFeedItemDto> FeedItems);
 }

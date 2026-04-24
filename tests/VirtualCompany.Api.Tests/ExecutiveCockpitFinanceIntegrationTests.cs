@@ -38,6 +38,15 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
         Assert.NotNull(dashboard.Finance.LowCashAlert);
         Assert.False(string.IsNullOrWhiteSpace(dashboard.Finance.LowCashAlert!.Summary));
         Assert.NotEmpty(dashboard.Finance.LowCashAlert!.ContributingFactors);
+        Assert.NotNull(dashboard.Finance.FinancialHealth);
+        Assert.Equal("critical", dashboard.Finance.FinancialHealth.Status, ignoreCase: true);
+        Assert.Equal(4, dashboard.Finance.FinancialHealth.ActiveInsightCount);
+        Assert.Equal(2, dashboard.Finance.FinancialHealth.CriticalInsightCount);
+        Assert.Equal(1, dashboard.Finance.TopActions.Count);
+        Assert.Equal(3, dashboard.Finance.InsightsFeed.Count);
+        Assert.Equal("transaction_anomaly:duplicate-payment-risk", dashboard.Finance.InsightsFeed[0].GroupKey);
+        Assert.Equal(2, dashboard.Finance.InsightsFeed[0].OccurrenceCount);
+        Assert.Contains("/finance/payments/", dashboard.Finance.InsightsFeed[0].Route, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "finance_workspace" && x.Route.Contains("/finance?companyId=", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "anomaly_workbench" && x.Route.Contains("/finance/anomalies", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "finance_summary" && x.Route.Contains("/finance/monthly-summary", StringComparison.OrdinalIgnoreCase));
@@ -157,6 +166,9 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
             var accountId = Guid.NewGuid();
             var counterpartyId = Guid.NewGuid();
             var invoiceId = Guid.NewGuid();
+            var billId = Guid.NewGuid();
+            var paymentAId = Guid.NewGuid();
+            var paymentBId = Guid.NewGuid();
             var transactionId = Guid.NewGuid();
 
             dbContext.Users.AddRange(
@@ -221,6 +233,92 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
                 950m,
                 "USD",
                 "open"));
+            dbContext.FinanceBills.Add(new FinanceBill(
+                billId,
+                companyId,
+                counterpartyId,
+                "BILL-COCKPIT-001",
+                new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc),
+                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
+                725m,
+                "USD",
+                "open"));
+            dbContext.Payments.AddRange(
+                new Payment(paymentAId, companyId, "outgoing", 315m, "USD", new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc), "bank_transfer", "pending", "PAY-COCKPIT-001"),
+                new Payment(paymentBId, companyId, "outgoing", 335m, "USD", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), "bank_transfer", "pending", "PAY-COCKPIT-002"));
+            dbContext.FinanceAgentInsights.AddRange(
+                new FinanceAgentInsight(
+                    Guid.NewGuid(),
+                    companyId,
+                    FinancialCheckDefinitions.TransactionAnomaly.Code,
+                    "duplicate-payment-risk",
+                    "payment",
+                    paymentAId.ToString("D"),
+                    FinancialCheckSeverity.Critical,
+                    "Two outgoing payments appear to represent the same underlying condition.",
+                    "Review both payments before releasing funds.",
+                    0.96m,
+                    "PAY-COCKPIT-001",
+                    """[{"entityType":"payment","entityId":"PAYMENT_A","displayName":"PAY-COCKPIT-001","isPrimary":true}]""".Replace("PAYMENT_A", paymentAId.ToString("D")),
+                    null,
+                    FinanceInsightStatus.Active,
+                    new DateTime(2026, 4, 22, 10, 0, 0, DateTimeKind.Utc),
+                    new DateTime(2026, 4, 22, 10, 0, 0, DateTimeKind.Utc),
+                    new DateTime(2026, 4, 22, 10, 5, 0, DateTimeKind.Utc)),
+                new FinanceAgentInsight(
+                    Guid.NewGuid(),
+                    companyId,
+                    FinancialCheckDefinitions.TransactionAnomaly.Code,
+                    "duplicate-payment-risk",
+                    "payment",
+                    paymentBId.ToString("D"),
+                    FinancialCheckSeverity.Critical,
+                    "Two outgoing payments appear to represent the same underlying condition.",
+                    "Review both payments before releasing funds.",
+                    0.94m,
+                    "PAY-COCKPIT-002",
+                    """[{"entityType":"payment","entityId":"PAYMENT_B","displayName":"PAY-COCKPIT-002","isPrimary":true}]""".Replace("PAYMENT_B", paymentBId.ToString("D")),
+                    null,
+                    FinanceInsightStatus.Active,
+                    new DateTime(2026, 4, 22, 10, 10, 0, DateTimeKind.Utc),
+                    new DateTime(2026, 4, 22, 10, 10, 0, DateTimeKind.Utc),
+                    new DateTime(2026, 4, 22, 10, 15, 0, DateTimeKind.Utc)),
+                new FinanceAgentInsight(
+                    Guid.NewGuid(),
+                    companyId,
+                    FinancialCheckDefinitions.PayablesPressure.Code,
+                    "bill-cash-pressure",
+                    "bill",
+                    billId.ToString("D"),
+                    FinancialCheckSeverity.High,
+                    "A supplier bill is overdue and cash pressure is rising.",
+                    "Prioritize the overdue bill and confirm payment timing.",
+                    0.89m,
+                    "BILL-COCKPIT-001",
+                    """[{"entityType":"bill","entityId":"BILL_ID","displayName":"BILL-COCKPIT-001","isPrimary":true}]""".Replace("BILL_ID", billId.ToString("D")),
+                    null,
+                    FinanceInsightStatus.Active,
+                    new DateTime(2026, 4, 22, 9, 0, 0, DateTimeKind.Utc),
+                    new DateTime(2026, 4, 22, 9, 0, 0, DateTimeKind.Utc),
+                    new DateTime(2026, 4, 22, 9, 30, 0, DateTimeKind.Utc)),
+                new FinanceAgentInsight(
+                    Guid.NewGuid(),
+                    companyId,
+                    FinancialCheckDefinitions.CashRisk.Code,
+                    "invoice-follow-up",
+                    "invoice",
+                    invoiceId.ToString("D"),
+                    FinancialCheckSeverity.Medium,
+                    "An open invoice needs collection follow-up.",
+                    "Review the invoice and schedule outreach.",
+                    0.78m,
+                    "INV-COCKPIT-001",
+                    """[{"entityType":"invoice","entityId":"INV_ID","displayName":"INV-COCKPIT-001","isPrimary":true}]""".Replace("INV_ID", invoiceId.ToString("D")),
+                    null,
+                    FinanceInsightStatus.Active,
+                    new DateTime(2026, 4, 22, 8, 0, 0, DateTimeKind.Utc),
+                    new DateTime(2026, 4, 22, 8, 0, 0, DateTimeKind.Utc),
+                    new DateTime(2026, 4, 22, 8, 15, 0, DateTimeKind.Utc)));
             dbContext.FinanceSeedAnomalies.Add(new FinanceSeedAnomaly(
                 Guid.NewGuid(),
                 companyId,
@@ -272,43 +370,25 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
         public FinanceCockpitCashResponse CashPosition { get; set; } = new();
         public FinanceCockpitRunwayResponse Runway { get; set; } = new();
         public FinanceAlertDetailResponse? LowCashAlert { get; set; }
+        public FinanceHealthResponse FinancialHealth { get; set; } = new();
+        public List<FinanceInsightFeedItemResponse> TopActions { get; set; } = [];
+        public List<FinanceInsightFeedItemResponse> InsightsFeed { get; set; } = [];
         public List<FinanceCockpitActionResponse> AvailableActions { get; set; } = [];
         public List<FinanceCockpitLinkResponse> DeepLinks { get; set; } = [];
     }
 
-    private sealed class FinanceCockpitCashResponse
-    {
-        public string DisplayValue { get; set; } = string.Empty;
-        public string TrendDisplay { get; set; } = string.Empty;
-        public DateTime LastRefreshedUtc { get; set; }
-    }
-
-    private sealed class FinanceCockpitRunwayResponse
+    private sealed class FinanceHealthResponse
     {
         public string Status { get; set; } = string.Empty;
-        public string DisplayValue { get; set; } = string.Empty;
-        public string StatusLabel { get; set; } = string.Empty;
+        public int ActiveInsightCount { get; set; }
+        public int CriticalInsightCount { get; set; }
+        public int HighInsightCount { get; set; }
     }
 
-    private sealed class FinanceAlertDetailResponse
+    private sealed class FinanceInsightFeedItemResponse
     {
-        public Guid AlertId { get; set; }
-        public string Summary { get; set; } = string.Empty;
-        public List<string> ContributingFactors { get; set; } = [];
-        public List<FinanceCockpitActionResponse> AvailableActions { get; set; } = [];
-        public List<FinanceCockpitLinkResponse> Links { get; set; } = [];
-    }
-
-    private sealed class FinanceCockpitActionResponse
-    {
-        public string Key { get; set; } = string.Empty;
-        public string HttpMethod { get; set; } = string.Empty;
-        public string? OrchestrationEndpoint { get; set; }
-    }
-
-    private sealed class FinanceCockpitLinkResponse
-    {
-        public string Key { get; set; } = string.Empty;
-        public string Route { get; set; } = string.Empty;
+        public string GroupKey { get; set; } = string.Empty;
+        public int OccurrenceCount { get; set; }
+        public string? Route { get; set; }
     }
 }

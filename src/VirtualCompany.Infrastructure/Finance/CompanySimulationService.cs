@@ -156,6 +156,14 @@ public sealed class CompanySimulationService : ICompanySimulationService
                 recurringExpenseInstancesGenerated += step.RecurringExpenseInstancesGenerated;
                 eventsEmitted += step.EventsEmitted;
                 cursorUtc = stepEndUtc;
+                FinanceDomainEvents.EnqueueSimulationDayAdvanced(
+                    _outboxEnqueuer,
+                    command.CompanyId,
+                    step.WindowStartUtc,
+                    step.WindowEndUtc,
+                    (int)Math.Max(1d, Math.Round((step.WindowEndUtc - step.WindowStartUtc).TotalHours, MidpointRounding.AwayFromZero)),
+                    $"finance-simulation:{command.CompanyId:N}:{step.WindowEndUtc:yyyyMMddHHmm}");
+                eventsEmitted++;
             }
 
             state.CurrentUtc = targetUtc;
@@ -197,6 +205,14 @@ public sealed class CompanySimulationService : ICompanySimulationService
                 recurringExpenseInstancesGenerated += step.RecurringExpenseInstancesGenerated;
                 eventsEmitted += step.EventsEmitted;
                 cursorUtc = stepEndUtc;
+                FinanceDomainEvents.EnqueueSimulationDayAdvanced(
+                    _outboxEnqueuer,
+                    command.CompanyId,
+                    step.WindowStartUtc,
+                    step.WindowEndUtc,
+                    (int)Math.Max(1d, Math.Round((step.WindowEndUtc - step.WindowStartUtc).TotalHours, MidpointRounding.AwayFromZero)),
+                    $"finance-simulation:{command.CompanyId:N}:{step.WindowEndUtc:yyyyMMddHHmm}");
+                eventsEmitted++;
             }
 
             state.CurrentUtc = targetUtc;
@@ -374,6 +390,7 @@ public sealed class CompanySimulationService : ICompanySimulationService
                     createdUtc: occurrenceUtc,
                     updatedUtc: occurrenceUtc);
                 _dbContext.FinanceBills.Add(bill);
+                FinanceDomainEvents.EnqueueBillCreated(_outboxEnqueuer, bill, rule.Name);
                 billCount++;
                 recurringExpenseCount++;
 

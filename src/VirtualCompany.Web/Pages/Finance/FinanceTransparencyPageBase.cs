@@ -43,6 +43,8 @@ public abstract class FinanceTransparencyPageBase : FinancePageBase
         return NormalizeToken(entityType) switch
         {
             "finance_transaction" or "transaction" => FinanceRoutes.BuildTransactionDetailPath(parsedEntityId, CompanyScopeId),
+            "finance_bill" or "bill" => FinanceRoutes.BuildBillDetailPath(parsedEntityId, CompanyScopeId),
+            "finance_payment" or "payment" => FinanceRoutes.BuildPaymentDetailPath(parsedEntityId, CompanyScopeId),
             "finance_invoice" or "invoice" => FinanceRoutes.BuildInvoiceDetailPath(parsedEntityId, CompanyScopeId),
             "finance_anomaly" or "anomaly" => FinanceRoutes.BuildAnomalyDetailPath(parsedEntityId, CompanyScopeId),
             "finance_alert" or "alert" => FinanceRoutes.BuildAlertDetailPath(parsedEntityId, CompanyScopeId),

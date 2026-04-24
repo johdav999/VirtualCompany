@@ -1,0 +1,433 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceWorkflowTriggerContracts.cs b/src/VirtualCompany.Application/Finance/FinanceWorkflowTriggerContracts.cs
+index 0a1b2c3..4d5e6f7 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceWorkflowTriggerContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceWorkflowTriggerContracts.cs
+@@ -27,6 +27,14 @@ public sealed record FinanceWorkflowTriggerExecutionDto(
+ 
+ public interface IFinanceWorkflowTriggerService
+ {
++    Task<FinanceWorkflowTriggerExecutionDto> ProcessAsync(
++        ProcessFinanceWorkflowTriggerCommand command,
++        CancellationToken cancellationToken);
++}
++
++public interface IFinanceWorkflowTriggerRegistry
++{
++    IReadOnlyList<string> GetChecks(string triggerType);
++    IReadOnlyList<FinanceWorkflowTriggerCheckRegistration> ListRegistrations();
+     Task<FinanceWorkflowTriggerExecutionDto> ProcessAsync(
+         ProcessFinanceWorkflowTriggerCommand command,
+         CancellationToken cancellationToken);
+@@ -57,3 +65,9 @@ public static class FinanceWorkflowTriggerOutcomes
+     public const string Succeeded = "succeeded";
+     public const string Failed = "failed";
+ }
++
++public sealed record FinanceWorkflowTriggerCheckRegistration(
++    string TriggerType,
++    IReadOnlyList<string> CheckCodes);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index 1a2b3c4..5d6e7f8 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -424,12 +424,15 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+             _ => null
+         };
+ 
++        var sourceEntityVersion = TryReadMetadataString(payload.Metadata, "sourceEntityVersion") ?? payload.EventId;
++
+         return new ProcessFinanceWorkflowTriggerCommand(
+             payload.CompanyId,
+             triggerType,
+             payload.SourceEntityType,
+             payload.SourceEntityId,
+-            payload.EventId,
++            sourceEntityVersion,
+             payload.OccurredAtUtc,
+             string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId,
+             payload.Metadata);
+@@ -653,6 +656,22 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         return null;
+     }
+ 
++    private static string? TryReadMetadataString(
++        IReadOnlyDictionary<string, JsonNode?> metadata,
++        string key)
++    {
++        foreach (var pair in metadata)
++        {
++            if (!string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase) ||
++                pair.Value is not JsonValue value ||
++                !value.TryGetValue<string>(out var text) ||
++                string.IsNullOrWhiteSpace(text))
++            {
++                continue;
++            }
++
++            return text.Trim();
++        }
++
+     private async Task InvalidateCockpitAsync(
+         CompanyOutboxMessage message,
+         string? entityType,
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 2b3c4d5..6e7f8a9 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -418,6 +418,7 @@ public static class DependencyInjection
+                 ? provider.GetRequiredService<MockFinanceToolProvider>()
+                 : provider.GetRequiredService<InternalFinanceToolProvider>();
+         });
++        services.AddSingleton<IFinanceWorkflowTriggerRegistry, StaticFinanceWorkflowTriggerRegistry>();
+         services.AddScoped<IFinanceWorkflowTriggerService, FinanceWorkflowTriggerService>();
+         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
+         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceDomainEvents.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceDomainEvents.cs
+index 3c4d5e6..7f8a9b0 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceDomainEvents.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceDomainEvents.cs
+@@ -33,6 +33,7 @@ internal static class FinanceDomainEvents
+                     ["recordId"] = JsonValue.Create(transaction.Id),
+                     ["amount"] = JsonValue.Create(transaction.Amount),
+                     ["category"] = JsonValue.Create(transaction.TransactionType),
++                    ["sourceEntityVersion"] = JsonValue.Create(BuildSourceEntityVersion(transaction.CreatedUtc)),
+                     ["timestampUtc"] = JsonValue.Create(transaction.TransactionUtc)
+                 }),
+             effectiveCorrelationId,
+@@ -74,6 +75,7 @@ internal static class FinanceDomainEvents
+                     ["supplierReference"] = JsonValue.Create(supplierReference),
+                     ["amount"] = JsonValue.Create(bill.Amount),
+                     ["dueDateUtc"] = JsonValue.Create(bill.DueUtc),
++                    ["sourceEntityVersion"] = JsonValue.Create(BuildSourceEntityVersion(bill.UpdatedUtc)),
+                     ["receivedUtc"] = JsonValue.Create(bill.ReceivedUtc)
+                 }),
+             effectiveCorrelationId,
+@@ -115,6 +117,7 @@ internal static class FinanceDomainEvents
+                     ["currency"] = JsonValue.Create(payment.Currency),
+                     ["paymentDate"] = JsonValue.Create(payment.PaymentDate),
+                     ["status"] = JsonValue.Create(payment.Status),
++                    ["sourceEntityVersion"] = JsonValue.Create(BuildSourceEntityVersion(payment.UpdatedUtc)),
+                     ["counterpartyReference"] = JsonValue.Create(payment.CounterpartyReference)
+                 }),
+             effectiveCorrelationId,
+@@ -156,6 +159,7 @@ internal static class FinanceDomainEvents
+                     ["invoiceId"] = JsonValue.Create(invoice.Id),
+                     ["supplierOrCustomerReference"] = JsonValue.Create(supplierOrCustomerReference),
+                     ["amount"] = JsonValue.Create(invoice.Amount),
++                    ["sourceEntityVersion"] = JsonValue.Create(BuildSourceEntityVersion(invoice.UpdatedUtc)),
+                     ["dueDateUtc"] = JsonValue.Create(invoice.DueUtc),
+                     ["timestampUtc"] = JsonValue.Create(invoice.CreatedUtc)
+                 }),
+@@ -197,6 +201,7 @@ internal static class FinanceDomainEvents
+                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                 {
+                     ["companyId"] = JsonValue.Create(companyId),
++                    ["sourceEntityVersion"] = JsonValue.Create(BuildSourceEntityVersion(normalizedWindowEndUtc)),
+                     ["windowStartUtc"] = JsonValue.Create(normalizedWindowStartUtc),
+                     ["windowEndUtc"] = JsonValue.Create(normalizedWindowEndUtc),
+                     ["hoursAdvanced"] = JsonValue.Create(hoursAdvanced)
+@@ -251,4 +256,7 @@ internal static class FinanceDomainEvents
+ 
+     private static DateTime NormalizeUtc(DateTime value) =>
+         value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++
++    private static string BuildSourceEntityVersion(DateTime value) =>
++        NormalizeUtc(value).ToString("O");
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceWorkflowTriggerService.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceWorkflowTriggerService.cs
+index 4d5e6f7..8a9b0c1 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceWorkflowTriggerService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceWorkflowTriggerService.cs
+@@ -15,6 +15,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+     private readonly IFinanceApprovalTaskService _financeApprovalTaskService;
+     private readonly IFinanceCashPositionWorkflowService _financeCashPositionWorkflowService;
+     private readonly TimeProvider _timeProvider;
++    private readonly IFinanceWorkflowTriggerRegistry _triggerRegistry;
+     private readonly ILogger<FinanceWorkflowTriggerService> _logger;
+ 
+     public FinanceWorkflowTriggerService(
+@@ -22,6 +23,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+         IFinanceReadService financeReadService,
+         IFinanceApprovalTaskService financeApprovalTaskService,
+         IFinanceCashPositionWorkflowService financeCashPositionWorkflowService,
++        IFinanceWorkflowTriggerRegistry triggerRegistry,
+         TimeProvider timeProvider,
+         ILogger<FinanceWorkflowTriggerService> logger)
+     {
+@@ -29,6 +31,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+         _financeReadService = financeReadService;
+         _financeApprovalTaskService = financeApprovalTaskService;
+         _financeCashPositionWorkflowService = financeCashPositionWorkflowService;
++        _triggerRegistry = triggerRegistry;
+         _timeProvider = timeProvider;
+         _logger = logger;
+     }
+@@ -74,11 +77,17 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+         }
+ 
+         var executedChecks = new List<string>();
++        var registeredChecks = _triggerRegistry.GetChecks(normalizedTriggerType);
++
+         try
+         {
+-            await TryRefreshInsightsSnapshotAsync(command.CompanyId, command.OccurredAtUtc, executedChecks, cancellationToken);
+-            await TryEvaluateCashPositionAsync(command.CompanyId, executedChecks, cancellationToken);
+-            await TryEnsureApprovalTaskAsync(command.CompanyId, normalizedTriggerType, normalizedSourceEntityId, executedChecks, cancellationToken);
++            foreach (var checkCode in registeredChecks)
++            {
++                await ExecuteRegisteredCheckAsync(
++                    checkCode,
++                    command,
++                    normalizedTriggerType,
++                    normalizedSourceEntityId,
++                    executedChecks,
++                    cancellationToken);
++            }
+ 
+             execution.Complete(
+                 executedChecks,
+@@ -101,6 +110,28 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
+         }
+     }
+ 
++    private Task ExecuteRegisteredCheckAsync(
++        string checkCode,
++        ProcessFinanceWorkflowTriggerCommand command,
++        string triggerType,
++        string sourceEntityId,
++        ICollection<string> executedChecks,
++        CancellationToken cancellationToken) =>
++        checkCode switch
++        {
++            FinanceWorkflowExecutedChecks.RefreshInsightsSnapshot => TryRefreshInsightsSnapshotAsync(
++                command.CompanyId,
++                command.OccurredAtUtc,
++                executedChecks,
++                cancellationToken),
++            FinanceWorkflowExecutedChecks.EvaluateCashPosition => TryEvaluateCashPositionAsync(
++                command.CompanyId,
++                executedChecks,
++                cancellationToken),
++            FinanceWorkflowExecutedChecks.EnsureApprovalTask => TryEnsureApprovalTaskAsync(
++                command.CompanyId,
++                triggerType,
++                sourceEntityId,
++                executedChecks,
++                cancellationToken),
++            _ => throw new InvalidOperationException($"Unsupported finance workflow trigger check '{checkCode}'.")
++        };
++
+     private async Task TryRefreshInsightsSnapshotAsync(
+         Guid companyId,
+         DateTime occurredAtUtc,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/StaticFinanceWorkflowTriggerRegistry.cs b/src/VirtualCompany.Infrastructure/Finance/StaticFinanceWorkflowTriggerRegistry.cs
+new file mode 100644
+index 0000000..9b0c1d2
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/StaticFinanceWorkflowTriggerRegistry.cs
+@@ -0,0 +1,54 @@
++using VirtualCompany.Application.Finance;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class StaticFinanceWorkflowTriggerRegistry : IFinanceWorkflowTriggerRegistry
++{
++    private readonly IReadOnlyDictionary<string, FinanceWorkflowTriggerCheckRegistration> _registrations;
++
++    public StaticFinanceWorkflowTriggerRegistry()
++    {
++        var registrations = new[]
++        {
++            Register(
++                FinanceWorkflowTriggerTypes.Invoice,
++                FinanceWorkflowExecutedChecks.RefreshInsightsSnapshot,
++                FinanceWorkflowExecutedChecks.EvaluateCashPosition),
++            Register(
++                FinanceWorkflowTriggerTypes.Bill,
++                FinanceWorkflowExecutedChecks.RefreshInsightsSnapshot,
++                FinanceWorkflowExecutedChecks.EvaluateCashPosition,
++                FinanceWorkflowExecutedChecks.EnsureApprovalTask),
++            Register(
++                FinanceWorkflowTriggerTypes.Payment,
++                FinanceWorkflowExecutedChecks.RefreshInsightsSnapshot,
++                FinanceWorkflowExecutedChecks.EvaluateCashPosition,
++                FinanceWorkflowExecutedChecks.EnsureApprovalTask),
++            Register(
++                FinanceWorkflowTriggerTypes.Cash,
++                FinanceWorkflowExecutedChecks.RefreshInsightsSnapshot,
++                FinanceWorkflowExecutedChecks.EvaluateCashPosition),
++            Register(
++                FinanceWorkflowTriggerTypes.SimulationDayAdvanced,
++                FinanceWorkflowExecutedChecks.RefreshInsightsSnapshot,
++                FinanceWorkflowExecutedChecks.EvaluateCashPosition)
++        };
++
++        _registrations = registrations.ToDictionary(x => x.TriggerType, StringComparer.OrdinalIgnoreCase);
++    }
++
++    public IReadOnlyList<string> GetChecks(string triggerType)
++    {
++        var normalizedTriggerType = FinanceWorkflowTriggerTypes.Normalize(triggerType);
++        return _registrations.TryGetValue(normalizedTriggerType, out var registration)
++            ? registration.CheckCodes
++            : [];
++    }
++
++    public IReadOnlyList<FinanceWorkflowTriggerCheckRegistration> ListRegistrations() =>
++        _registrations.Values
++            .OrderBy(x => x.TriggerType, StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++
++    private static FinanceWorkflowTriggerCheckRegistration Register(string triggerType, params string[] checkCodes) =>
++        new(
++            FinanceWorkflowTriggerTypes.Normalize(triggerType),
++            checkCodes
++                .Where(value => !string.IsNullOrWhiteSpace(value))
++                .Select(value => value.Trim())
++                .Distinct(StringComparer.OrdinalIgnoreCase)
++                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
++                .ToArray());
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423153000_AddFinanceWorkflowTriggerExecutions.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423153000_AddFinanceWorkflowTriggerExecutions.cs
+new file mode 100644
+index 0000000..0c1d2e3
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260423153000_AddFinanceWorkflowTriggerExecutions.cs
+@@ -0,0 +1,77 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddFinanceWorkflowTriggerExecutions : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
++            var string256Type = isPostgres ? "character varying(256)" : "nvarchar(256)";
++            var string4000Type = isPostgres ? "character varying(4000)" : "nvarchar(4000)";
++
++            migrationBuilder.CreateTable(
++                name: "finance_workflow_trigger_executions",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    trigger_type = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    source_entity_type = table.Column<string>(type: string128Type, maxLength: 128, nullable: false),
++                    source_entity_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: false),
++                    source_entity_version = table.Column<string>(type: string256Type, maxLength: 256, nullable: false),
++                    correlation_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: true),
++                    occurred_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    started_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    completed_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                    executed_checks = table.Column<string>(type: string4000Type, maxLength: 4000, nullable: false),
++                    outcome = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    error_details = table.Column<string>(type: string4000Type, maxLength: 4000, nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_workflow_trigger_executions", x => x.id);
++                    table.UniqueConstraint("AK_finance_workflow_trigger_executions_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(
++                        name: "FK_finance_workflow_trigger_executions_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_workflow_trigger_executions_company_id",
++                table: "finance_workflow_trigger_executions",
++                column: "company_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_workflow_trigger_executions_company_id_source_entity_type_source_entity_id",
++                table: "finance_workflow_trigger_executions",
++                columns: new[] { "company_id", "source_entity_type", "source_entity_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_workflow_trigger_executions_company_id_trigger_type_occurred_at",
++                table: "finance_workflow_trigger_executions",
++                columns: new[] { "company_id", "trigger_type", "occurred_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_workflow_trigger_executions_company_id_trigger_type_source_entity_id_source_entity_version",
++                table: "finance_workflow_trigger_executions",
++                columns: new[] { "company_id", "trigger_type", "source_entity_id", "source_entity_version" },
++                unique: true);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "finance_workflow_trigger_executions");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceWorkflowTriggerIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceWorkflowTriggerIntegrationTests.cs
+index 5e6f708..1d2e3f4 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceWorkflowTriggerIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceWorkflowTriggerIntegrationTests.cs
+@@ -28,6 +28,7 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW
+         var utcNow = new DateTime(2026, 4, 22, 9, 0, 0, DateTimeKind.Utc);
+         var paymentDate = utcNow.AddHours(-1);
+         var correlationId = "finance-trigger-payment-001";
++        var sourceEntityVersion = paymentDate.ToString("O");
+         var eventId = $"finance.payment.created:{paymentId:N}";
+ 
+         await _factory.SeedAsync(dbContext =>
+@@ -84,7 +85,7 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW
+                 "Recent operating expense",
+                 "TXN-LOW-CASH-001",
+                 createdUtc: utcNow.AddDays(-5)));
+ 
+-            dbContext.CompanyOutboxMessages.Add(CreatePlatformEventOutboxMessage(firstOutboxId, companyId, utcNow, correlationId, eventId, paymentId, "payment-outbox-001"));
++            dbContext.CompanyOutboxMessages.Add(CreatePlatformEventOutboxMessage(firstOutboxId, companyId, utcNow, correlationId, eventId, paymentId, sourceEntityVersion, "payment-outbox-001"));
+             return Task.CompletedTask;
+         });
+@@ -97,7 +98,7 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+-            dbContext.CompanyOutboxMessages.Add(CreatePlatformEventOutboxMessage(secondOutboxId, companyId, utcNow.AddMinutes(1), correlationId, eventId, paymentId, "payment-outbox-002"));
++            dbContext.CompanyOutboxMessages.Add(CreatePlatformEventOutboxMessage(secondOutboxId, companyId, utcNow.AddMinutes(1), correlationId, eventId, paymentId, sourceEntityVersion, "payment-outbox-002"));
+             return Task.CompletedTask;
+         });
+@@ -127,8 +128,10 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW
+             Assert.Single(executions);
+             Assert.Equal(companyId, execution.CompanyId);
+             Assert.Equal("payment", execution.TriggerType);
++            Assert.Equal(correlationId, execution.CorrelationId);
+             Assert.Equal(paymentId.ToString("N"), execution.SourceEntityId);
+             Assert.NotEqual(default, execution.StartedAtUtc);
++            Assert.Equal(sourceEntityVersion, execution.SourceEntityVersion);
+             Assert.NotNull(execution.CompletedAtUtc);
+             Assert.Equal("succeeded", execution.Outcome);
+             Assert.Contains("refresh_insights_snapshot", execution.GetExecutedChecks());
+@@ -145,6 +148,7 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW
+         DateTime occurredAtUtc,
+         string correlationId,
+         string eventId,
+         Guid paymentId,
++        string sourceEntityVersion,
+         string idempotencyKey)
+     {
+         var payload = JsonSerializer.Serialize(new PlatformEventEnvelope(
+@@ -160,6 +164,7 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW
+             {
+                 ["paymentId"] = JsonValue.Create(paymentId),
+                 ["amount"] = JsonValue.Create(640.10m),
++                ["sourceEntityVersion"] = JsonValue.Create(sourceEntityVersion),
+                 ["currency"] = JsonValue.Create("USD")
+             }));
+ 
+END_OF_PATCH

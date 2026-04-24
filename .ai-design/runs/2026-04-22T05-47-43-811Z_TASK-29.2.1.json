@@ -1,0 +1,30 @@
+{
+  "taskId": "TASK-29.2.1",
+  "promptPath": ".ai-design/prompts/TASK-29.2.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-22T05:47:43.811Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-22T05-47-43-811Z_TASK-29.2.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-22T05-47-43-811Z_TASK-29.2.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-22T05:57:42.868Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "  Assert.Equal(FinanceInsightStatus.Active, created.Status);\n+\n+        timeProvider.SetUtcNow(new DateTimeOffset(2026, 4, 22, 9, 0, 0, TimeSpan.Zero));\n+\n+        await service.ReconcileAsync(\n+            context with { AsOfUtc = timeProvider.GetUtcNow().UtcDateTime },\n+            [\"overdue_receivables\"],\n+            [\n+                new FinancialCheckResult(\n+                    \"overdue_receivables\",\n+                    \"overdue_receivables:customer-1\",\n+                    FinancialCheckSeverity.Critical,\n+                    \"Contoso now has severely overdue receivables.\",\n+                    \"Escalate collections immediately.\",\n+                    0.92m,\n+                    primaryEntity,\n+                    [primaryEntity])\n+            ],\n+            CancellationToken.None);\n+\n+        var updatedRows = await dbContext.FinanceAgentInsights.IgnoreQueryFilters().ToListAsync();\n+        Assert.Single(updatedRows);\n+        Assert.Equal(FinancialCheckSeverity.Critical, updatedRows[0].Severity);\n+        Assert.Contains(\"severely overdue\", updatedRows[0].Message);\n+\n+        timeProvider.SetUtcNow(new DateTimeOffset(2026, 4, 22, 10, 0, 0, TimeSpan.Zero));\n+\n+        await service.ReconcileAsync(\n+            context with { AsOfUtc = timeProvider.GetUtcNow().UtcDateTime },\n+            [\"overdue_receivables\"],\n+            [],\n+            CancellationToken.None);\n+\n+        var resolved = await dbContext.FinanceAgentInsights.IgnoreQueryFilters().SingleAsync();\n+        Assert.Equal(FinanceInsightStatus.Resolved, resolved.Status);\n+    }\n+\n+    private sealed class MutableTimeProvider : TimeProvider\n+    {\n+        private DateTimeOffset _utcNow;\n+\n+        public MutableTimeProvider(DateTimeOffset utcNow)\n+        {\n+            _utcNow = utcNow;\n+        }\n+\n+        public override DateTimeOffset GetUtcNow() => _utcNow;\n+\n+        public void SetUtcNow(DateTimeOffset utcNow)\n+        {\n+            _utcNow = utcNow;\n+        }\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "ceInsightStatus.Active, created.Status);\n+\n+        timeProvider.SetUtcNow(new DateTimeOffset(2026, 4, 22, 9, 0, 0, TimeSpan.Zero));\n+\n+        await service.ReconcileAsync(\n+            context with { AsOfUtc = timeProvider.GetUtcNow().UtcDateTime },\n+            [\"overdue_receivables\"],\n+            [\n+                new FinancialCheckResult(\n+                    \"overdue_receivables\",\n+                    \"overdue_receivables:customer-1\",\n+                    FinancialCheckSeverity.Critical,\n+                    \"Contoso now has severely overdue receivables.\",\n+                    \"Escalate collections immediately.\",\n+                    0.92m,\n+                    primaryEntity,\n+                    [primaryEntity])\n+            ],\n+            CancellationToken.None);\n+\n+        var updatedRows = await dbContext.FinanceAgentInsights.IgnoreQueryFilters().ToListAsync();\n+        Assert.Single(updatedRows);\n+        Assert.Equal(FinancialCheckSeverity.Critical, updatedRows[0].Severity);\n+        Assert.Contains(\"severely overdue\", updatedRows[0].Message);\n+\n+        timeProvider.SetUtcNow(new DateTimeOffset(2026, 4, 22, 10, 0, 0, TimeSpan.Zero));\n+\n+        await service.ReconcileAsync(\n+            context with { AsOfUtc = timeProvider.GetUtcNow().UtcDateTime },\n+            [\"overdue_receivables\"],\n+            [],\n+            CancellationToken.None);\n+\n+        var resolved = await dbContext.FinanceAgentInsights.IgnoreQueryFilters().SingleAsync();\n+        Assert.Equal(FinanceInsightStatus.Resolved, resolved.Status);\n+    }\n+\n+    private sealed class MutableTimeProvider : TimeProvider\n+    {\n+        private DateTimeOffset _utcNow;\n+\n+        public MutableTimeProvider(DateTimeOffset utcNow)\n+        {\n+            _utcNow = utcNow;\n+        }\n+\n+        public override DateTimeOffset GetUtcNow() => _utcNow;\n+\n+        public void SetUtcNow(DateTimeOffset utcNow)\n+        {\n+            _utcNow = utcNow;\n+        }\n+    }\n+}\nEND_OF_PATCH\ntokens used\n135,304\n",
+  "verbosityMode": "summary"
+}

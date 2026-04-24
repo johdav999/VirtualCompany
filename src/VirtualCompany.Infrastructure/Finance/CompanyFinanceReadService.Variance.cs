@@ -56,22 +56,30 @@ public sealed partial class CompanyFinanceReadService
                 []);
         }
 
-        var actualRows = await _dbContext.LedgerEntryLines
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x =>
-                x.CompanyId == query.CompanyId &&
-                x.LedgerEntry.Status == LedgerEntryStatuses.Posted &&
-                (!query.FinanceAccountId.HasValue || x.FinanceAccountId == query.FinanceAccountId.Value) &&
-                (!includesCostCenters || !query.CostCenterId.HasValue || x.CostCenterId == query.CostCenterId.Value))
-            .Select(x => new ActualLedgerRow(
-                x.LedgerEntry.PostedAtUtc ?? x.LedgerEntry.EntryUtc,
-                x.FinanceAccountId,
-                NormalizeVarianceCategory(x.FinanceAccount.AccountType),
-                x.CostCenterId,
-                x.DebitAmount - x.CreditAmount,
-                x.Currency))
-            .ToListAsync(cancellationToken);
+        List<ActualLedgerRow> actualRows;
+        try
+        {
+            actualRows = await _dbContext.LedgerEntryLines
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x =>
+                    x.CompanyId == query.CompanyId &&
+                    x.LedgerEntry.Status == LedgerEntryStatuses.Posted &&
+                    (!query.FinanceAccountId.HasValue || x.FinanceAccountId == query.FinanceAccountId.Value) &&
+                    (!includesCostCenters || !query.CostCenterId.HasValue || x.CostCenterId == query.CostCenterId.Value))
+                .Select(x => new ActualLedgerRow(
+                    x.LedgerEntry.PostedAtUtc ?? x.LedgerEntry.EntryUtc,
+                    x.FinanceAccountId,
+                    NormalizeVarianceCategory(x.FinanceAccount.AccountType),
+                    x.CostCenterId,
+                    x.DebitAmount - x.CreditAmount,
+                    x.Currency))
+                .ToListAsync(cancellationToken);
+        }
+        catch (Exception ex) when (IsMissingLedgerReportingSchemaTable(ex))
+        {
+            actualRows = [];
+        }
 
         var actualLookup = actualRows
             .Where(x => x.PostedAtUtc >= periodStartUtc && x.PostedAtUtc < endExclusiveUtc)
@@ -147,29 +155,65 @@ public sealed partial class CompanyFinanceReadService
         bool includesCostCenters,
         CancellationToken cancellationToken)
     {
-        if (comparisonType == FinanceVarianceComparisonTypes.Budget)
+        try
         {
-            var budgets = _dbContext.Budgets
+            if (comparisonType == FinanceVarianceComparisonTypes.Budget)
+            {
+                var budgets = _dbContext.Budgets
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(x => x.CompanyId == query.CompanyId && x.PeriodStartUtc >= periodStartUtc && x.PeriodStartUtc < endExclusiveUtc);
+
+                if (!string.IsNullOrWhiteSpace(normalizedVersion))
+                {
+                    budgets = budgets.Where(x => x.Version == normalizedVersion);
+                }
+
+                if (query.FinanceAccountId.HasValue)
+                {
+                    budgets = budgets.Where(x => x.FinanceAccountId == query.FinanceAccountId.Value);
+                }
+
+                if (includesCostCenters && query.CostCenterId.HasValue)
+                {
+                    budgets = budgets.Where(x => x.CostCenterId == query.CostCenterId.Value);
+                }
+
+                return await budgets
+                    .Select(x => new PlanningComparisonRow(
+                        x.PeriodStartUtc,
+                        x.FinanceAccountId,
+                        x.FinanceAccount.Code,
+                        x.FinanceAccount.Name,
+                        NormalizeVarianceCategory(x.FinanceAccount.AccountType),
+                        FormatVarianceCategoryName(x.FinanceAccount.AccountType),
+                        includesCostCenters ? x.CostCenterId : null,
+                        x.Amount,
+                        x.Currency))
+                    .ToListAsync(cancellationToken);
+            }
+
+            var forecasts = _dbContext.Forecasts
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(x => x.CompanyId == query.CompanyId && x.PeriodStartUtc >= periodStartUtc && x.PeriodStartUtc < endExclusiveUtc);
 
             if (!string.IsNullOrWhiteSpace(normalizedVersion))
             {
-                budgets = budgets.Where(x => x.Version == normalizedVersion);
+                forecasts = forecasts.Where(x => x.Version == normalizedVersion);
             }
 
             if (query.FinanceAccountId.HasValue)
             {
-                budgets = budgets.Where(x => x.FinanceAccountId == query.FinanceAccountId.Value);
+                forecasts = forecasts.Where(x => x.FinanceAccountId == query.FinanceAccountId.Value);
             }
 
             if (includesCostCenters && query.CostCenterId.HasValue)
             {
-                budgets = budgets.Where(x => x.CostCenterId == query.CostCenterId.Value);
+                forecasts = forecasts.Where(x => x.CostCenterId == query.CostCenterId.Value);
             }
 
-            return await budgets
+            return await forecasts
                 .Select(x => new PlanningComparisonRow(
                     x.PeriodStartUtc,
                     x.FinanceAccountId,
@@ -182,39 +226,10 @@ public sealed partial class CompanyFinanceReadService
                     x.Currency))
                 .ToListAsync(cancellationToken);
         }
-
-        var forecasts = _dbContext.Forecasts
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.PeriodStartUtc >= periodStartUtc && x.PeriodStartUtc < endExclusiveUtc);
-
-        if (!string.IsNullOrWhiteSpace(normalizedVersion))
+        catch (Exception ex) when (IsMissingPlanningSchemaTable(ex))
         {
-            forecasts = forecasts.Where(x => x.Version == normalizedVersion);
+            return [];
         }
-
-        if (query.FinanceAccountId.HasValue)
-        {
-            forecasts = forecasts.Where(x => x.FinanceAccountId == query.FinanceAccountId.Value);
-        }
-
-        if (includesCostCenters && query.CostCenterId.HasValue)
-        {
-            forecasts = forecasts.Where(x => x.CostCenterId == query.CostCenterId.Value);
-        }
-
-        return await forecasts
-            .Select(x => new PlanningComparisonRow(
-                x.PeriodStartUtc,
-                x.FinanceAccountId,
-                x.FinanceAccount.Code,
-                x.FinanceAccount.Name,
-                NormalizeVarianceCategory(x.FinanceAccount.AccountType),
-                FormatVarianceCategoryName(x.FinanceAccount.AccountType),
-                includesCostCenters ? x.CostCenterId : null,
-                x.Amount,
-                x.Currency))
-            .ToListAsync(cancellationToken);
     }
 
     private async Task<bool> AreCostCentersEnabledAsync(Guid companyId, CancellationToken cancellationToken)

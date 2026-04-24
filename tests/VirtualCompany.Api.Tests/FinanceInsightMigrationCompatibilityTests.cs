@@ -17,6 +17,7 @@ public sealed class FinanceInsightMigrationCompatibilityTests
 {
     private static readonly DateTime LegacySeedAnchorUtc = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
     private const string MockFinanceSchemaMigration = "20260422090000_AddApprovalTaskInboxIndexes";
+    private const string FinanceInsightSchemaMigration = "20260422110000_AddFinanceAgentInsights";
     private const string PartiallySeededCompanyMigration = "20260422120000_AddBudgetAndForecastPlanning";
 
     [Fact]
@@ -52,11 +53,8 @@ public sealed class FinanceInsightMigrationCompatibilityTests
         Assert.Equal(companyId, result.CompanyId);
         Assert.True(result.GeneratedAt > DateTime.MinValue);
         Assert.False(result.FromSnapshot);
-        Assert.NotNull(result.TopExpenses);
-        Assert.NotNull(result.RevenueTrend);
-        Assert.NotNull(result.BurnRate);
-        Assert.NotNull(result.OverdueCustomerRisk);
-        Assert.NotNull(result.PayablePressure);
+        Assert.NotNull(result.Items);
+        Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.CheckCode)));
         Assert.Empty(await dbContext.Database.GetPendingMigrationsAsync());
     }
 
@@ -91,6 +89,28 @@ public sealed class FinanceInsightMigrationCompatibilityTests
             .GroupBy(x => new { x.TargetType, x.TargetId })
             .CountAsync(x => x.Count() > 1);
         Assert.Equal(0, duplicateApprovalTargets);
+    }
+
+    [Fact]
+    public async Task Finance_insights_tolerate_missing_planning_tables_on_pre_planning_schema()
+    {
+        var companyId = Guid.NewGuid();
+        await using var connection = await OpenConnectionAsync();
+        await MigrateAsync(connection, FinanceInsightSchemaMigration);
+        await SeedMockFinanceCompanyAsync(connection, companyId, "Insight Compatibility Company");
+
+        Assert.False(await TableExistsAsync(connection, "budgets"));
+        Assert.False(await TableExistsAsync(connection, "forecasts"));
+
+        await using var dbContext = CreateContext(connection);
+        var service = new CompanyFinanceReadService(dbContext, new TestCompanyContextAccessor(companyId));
+
+        var result = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyId), CancellationToken.None);
+
+        Assert.Equal(companyId, result.CompanyId);
+        Assert.NotEmpty(result.Items);
+        Assert.Contains(result.Items, item => item.CheckCode == FinancialCheckDefinitions.BudgetGap.Code);
+        Assert.Contains(result.Items, item => item.CheckCode == FinancialCheckDefinitions.ForecastGap.Code);
     }
 
     [Fact]

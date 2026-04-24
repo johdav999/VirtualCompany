@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Cockpit;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Briefings;
 using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.Agents;
@@ -178,6 +179,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly ICompanyInvitationDeliveryDispatcher _invitationDeliveryDispatcher;
     private readonly ICompanyNotificationDispatcher _notificationDispatcher;
     private readonly IInternalWorkflowEventTriggerService _workflowEventTriggerService;
+    private readonly IFinanceWorkflowTriggerService _financeWorkflowTriggerService;
     private readonly ITriggerExecutionService _triggerExecutionService;
     private readonly IExecutiveCockpitDashboardCacheInvalidator _cockpitCacheInvalidator;
     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
@@ -194,6 +196,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         ICompanyInvitationDeliveryDispatcher invitationDeliveryDispatcher,
         ICompanyNotificationDispatcher notificationDispatcher,
         ITriggerExecutionService triggerExecutionService,
+        IFinanceWorkflowTriggerService financeWorkflowTriggerService,
         IInternalWorkflowEventTriggerService workflowEventTriggerService,
         IExecutiveCockpitDashboardCacheInvalidator cockpitCacheInvalidator,
         IOptions<CompanyOutboxDispatcherOptions> options,
@@ -209,6 +212,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
         _notificationDispatcher = notificationDispatcher;
         _triggerExecutionService = triggerExecutionService;
+        _financeWorkflowTriggerService = financeWorkflowTriggerService;
         _workflowEventTriggerService = workflowEventTriggerService;
         _cockpitCacheInvalidator = cockpitCacheInvalidator;
         _options = options;
@@ -401,6 +405,51 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             .ToArrayAsync(cancellationToken);
     }
 
+    private static ProcessFinanceWorkflowTriggerCommand? BuildFinanceWorkflowTriggerCommand(
+        CompanyOutboxMessage message,
+        PlatformEventEnvelope payload)
+    {
+        var triggerType = message.Topic switch
+        {
+            CompanyOutboxTopics.FinanceInvoiceCreated => FinanceWorkflowTriggerTypes.Invoice,
+            CompanyOutboxTopics.FinanceBillCreated => FinanceWorkflowTriggerTypes.Bill,
+            CompanyOutboxTopics.FinancePaymentCreated => FinanceWorkflowTriggerTypes.Payment,
+            CompanyOutboxTopics.FinanceTransactionCreated => FinanceWorkflowTriggerTypes.Cash,
+            CompanyOutboxTopics.FinanceSimulationDayAdvanced => FinanceWorkflowTriggerTypes.SimulationDayAdvanced,
+            _ => null
+        };
+        if (triggerType is null)
+        {
+            return null;
+        }
+
+        var sourceEntityVersion = TryReadMetadataString(payload.Metadata, "sourceEntityVersion") ?? payload.EventId;
+        var sourceMetadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in payload.Metadata)
+        {
+            sourceMetadata[pair.Key] = pair.Value?.DeepClone();
+        }
+
+        sourceMetadata["eventId"] = JsonValue.Create(payload.EventId);
+        sourceMetadata["sourceOutboxMessageId"] = JsonValue.Create(message.Id.ToString("N"));
+        sourceMetadata["sourceOutboxTopic"] = JsonValue.Create(message.Topic);
+        sourceMetadata["sourceOutboxMessageType"] = JsonValue.Create(message.MessageType);
+        sourceMetadata["sourceOutboxIdempotencyKey"] = JsonValue.Create(message.IdempotencyKey);
+
+        return new ProcessFinanceWorkflowTriggerCommand(
+            payload.CompanyId,
+            triggerType,
+            payload.SourceEntityType,
+            payload.SourceEntityId,
+            sourceEntityVersion,
+            payload.OccurredAtUtc,
+            string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId,
+            payload.EventId,
+            message.CausationId ?? payload.EventId,
+            message.Id.ToString("N"),
+            sourceMetadata);
+    }
+
     private async Task DispatchAsync(CompanyOutboxMessage message, CancellationToken cancellationToken)
     {
         if (message.CompanyId == Guid.Empty)
@@ -446,6 +495,9 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             case CompanyOutboxTopics.WorkflowStateChanged:
             case CompanyOutboxTopics.FinanceTransactionCreated:
             case CompanyOutboxTopics.FinanceInvoiceCreated:
+            case CompanyOutboxTopics.FinanceBillCreated:
+            case CompanyOutboxTopics.FinancePaymentCreated:
+            case CompanyOutboxTopics.FinanceSimulationDayAdvanced:
             case CompanyOutboxTopics.FinanceThresholdBreached:
             {
                 var payload = Deserialize<PlatformEventEnvelope>(message);
@@ -459,6 +511,16 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                     throw new CompanyOutboxPermanentException($"Platform event payload type '{payload.EventType}' does not match outbox topic '{message.Topic}'.");
                 }
 
+                var financeTriggerCommand = BuildFinanceWorkflowTriggerCommand(message, payload);
+                if (financeTriggerCommand is not null)
+                {
+                    await _financeWorkflowTriggerService.ProcessAsync(
+                        financeTriggerCommand with
+                        {
+                            CorrelationId = string.IsNullOrWhiteSpace(financeTriggerCommand.CorrelationId) ? message.CorrelationId ?? payload.EventId : financeTriggerCommand.CorrelationId
+                        },
+                        cancellationToken);
+                }
                 await _workflowEventTriggerService.HandleAsync(
                     payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId },
                     cancellationToken);
@@ -599,6 +661,26 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                    string.Equals(reason?.GetValue<string>(), "created", StringComparison.OrdinalIgnoreCase)
                 ? BriefingUpdateEventTypes.ApprovalRequested
                 : BriefingUpdateEventTypes.ApprovalDecision;
+        }
+
+        return null;
+    }
+
+    private static string? TryReadMetadataString(
+        IReadOnlyDictionary<string, JsonNode?> metadata,
+        string key)
+    {
+        foreach (var pair in metadata)
+        {
+            if (!string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase) ||
+                pair.Value is not JsonValue value ||
+                !value.TryGetValue<string>(out var text) ||
+                string.IsNullOrWhiteSpace(text))
+            {
+                continue;
+            }
+
+            return text.Trim();
         }
 
         return null;
