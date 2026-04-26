@@ -128,6 +128,16 @@ public sealed partial class InternalFinanceController : ControllerBase
                 new GetFinanceCashPositionQuery(companyId, asOfUtc, averageMonthlyBurn, burnLookbackDays),
                 cancellationToken));
 
+    [HttpGet("balances")]
+    public async Task<ActionResult<IReadOnlyList<FinanceAccountBalanceDto>>> GetBalancesAsync(
+        Guid companyId,
+        [FromQuery] DateTime? asOfUtc,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadAsync(
+            () => _financeReadService.GetBalancesAsync(
+                new GetFinanceBalancesQuery(companyId, asOfUtc),
+                cancellationToken));
+
     [HttpPost("cash-position/evaluation")]
     public async Task<ActionResult<FinanceCashPositionDto>> EvaluateCashPositionAsync(
         Guid companyId,

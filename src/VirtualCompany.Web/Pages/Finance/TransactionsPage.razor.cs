@@ -277,7 +277,5 @@ public partial class TransactionsPage : FinancePageBase
         value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
     private static string FormatLabel(string? value) =>
-        string.IsNullOrWhiteSpace(value)
-            ? "n/a"
-            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        FinanceAnomalyPresentation.FormatLabel(value);
 }

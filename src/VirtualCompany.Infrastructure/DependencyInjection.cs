@@ -408,6 +408,7 @@ public static class DependencyInjection
         services.AddScoped<IReportingPeriodRegenerationJobRunner, ReportingPeriodRegenerationJobRunner>();
         services.AddScoped<IFinanceApprovalTaskBackfillJobRunner, FinanceApprovalTaskBackfillJobRunner>();
         services.AddScoped<IFinanceInsightsSnapshotJobRunner, FinanceInsightsSnapshotJobRunner>();
+        services.AddScoped<IFinanceMaintenanceService, CompanyFinanceMaintenanceService>();
         services.AddSingleton<IFinanceSeedBackfillExecutionScheduler, FinanceSeedBackfillExecutionScheduler>();
         services.AddSingleton<IFinanceSeedBackfillDelayStrategy, SystemFinanceSeedBackfillDelayStrategy>();
         services.AddScoped<IFinanceSeedingStateResolver, CompanyFinanceSeedingStateResolver>();

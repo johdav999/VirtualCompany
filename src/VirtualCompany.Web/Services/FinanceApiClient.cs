@@ -252,6 +252,17 @@ public sealed class FinanceApiClient
         return SendCompanyScopedAsync<FinanceSandboxSimulationAdvanceRequest, FinanceSandboxProgressionRunSummaryResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/sandbox-admin/simulation-controls/progression-run", request, cancellationToken);
     }
 
+    public Task<FinanceDataResetResponse> ResetFinancialDataAsync(Guid companyId, CancellationToken cancellationToken = default)
+    {
+        EnsureOnlineMutation();
+        return SendCompanyScopedAsync<object, FinanceDataResetResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"api/companies/{companyId}/finance/reset",
+            new { },
+            cancellationToken);
+    }
+
 
     public Task<FinanceSandboxToolExecutionVisibilityResponse?> GetSandboxToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default) =>
         _useOfflineMode
@@ -877,6 +888,13 @@ public sealed class FinanceCashPositionAlertStateResponse
     public Guid? AlertId { get; set; }
     public string? AlertStatus { get; set; }
     public string Rationale { get; set; } = string.Empty;
+}
+
+public sealed class FinanceDataResetResponse
+{
+    public Guid CompanyId { get; set; }
+    public int TotalDeleted { get; set; }
+    public Dictionary<string, int> DeletedCounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 public sealed class FinanceAccountBalanceResponse

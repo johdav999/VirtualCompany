@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-04-22T05:05:05.193Z",
+  "generatedAt": "2026-04-25T06:38:27.707Z",
   "epics": [
     {
       "id": "EP-1",
@@ -6407,6 +6407,226 @@
             "Invoice, bill, and payment detail pages each render an Agent Insights panel filtered to the current entity reference.",
             "Duplicate insights for the same underlying condition are grouped in the dashboard feed and shown once with an occurrence count.",
             "After a new financial event is processed, updated insights become visible in the UI within one refresh cycle or via live update without manual data repair."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-30",
+      "title": "EPIC-30 — Controlled Email Bill Ingestion, Extraction, and Approval Workflow",
+      "stories": [
+        {
+          "id": "US-30.1",
+          "title": "Implement tenant-scoped mailbox connection and manual bill scan initiation",
+          "tasks": [
+            {
+              "id": "TASK-30.1.1",
+              "title": "Add MailboxConnection and EmailIngestionRun persistence models with tenant-scoped encryption support",
+              "tags": [
+                "backend",
+                "db",
+                "security"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-30.1.2",
+              "title": "Implement Gmail and Microsoft 365 OAuth connection flows with minimal mailbox read scopes",
+              "tags": [
+                "backend",
+                "oauth",
+                "gmail",
+                "m365"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-30.1.3",
+              "title": "Build manual inbox scan endpoint and orchestration job limited to the last 30 days",
+              "tags": [
+                "backend",
+                "api",
+                "jobs"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-30.1.4",
+              "title": "Add finance workspace UI for mailbox connection status and manual scan trigger",
+              "tags": [
+                "frontend",
+                "finance-ui",
+                "integration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Users can connect either Gmail or Microsoft 365 mailboxes via OAuth with provider-specific minimal read scopes required for message and attachment retrieval.",
+            "Mailbox connections are stored per tenant and per user in a MailboxConnection record with encrypted tokens and connection status.",
+            "A user can trigger a manual 'Scan inbox for bills' action that scans only the last 30 days of messages.",
+            "The scan only evaluates configured folders/labels and bill-related keywords including invoice, bill, faktura, payment due, amount due, OCR, IBAN, bankgiro, and plusgiro.",
+            "The system persists an EmailIngestionRun audit record containing start time, end time, provider, scanned message count, detected candidate count, and failure details.",
+            "No payment action or approval proposal is created directly from mailbox connection or scan initiation alone."
+          ]
+        },
+        {
+          "id": "US-30.2",
+          "title": "Build bill detection and attachment classification pipeline for untrusted email input",
+          "tasks": [
+            {
+              "id": "TASK-30.2.1",
+              "title": "Implement BillDetectionService with keyword, sender, and attachment heuristics",
+              "tags": [
+                "backend",
+                "rules",
+                "detection"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-30.2.2",
+              "title": "Create snapshot storage for candidate emails and attachments with hash-based deduplication",
+              "tags": [
+                "backend",
+                "db",
+                "storage"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-30.2.3",
+              "title": "Add attachment and body source-type classification for PDF, DOCX, and email-body invoices",
+              "tags": [
+                "backend",
+                "parsing",
+                "classification"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The detection pipeline creates EmailMessageSnapshot and EmailAttachmentSnapshot records only for messages classified as likely bill candidates.",
+            "Candidate detection uses deterministic rules combining sender/domain matching, folder or label filtering, keyword matching, and attachment presence.",
+            "The classifier supports text-based PDF attachments, DOCX attachments, and email body-only invoices as separate source types.",
+            "The system stores attachment metadata, content hash, MIME type, and reference identifiers without persisting unnecessary full mailbox content.",
+            "All extracted document text is stored and processed as untrusted data and is not allowed to alter workflow policy or approval behavior.",
+            "Messages that do not meet candidate rules are excluded from downstream extraction and are counted in ingestion metrics only."
+          ]
+        },
+        {
+          "id": "US-30.3",
+          "title": "Extract normalized bill data with evidence capture, validation, duplicate checks, and confidence scoring",
+          "tasks": [
+            {
+              "id": "TASK-30.3.1",
+              "title": "Implement DocumentExtractionService for text-based PDF, DOCX, and email body parsing",
+              "tags": [
+                "backend",
+                "extraction",
+                "pdf",
+                "docx"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-30.3.2",
+              "title": "Build BillInformationExtractor with regex parsing, structured extraction, and normalized field mapping",
+              "tags": [
+                "backend",
+                "parser",
+                "llm",
+                "normalization"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-30.3.3",
+              "title": "Add deterministic validation, duplicate checks, and confidence scoring persistence",
+              "tags": [
+                "backend",
+                "validation",
+                "dedupe",
+                "scoring"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-30.3.4",
+              "title": "Create DetectedBill and DetectedBillField schemas with evidence references",
+              "tags": [
+                "db",
+                "backend",
+                "audit"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "For each detected bill candidate, the system produces a normalized bill object containing supplierName, supplierOrgNumber, invoiceNumber, invoiceDate, dueDate, currency, totalAmount, vatAmount, paymentReference, bankgiro, plusgiro, iban, bic, confidence, sourceEmailId, and sourceAttachmentId.",
+            "Each extracted field is stored with evidence metadata including source document, page or section reference, text span or locator, extraction method, and field-level confidence.",
+            "Validation rules reject or flag records when amount is missing, due date is invalid, invoice number is duplicated, bankgiro or IBAN format is invalid, or VAT values are implausible.",
+            "Duplicate detection checks at minimum tenant, supplier, invoice number, and total amount and persists the result in a BillDuplicateCheck record.",
+            "Confidence scoring assigns high, medium, or low confidence based on deterministic validation outcomes and supplier matching signals.",
+            "Low-confidence and medium-confidence bills are marked as requiring review and are not eligible for approval proposal until validation status is persisted."
+          ]
+        },
+        {
+          "id": "US-30.4",
+          "title": "Deliver finance inbox review flow and bounded approval proposal experience",
+          "tasks": [
+            {
+              "id": "TASK-30.4.1",
+              "title": "Build FinanceBillInbox list and detail views with status, warnings, and evidence display",
+              "tags": [
+                "frontend",
+                "finance-ui",
+                "review"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-30.4.2",
+              "title": "Implement ApprovalWorkflow API and persistence for approve, reject, and clarification actions",
+              "tags": [
+                "backend",
+                "workflow",
+                "api"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-30.4.3",
+              "title": "Add FinanceAgent proposal summary generation constrained to explain-and-propose behavior",
+              "tags": [
+                "backend",
+                "agent",
+                "guardrails"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Detected bills appear in a FinanceBillInbox with statuses limited to Detected, Extracted, Needs review, Proposed for approval, Approved, Rejected, and Sent to payment/exported.",
+            "Users can open a detected bill and view extracted fields, confidence level, validation warnings, duplicate warnings, and evidence references for each field.",
+            "The finance agent summary uses extracted bill data to present a proposal message and explicitly asks for approval without initiating payment automatically.",
+            "Users can perform approve, reject, and request clarification actions, and each action is recorded with actor, timestamp, prior status, new status, and rationale.",
+            "Approving a bill creates a BillApprovalProposal or approved bill record only; it does not execute payment in the first version.",
+            "Bills with unresolved validation failures cannot transition to Approved through the UI or API."
           ]
         }
       ]

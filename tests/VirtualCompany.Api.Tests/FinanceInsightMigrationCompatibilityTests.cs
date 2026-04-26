@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -34,6 +35,7 @@ public sealed class FinanceInsightMigrationCompatibilityTests
         Assert.True(await TableExistsAsync(connection, "budgets"));
         Assert.True(await TableExistsAsync(connection, "forecasts"));
         Assert.True(await TableExistsAsync(connection, "financial_statement_snapshots"));
+        Assert.True(await TableExistsAsync(connection, "financial_statement_snapshot_lines"));
         Assert.True(await IndexExistsAsync(connection, "IX_budgets_company_id_period_start_at_finance_account_id_version_null_cost_center"));
         Assert.True(await IndexExistsAsync(connection, "IX_forecasts_company_id_period_start_at_finance_account_id_version_null_cost_center"));
     }
@@ -89,6 +91,78 @@ public sealed class FinanceInsightMigrationCompatibilityTests
             .GroupBy(x => new { x.TargetType, x.TargetId })
             .CountAsync(x => x.Count() > 1);
         Assert.Equal(0, duplicateApprovalTargets);
+    }
+
+    [Fact]
+    public async Task Financial_reset_removes_finance_approval_inbox_requests()
+    {
+        var companyId = Guid.NewGuid();
+        await using var connection = await OpenConnectionAsync();
+        await MigrateAsync(connection);
+        await SeedMockFinanceCompanyAsync(connection, companyId, "Approval Reset Company");
+
+        var actorId = Guid.NewGuid();
+        var taskId = Guid.NewGuid();
+        var approvalId = Guid.NewGuid();
+
+        await using (var seedContext = CreateContext(connection))
+        {
+            seedContext.WorkTasks.Add(
+                new WorkTask(
+                    taskId,
+                    companyId,
+                    "approval_review",
+                    "Bill requires approval",
+                    "Review generated bill SIM-BILL-20440323-HUMAN.",
+                    WorkTaskPriority.High,
+                    null,
+                    null,
+                    "system",
+                    actorId,
+                    inputPayload: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["billNumber"] = JsonValue.Create("SIM-BILL-20440323-HUMAN"),
+                        ["amount"] = JsonValue.Create(6900m),
+                        ["currency"] = JsonValue.Create("USD")
+                    },
+                    correlationId: "finance-sim:bill:SIM-BILL-20440323-HUMAN",
+                    sourceType: "system",
+                    triggerEventId: "finance.bill.approval",
+                    status: WorkTaskStatus.AwaitingApproval));
+
+            seedContext.ApprovalRequests.Add(
+                ApprovalRequest.CreateForTarget(
+                    approvalId,
+                    companyId,
+                    ApprovalTargetEntityType.Task,
+                    taskId,
+                    "system",
+                    actorId,
+                    "threshold",
+                    new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["billNumber"] = JsonValue.Create("SIM-BILL-20440323-HUMAN"),
+                        ["amount"] = JsonValue.Create(6900m),
+                        ["currency"] = JsonValue.Create("USD")
+                    },
+                    "owner",
+                    null,
+                    []));
+
+            await seedContext.SaveChangesAsync();
+        }
+
+        await using var dbContext = CreateContext(connection);
+        var service = new CompanyFinanceMaintenanceService(
+            dbContext,
+            null,
+            NullLogger<CompanyFinanceMaintenanceService>.Instance);
+
+        var result = await service.ResetFinancialDataAsync(companyId, CancellationToken.None);
+
+        Assert.True(result.DeletedCounts.GetValueOrDefault("approval_requests") > 0);
+        Assert.False(await dbContext.ApprovalRequests.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.Id == approvalId));
+        Assert.False(await dbContext.WorkTasks.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.Id == taskId));
     }
 
     [Fact]

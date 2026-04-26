@@ -2379,6 +2379,16 @@ public interface IFinanceInsightsSnapshotJobRunner
     Task<int> RunDueAsync(CancellationToken cancellationToken);
 }
 
+public sealed record FinanceDataResetResultDto(
+    Guid CompanyId,
+    int TotalDeleted,
+    IReadOnlyDictionary<string, int> DeletedCounts);
+
+public interface IFinanceMaintenanceService
+{
+    Task<FinanceDataResetResultDto> ResetFinancialDataAsync(Guid companyId, CancellationToken cancellationToken);
+}
+
 public interface IPlanningBaselineService
 {
     Task<int> EnsureBaselineAsync(Guid companyId, CancellationToken cancellationToken);

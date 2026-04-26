@@ -9,6 +9,7 @@
 @inject IDashboardInteractionService DashboardInteractionService
 @using Microsoft.AspNetCore.Components
 @using Microsoft.JSInterop
+@using VirtualCompany.Shared
 @using VirtualCompany.Web.Services
 
 <PageTitle>Dashboard</PageTitle>
@@ -72,6 +73,31 @@ else
         <div class="company-dashboard-layout company-dashboard-layout--single">
             <div class="company-dashboard-main dashboard-home">
                 <section class="wizard-card dashboard-finance-strip" data-testid="dashboard-finance-strip">
+                    @if (CanResetFinanceData)
+                    {
+                        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+                            <div>
+                                <span class="dashboard-kicker">Finance admin</span>
+                                <h2 class="h6 mb-0">Financial data reset</h2>
+                            </div>
+                            <button type="button"
+                                    class="btn btn-outline-danger btn-sm"
+                                    disabled="@isResettingFinancialData"
+                                    @onclick="HandleResetFinancialDataAsync">
+                                @(isResettingFinancialData ? "Resetting..." : "Reset finance data")
+                            </button>
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(financeResetErrorMessage))
+                    {
+                        <div class="alert alert-danger mb-3" role="alert">@financeResetErrorMessage</div>
+                    }
+                    else if (!string.IsNullOrWhiteSpace(financeResetSuccessMessage))
+                    {
+                        <div class="alert alert-success mb-3" role="status">@financeResetSuccessMessage</div>
+                    }
+
                     <div class="dashboard-finance-strip__grid">
                         <article class="dashboard-finance-strip__item">
                             <span class="dashboard-finance-strip__label">Revenue</span>
@@ -174,7 +200,10 @@ else
     private CashPositionSummaryViewModel? financeCashPosition;
     private DashboardBriefingSummaryViewModel? briefingSummary;
     private bool isSummaryLoading;
+    private bool isResettingFinancialData;
     private string? summaryErrorMessage;
+    private string? financeResetErrorMessage;
+    private string? financeResetSuccessMessage;
     private string? errorMessage;
     private IJSObjectReference? telemetryModule;
     private DotNetObjectReference<Dashboard>? dotNetReference;
@@ -187,6 +216,9 @@ else
     private static string LatestBriefingAgentName => "LAURA";
     private static string LatestBriefingAgentRole => "Finance Manager";
     private static string LatestBriefingAvatarUrl => "/images/laura.png";
+    private bool CanResetFinanceData =>
+        companyAccess is not null &&
+        FinanceAccess.CanAccessSandboxAdmin(companyAccess.MembershipRole);
     private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
         currentUser?.Memberships
             .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
@@ -208,6 +240,8 @@ else
             financeMonthlySummary = null;
             briefingSummary = null;
             summaryErrorMessage = null;
+            financeResetErrorMessage = null;
+            financeResetSuccessMessage = null;
             isSummaryLoading = false;
 
             if (CompanyId is not Guid companyId)
@@ -233,20 +267,7 @@ else
             financeCashPosition = null;
             if (companyAccess is not null)
             {
-                try
-                {
-                    var monthlySummary = await FinanceApiClient.GetMonthlySummaryAsync(companyId);
-                    financeMonthlySummary = FinanceSummaryPresenter.ToMonthlySummaryViewModel(monthlySummary);
-
-                    var referenceUtc = await FinanceApiClient.GetFinanceReferenceUtcAsync(companyId);
-                    var cashPosition = await FinanceApiClient.GetCashPositionAsync(companyId, referenceUtc);
-                    financeCashPosition = FinanceSummaryPresenter.ToCashPositionViewModel(cashPosition);
-                }
-                catch (FinanceApiException)
-                {
-                    financeMonthlySummary = null;
-                    financeCashPosition = null;
-                }
+                await LoadFinanceSnapshotAsync(companyId);
             }
 
             if (companyAccess is not null)
@@ -331,6 +352,59 @@ else
     {
         DashboardInteractionService.RecordAction(context);
         return Task.CompletedTask;
+    }
+
+    private async Task HandleResetFinancialDataAsync()
+    {
+        if (CompanyId is not Guid companyId || isResettingFinancialData || !CanResetFinanceData)
+        {
+            return;
+        }
+
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            "Reset all generated financial data for this company? This keeps company setup and master data.");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        financeResetErrorMessage = null;
+        financeResetSuccessMessage = null;
+        isResettingFinancialData = true;
+
+        try
+        {
+            var result = await FinanceApiClient.ResetFinancialDataAsync(companyId);
+            financeResetSuccessMessage = $"Financial data reset completed. Deleted {result.TotalDeleted} record(s).";
+            await LoadFinanceSnapshotAsync(companyId);
+        }
+        catch (FinanceApiException ex)
+        {
+            financeResetErrorMessage = ex.Message;
+        }
+        finally
+        {
+            isResettingFinancialData = false;
+        }
+    }
+
+    private async Task LoadFinanceSnapshotAsync(Guid companyId)
+    {
+        try
+        {
+            var monthlySummary = await FinanceApiClient.GetMonthlySummaryAsync(companyId);
+            financeMonthlySummary = FinanceSummaryPresenter.ToMonthlySummaryViewModel(monthlySummary);
+
+            var referenceUtc = await FinanceApiClient.GetFinanceReferenceUtcAsync(companyId);
+            var cashPosition = await FinanceApiClient.GetCashPositionAsync(companyId, referenceUtc);
+            financeCashPosition = FinanceSummaryPresenter.ToCashPositionViewModel(cashPosition);
+        }
+        catch (FinanceApiException)
+        {
+            financeMonthlySummary = null;
+            financeCashPosition = null;
+        }
     }
 
     private async Task DisposeScrollTrackerAsync()
