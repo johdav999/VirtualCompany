@@ -123,6 +123,20 @@ On first authenticated request, the API provisions or updates the internal `User
 ## Company Context Resolution
 
 Tenant-owned API requests resolve company context from:
+
+## Mailbox OAuth Redirect URIs
+
+Mailbox integrations use stable provider callback URLs. Register one redirect URI per provider per environment; do not register tenant-specific or company-specific callback URLs. Tenant and user correlation is stored in protected OAuth state.
+
+Local development API redirect URIs:
+
+- Gmail: `http://localhost:5301/api/mailbox-connections/gmail/callback`
+- Microsoft 365: `http://localhost:5301/api/mailbox-connections/microsoft365/callback`
+
+Production redirect URIs use the same provider callback paths on the public API host for that environment, for example `https://<api-host>/api/mailbox-connections/gmail/callback` and `https://<api-host>/api/mailbox-connections/microsoft365/callback`.
+
+Additional setup details are in `docs/mailbox-oauth-redirect-uris.md`.
+
 ### Executive cockpit performance validation
 
 The executive cockpit supports aggregate dashboard loading plus widget-scoped refresh endpoints under

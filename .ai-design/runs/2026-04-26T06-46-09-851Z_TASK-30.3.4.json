@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-30.3.4",
+  "promptPath": ".ai-design/prompts/TASK-30.3.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-26T06:46:09.851Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-26T06-46-09-851Z_TASK-30.3.4_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-26T06-46-09-851Z_TASK-30.3.4.json",
+  "agentsPromptPath": "AGENTS.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-26T06:50:21.690Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ntity.FindProperty(nameof(DetectedBillField.SourceDocument))!.GetMaxLength());\n+        Assert.Equal(128, entity.FindProperty(nameof(DetectedBillField.PageReference))!.GetMaxLength());\n+        Assert.Equal(128, entity.FindProperty(nameof(DetectedBillField.SectionReference))!.GetMaxLength());\n+        Assert.Equal(128, entity.FindProperty(nameof(DetectedBillField.TextSpan))!.GetMaxLength());\n+        Assert.Equal(512, entity.FindProperty(nameof(DetectedBillField.Locator))!.GetMaxLength());\n+        Assert.Equal(64, entity.FindProperty(nameof(DetectedBillField.ExtractionMethod))!.GetMaxLength());\n+\n+        Assert.Contains(entity.GetIndexes(), index =>\n+            index.IsUnique &&\n+            HasProperties(index, nameof(DetectedBillField.CompanyId), nameof(DetectedBillField.DetectedBillId), nameof(DetectedBillField.FieldName)));\n+    }\n+\n+    [Fact]\n+    public void BillDuplicateCheckModel_StoresResultStatusForDetectedBillDuplicatePersistence()\n+    {\n+        using var dbContext = CreateContext();\n+        var entity = dbContext.Model.FindEntityType(typeof(BillDuplicateCheck));\n+\n+        Assert.NotNull(entity);\n+        Assert.Equal(32, entity!.FindProperty(nameof(BillDuplicateCheck.ResultStatus))!.GetMaxLength());\n+        Assert.Contains(entity.GetIndexes(), index =>\n+            HasProperties(index, nameof(BillDuplicateCheck.CompanyId), nameof(BillDuplicateCheck.ResultStatus), nameof(BillDuplicateCheck.CheckedUtc)));\n+    }\n+\n+    private static VirtualCompanyDbContext CreateContext() =>\n+        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()\n+            .UseInMemoryDatabase(Guid.NewGuid().ToString(\"N\"))\n+            .Options);\n+\n+    private static bool HasProperties(Microsoft.EntityFrameworkCore.Metadata.IReadOnlyIndex index, params string[] propertyNames)\n+    {\n+        var actual = index.Properties.Select(property => property.Name).ToArray();\n+        return actual.SequenceEqual(propertyNames, StringComparer.Ordinal);\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "ence))!.GetMaxLength());\n+        Assert.Equal(128, entity.FindProperty(nameof(DetectedBillField.SectionReference))!.GetMaxLength());\n+        Assert.Equal(128, entity.FindProperty(nameof(DetectedBillField.TextSpan))!.GetMaxLength());\n+        Assert.Equal(512, entity.FindProperty(nameof(DetectedBillField.Locator))!.GetMaxLength());\n+        Assert.Equal(64, entity.FindProperty(nameof(DetectedBillField.ExtractionMethod))!.GetMaxLength());\n+\n+        Assert.Contains(entity.GetIndexes(), index =>\n+            index.IsUnique &&\n+            HasProperties(index, nameof(DetectedBillField.CompanyId), nameof(DetectedBillField.DetectedBillId), nameof(DetectedBillField.FieldName)));\n+    }\n+\n+    [Fact]\n+    public void BillDuplicateCheckModel_StoresResultStatusForDetectedBillDuplicatePersistence()\n+    {\n+        using var dbContext = CreateContext();\n+        var entity = dbContext.Model.FindEntityType(typeof(BillDuplicateCheck));\n+\n+        Assert.NotNull(entity);\n+        Assert.Equal(32, entity!.FindProperty(nameof(BillDuplicateCheck.ResultStatus))!.GetMaxLength());\n+        Assert.Contains(entity.GetIndexes(), index =>\n+            HasProperties(index, nameof(BillDuplicateCheck.CompanyId), nameof(BillDuplicateCheck.ResultStatus), nameof(BillDuplicateCheck.CheckedUtc)));\n+    }\n+\n+    private static VirtualCompanyDbContext CreateContext() =>\n+        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()\n+            .UseInMemoryDatabase(Guid.NewGuid().ToString(\"N\"))\n+            .Options);\n+\n+    private static bool HasProperties(Microsoft.EntityFrameworkCore.Metadata.IReadOnlyIndex index, params string[] propertyNames)\n+    {\n+        var actual = index.Properties.Select(property => property.Name).ToArray();\n+        return actual.SequenceEqual(propertyNames, StringComparer.Ordinal);\n+    }\n+}\nEND_OF_PATCH\n2026-04-26T06:50:18.746790Z ERROR codex_core::session: failed to record rollout items: thread 019dc889-e7e2-7780-8a5e-2b58c1630012 not found\ntokens used\n75,612\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

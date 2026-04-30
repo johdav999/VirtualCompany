@@ -1,0 +1,162 @@
+diff --git a/src/VirtualCompany.Api/Controllers/MailboxConnectionCallbacksController.cs b/src/VirtualCompany.Api/Controllers/MailboxConnectionCallbacksController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/MailboxConnectionCallbacksController.cs
++++ b/src/VirtualCompany.Api/Controllers/MailboxConnectionCallbacksController.cs
+@@ -35,6 +35,26 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
+         CancellationToken cancellationToken) =>
+         CompleteProviderCallbackAsync(MailboxProvider.Microsoft365, code, state, error, cancellationToken);
+ 
++    [HttpGet("/api/companies/{companyId:guid}/mailbox-connections/gmail/callback")]
++    public Task<IActionResult> LegacyGmailCallbackAsync(
++        Guid companyId,
++        [FromQuery] string? code,
++        [FromQuery] string? state,
++        [FromQuery] string? error,
++        CancellationToken cancellationToken) =>
++        // Legacy route tenant identity is intentionally ignored; protected OAuth state is authoritative.
++        CompleteProviderCallbackAsync(MailboxProvider.Gmail, code, state, error, cancellationToken);
++
++    [HttpGet("/api/companies/{companyId:guid}/mailbox-connections/microsoft365/callback")]
++    public Task<IActionResult> LegacyMicrosoft365CallbackAsync(
++        Guid companyId,
++        [FromQuery] string? code,
++        [FromQuery] string? state,
++        [FromQuery] string? error,
++        CancellationToken cancellationToken) =>
++        // Legacy route tenant identity is intentionally ignored; protected OAuth state is authoritative.
++        CompleteProviderCallbackAsync(MailboxProvider.Microsoft365, code, state, error, cancellationToken);
++
+     private async Task<IActionResult> CompleteProviderCallbackAsync(
+         MailboxProvider expectedProvider,
+         string? code,
+@@ -120,7 +140,7 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
+ 
+     private IActionResult RedirectToMailbox(string status, string? detail, MailboxOAuthState state)
+     {
+-        if (state.ReturnUri is not null)
++        if (state.ReturnUri is not null && IsAllowedReturnUri(state.ReturnUri))
+         {
+             return Redirect(AppendMailboxStatus(state.ReturnUri, status, detail).ToString());
+         }
+@@ -139,6 +159,20 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
+         return Redirect(AppendMailboxStatus(uri.Uri, status, detail).ToString());
+     }
+ 
++    private bool IsAllowedReturnUri(Uri returnUri)
++    {
++        if (returnUri.Scheme is not ("http" or "https") ||
++            !returnUri.AbsolutePath.StartsWith("/finance/mailbox", StringComparison.OrdinalIgnoreCase))
++        {
++            return false;
++        }
++
++        var expectedPort = Request.Host.Port ?? GetDefaultPort(returnUri.Scheme);
++        return string.Equals(returnUri.Host, Request.Host.Host, StringComparison.OrdinalIgnoreCase) &&
++            returnUri.Port == expectedPort;
++    }
++
++    private static int GetDefaultPort(string scheme) =>
++        string.Equals(scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ? 443 : 80;
++
+     private static Uri AppendMailboxStatus(Uri uri, string status, string? detail)
+     {
+         var builder = new UriBuilder(uri);
+diff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs
+@@ -101,17 +101,80 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
+     }
+ 
+     [Theory]
++    [InlineData("/api/companies/{0}/mailbox-connections/gmail/callback")]
++    [InlineData("/api/companies/{0}/mailbox-connections/microsoft365/callback")]
++    public async Task Legacy_company_scoped_callback_routes_are_reachable_and_require_protected_state(string pathTemplate)
++    {
++        using var client = _factory.CreateClient();
++
++        var response = await client.GetAsync(string.Format(
++            pathTemplate,
++            Guid.NewGuid().ToString("D")) + "?code=oauth-code");
++
++        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
++        Assert.NotEqual(HttpStatusCode.NotFound, response.StatusCode);
++    }
++
++    [Theory]
+     [InlineData("gmail")]
+     [InlineData("microsoft365")]
+-    public async Task Company_scoped_callback_routes_are_not_oauth_redirect_targets(string provider)
++    public async Task Legacy_callback_route_ignores_route_company_and_uses_protected_state_return_uri(string provider)
+     {
+-        using var factory = CreateFactoryWithMailboxOAuthOptions();
+-        var seed = await SeedMailboxCompanyAsync(factory);
+-        using var client = factory.CreateClient();
++        using var client = _factory.CreateClient();
++        var stateCompanyId = Guid.NewGuid();
++        var routeCompanyId = Guid.NewGuid();
++        var state = ProtectState(new MailboxOAuthState(
++            stateCompanyId,
++            Guid.NewGuid(),
++            MailboxProviderValues.Parse(provider),
++            [new MailboxFolderSelection("INBOX", "Inbox")],
++            DateTime.UtcNow.AddMinutes(10),
++            new Uri($"http://localhost/finance/mailbox?companyId={stateCompanyId:D}&tab=connections")));
++
++        var response = await client.GetAsync($"/api/companies/{routeCompanyId:D}/mailbox-connections/{provider}/callback?error=access_denied&state={Uri.EscapeDataString(state)}");
++
++        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
++        var location = Assert.IsType<Uri>(response.Headers.Location);
++        Assert.Equal("localhost", location.Host);
++        Assert.Contains($"companyId={stateCompanyId:D}", location.Query, StringComparison.OrdinalIgnoreCase);
++        Assert.DoesNotContain($"companyId={routeCompanyId:D}", location.Query, StringComparison.OrdinalIgnoreCase);
++        Assert.Contains("mailboxConnection=denied", location.Query, StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public async Task Legacy_callback_fallback_redirect_uses_state_company_when_return_uri_is_missing()
++    {
++        using var client = _factory.CreateClient();
++        var stateCompanyId = Guid.NewGuid();
++        var routeCompanyId = Guid.NewGuid();
++        var state = ProtectState(new MailboxOAuthState(
++            stateCompanyId,
++            Guid.NewGuid(),
++            MailboxProvider.Gmail,
++            [new MailboxFolderSelection("INBOX", "Inbox")],
++            DateTime.UtcNow.AddMinutes(10)));
++
++        var response = await client.GetAsync($"/api/companies/{routeCompanyId:D}/mailbox-connections/gmail/callback?error=access_denied&state={Uri.EscapeDataString(state)}");
+ 
+-        var response = await client.GetAsync($"/api/companies/{seed.CompanyId:D}/mailbox-connections/{provider}/callback?code=oauth-code&state=tampered-state");
++        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
++        var location = Assert.IsType<Uri>(response.Headers.Location);
++        Assert.Contains($"companyId={stateCompanyId:D}", location.Query, StringComparison.OrdinalIgnoreCase);
++        Assert.DoesNotContain($"companyId={routeCompanyId:D}", location.Query, StringComparison.OrdinalIgnoreCase);
++        Assert.Contains("mailboxConnection=denied", location.Query, StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public async Task Legacy_callback_invalid_return_uri_falls_back_to_state_company()
++    {
++        using var client = _factory.CreateClient();
++        var stateCompanyId = Guid.NewGuid();
++        var state = ProtectState(new MailboxOAuthState(
++            stateCompanyId,
++            Guid.NewGuid(),
++            MailboxProvider.Gmail,
++            [new MailboxFolderSelection("INBOX", "Inbox")],
++            DateTime.UtcNow.AddMinutes(10),
++            new Uri("https://evil.example.test/finance/mailbox")));
++
++        var response = await client.GetAsync($"/api/companies/{Guid.NewGuid():D}/mailbox-connections/gmail/callback?error=access_denied&state={Uri.EscapeDataString(state)}");
+ 
+-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
++        var location = Assert.IsType<Uri>(response.Headers.Location);
++        Assert.NotEqual("evil.example.test", location.Host);
++        Assert.Contains($"companyId={stateCompanyId:D}", location.Query, StringComparison.OrdinalIgnoreCase);
+     }
+ 
+     [Fact]
+END_OF_PATCH

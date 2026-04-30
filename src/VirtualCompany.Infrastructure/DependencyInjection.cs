@@ -26,6 +26,7 @@ using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Insights;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Tasks;
+using VirtualCompany.Application.Mailbox;
 using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Memory;
 using VirtualCompany.Application.Workflows;
@@ -33,6 +34,7 @@ using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Mobile;
 using VirtualCompany.Application.Notifications;
 using VirtualCompany.Application.ProactiveMessaging;
+using VirtualCompany.Infrastructure.Security;
 using VirtualCompany.Domain.Events;
 using VirtualCompany.Infrastructure.Activity;
 using VirtualCompany.Infrastructure.Auditing;
@@ -43,6 +45,7 @@ using VirtualCompany.Infrastructure.Context;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Documents;
 using VirtualCompany.Infrastructure.Finance;
+using VirtualCompany.Infrastructure.Mailbox;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Memory;
 using VirtualCompany.Infrastructure.Observability;
@@ -62,11 +65,15 @@ public static class DependencyInjection
 
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
 
+        services.AddDataProtection();
+        services.TryAddSingleton<IFieldEncryptionService, DataProtectionFieldEncryptionService>();
         services.AddDbContext<VirtualCompanyDbContext>(options =>
             ConfigureDatabase(options, connectionString, configuration["Database:Provider"]));
 
         services.AddOptions<CompanyDocumentOptions>()
             .Bind(configuration.GetSection(CompanyDocumentOptions.SectionName));
+
+        services.AddOptions<MailboxIntegrationOptions>().Bind(configuration.GetSection(MailboxIntegrationOptions.SectionName));
 
         services.AddOptions<CompanyOutboxDispatcherOptions>()
             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
@@ -234,6 +241,8 @@ public static class DependencyInjection
         services.AddSingleton<ExecutiveCockpitCacheKeyBuilder>();
         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
         services.AddHttpClient(CompanyDashboardBriefingSummaryService.ClientName);
+        services.AddHttpClient(GmailMailboxProviderClient.ClientName);
+        services.AddHttpClient(Microsoft365MailboxProviderClient.ClientName);
         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
         services.AddVirtualCompanyObservability(configuration);
         services.AddOptions<WorkflowSchedulerOptions>()
@@ -300,6 +309,23 @@ public static class DependencyInjection
         services.AddScoped<ICompanyDocumentStorage, LocalCompanyDocumentStorage>();
         services.AddScoped<ICompanyDocumentTextExtractor, CompanyDocumentTextExtractor>();
         services.AddScoped<IKnowledgeChunker, DefaultKnowledgeChunker>();
+        services.AddSingleton<IMailboxOAuthStateProtector, DataProtectionMailboxOAuthStateProtector>();
+        services.AddScoped<GmailMailboxProviderClient>();
+        services.AddScoped<Microsoft365MailboxProviderClient>();
+        services.AddScoped<IMailboxProviderClient>(provider => provider.GetRequiredService<GmailMailboxProviderClient>());
+        services.AddScoped<IMailboxProviderClient>(provider => provider.GetRequiredService<Microsoft365MailboxProviderClient>());
+        services.AddScoped<IMailboxProviderRegistry, MailboxProviderRegistry>();
+        services.AddScoped<IMailboxConnectionService, CompanyMailboxConnectionService>();
+        services.AddScoped<IBillDetectionService, BillDetectionService>();
+        services.AddScoped<IManualInboxBillScanOrchestrator, CompanyManualInboxBillScanOrchestrator>();
+        services.AddScoped<IDocumentExtractionService, DocumentExtractionService>();
+        services.AddScoped<IBillInformationExtractor, BillInformationExtractor>();
+        services.AddScoped<IBillDuplicateCheckRepository, BillDuplicateCheckRepository>();
+        services.AddScoped<IBillExtractionPersistenceRepository, BillExtractionPersistenceRepository>();
+        services.AddScoped<IDocumentTextExtractor, PdfDocumentTextExtractor>();
+        services.AddScoped<IDocumentTextExtractor, DocxDocumentTextExtractor>();
+        services.AddScoped<IDocumentTextExtractor, EmailBodyTextExtractor>();
+        services.AddScoped<IManualInboxBillScanJobScheduler, InlineManualInboxBillScanJobScheduler>();
         services.AddScoped<IEmbeddingGenerator, OpenAiCompatibleEmbeddingGenerator>();
         services.AddScoped<IKnowledgeAccessPolicyEvaluator, KnowledgeAccessPolicyEvaluator>();
         services.AddScoped<ICompanyKnowledgeIndexingProcessor, CompanyKnowledgeIndexingProcessor>();
@@ -424,6 +450,7 @@ public static class DependencyInjection
         });
         services.AddSingleton<IFinanceWorkflowTriggerRegistry, StaticFinanceWorkflowTriggerRegistry>();
         services.AddScoped<IFinanceWorkflowTriggerService, FinanceWorkflowTriggerService>();
+        services.AddScoped<IFinanceBillInboxService, CompanyFinanceBillInboxService>();
         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();

@@ -1,0 +1,303 @@
+diff --git a/src/VirtualCompany.Application/Mailbox/BillDetectionService.cs b/src/VirtualCompany.Application/Mailbox/BillDetectionService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Mailbox/BillDetectionService.cs
++++ b/src/VirtualCompany.Application/Mailbox/BillDetectionService.cs
+@@ -62,8 +62,8 @@ public sealed class BillDetectionService : IBillDetectionService
+         }
+ 
+         var qualifiesWithAttachment =
+-            supportedAttachments.Length > 0 &&
+-            ((senderMatch && folderMatch) || hasKeywordMatch);
++            supportedAttachments.Length > 0 && 
++            hasKeywordMatch && (senderMatch || folderMatch);
+         var qualifiesBodyOnly =
+             supportedAttachments.Length == 0 &&
+             IsBodyOnlyCandidate(message, keywordScore, senderMatch, folderMatch);
+@@ -80,7 +80,10 @@ public sealed class BillDetectionService : IBillDetectionService
+ 
+         var sourceTypes = qualifiesBodyOnly
+             ? [BillSourceType.EmailBodyOnly]
+-            : supportedAttachments.Select(x => x.SourceType).Distinct().ToArray();
++            : supportedAttachments
++                .Select(x => x.SourceType)
++                .Distinct()
++                .OrderBy(GetSourceTypePrecedence).ToArray();
+ 
+         return new BillDetectionResult(
+             true,
+@@ -152,13 +155,18 @@ public sealed class BillDetectionService : IBillDetectionService
+             return false;
+         }
+ 
++        if (!senderMatch && !folderMatch)
++        {
++            return false;
++        }
++
+         var hasStrongPhrase =
+             Contains(text, "amount due") ||
+             Contains(text, "payment due") ||
+             Contains(text, "invoice number") ||
+             Contains(text, "due date") ||
+             Contains(text, "remittance");
+ 
+-        return keywordScore >= 2 || (hasStrongPhrase && (senderMatch || folderMatch || keywordScore > 0));
++        return keywordScore >= 2 || hasStrongPhrase;
+     }
+ 
+     private static bool IsSenderMatch(string? fromAddress)
+@@ -206,4 +214,12 @@ public sealed class BillDetectionService : IBillDetectionService
+         if (bodyOnly) parts.Add("body_only");
+         return $"Matched deterministic bill detection rules: {string.Join(", ", parts)}.";
+     }
++
++    private static int GetSourceTypePrecedence(BillSourceType sourceType) =>
++        sourceType switch
++        {
++            BillSourceType.PdfAttachment => 0,
++            BillSourceType.DocxAttachment => 1,
++            _ => 2
++        };
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs b/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
++++ b/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
+@@ -121,13 +121,16 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
+             [],
+             lastRun is null ? null : new EmailIngestionRunSummary(
+                 lastRun.Id, lastRun.StartedUtc, lastRun.CompletedUtc, lastRun.Provider.ToStorageValue(),
+-                lastRun.ScanFromUtc, lastRun.ScanToUtc, lastRun.ScannedMessageCount, lastRun.DetectedCandidateCount, lastRun.FailureDetails));
++                lastRun.ScanFromUtc, lastRun.ScanToUtc,
++                lastRun.ScannedMessageCount,
++                lastRun.DetectedCandidateCount,
++                lastRun.NonCandidateMessageCount,
++                lastRun.CandidateAttachmentSnapshotCount,
++                lastRun.DeduplicatedAttachmentCount,
++                lastRun.FailureDetails));
+     }
+ 
+-                lastRun.NonCandidateMessageCount,
+-                lastRun.CandidateAttachmentSnapshotCount,
+-                lastRun.DeduplicatedAttachmentCount,
+     public async Task<MailboxOAuthCompletionResult> CompleteOAuthConnectionAsync(
+         CompleteMailboxOAuthConnectionCommand command,
+         CancellationToken cancellationToken)
+@@ -248,16 +251,16 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
+ 
+         return new ManualMailboxScanResult(
+             completedRun.Id,
+-            completedRun.NonCandidateMessageCount,
+-            completedRun.CandidateAttachmentSnapshotCount,
+-            completedRun.DeduplicatedAttachmentCount,
+             connection.Id,
+             scanFromUtc,
+             scanToUtc,
+             completedRun.ScannedMessageCount,
+             completedRun.DetectedCandidateCount,
++            completedRun.NonCandidateMessageCount,
++            completedRun.CandidateAttachmentSnapshotCount,
++            completedRun.DeduplicatedAttachmentCount,
+             completedRun.FailureDetails,
+             completedRun.CompletedUtc.HasValue ? "completed" : "started");
+     }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/ManualInboxBillScanOrchestration.cs b/src/VirtualCompany.Infrastructure/Mailbox/ManualInboxBillScanOrchestration.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Mailbox/ManualInboxBillScanOrchestration.cs
++++ b/src/VirtualCompany.Infrastructure/Mailbox/ManualInboxBillScanOrchestration.cs
+@@ -200,11 +200,7 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
+         BillDetectionResult detection,
+         IDictionary<string, Guid> knownAttachmentSnapshotIdsByHash,
+         DateTime? completedUtc)
+     {
+-        var sourceType = detection.DetectedSourceTypes.FirstOrDefault();
+-        if (sourceType == default)
+-        {
+-            sourceType = BillSourceType.EmailBodyOnly;
+-        }
++        var sourceType = SelectPrimarySourceType(detection);
+ 
+         // Body and attachment text came from an external mailbox and must stay untrusted downstream.
+         var snapshot = new EmailMessageSnapshot(
+@@ -265,4 +261,18 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
+ 
+         return snapshot;
+     }
++
++    private static BillSourceType SelectPrimarySourceType(BillDetectionResult detection) =>
++        detection.DetectedSourceTypes
++            .OrderBy(GetSourceTypePrecedence)
++            .FirstOrDefault(BillSourceType.EmailBodyOnly);
++
++    private static int GetSourceTypePrecedence(BillSourceType sourceType) =>
++        sourceType switch
++        {
++            BillSourceType.PdfAttachment => 0,
++            BillSourceType.DocxAttachment => 1,
++            BillSourceType.EmailBodyOnly => 2,
++            _ => 3
++        };
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs b/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs
+@@ -76,7 +76,7 @@ public sealed class BillDetectionServiceTests
+     }
+ 
+     [Fact]
+-    public void Rejects_keyword_only_without_sender_folder_or_supported_attachment_signal()
++    public void Rejects_keyword_only_without_sender_or_folder_signal()
+     {
+         var result = _service.Detect(new MailboxMessageSummary(
+             "msg-4b",
+@@ -89,6 +89,61 @@ public sealed class BillDetectionServiceTests
+         Assert.False(result.IsCandidate);
+     }
+ 
++    [Fact]
++    public void Rejects_sender_only_without_keyword_or_attachment_signal()
++    {
++        var result = _service.Detect(new MailboxMessageSummary(
++            "msg-4c",
++            "Hello",
++            null,
++            "General supplier update.",
++            [],
++            "billing@supplier.example"));
++
++        Assert.False(result.IsCandidate);
++        Assert.Contains(BillDetectionRuleMatch.SenderMatch, result.MatchedRules);
++    }
++
++    [Fact]
++    public void Rejects_attachment_only_without_keyword_and_trusted_context_signal()
++    {
++        var result = _service.Detect(new MailboxMessageSummary(
++            "msg-4d",
++            "Document attached",
++            null,
++            null,
++            ["document.pdf"],
++            "person@example.com",
++            Attachments: [new MailboxAttachmentSummary("att-4d", "document.pdf", "application/pdf", 1000, UntrustedExtractedText: "Document text")]));
++
++        Assert.False(result.IsCandidate);
++        Assert.Contains(BillDetectionRuleMatch.AttachmentPresent, result.MatchedRules);
++    }
++
++    [Fact]
++    public void Detects_folder_keyword_and_supported_attachment_combination()
++    {
++        var result = _service.Detect(new MailboxMessageSummary(
++            "msg-4e",
++            "Amount due",
++            null,
++            null,
++            ["statement.pdf"],
++            "supplier@example.com",
++            FolderId: "ap",
++            FolderDisplayName: "Accounts Payable",
++            Attachments: [new MailboxAttachmentSummary("att-4e", "statement.pdf", "application/pdf", 1000, UntrustedExtractedText: "Statement amount due")]));
++
++        Assert.True(result.IsCandidate);
++        Assert.Contains(BillSourceType.PdfAttachment, result.DetectedSourceTypes);
++        Assert.Contains(BillDetectionRuleMatch.FolderMatch, result.MatchedRules);
++        Assert.Contains(BillDetectionRuleMatch.KeywordMatch, result.MatchedRules);
++        Assert.Contains(BillDetectionRuleMatch.AttachmentPresent, result.MatchedRules);
++    }
++
+     [Fact]
+     public void Rejects_image_only_pdf_as_supported_source()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
+@@ -142,6 +142,32 @@ public sealed class MailboxConnectionFlowTests
+         Assert.Equal("completed", result.Status);
+     }
+ 
++    [Fact]
++    public async Task Manual_scan_persists_body_only_candidate_as_untrusted_body_text()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var provider = new FakeProvider(MailboxProvider.Gmail)
++        {
++            Messages =
++            [
++                new MailboxMessageSummary("body-1", "Amount due", null, "Invoice number 42 amount due tomorrow", [], "billing@supplier.example")
++            ]
++        };
++        var service = CreateService(connection, companyId, userId, provider);
++        await SeedConnectedMailboxAsync(connection, companyId, userId, MailboxProvider.Gmail);
++
++        var result = await service.TriggerManualScanAsync(
++            new TriggerManualMailboxScanCommand(companyId, userId),
++            CancellationToken.None);
++
++        Assert.Equal(1, result.DetectedCandidateCount);
++        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
++        var snapshot = await dbContext.EmailMessageSnapshots.Include(x => x.Attachments).SingleAsync();
++        Assert.Equal(BillSourceType.EmailBodyOnly, snapshot.SourceType);
++        Assert.Equal("Invoice number 42 amount due tomorrow", snapshot.UntrustedBodyText);
++        Assert.Empty(snapshot.Attachments);
++    }
++
+     [Fact]
+     public async Task Manual_scan_counts_non_candidates_without_creating_snapshots()
+     {
+@@ -222,6 +248,46 @@ public sealed class MailboxConnectionFlowTests
+         Assert.Contains(attachments, x => x.IsDuplicateByHash && x.CanonicalAttachmentSnapshotId == attachments.First(a => !a.IsDuplicateByHash).Id);
+     }
+ 
++    [Fact]
++    public async Task Manual_scan_is_idempotent_for_same_provider_message_id()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var provider = new FakeProvider(MailboxProvider.Gmail)
++        {
++            Messages =
++            [
++                new MailboxMessageSummary(
++                    "same-message",
++                    "Monthly invoice",
++                    null,
++                    null,
++                    ["invoice.pdf"],
++                    "billing@supplier.example",
++                    null,
++                    DateTime.UtcNow,
++                    "INBOX",
++                    "Invoices",
++                    null,
++                    [new MailboxAttachmentSummary("a1", "invoice.pdf", "application/pdf", 1000, UntrustedExtractedText: "Invoice amount due")])
++            ]
++        };
++        var service = CreateService(connection, companyId, userId, provider);
++        await SeedConnectedMailboxAsync(connection, companyId, userId, MailboxProvider.Gmail);
++
++        await service.TriggerManualScanAsync(new TriggerManualMailboxScanCommand(companyId, userId), CancellationToken.None);
++        var second = await service.TriggerManualScanAsync(new TriggerManualMailboxScanCommand(companyId, userId), CancellationToken.None);
++
++        Assert.Equal(1, second.ScannedMessageCount);
++        Assert.Equal(1, second.DetectedCandidateCount);
++        Assert.Equal(0, second.CandidateAttachmentSnapshotCount);
++
++        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
++        Assert.Equal(2, await dbContext.EmailIngestionRuns.CountAsync());
++        Assert.Equal(1, await dbContext.EmailMessageSnapshots.CountAsync());
++        Assert.Equal(1, await dbContext.EmailAttachmentSnapshots.CountAsync());
++        Assert.Equal(0, await dbContext.Payments.CountAsync());
++        Assert.Equal(0, await dbContext.ApprovalRequests.CountAsync());
++    }
++
+     [Fact]
+     public async Task Status_query_returns_current_users_connection_and_latest_audit_summary()
+     {
+END_OF_PATCH

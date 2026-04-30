@@ -1,0 +1,239 @@
+@page "/finance/mailbox"
+@rendermode InteractiveServer
+@inherits FinancePageBase
+
+<PageTitle>Finance mailbox</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Finance mailbox"
+    Description="Connect a mailbox and start bill scans for the active company."
+    LoadingMessage="Loading mailbox integration...">
+    <div class="wizard-card wizard-card--compact">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+            <div>
+                <h2 class="h5 mb-1">Mailbox connection</h2>
+                <p class="text-body-secondary mb-0">
+                    Connect Gmail or Microsoft 365, then scan the configured inbox folders for bill-related messages.
+                </p>
+            </div>
+            <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync" disabled="@IsStatusLoading">Refresh</button>
+        </div>
+
+        <FinanceDataState
+            IsLoading="@IsStatusLoading"
+            IsEmpty="false"
+            ErrorMessage="@StatusErrorMessage"
+            LoadingTitle="Loading mailbox status"
+            LoadingMessage="Reading the current user's tenant-scoped mailbox connection."
+            ErrorTitle="Mailbox status is unavailable"
+            OnRetry="@ReloadAsync">
+            <div class="row g-3">
+                <div class="col-12 col-lg-4">
+                    <div class="border rounded-3 p-3 h-100">
+                        <div class="small text-uppercase text-body-secondary fw-semibold mb-1">Connection</div>
+                        <div><span class="@ConnectionBadgeClass">@ConnectionStatusLabel</span></div>
+                        @if (!string.IsNullOrWhiteSpace(Status?.LastErrorSummary))
+                        {
+                            <div class="small text-danger mt-2">@Status.LastErrorSummary</div>
+                        }
+                    </div>
+                </div>
+                <div class="col-12 col-lg-4">
+                    <div class="border rounded-3 p-3 h-100">
+                        <div class="small text-uppercase text-body-secondary fw-semibold mb-1">Provider</div>
+                        <div class="fw-semibold">@ProviderLabel</div>
+                        <div class="small text-body-secondary mt-1">@MailboxLabel</div>
+                    </div>
+                </div>
+                <div class="col-12 col-lg-4">
+                    <div class="border rounded-3 p-3 h-100">
+                        <div class="small text-uppercase text-body-secondary fw-semibold mb-1">Last successful scan</div>
+                        <div class="fw-semibold">@FormatDateTime(Status?.LastSuccessfulScanAtUtc)</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row g-3 mt-1">
+                <div class="col-12 col-lg-6">
+                    <div class="border rounded-3 p-3 h-100">
+                        <div class="d-flex justify-content-between align-items-start gap-3">
+                            <div>
+                                <div class="fw-semibold">Gmail</div>
+                                <div class="small text-body-secondary">Users can connect their own Google mailbox when this provider is ready.</div>
+                            </div>
+                            <span class="@GetProviderAvailabilityBadgeClass(ProviderAvailability?.Gmail)">@GmailProviderStatus</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-12 col-lg-6">
+                    <div class="border rounded-3 p-3 h-100">
+                        <div class="d-flex justify-content-between align-items-start gap-3">
+                            <div>
+                                <div class="fw-semibold">Microsoft 365</div>
+                                <div class="small text-body-secondary">Users can connect their own Microsoft mailbox when this provider is ready.</div>
+                            </div>
+                            <span class="@GetProviderAvailabilityBadgeClass(ProviderAvailability?.Microsoft365)">@Microsoft365ProviderStatus</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-flex flex-wrap gap-2 mt-4">
+                <button class="btn btn-primary" type="button" @onclick="@(() => StartConnectionAsync("gmail"))" disabled="@IsGmailConnectDisabled">
+                    Connect Gmail
+                </button>
+                <button class="btn btn-outline-primary" type="button" @onclick="@(() => StartConnectionAsync("microsoft365"))" disabled="@IsMicrosoft365ConnectDisabled">
+                    Connect Microsoft 365
+                </button>
+                <button class="btn btn-outline-secondary" type="button" @onclick="TriggerScanAsync" disabled="@IsScanDisabled">
+                    @(IsScanInFlight ? "Starting scan..." : "Scan inbox for bills")
+                </button>
+            </div>
+
+            @if (!CanScan)
+            {
+                <div class="alert alert-warning mt-3 mb-0" role="status">
+                    Connect an active mailbox before starting an inbox scan.
+                </div>
+            }
+            @if (!string.IsNullOrWhiteSpace(ProviderSetupMessage))
+            {
+                <div class="alert alert-warning mt-3 mb-0" role="status">
+                    @ProviderSetupMessage
+                    <NavLink href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.EmailSettings, AccessState.CompanyId)" class="alert-link">Open email settings</NavLink>
+                </div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(ActionMessage))
+            {
+                <div class="alert alert-success mt-3 mb-0" role="status">@ActionMessage</div>
+            }
+            @if (!string.IsNullOrWhiteSpace(ActionErrorMessage))
+            {
+                <div class="alert alert-danger mt-3 mb-0" role="alert">@ActionErrorMessage</div>
+            }
+        </FinanceDataState>
+    </div>
+
+    <div class="wizard-card wizard-card--compact mt-4">
+        <div class="d-flex justify-content-between gap-3 align-items-start mb-3">
+            <div>
+                <h2 class="h5 mb-1">Scanned inbox</h2>
+                <p class="text-body-secondary mb-0">Bill-candidate messages fetched from the connected mailbox.</p>
+            </div>
+        </div>
+
+        <FinanceDataState
+            IsLoading="@IsMessagesLoading"
+            IsEmpty="@(ScannedMessages.Count == 0)"
+            ErrorMessage="@MessagesErrorMessage"
+            LoadingTitle="Loading scanned messages"
+            LoadingMessage="Reading message snapshots from recent mailbox scans."
+            EmptyTitle="No fetched bill messages yet"
+            EmptyMessage="Run a scan to show detected bill-related emails here."
+            ErrorTitle="Scanned messages are unavailable"
+            OnRetry="@ReloadAsync">
+            <div class="row g-3">
+                <div class="col-12 col-xl-5">
+                    <div class="list-group mailbox-message-list">
+                        @foreach (var message in ScannedMessages)
+                        {
+                            var isSelected = SelectedMessage?.Id == message.Id;
+                            <button type="button"
+                                    class="list-group-item list-group-item-action @(isSelected ? "active" : null)"
+                                    @onclick="@(() => SelectMessage(message))">
+                                <div class="d-flex justify-content-between gap-3">
+                                    <span class="fw-semibold text-truncate">@(!string.IsNullOrWhiteSpace(message.Subject) ? message.Subject : "(No subject)")</span>
+                                    <span class="small flex-shrink-0">@FormatDateTime(message.ReceivedUtc)</span>
+                                </div>
+                                <div class="small text-truncate @(isSelected ? "text-white-50" : "text-body-secondary")">@FormatSender(message)</div>
+                                <div class="small text-truncate @(isSelected ? "text-white-50" : "text-body-secondary")">@message.ReasonSummary</div>
+                            </button>
+                        }
+                    </div>
+                </div>
+                <div class="col-12 col-xl-7">
+                    @if (SelectedMessage is null)
+                    {
+                        <FinanceEmptyState Title="No message selected" Message="Select a fetched email to inspect its details." />
+                    }
+                    else
+                    {
+                        <div class="border rounded-3 p-3 h-100">
+                            <div class="d-flex flex-wrap justify-content-between gap-3 mb-3">
+                                <div>
+                                    <div class="small text-uppercase text-body-secondary fw-semibold mb-1">Subject</div>
+                                    <h3 class="h6 mb-0">@(!string.IsNullOrWhiteSpace(SelectedMessage.Subject) ? SelectedMessage.Subject : "(No subject)")</h3>
+                                </div>
+                                <span class="badge text-bg-success align-self-start">@FormatMailboxCode(SelectedMessage.CandidateDecision)</span>
+                            </div>
+                            <dl class="row small mb-3">
+                                <dt class="col-sm-4">From</dt>
+                                <dd class="col-sm-8">@FormatSender(SelectedMessage)</dd>
+                                <dt class="col-sm-4">Received</dt>
+                                <dd class="col-sm-8">@FormatDateTime(SelectedMessage.ReceivedUtc)</dd>
+                                <dt class="col-sm-4">Folder</dt>
+                                <dd class="col-sm-8">@(!string.IsNullOrWhiteSpace(SelectedMessage.FolderDisplayName) ? SelectedMessage.FolderDisplayName : FormatMailboxCode(SelectedMessage.FolderId))</dd>
+                                <dt class="col-sm-4">Source</dt>
+                                <dd class="col-sm-8">@FormatMailboxCode(SelectedMessage.SourceType)</dd>
+                                <dt class="col-sm-4">Rules</dt>
+                                <dd class="col-sm-8">@FormatRules(SelectedMessage.MatchedRules)</dd>
+                                <dt class="col-sm-4">Attachments</dt>
+                                <dd class="col-sm-8">@FormatAttachments(SelectedMessage.Attachments)</dd>
+                            </dl>
+                            <div class="small text-uppercase text-body-secondary fw-semibold mb-1">Extracted email text</div>
+                            @if (string.IsNullOrWhiteSpace(SelectedMessage.BodyPreview))
+                            {
+                                <p class="text-body-secondary mb-0">No body text was stored for this message.</p>
+                            }
+                            else
+                            {
+                                <pre class="mailbox-message-body mb-0">@SelectedMessage.BodyPreview</pre>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        </FinanceDataState>
+    </div>
+
+    <div class="wizard-card wizard-card--compact mt-4">
+        <div class="d-flex justify-content-between gap-3 align-items-start mb-3">
+            <div>
+                <h2 class="h5 mb-1">Recent scan</h2>
+                <p class="text-body-secondary mb-0">Latest audit summary for the current user's mailbox scan.</p>
+            </div>
+        </div>
+
+        @if (Status?.LastRun is null)
+        {
+            <FinanceEmptyState Title="No mailbox scans yet" Message="Run a manual scan after connecting a mailbox to create an audit record." />
+        }
+        else
+        {
+            var run = Status.LastRun;
+            <dl class="mb-0">
+                <dt>Provider</dt>
+                <dd>@FormatProvider(run.Provider)</dd>
+                <dt>Started</dt>
+                <dd>@FormatDateTime(run.StartedUtc)</dd>
+                <dt>Completed</dt>
+                <dd>@FormatDateTime(run.CompletedUtc)</dd>
+                <dt>Scan window</dt>
+                <dd>@FormatDateTime(run.ScanFromUtc) to @FormatDateTime(run.ScanToUtc)</dd>
+                <dt>Messages scanned</dt>
+                <dd>@run.ScannedMessageCount</dd>
+                <dt>Detected candidates</dt>
+                <dd>@run.DetectedCandidateCount</dd>
+                @if (!string.IsNullOrWhiteSpace(run.FailureDetails))
+                {
+                    <dt>Failure</dt>
+                    <dd class="text-danger">@run.FailureDetails</dd>
+                }
+            </dl>
+        }
+    </div>
+</FinancePageLayout>

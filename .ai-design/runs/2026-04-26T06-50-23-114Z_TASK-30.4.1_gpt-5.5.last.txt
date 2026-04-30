@@ -1,0 +1,1762 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceBillInboxContracts.cs b/src/VirtualCompany.Application/Finance/FinanceBillInboxContracts.cs
+new file mode 100644
+index 0000000..8d8a3e2
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/FinanceBillInboxContracts.cs
+@@ -0,0 +1,103 @@
++namespace VirtualCompany.Application.Finance;
++
++public sealed record GetFinanceBillInboxQuery(Guid CompanyId, int Limit = 100);
++
++public sealed record GetFinanceBillInboxDetailQuery(Guid CompanyId, Guid BillId);
++
++public sealed record ApproveFinanceBillCommand(
++    Guid CompanyId,
++    Guid BillId,
++    Guid? ActorUserId,
++    string ActorDisplayName,
++    string Rationale);
++
++public sealed record RejectFinanceBillCommand(
++    Guid CompanyId,
++    Guid BillId,
++    Guid? ActorUserId,
++    string ActorDisplayName,
++    string Rationale);
++
++public sealed record RequestFinanceBillClarificationCommand(
++    Guid CompanyId,
++    Guid BillId,
++    Guid? ActorUserId,
++    string ActorDisplayName,
++    string Rationale);
++
++public sealed record FinanceBillInboxRowDto(
++    Guid Id,
++    string SupplierName,
++    string BillReference,
++    decimal? Amount,
++    string? Currency,
++    DateTime DetectedUtc,
++    string Status,
++    string ConfidenceLevel,
++    int ValidationWarningCount,
++    int DuplicateWarningCount);
++
++public sealed record FinanceBillInboxDetailDto(
++    Guid Id,
++    string SupplierName,
++    string? SupplierOrgNumber,
++    string BillReference,
++    DateTime? BillDateUtc,
++    DateTime? DueDateUtc,
++    decimal? Amount,
++    decimal? VatAmount,
++    string? Currency,
++    string Status,
++    decimal? Confidence,
++    string ConfidenceLevel,
++    IReadOnlyList<FinanceBillExtractedFieldDto> ExtractedFields,
++    IReadOnlyList<FinanceBillWarningDto> ValidationWarnings,
++    IReadOnlyList<FinanceBillWarningDto> DuplicateWarnings,
++    FinanceBillProposalSummaryDto ProposalSummary,
++    IReadOnlyList<FinanceBillReviewActionDto> ActionHistory,
++    bool CanApprove,
++    string? ApprovalBlockedReason);
++
++public sealed record FinanceBillExtractedFieldDto(
++    string FieldName,
++    string DisplayName,
++    string? RawValue,
++    string? NormalizedValue,
++    decimal? Confidence,
++    IReadOnlyList<FinanceBillEvidenceReferenceDto> EvidenceReferences);
++
++public sealed record FinanceBillEvidenceReferenceDto(
++    string SourceDocument,
++    string? SourceDocumentType,
++    string? PageReference,
++    string? SectionReference,
++    string? TextSpan,
++    string? Locator,
++    string? Snippet);
++
++public sealed record FinanceBillWarningDto(
++    string Code,
++    string Severity,
++    string Message,
++    bool IsResolved);
++
++public sealed record FinanceBillProposalSummaryDto(
++    string Summary,
++    bool ExplicitlyRequestsApproval,
++    bool InitiatesPayment);
++
++public sealed record FinanceBillReviewActionDto(
++    Guid Id,
++    string Action,
++    string ActorDisplayName,
++    Guid? ActorUserId,
++    DateTime OccurredUtc,
++    string PriorStatus,
++    string NewStatus,
++    string Rationale);
++
++public sealed record FinanceBillReviewActionResultDto(
++    Guid BillId,
++    string PriorStatus,
++    string NewStatus,
++    DateTime OccurredUtc);
++
++public interface IFinanceBillInboxService
++{
++    Task<IReadOnlyList<FinanceBillInboxRowDto>> GetInboxAsync(GetFinanceBillInboxQuery query, CancellationToken cancellationToken);
++    Task<FinanceBillInboxDetailDto?> GetDetailAsync(GetFinanceBillInboxDetailQuery query, CancellationToken cancellationToken);
++    Task<FinanceBillReviewActionResultDto> ApproveAsync(ApproveFinanceBillCommand command, CancellationToken cancellationToken);
++    Task<FinanceBillReviewActionResultDto> RejectAsync(RejectFinanceBillCommand command, CancellationToken cancellationToken);
++    Task<FinanceBillReviewActionResultDto> RequestClarificationAsync(RequestFinanceBillClarificationCommand command, CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceBillInboxReviewEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceBillInboxReviewEntities.cs
+new file mode 100644
+index 0000000..e091029
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/FinanceBillInboxReviewEntities.cs
+@@ -0,0 +1,202 @@
++namespace VirtualCompany.Domain.Entities;
++
++public static class FinanceBillInboxStatuses
++{
++    public const string Detected = "detected";
++    public const string Extracted = "extracted";
++    public const string NeedsReview = "needs_review";
++    public const string ProposedForApproval = "proposed_for_approval";
++    public const string Approved = "approved";
++    public const string Rejected = "rejected";
++    public const string SentToPaymentExported = "sent_to_payment_exported";
++
++    public static readonly IReadOnlySet<string> Allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
++    {
++        Detected,
++        Extracted,
++        NeedsReview,
++        ProposedForApproval,
++        Approved,
++        Rejected,
++        SentToPaymentExported
++    };
++
++    public static string Normalize(string value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException("Finance bill inbox status is required.", nameof(value));
++        }
++
++        var normalized = value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
++        return Allowed.Contains(normalized)
++            ? normalized
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported finance bill inbox status.");
++    }
++}
++
++public sealed class FinanceBillReviewState : ICompanyOwnedEntity
++{
++    private readonly List<FinanceBillReviewAction> _actions = [];
++
++    private FinanceBillReviewState()
++    {
++    }
++
++    public FinanceBillReviewState(
++        Guid id,
++        Guid companyId,
++        Guid detectedBillId,
++        string status,
++        string proposalSummary,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (detectedBillId == Guid.Empty)
++        {
++            throw new ArgumentException("DetectedBillId is required.", nameof(detectedBillId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        DetectedBillId = detectedBillId;
++        Status = FinanceBillInboxStatuses.Normalize(status);
++        ProposalSummary = NormalizeProposalSummary(proposalSummary);
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid DetectedBillId { get; private set; }
++    public string Status { get; private set; } = FinanceBillInboxStatuses.Detected;
++    public string ProposalSummary { get; private set; } = string.Empty;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public DetectedBill DetectedBill { get; private set; } = null!;
++    public IReadOnlyCollection<FinanceBillReviewAction> Actions => _actions;
++
++    public FinanceBillReviewAction Approve(Guid? actorUserId, string actorDisplayName, string rationale, DateTime occurredUtc, bool hasUnresolvedValidationFailures)
++    {
++        if (hasUnresolvedValidationFailures)
++        {
++            throw new InvalidOperationException("Finance bill approval is blocked while validation failures are unresolved.");
++        }
++
++        return Transition("approve", FinanceBillInboxStatuses.Approved, actorUserId, actorDisplayName, rationale, occurredUtc);
++    }
++
++    public FinanceBillReviewAction Reject(Guid? actorUserId, string actorDisplayName, string rationale, DateTime occurredUtc) =>
++        Transition("reject", FinanceBillInboxStatuses.Rejected, actorUserId, actorDisplayName, rationale, occurredUtc);
++
++    public FinanceBillReviewAction RequestClarification(Guid? actorUserId, string actorDisplayName, string rationale, DateTime occurredUtc) =>
++        Transition("request_clarification", FinanceBillInboxStatuses.NeedsReview, actorUserId, actorDisplayName, rationale, occurredUtc);
++
++    private FinanceBillReviewAction Transition(string action, string newStatus, Guid? actorUserId, string actorDisplayName, string rationale, DateTime occurredUtc)
++    {
++        var priorStatus = Status;
++        Status = FinanceBillInboxStatuses.Normalize(newStatus);
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(occurredUtc, nameof(occurredUtc));
++        var history = new FinanceBillReviewAction(Guid.NewGuid(), CompanyId, Id, DetectedBillId, action, actorUserId, actorDisplayName, priorStatus, Status, rationale, UpdatedUtc);
++        _actions.Add(history);
++        return history;
++    }
++
++    private static string NormalizeProposalSummary(string value) =>
++        string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
++}
++
++public sealed class FinanceBillReviewAction : ICompanyOwnedEntity
++{
++    private FinanceBillReviewAction()
++    {
++    }
++
++    public FinanceBillReviewAction(
++        Guid id,
++        Guid companyId,
++        Guid reviewStateId,
++        Guid detectedBillId,
++        string action,
++        Guid? actorUserId,
++        string actorDisplayName,
++        string priorStatus,
++        string newStatus,
++        string rationale,
++        DateTime occurredUtc)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
++        ReviewStateId = reviewStateId == Guid.Empty ? throw new ArgumentException("ReviewStateId is required.", nameof(reviewStateId)) : reviewStateId;
++        DetectedBillId = detectedBillId == Guid.Empty ? throw new ArgumentException("DetectedBillId is required.", nameof(detectedBillId)) : detectedBillId;
++        Action = NormalizeRequired(action, nameof(action), 64);
++        ActorUserId = actorUserId == Guid.Empty ? null : actorUserId;
++        ActorDisplayName = NormalizeRequired(actorDisplayName, nameof(actorDisplayName), 200);
++        PriorStatus = FinanceBillInboxStatuses.Normalize(priorStatus);
++        NewStatus = FinanceBillInboxStatuses.Normalize(newStatus);
++        Rationale = NormalizeRequired(rationale, nameof(rationale), 1000);
++        OccurredUtc = EntityTimestampNormalizer.NormalizeUtc(occurredUtc, nameof(occurredUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid ReviewStateId { get; private set; }
++    public Guid DetectedBillId { get; private set; }
++    public string Action { get; private set; } = null!;
++    public Guid? ActorUserId { get; private set; }
++    public string ActorDisplayName { get; private set; } = null!;
++    public string PriorStatus { get; private set; } = null!;
++    public string NewStatus { get; private set; } = null!;
++    public string Rationale { get; private set; } = null!;
++    public DateTime OccurredUtc { get; private set; }
++    public FinanceBillReviewState ReviewState { get; private set; } = null!;
++    public DetectedBill DetectedBill { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length > maxLength ? trimmed[..maxLength] : trimmed;
++    }
++}
++
++public sealed class BillApprovalProposal : ICompanyOwnedEntity
++{
++    private BillApprovalProposal()
++    {
++    }
++
++    public BillApprovalProposal(Guid id, Guid companyId, Guid detectedBillId, Guid reviewStateId, string summary, Guid? approvedByUserId, DateTime approvedUtc)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
++        DetectedBillId = detectedBillId == Guid.Empty ? throw new ArgumentException("DetectedBillId is required.", nameof(detectedBillId)) : detectedBillId;
++        ReviewStateId = reviewStateId == Guid.Empty ? throw new ArgumentException("ReviewStateId is required.", nameof(reviewStateId)) : reviewStateId;
++        Summary = string.IsNullOrWhiteSpace(summary) ? "Approval was requested for this bill. No payment has been initiated." : summary.Trim();
++        ApprovedByUserId = approvedByUserId == Guid.Empty ? null : approvedByUserId;
++        ApprovedUtc = EntityTimestampNormalizer.NormalizeUtc(approvedUtc, nameof(approvedUtc));
++        PaymentExecutionRequested = false;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid DetectedBillId { get; private set; }
++    public Guid ReviewStateId { get; private set; }
++    public string Summary { get; private set; } = null!;
++    public Guid? ApprovedByUserId { get; private set; }
++    public DateTime ApprovedUtc { get; private set; }
++    public bool PaymentExecutionRequested { get; private set; }
++    public DetectedBill DetectedBill { get; private set; } = null!;
++    public FinanceBillReviewState ReviewState { get; private set; } = null!;
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceBillInboxEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceBillInboxEntityConfiguration.cs
+new file mode 100644
+index 0000000..6bfdd54
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceBillInboxEntityConfiguration.cs
+@@ -0,0 +1,104 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class FinanceBillReviewStateEntityConfiguration : IEntityTypeConfiguration<FinanceBillReviewState>
++{
++    public void Configure(EntityTypeBuilder<FinanceBillReviewState> builder)
++    {
++        builder.ToTable("finance_bill_review_states");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.DetectedBillId).HasColumnName("detected_bill_id").IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.ProposalSummary).HasColumnName("proposal_summary").HasMaxLength(4000).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.Navigation(x => x.Actions).UsePropertyAccessMode(PropertyAccessMode.Field);
++
++        builder.ToTable(t => t.HasCheckConstraint(
++            "CK_finance_bill_review_states_status",
++            "status IN ('detected', 'extracted', 'needs_review', 'proposed_for_approval', 'approved', 'rejected', 'sent_to_payment_exported')"));
++
++        builder.HasIndex(x => new { x.CompanyId, x.DetectedBillId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.UpdatedUtc });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.DetectedBill).WithMany().HasForeignKey(x => x.DetectedBillId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class FinanceBillReviewActionEntityConfiguration : IEntityTypeConfiguration<FinanceBillReviewAction>
++{
++    public void Configure(EntityTypeBuilder<FinanceBillReviewAction> builder)
++    {
++        builder.ToTable("finance_bill_review_actions");
++        builder.HasKey(x => x.Id);
++
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ReviewStateId).HasColumnName("review_state_id").IsRequired();
++        builder.Property(x => x.DetectedBillId).HasColumnName("detected_bill_id").IsRequired();
++        builder.Property(x => x.Action).HasColumnName("action").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.ActorUserId).HasColumnName("actor_user_id");
++        builder.Property(x => x.ActorDisplayName).HasColumnName("actor_display_name").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.PriorStatus).HasColumnName("prior_status").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.NewStatus).HasColumnName("new_status").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Rationale).HasColumnName("rationale").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.OccurredUtc).HasColumnName("occurred_at").IsRequired();
++
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_finance_bill_review_actions_prior_status", "prior_status IN ('detected', 'extracted', 'needs_review', 'proposed_for_approval', 'approved', 'rejected', 'sent_to_payment_exported')");
++            t.HasCheckConstraint("CK_finance_bill_review_actions_new_status", "new_status IN ('detected', 'extracted', 'needs_review', 'proposed_for_approval', 'approved', 'rejected', 'sent_to_payment_exported')");
++        });
++
++        builder.HasIndex(x => new { x.CompanyId, x.DetectedBillId, x.OccurredUtc });
++        builder.HasOne(x => x.ReviewState).WithMany(x => x.Actions).HasForeignKey(x => x.ReviewStateId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.DetectedBill).WithMany().HasForeignKey(x => x.DetectedBillId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class BillApprovalProposalEntityConfiguration : IEntityTypeConfiguration<BillApprovalProposal>
++{
++    public void Configure(EntityTypeBuilder<BillApprovalProposal> builder)
++    {
++        builder.ToTable("bill_approval_proposals");
++        builder.HasKey(x => x.Id);
++
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.DetectedBillId).HasColumnName("detected_bill_id").IsRequired();
++        builder.Property(x => x.ReviewStateId).HasColumnName("review_state_id").IsRequired();
++        builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(4000).IsRequired();
++        builder.Property(x => x.ApprovedByUserId).HasColumnName("approved_by_user_id");
++        builder.Property(x => x.ApprovedUtc).HasColumnName("approved_at").IsRequired();
++        builder.Property(x => x.PaymentExecutionRequested)
++            .HasColumnName("payment_execution_requested")
++            .HasDefaultValue(false)
++            .IsRequired();
++
++        builder.ToTable(t => t.HasCheckConstraint(
++            "CK_bill_approval_proposals_no_payment_execution",
++            "payment_execution_requested = 0"));
++
++        builder.HasIndex(x => new { x.CompanyId, x.DetectedBillId }).IsUnique();
++        builder.HasOne(x => x.DetectedBill).WithMany().HasForeignKey(x => x.DetectedBillId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.ReviewState).WithMany().HasForeignKey(x => x.ReviewStateId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 1ef3b0b..95f8fe9 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -122,6 +122,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<NormalizedBillExtraction> NormalizedBillExtractions => Set<NormalizedBillExtraction>();
+     public DbSet<DetectedBill> DetectedBills => Set<DetectedBill>();
+     public DbSet<DetectedBillField> DetectedBillFields => Set<DetectedBillField>();
++    public DbSet<FinanceBillReviewState> FinanceBillReviewStates => Set<FinanceBillReviewState>();
++    public DbSet<FinanceBillReviewAction> FinanceBillReviewActions => Set<FinanceBillReviewAction>();
++    public DbSet<BillApprovalProposal> BillApprovalProposals => Set<BillApprovalProposal>();
+     public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
+     public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
+     public DbSet<SimulationCashDeltaRecord> SimulationCashDeltaRecords => Set<SimulationCashDeltaRecord>();
+@@ -254,6 +257,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is NormalizedBillExtraction ||
+                 entry.Entity is DetectedBill ||
+                 entry.Entity is DetectedBillField ||
++                entry.Entity is FinanceBillReviewState ||
++                entry.Entity is FinanceBillReviewAction ||
++                entry.Entity is BillApprovalProposal ||
+                 entry.Entity is EmailAttachmentSnapshot ||
+                 entry.Entity is SimulationCashDeltaRecord ||
+                 entry.Entity is SimulationEventRecord)
+@@ -523,6 +529,15 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<DetectedBillField>()
+             .HasQueryFilter(field =>
+                 CurrentCompanyId.HasValue && field.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceBillReviewState>()
++            .HasQueryFilter(state =>
++                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceBillReviewAction>()
++            .HasQueryFilter(action =>
++                CurrentCompanyId.HasValue && action.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<BillApprovalProposal>()
++            .HasQueryFilter(proposal =>
++                CurrentCompanyId.HasValue && proposal.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanySimulationRunHistory>()
+             .HasQueryFilter(history =>
+                 CurrentCompanyId.HasValue && history.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBillInboxService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBillInboxService.cs
+new file mode 100644
+index 0000000..5c6ac88
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBillInboxService.cs
+@@ -0,0 +1,356 @@
++using System.Text.Json;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class CompanyFinanceBillInboxService : IFinanceBillInboxService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
++    private readonly IAuditEventWriter _auditEventWriter;
++    private readonly TimeProvider _timeProvider;
++
++    public CompanyFinanceBillInboxService(
++        VirtualCompanyDbContext dbContext,
++        IAuditEventWriter auditEventWriter,
++        TimeProvider timeProvider,
++        ICompanyContextAccessor? companyContextAccessor = null)
++    {
++        _dbContext = dbContext;
++        _auditEventWriter = auditEventWriter;
++        _timeProvider = timeProvider;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public async Task<IReadOnlyList<FinanceBillInboxRowDto>> GetInboxAsync(GetFinanceBillInboxQuery query, CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++        var limit = Math.Clamp(query.Limit <= 0 ? 100 : query.Limit, 1, 500);
++
++        var rows = await _dbContext.DetectedBills
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .GroupJoin(
++                _dbContext.FinanceBillReviewStates.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == query.CompanyId),
++                bill => bill.Id,
++                state => state.DetectedBillId,
++                (bill, states) => new { Bill = bill, State = states.FirstOrDefault() })
++            .OrderByDescending(x => x.Bill.UpdatedUtc)
++            .ThenByDescending(x => x.Bill.CreatedUtc)
++            .Take(limit)
++            .ToListAsync(cancellationToken);
++
++        return rows
++            .Select(x =>
++            {
++                var status = ResolveInboxStatus(x.Bill, x.State);
++                return new FinanceBillInboxRowDto(
++                    x.Bill.Id,
++                    x.Bill.SupplierName ?? "Unknown supplier",
++                    x.Bill.InvoiceNumber ?? x.Bill.SourceAttachmentId ?? x.Bill.Id.ToString("D"),
++                    x.Bill.TotalAmount,
++                    x.Bill.Currency,
++                    x.Bill.CreatedUtc,
++                    FormatStatus(status),
++                    FormatStatus(x.Bill.ConfidenceLevel),
++                    CountValidationWarnings(x.Bill),
++                    x.Bill.DuplicateCheck?.IsDuplicate == true ? 1 : 0);
++            })
++            .Where(x => IsAllowedDisplayStatus(x.Status))
++            .ToList();
++    }
++
++    public async Task<FinanceBillInboxDetailDto?> GetDetailAsync(GetFinanceBillInboxDetailQuery query, CancellationToken cancellationToken)
++    {
++        EnsureTenant(query.CompanyId);
++
++        var bill = await _dbContext.DetectedBills
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Include(x => x.Fields)
++            .Include(x => x.DuplicateCheck)
++            .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId && x.Id == query.BillId, cancellationToken);
++
++        if (bill is null)
++        {
++            return null;
++        }
++
++        var state = await _dbContext.FinanceBillReviewStates
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Include(x => x.Actions)
++            .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId && x.DetectedBillId == query.BillId, cancellationToken);
++
++        var validationWarnings = ParseValidationWarnings(bill);
++        var duplicateWarnings = BuildDuplicateWarnings(bill);
++        var hasUnresolvedValidationFailures = HasUnresolvedValidationFailures(bill, validationWarnings);
++        var status = ResolveInboxStatus(bill, state);
++        var proposalSummary = BuildProposalSummary(bill, state?.ProposalSummary);
++
++        return new FinanceBillInboxDetailDto(
++            bill.Id,
++            bill.SupplierName ?? "Unknown supplier",
++            bill.SupplierOrgNumber,
++            bill.InvoiceNumber ?? bill.SourceAttachmentId ?? bill.Id.ToString("D"),
++            bill.InvoiceDateUtc,
++            bill.DueDateUtc,
++            bill.TotalAmount,
++            bill.VatAmount,
++            bill.Currency,
++            FormatStatus(status),
++            bill.Confidence,
++            FormatStatus(bill.ConfidenceLevel),
++            bill.Fields.OrderBy(x => x.FieldName).Select(MapField).ToList(),
++            validationWarnings,
++            duplicateWarnings,
++            proposalSummary,
++            state?.Actions.OrderByDescending(x => x.OccurredUtc).Select(MapAction).ToList() ?? [],
++            !hasUnresolvedValidationFailures && !string.Equals(status, FinanceBillInboxStatuses.Approved, StringComparison.OrdinalIgnoreCase),
++            hasUnresolvedValidationFailures ? "Resolve validation failures before approving this bill." : null);
++    }
++
++    public async Task<FinanceBillReviewActionResultDto> ApproveAsync(ApproveFinanceBillCommand command, CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        var bill = await LoadBillForWriteAsync(command.CompanyId, command.BillId, cancellationToken);
++        var state = await LoadOrCreateStateAsync(bill, cancellationToken);
++        var validationWarnings = ParseValidationWarnings(bill);
++        var hasFailures = HasUnresolvedValidationFailures(bill, validationWarnings);
++        var occurredUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var action = state.Approve(command.ActorUserId, command.ActorDisplayName, command.Rationale, occurredUtc, hasFailures);
++
++        _dbContext.BillApprovalProposals.Add(new BillApprovalProposal(
++            Guid.NewGuid(),
++            command.CompanyId,
++            bill.Id,
++            state.Id,
++            BuildProposalSummary(bill, state.ProposalSummary).Summary,
++            command.ActorUserId,
++            occurredUtc));
++
++        await WriteAuditAsync(command.CompanyId, command.ActorUserId, "finance.bill_inbox.approved", bill.Id, AuditEventOutcomes.Approved, action, cancellationToken);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new FinanceBillReviewActionResultDto(bill.Id, FormatStatus(action.PriorStatus), FormatStatus(action.NewStatus), action.OccurredUtc);
++    }
++
++    public async Task<FinanceBillReviewActionResultDto> RejectAsync(RejectFinanceBillCommand command, CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        var bill = await LoadBillForWriteAsync(command.CompanyId, command.BillId, cancellationToken);
++        var state = await LoadOrCreateStateAsync(bill, cancellationToken);
++        var action = state.Reject(command.ActorUserId, command.ActorDisplayName, command.Rationale, _timeProvider.GetUtcNow().UtcDateTime);
++
++        await WriteAuditAsync(command.CompanyId, command.ActorUserId, "finance.bill_inbox.rejected", bill.Id, AuditEventOutcomes.Rejected, action, cancellationToken);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new FinanceBillReviewActionResultDto(bill.Id, FormatStatus(action.PriorStatus), FormatStatus(action.NewStatus), action.OccurredUtc);
++    }
++
++    public async Task<FinanceBillReviewActionResultDto> RequestClarificationAsync(RequestFinanceBillClarificationCommand command, CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        var bill = await LoadBillForWriteAsync(command.CompanyId, command.BillId, cancellationToken);
++        var state = await LoadOrCreateStateAsync(bill, cancellationToken);
++        var action = state.RequestClarification(command.ActorUserId, command.ActorDisplayName, command.Rationale, _timeProvider.GetUtcNow().UtcDateTime);
++
++        await WriteAuditAsync(command.CompanyId, command.ActorUserId, "finance.bill_inbox.clarification_requested", bill.Id, AuditEventOutcomes.Requested, action, cancellationToken);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new FinanceBillReviewActionResultDto(bill.Id, FormatStatus(action.PriorStatus), FormatStatus(action.NewStatus), action.OccurredUtc);
++    }
++
++    private async Task<DetectedBill> LoadBillForWriteAsync(Guid companyId, Guid billId, CancellationToken cancellationToken) =>
++        await _dbContext.DetectedBills
++            .IgnoreQueryFilters()
++            .Include(x => x.DuplicateCheck)
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == billId, cancellationToken)
++        ?? throw new InvalidOperationException("The selected finance bill was not found in the active company.");
++
++    private async Task<FinanceBillReviewState> LoadOrCreateStateAsync(DetectedBill bill, CancellationToken cancellationToken)
++    {
++        var state = await _dbContext.FinanceBillReviewStates
++            .IgnoreQueryFilters()
++            .Include(x => x.Actions)
++            .SingleOrDefaultAsync(x => x.CompanyId == bill.CompanyId && x.DetectedBillId == bill.Id, cancellationToken);
++
++        if (state is not null)
++        {
++            return state;
++        }
++
++        state = new FinanceBillReviewState(
++            Guid.NewGuid(),
++            bill.CompanyId,
++            bill.Id,
++            ResolveInboxStatus(bill, null),
++            BuildProposalSummary(bill, null).Summary,
++            _timeProvider.GetUtcNow().UtcDateTime);
++        _dbContext.FinanceBillReviewStates.Add(state);
++        return state;
++    }
++
++    private async Task WriteAuditAsync(Guid companyId, Guid? actorUserId, string actionName, Guid billId, string outcome, FinanceBillReviewAction action, CancellationToken cancellationToken)
++    {
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.User,
++                actorUserId,
++                actionName,
++                "finance_bill_inbox_item",
++                billId.ToString("D"),
++                outcome,
++                action.Rationale,
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["priorStatus"] = FormatStatus(action.PriorStatus),
++                    ["newStatus"] = FormatStatus(action.NewStatus),
++                    ["reviewActionId"] = action.Id.ToString("D")
++                },
++                OccurredUtc: action.OccurredUtc),
++            cancellationToken);
++    }
++
++    private void EnsureTenant(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (_companyContextAccessor?.CompanyId is Guid currentCompanyId && currentCompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException("The requested finance bill inbox is outside the active company context.");
++        }
++    }
++
++    private static string ResolveInboxStatus(DetectedBill bill, FinanceBillReviewState? state)
++    {
++        if (state is not null)
++        {
++            return state.Status;
++        }
++
++        if (bill.ValidationStatusPersisted && bill.IsEligibleForApprovalProposal)
++        {
++            return FinanceBillInboxStatuses.ProposedForApproval;
++        }
++
++        if (bill.RequiresReview || string.Equals(bill.ValidationStatus, "flagged", StringComparison.OrdinalIgnoreCase))
++        {
++            return FinanceBillInboxStatuses.NeedsReview;
++        }
++
++        return bill.Fields.Count > 0 ? FinanceBillInboxStatuses.Extracted : FinanceBillInboxStatuses.Detected;
++    }
++
++    private static FinanceBillProposalSummaryDto BuildProposalSummary(DetectedBill bill, string? storedSummary)
++    {
++        var reference = bill.InvoiceNumber ?? bill.SourceAttachmentId ?? bill.Id.ToString("D");
++        var amount = bill.TotalAmount.HasValue && !string.IsNullOrWhiteSpace(bill.Currency)
++            ? $"{bill.TotalAmount.Value:0.##} {bill.Currency}"
++            : "the extracted amount";
++        var due = bill.DueDateUtc.HasValue ? $" due {bill.DueDateUtc.Value:yyyy-MM-dd}" : string.Empty;
++        var summary = string.IsNullOrWhiteSpace(storedSummary)
++            ? $"Finance agent proposal: approve bill {reference} from {bill.SupplierName ?? "the supplier"} for {amount}{due}. Please approve or reject this proposal. Approval records the decision only and does not initiate payment."
++            : storedSummary.Trim();
++
++        return new FinanceBillProposalSummaryDto(summary, true, false);
++    }
++
++    private static FinanceBillExtractedFieldDto MapField(DetectedBillField field) =>
++        new(
++            field.FieldName,
++            FormatFieldName(field.FieldName),
++            field.RawValue,
++            field.NormalizedValue,
++            field.FieldConfidence,
++            [
++                new FinanceBillEvidenceReferenceDto(
++                    field.SourceDocument,
++                    field.SourceDocumentType,
++                    field.PageReference,
++                    field.SectionReference,
++                    field.TextSpan,
++                    field.Locator,
++                    field.Snippet)
++            ]);
++
++    private static FinanceBillReviewActionDto MapAction(FinanceBillReviewAction action) =>
++        new(
++            action.Id,
++            FormatStatus(action.Action),
++            action.ActorDisplayName,
++            action.ActorUserId,
++            action.OccurredUtc,
++            FormatStatus(action.PriorStatus),
++            FormatStatus(action.NewStatus),
++            action.Rationale);
++
++    private static IReadOnlyList<FinanceBillWarningDto> ParseValidationWarnings(DetectedBill bill)
++    {
++        if (string.IsNullOrWhiteSpace(bill.ValidationIssuesJson) || bill.ValidationIssuesJson == "[]")
++        {
++            return [];
++        }
++
++        try
++        {
++            using var document = JsonDocument.Parse(bill.ValidationIssuesJson);
++            if (document.RootElement.ValueKind != JsonValueKind.Array)
++            {
++                return [new FinanceBillWarningDto("validation_payload", bill.ValidationStatus, bill.ValidationIssuesJson, false)];
++            }
++
++            return document.RootElement.EnumerateArray()
++                .Select((item, index) =>
++                {
++                    var code = TryGetString(item, "code") ?? $"validation_{index + 1}";
++                    var severity = TryGetString(item, "severity") ?? bill.ValidationStatus;
++                    var message = TryGetString(item, "message") ?? item.ToString();
++                    var resolved = item.TryGetProperty("isResolved", out var resolvedProperty) && resolvedProperty.ValueKind == JsonValueKind.True;
++                    return new FinanceBillWarningDto(code, FormatStatus(severity), message, resolved);
++                })
++                .ToList();
++        }
++        catch (JsonException)
++        {
++            return [new FinanceBillWarningDto("validation_payload", FormatStatus(bill.ValidationStatus), bill.ValidationIssuesJson, false)];
++        }
++    }
++
++    private static IReadOnlyList<FinanceBillWarningDto> BuildDuplicateWarnings(DetectedBill bill)
++    {
++        if (bill.DuplicateCheck is null || !bill.DuplicateCheck.IsDuplicate)
++        {
++            return [];
++        }
++
++        return
++        [
++            new FinanceBillWarningDto(
++                "possible_duplicate",
++                FormatStatus(bill.DuplicateCheck.ResultStatus),
++                bill.DuplicateCheck.CriteriaSummary,
++                false)
++        ];
++    }
++
++    private static bool HasUnresolvedValidationFailures(DetectedBill bill, IReadOnlyList<FinanceBillWarningDto> warnings)
++    {
++        if (warnings.Any(x => !x.IsResolved))
++        {
++            return true;
++        }
++
++        return string.Equals(bill.ValidationStatus, "pending", StringComparison.OrdinalIgnoreCase) ||
++               string.Equals(bill.ValidationStatus, "flagged", StringComparison.OrdinalIgnoreCase) ||
++               string.Equals(bill.ValidationStatus, "rejected", StringComparison.OrdinalIgnoreCase);
++    }
++
++    private static int CountValidationWarnings(DetectedBill bill) => ParseValidationWarnings(bill).Count(x => !x.IsResolved);
++
++    private static string? TryGetString(JsonElement item, string propertyName) =>
++        item.ValueKind == JsonValueKind.Object &&
++        item.TryGetProperty(propertyName, out var property) &&
++        property.ValueKind == JsonValueKind.String
++            ? property.GetString()
++            : null;
++
++    private static string FormatFieldName(string value) => FormatStatus(value.Replace("Utc", string.Empty, StringComparison.Ordinal));
++
++    private static string FormatStatus(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "Unknown"
++            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(x => char.ToUpperInvariant(x[0]) + x[1..]));
++
++    private static bool IsAllowedDisplayStatus(string value) =>
++        new[] { "Detected", "Extracted", "Needs Review", "Proposed For Approval", "Approved", "Rejected", "Sent To Payment Exported" }
++            .Contains(value, StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 9b24ec1..3221ccc 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -453,6 +453,7 @@ public static class DependencyInjection
+ 
+         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
+         services.AddScoped<IFinancePaymentReadService, CompanyFinanceReadService>();
++        services.AddScoped<IFinanceBillInboxService, CompanyFinanceBillInboxService>();
+         services.AddScoped<ICompanyFinanceReadService, CompanyFinanceReadService>();
+         services.AddScoped<ICompanySimulationStateService, CompanySimulationStateService>();
+         services.AddScoped<ICompanySimulationStateRepository, CompanySimulationStateRepository>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426193000_AddFinanceBillInboxReview.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426193000_AddFinanceBillInboxReview.cs
+new file mode 100644
+index 0000000..1cc6d30
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426193000_AddFinanceBillInboxReview.cs
+@@ -0,0 +1,159 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddFinanceBillInboxReview : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "finance_bill_review_states",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    detected_bill_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    status = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    proposal_summary = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_bill_review_states", x => x.id);
++                    table.UniqueConstraint("AK_finance_bill_review_states_company_id_id", x => new { x.company_id, x.id });
++                    table.CheckConstraint("CK_finance_bill_review_states_status", "status IN ('detected', 'extracted', 'needs_review', 'proposed_for_approval', 'approved', 'rejected', 'sent_to_payment_exported')");
++                    table.ForeignKey("FK_finance_bill_review_states_companies_company_id", x => x.company_id, "companies", "id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey("FK_finance_bill_review_states_detected_bills_detected_bill_id", x => x.detected_bill_id, "detected_bills", "id", onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "finance_bill_review_actions",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    review_state_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    detected_bill_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    action = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    actor_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    actor_display_name = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                    prior_status = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    new_status = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    rationale = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
++                    occurred_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_bill_review_actions", x => x.id);
++                    table.CheckConstraint("CK_finance_bill_review_actions_new_status", "new_status IN ('detected', 'extracted', 'needs_review', 'proposed_for_approval', 'approved', 'rejected', 'sent_to_payment_exported')");
++                    table.CheckConstraint("CK_finance_bill_review_actions_prior_status", "prior_status IN ('detected', 'extracted', 'needs_review', 'proposed_for_approval', 'approved', 'rejected', 'sent_to_payment_exported')");
++                    table.ForeignKey("FK_finance_bill_review_actions_detected_bills_detected_bill_id", x => x.detected_bill_id, "detected_bills", "id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey("FK_finance_bill_review_actions_finance_bill_review_states_review_state_id", x => x.review_state_id, "finance_bill_review_states", "id", onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "bill_approval_proposals",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    detected_bill_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    review_state_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    summary = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
++                    approved_by_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    approved_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    payment_execution_requested = table.Column<bool>(type: "bit", nullable: false, defaultValue: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_bill_approval_proposals", x => x.id);
++                    table.CheckConstraint("CK_bill_approval_proposals_no_payment_execution", "payment_execution_requested = 0");
++                    table.ForeignKey("FK_bill_approval_proposals_detected_bills_detected_bill_id", x => x.detected_bill_id, "detected_bills", "id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey("FK_bill_approval_proposals_finance_bill_review_states_review_state_id", x => x.review_state_id, "finance_bill_review_states", "id", onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_bill_review_states_company_id_detected_bill_id",
++                table: "finance_bill_review_states",
++                columns: new[] { "company_id", "detected_bill_id" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_bill_review_states_company_id_status_updated_at",
++                table: "finance_bill_review_states",
++                columns: new[] { "company_id", "status", "updated_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_bill_review_states_detected_bill_id",
++                table: "finance_bill_review_states",
++                column: "detected_bill_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_bill_review_actions_company_id_detected_bill_id_occurred_at",
++                table: "finance_bill_review_actions",
++                columns: new[] { "company_id", "detected_bill_id", "occurred_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_bill_review_actions_detected_bill_id",
++                table: "finance_bill_review_actions",
++                column: "detected_bill_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_finance_bill_review_actions_review_state_id",
++                table: "finance_bill_review_actions",
++                column: "review_state_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_bill_approval_proposals_company_id_detected_bill_id",
++                table: "bill_approval_proposals",
++                columns: new[] { "company_id", "detected_bill_id" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_bill_approval_proposals_detected_bill_id",
++                table: "bill_approval_proposals",
++                column: "detected_bill_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_bill_approval_proposals_review_state_id",
++                table: "bill_approval_proposals",
++                column: "review_state_id");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(name: "bill_approval_proposals");
++            migrationBuilder.DropTable(name: "finance_bill_review_actions");
++            migrationBuilder.DropTable(name: "finance_bill_review_states");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Api/Controllers/FinanceBillInboxController.cs b/src/VirtualCompany.Api/Controllers/FinanceBillInboxController.cs
+new file mode 100644
+index 0000000..2ba83d7
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/FinanceBillInboxController.cs
+@@ -0,0 +1,119 @@
++using System.Security.Claims;
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("internal/companies/{companyId:guid}/finance/bill-inbox")]
++[Authorize(Policy = CompanyPolicies.FinanceView)]
++[RequireCompanyContext]
++public sealed class FinanceBillInboxController : ControllerBase
++{
++    private readonly IFinanceBillInboxService _service;
++
++    public FinanceBillInboxController(IFinanceBillInboxService service)
++    {
++        _service = service;
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<IReadOnlyList<FinanceBillInboxRowDto>>> GetInboxAsync(
++        Guid companyId,
++        [FromQuery] int limit,
++        CancellationToken cancellationToken) =>
++        Ok(await _service.GetInboxAsync(new GetFinanceBillInboxQuery(companyId, limit <= 0 ? 100 : limit), cancellationToken));
++
++    [HttpGet("{billId:guid}")]
++    public async Task<ActionResult<FinanceBillInboxDetailDto>> GetDetailAsync(
++        Guid companyId,
++        Guid billId,
++        CancellationToken cancellationToken)
++    {
++        var detail = await _service.GetDetailAsync(new GetFinanceBillInboxDetailQuery(companyId, billId), cancellationToken);
++        return detail is null ? NotFound() : Ok(detail);
++    }
++
++    [HttpPost("{billId:guid}/approve")]
++    [Authorize(Policy = CompanyPolicies.FinanceManage)]
++    public async Task<ActionResult<FinanceBillReviewActionResultDto>> ApproveAsync(
++        Guid companyId,
++        Guid billId,
++        [FromBody] FinanceBillReviewActionRequest request,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _service.ApproveAsync(
++                new ApproveFinanceBillCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName(), request.Rationale),
++                cancellationToken));
++        }
++        catch (InvalidOperationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
++            {
++                [nameof(request.Rationale)] = [ex.Message]
++            })
++            {
++                Title = "Finance bill approval blocked",
++                Detail = ex.Message,
++                Status = StatusCodes.Status400BadRequest,
++                Instance = HttpContext.Request.Path
++            });
++        }
++    }
++
++    [HttpPost("{billId:guid}/reject")]
++    [Authorize(Policy = CompanyPolicies.FinanceManage)]
++    public async Task<ActionResult<FinanceBillReviewActionResultDto>> RejectAsync(
++        Guid companyId,
++        Guid billId,
++        [FromBody] FinanceBillReviewActionRequest request,
++        CancellationToken cancellationToken) =>
++        Ok(await _service.RejectAsync(
++            new RejectFinanceBillCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName(), request.Rationale),
++            cancellationToken));
++
++    [HttpPost("{billId:guid}/request-clarification")]
++    [Authorize(Policy = CompanyPolicies.FinanceManage)]
++    public async Task<ActionResult<FinanceBillReviewActionResultDto>> RequestClarificationAsync(
++        Guid companyId,
++        Guid billId,
++        [FromBody] FinanceBillReviewActionRequest request,
++        CancellationToken cancellationToken) =>
++        Ok(await _service.RequestClarificationAsync(
++            new RequestFinanceBillClarificationCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName(), request.Rationale),
++            cancellationToken));
++
++    private Guid? ResolveActorId()
++    {
++        var value = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");
++        return Guid.TryParse(value, out var userId) ? userId : null;
++    }
++
++    private string ResolveActorDisplayName() =>
++        User.Identity?.Name ??
++        User.FindFirstValue("name") ??
++        User.FindFirstValue(ClaimTypes.Email) ??
++        "Finance user";
++}
++
++public sealed record FinanceBillReviewActionRequest(string Rationale);
+diff --git a/src/VirtualCompany.Web/Services/FinanceRoutes.cs b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+index 7e25b0e..4a23ee0 100644
+--- a/src/VirtualCompany.Web/Services/FinanceRoutes.cs
++++ b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+@@ -19,6 +19,8 @@ public static class FinanceRoutes
+     public const string Bills = "/finance/bills";
+     public const string BillDetail = "/finance/bills/{billId:guid}";
+     public const string TransactionDetail = "/finance/transactions/{transactionId:guid}";
++    public const string BillInbox = "/finance/bill-inbox";
++    public const string BillInboxDetail = "/finance/bill-inbox/{billId:guid}";
+     public const string Invoices = "/finance/invoices";
+     public const string Reviews = "/finance/reviews";
+     public const string ReviewDetail = "/finance/reviews/{invoiceId:guid}";
+@@ -55,6 +57,7 @@ public static class FinanceRoutes
+             new("Transactions", Transactions, "Inspect transaction activity and categorization work for the selected company."),
+             new("Payments", Payments, "Inspect incoming and outgoing cash movement records for the selected company."),
+             new("Bills", Bills, "Inspect supplier bills and tenant-scoped bill detail workflows."),
++            new("Bill inbox", BillInbox, "Review detected supplier bills, evidence, warnings, and approval proposals."),
+             new("Invoice reviews", Reviews, "Review finance workflow recommendations and actions for invoice workbench items."),
+             new("Invoices", Invoices, "Track invoice review and collection workflows inside the active company."),
+             new("Mailbox", Mailbox, "Connect a mailbox and trigger tenant-scoped bill inbox scans."),
+@@ -82,6 +85,9 @@ public static class FinanceRoutes
+     public static string BuildBillDetailPath(Guid billId, Guid? companyId) =>
+         WithCompanyContext($"/finance/bills/{billId:D}", companyId);
+ 
++    public static string BuildBillInboxDetailPath(Guid billId, Guid? companyId) =>
++        WithCompanyContext($"/finance/bill-inbox/{billId:D}", companyId);
++
+     public static string BuildInvoiceDetailPath(Guid invoiceId, Guid? companyId) =>
+         WithCompanyContext($"/finance/invoices/{invoiceId:D}", companyId);
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 62e4964..e0c86a7 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -422,6 +422,38 @@ public sealed class FinanceApiClient
+             ? Task.FromResult<FinanceBillDetailResponse?>(null)
+             : GetAsync<FinanceBillDetailResponse>(companyId, $"internal/companies/{companyId}/finance/bills/{billId}", allowNotFound: true, cancellationToken);
+ 
++    public Task<IReadOnlyList<FinanceBillInboxRowResponse>> GetBillInboxAsync(
++        Guid companyId,
++        int limit = 100,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<IReadOnlyList<FinanceBillInboxRowResponse>>([]);
++        }
++
++        var uri = $"internal/companies/{companyId}/finance/bill-inbox{BuildQuery(("limit", limit.ToString(CultureInfo.InvariantCulture)))}";
++        return GetListAsync<FinanceBillInboxRowResponse>(companyId, uri, cancellationToken);
++    }
++
++    public Task<FinanceBillInboxDetailResponse?> GetBillInboxDetailAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<FinanceBillInboxDetailResponse?>(null)
++            : GetAsync<FinanceBillInboxDetailResponse>(companyId, $"internal/companies/{companyId}/finance/bill-inbox/{billId}", allowNotFound: true, cancellationToken);
++
++    public Task<FinanceBillReviewActionResultResponse> ApproveBillInboxItemAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
++        SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillReviewActionResultResponse>(
++            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/approve", new FinanceBillReviewActionRequest(rationale), cancellationToken);
++
++    public Task<FinanceBillReviewActionResultResponse> RejectBillInboxItemAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
++        SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillReviewActionResultResponse>(
++            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/reject", new FinanceBillReviewActionRequest(rationale), cancellationToken);
++
++    public Task<FinanceBillReviewActionResultResponse> RequestBillInboxClarificationAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
++        SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillReviewActionResultResponse>(
++            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/request-clarification", new FinanceBillReviewActionRequest(rationale), cancellationToken);
++
+     public Task<MailboxConnectionStatusResponse?> GetMailboxConnectionStatusAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+             ? Task.FromResult<MailboxConnectionStatusResponse?>(new MailboxConnectionStatusResponse())
+@@ -1117,6 +1149,97 @@ public sealed class FinanceBillDetailResponse
+     public List<NormalizedFinanceInsightResponse> AgentInsights { get; set; } = [];
+ }
+ 
++public sealed class FinanceBillInboxRowResponse
++{
++    public Guid Id { get; set; }
++    public string SupplierName { get; set; } = string.Empty;
++    public string BillReference { get; set; } = string.Empty;
++    public decimal? Amount { get; set; }
++    public string? Currency { get; set; }
++    public DateTime DetectedUtc { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public string ConfidenceLevel { get; set; } = string.Empty;
++    public int ValidationWarningCount { get; set; }
++    public int DuplicateWarningCount { get; set; }
++}
++
++public sealed class FinanceBillInboxDetailResponse
++{
++    public Guid Id { get; set; }
++    public string SupplierName { get; set; } = string.Empty;
++    public string? SupplierOrgNumber { get; set; }
++    public string BillReference { get; set; } = string.Empty;
++    public DateTime? BillDateUtc { get; set; }
++    public DateTime? DueDateUtc { get; set; }
++    public decimal? Amount { get; set; }
++    public decimal? VatAmount { get; set; }
++    public string? Currency { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public decimal? Confidence { get; set; }
++    public string ConfidenceLevel { get; set; } = string.Empty;
++    public List<FinanceBillExtractedFieldResponse> ExtractedFields { get; set; } = [];
++    public List<FinanceBillWarningResponse> ValidationWarnings { get; set; } = [];
++    public List<FinanceBillWarningResponse> DuplicateWarnings { get; set; } = [];
++    public FinanceBillProposalSummaryResponse ProposalSummary { get; set; } = new();
++    public List<FinanceBillReviewActionResponse> ActionHistory { get; set; } = [];
++    public bool CanApprove { get; set; }
++    public string? ApprovalBlockedReason { get; set; }
++}
++
++public sealed class FinanceBillExtractedFieldResponse
++{
++    public string FieldName { get; set; } = string.Empty;
++    public string DisplayName { get; set; } = string.Empty;
++    public string? RawValue { get; set; }
++    public string? NormalizedValue { get; set; }
++    public decimal? Confidence { get; set; }
++    public List<FinanceBillEvidenceReferenceResponse> EvidenceReferences { get; set; } = [];
++}
++
++public sealed class FinanceBillEvidenceReferenceResponse
++{
++    public string SourceDocument { get; set; } = string.Empty;
++    public string? SourceDocumentType { get; set; }
++    public string? PageReference { get; set; }
++    public string? SectionReference { get; set; }
++    public string? TextSpan { get; set; }
++    public string? Locator { get; set; }
++    public string? Snippet { get; set; }
++}
++
++public sealed class FinanceBillWarningResponse
++{
++    public string Code { get; set; } = string.Empty;
++    public string Severity { get; set; } = string.Empty;
++    public string Message { get; set; } = string.Empty;
++    public bool IsResolved { get; set; }
++}
++
++public sealed class FinanceBillProposalSummaryResponse
++{
++    public string Summary { get; set; } = string.Empty;
++    public bool ExplicitlyRequestsApproval { get; set; }
++    public bool InitiatesPayment { get; set; }
++}
++
++public sealed class FinanceBillReviewActionResponse
++{
++    public Guid Id { get; set; }
++    public string Action { get; set; } = string.Empty;
++    public string ActorDisplayName { get; set; } = string.Empty;
++    public Guid? ActorUserId { get; set; }
++    public DateTime OccurredUtc { get; set; }
++    public string PriorStatus { get; set; } = string.Empty;
++    public string NewStatus { get; set; } = string.Empty;
++    public string Rationale { get; set; } = string.Empty;
++}
++
++public sealed class FinanceBillReviewActionResultResponse
++{
++    public Guid BillId { get; set; }
++    public string PriorStatus { get; set; } = string.Empty;
++    public string NewStatus { get; set; } = string.Empty;
++    public DateTime OccurredUtc { get; set; }
++}
++
++public sealed record FinanceBillReviewActionRequest(string Rationale);
++
+ public sealed class StartMailboxConnectionRequest
+ {
+     public string? CallbackUri { get; set; }
+diff --git a/src/VirtualCompany.Web/Pages/Finance/BillInboxPage.razor b/src/VirtualCompany.Web/Pages/Finance/BillInboxPage.razor
+new file mode 100644
+index 0000000..56ac1e9
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/BillInboxPage.razor
+@@ -0,0 +1,64 @@
++@page "/finance/bill-inbox"
++@inherits FinancePageBase
++
++<PageTitle>Finance Bill Inbox</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Bill inbox"
++    Description="Review detected supplier bills, warnings, confidence, and bounded approval proposals."
++    LoadingMessage="Loading bill inbox...">
++    <div class="wizard-card wizard-card--compact">
++        <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
++            <div>
++                <h2 class="h5 mb-1">Inbox</h2>
++                <p class="text-body-secondary mb-0">Only review-flow bill statuses are shown.</p>
++            </div>
++            <span class="badge text-bg-light">@Items.Count item@(Items.Count == 1 ? string.Empty : "s")</span>
++        </div>
++
++        <FinanceDataState
++            IsLoading="@IsListLoading"
++            IsEmpty="@IsListEmpty"
++            ErrorMessage="@ListErrorMessage"
++            LoadingTitle="Loading inbox"
++            LoadingMessage="Fetching tenant-scoped finance bill inbox items."
++            EmptyTitle="No bill inbox items"
++            EmptyMessage="Detected bills that require review will appear here."
++            OnRetry="@ReloadAsync">
++            <div class="table-responsive">
++                <table class="table align-middle">
++                    <thead>
++                        <tr>
++                            <th>Bill</th>
++                            <th>Supplier</th>
++                            <th>Amount</th>
++                            <th>Status</th>
++                            <th>Confidence</th>
++                            <th>Warnings</th>
++                            <th class="text-end">Review</th>
++                        </tr>
++                    </thead>
++                    <tbody>
++                        @foreach (var item in Items)
++                        {
++                            <tr>
++                                <td>
++                                    <strong>@item.BillReference</strong>
++                                    <div class="text-body-secondary small">@FormatDate(item.DetectedUtc)</div>
++                                </td>
++                                <td>@item.SupplierName</td>
++                                <td>@FormatAmount(item.Amount, item.Currency)</td>
++                                <td><span class="badge text-bg-light">@item.Status</span></td>
++                                <td>@item.ConfidenceLevel</td>
++                                <td>@FormatWarnings(item)</td>
++                                <td class="text-end">
++                                    <a class="btn btn-sm btn-outline-primary" href="@BuildDetailHref(item.Id)">Open</a>
++                                </td>
++                            </tr>
++                        }
++                    </tbody>
++                </table>
++            </div>
++        </FinanceDataState>
++    </div>
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/BillInboxPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/BillInboxPage.razor.cs
+new file mode 100644
+index 0000000..0c16444
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/BillInboxPage.razor.cs
+@@ -0,0 +1,65 @@
++using System.Globalization;
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class BillInboxPage : FinancePageBase
++{
++    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
++
++    private IReadOnlyList<FinanceBillInboxRowResponse> Items { get; set; } = [];
++    private bool IsListLoading { get; set; }
++    private string? ListErrorMessage { get; set; }
++    private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Items.Count == 0;
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        Items = [];
++        ListErrorMessage = null;
++
++        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadAsync(companyId);
++    }
++
++    private async Task ReloadAsync()
++    {
++        if (AccessState.CompanyId is Guid companyId)
++        {
++            await LoadAsync(companyId);
++        }
++    }
++
++    private async Task LoadAsync(Guid companyId)
++    {
++        IsListLoading = true;
++        ListErrorMessage = null;
++
++        try
++        {
++            Items = await FinanceApiClient.GetBillInboxAsync(companyId, 200);
++        }
++        catch (FinanceApiException ex)
++        {
++            Items = [];
++            ListErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsListLoading = false;
++        }
++    }
++
++    private string BuildDetailHref(Guid billId) => FinanceRoutes.BuildBillInboxDetailPath(billId, AccessState.CompanyId);
++
++    private static string FormatDate(DateTime value) => value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
++
++    private static string FormatAmount(decimal? amount, string? currency) =>
++        amount.HasValue ? $"{currency ?? string.Empty} {amount.Value.ToString("N2", CultureInfo.InvariantCulture)}".Trim() : "n/a";
++
++    private static string FormatWarnings(FinanceBillInboxRowResponse item) =>
++        item.ValidationWarningCount == 0 && item.DuplicateWarningCount == 0
++            ? "None"
++            : $"{item.ValidationWarningCount} validation, {item.DuplicateWarningCount} duplicate";
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/BillInboxDetailPage.razor b/src/VirtualCompany.Web/Pages/Finance/BillInboxDetailPage.razor
+new file mode 100644
+index 0000000..812861e
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/BillInboxDetailPage.razor
+@@ -0,0 +1,160 @@
++@page "/finance/bill-inbox/{BillId:guid}"
++@inherits FinancePageBase
++
++<PageTitle>Finance Bill Review</PageTitle>
++
++<FinancePageLayout
++    IsLoading="@IsLoading"
++    AccessState="@AccessState"
++    ErrorMessage="@ErrorMessage"
++    Title="Bill review"
++    Description="Review extracted bill data, evidence, warnings, and approval proposal details."
++    LoadingMessage="Loading bill review...">
++    <FinanceDataState
++        IsLoading="@IsDetailLoading"
++        IsEmpty="@(Detail is null)"
++        ErrorMessage="@DetailErrorMessage"
++        LoadingTitle="Loading bill"
++        LoadingMessage="Fetching the tenant-scoped bill review detail."
++        EmptyTitle="Bill not found"
++        EmptyMessage="The selected bill was not found in the active company."
++        OnRetry="@ReloadAsync">
++        @if (Detail is not null)
++        {
++            <div class="row g-4">
++                <div class="col-lg-8">
++                    <div class="wizard-card wizard-card--compact mb-4">
++                        <div class="d-flex justify-content-between gap-3 align-items-start">
++                            <div>
++                                <h2 class="h4 mb-1">@Detail.BillReference</h2>
++                                <div class="text-body-secondary">@Detail.SupplierName</div>
++                            </div>
++                            <span class="badge text-bg-light">@Detail.Status</span>
++                        </div>
++
++                        <dl class="row mt-4 mb-0">
++                            <dt class="col-sm-4">Amount</dt>
++                            <dd class="col-sm-8">@FormatAmount(Detail.Amount, Detail.Currency)</dd>
++                            <dt class="col-sm-4">VAT</dt>
++                            <dd class="col-sm-8">@FormatAmount(Detail.VatAmount, Detail.Currency)</dd>
++                            <dt class="col-sm-4">Bill date</dt>
++                            <dd class="col-sm-8">@FormatDate(Detail.BillDateUtc)</dd>
++                            <dt class="col-sm-4">Due date</dt>
++                            <dd class="col-sm-8">@FormatDate(Detail.DueDateUtc)</dd>
++                            <dt class="col-sm-4">Confidence</dt>
++                            <dd class="col-sm-8">@Detail.ConfidenceLevel @FormatConfidence(Detail.Confidence)</dd>
++                        </dl>
++                    </div>
++
++                    <div class="wizard-card wizard-card--compact mb-4">
++                        <h2 class="h5">Extracted fields</h2>
++                        <div class="table-responsive">
++                            <table class="table align-middle">
++                                <thead>
++                                    <tr>
++                                        <th>Field</th>
++                                        <th>Value</th>
++                                        <th>Confidence</th>
++                                        <th>Evidence</th>
++                                    </tr>
++                                </thead>
++                                <tbody>
++                                    @foreach (var field in Detail.ExtractedFields)
++                                    {
++                                        <tr>
++                                            <td>@field.DisplayName</td>
++                                            <td>
++                                                <strong>@(field.NormalizedValue ?? field.RawValue ?? "n/a")</strong>
++                                                @if (!string.IsNullOrWhiteSpace(field.RawValue) && field.RawValue != field.NormalizedValue)
++                                                {
++                                                    <div class="text-body-secondary small">@field.RawValue</div>
++                                                }
++                                            </td>
++                                            <td>@FormatConfidence(field.Confidence)</td>
++                                            <td>
++                                                @foreach (var evidence in field.EvidenceReferences)
++                                                {
++                                                    <div class="small">
++                                                        <strong>@evidence.SourceDocument</strong>
++                                                        <span>@FormatEvidenceLocation(evidence)</span>
++                                                        @if (!string.IsNullOrWhiteSpace(evidence.Snippet))
++                                                        {
++                                                            <div class="text-body-secondary">@evidence.Snippet</div>
++                                                        }
++                                                    </div>
++                                                }
++                                            </td>
++                                        </tr>
++                                    }
++                                </tbody>
++                            </table>
++                        </div>
++                    </div>
++
++                    <div class="wizard-card wizard-card--compact">
++                        <h2 class="h5">Action history</h2>
++                        @if (Detail.ActionHistory.Count == 0)
++                        {
++                            <p class="text-body-secondary mb-0">No review actions have been recorded.</p>
++                        }
++                        else
++                        {
++                            <div class="table-responsive">
++                                <table class="table align-middle mb-0">
++                                    <thead>
++                                        <tr>
++                                            <th>Time</th>
++                                            <th>Actor</th>
++                                            <th>Action</th>
++                                            <th>Status</th>
++                                            <th>Rationale</th>
++                                        </tr>
++                                    </thead>
++                                    <tbody>
++                                        @foreach (var action in Detail.ActionHistory)
++                                        {
++                                            <tr>
++                                                <td>@FormatDateTime(action.OccurredUtc)</td>
++                                                <td>@action.ActorDisplayName</td>
++                                                <td>@action.Action</td>
++                                                <td>@action.PriorStatus -> @action.NewStatus</td>
++                                                <td>@action.Rationale</td>
++                                            </tr>
++                                        }
++                                    </tbody>
++                                </table>
++                            </div>
++                        }
++                    </div>
++                </div>
++
++                <div class="col-lg-4">
++                    <div class="wizard-card wizard-card--compact mb-4">
++                        <h2 class="h5">Proposal</h2>
++                        <p>@Detail.ProposalSummary.Summary</p>
++                        <div class="small text-body-secondary">Payment execution: @(Detail.ProposalSummary.InitiatesPayment ? "requested" : "not requested")</div>
++                    </div>
++
++                    <div class="wizard-card wizard-card--compact mb-4">
++                        <h2 class="h5">Warnings</h2>
++                        @RenderWarnings("Validation", Detail.ValidationWarnings)
++                        @RenderWarnings("Duplicate", Detail.DuplicateWarnings)
++                    </div>
++
++                    <div class="wizard-card wizard-card--compact">
++                        <h2 class="h5">Review action</h2>
++                        @if (!string.IsNullOrWhiteSpace(ActionStatusMessage))
++                        {
++                            <div class="alert alert-info">@ActionStatusMessage</div>
++                        }
++                        <label class="form-label" for="bill-action-rationale">Rationale</label>
++                        <textarea id="bill-action-rationale" class="form-control mb-3" rows="4" @bind="Rationale"></textarea>
++                        @if (!Detail.CanApprove && !string.IsNullOrWhiteSpace(Detail.ApprovalBlockedReason))
++                        {
++                            <div class="alert alert-warning">@Detail.ApprovalBlockedReason</div>
++                        }
++                        <div class="d-grid gap-2">
++                            <button class="btn btn-primary" disabled="@(!Detail.CanApprove || IsSubmittingAction)" @onclick="ApproveAsync">Approve proposal</button>
++                            <button class="btn btn-outline-danger" disabled="@IsSubmittingAction" @onclick="RejectAsync">Reject</button>
++                            <button class="btn btn-outline-secondary" disabled="@IsSubmittingAction" @onclick="RequestClarificationAsync">Request clarification</button>
++                        </div>
++                    </div>
++                </div>
++            </div>
++        }
++    </FinanceDataState>
++</FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/BillInboxDetailPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/BillInboxDetailPage.razor.cs
+new file mode 100644
+index 0000000..09bf35c
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Finance/BillInboxDetailPage.razor.cs
+@@ -0,0 +1,142 @@
++using System.Globalization;
++using Microsoft.AspNetCore.Components;
++using Microsoft.AspNetCore.Components.Rendering;
++using VirtualCompany.Web.Services;
++
++namespace VirtualCompany.Web.Pages.Finance;
++
++public partial class BillInboxDetailPage : FinancePageBase
++{
++    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
++
++    [Parameter] public Guid BillId { get; set; }
++
++    private FinanceBillInboxDetailResponse? Detail { get; set; }
++    private bool IsDetailLoading { get; set; }
++    private bool IsSubmittingAction { get; set; }
++    private string? DetailErrorMessage { get; set; }
++    private string? ActionStatusMessage { get; set; }
++    private string Rationale { get; set; } = string.Empty;
++
++    protected override async Task OnParametersSetAsync()
++    {
++        await base.OnParametersSetAsync();
++
++        Detail = null;
++        DetailErrorMessage = null;
++        ActionStatusMessage = null;
++
++        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        await LoadAsync(companyId);
++    }
++
++    private async Task ReloadAsync()
++    {
++        if (AccessState.CompanyId is Guid companyId)
++        {
++            await LoadAsync(companyId);
++        }
++    }
++
++    private async Task LoadAsync(Guid companyId)
++    {
++        IsDetailLoading = true;
++        DetailErrorMessage = null;
++
++        try
++        {
++            Detail = await FinanceApiClient.GetBillInboxDetailAsync(companyId, BillId);
++        }
++        catch (FinanceApiException ex)
++        {
++            Detail = null;
++            DetailErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsDetailLoading = false;
++        }
++    }
++
++    private Task ApproveAsync() => SubmitActionAsync((companyId, rationale) => FinanceApiClient.ApproveBillInboxItemAsync(companyId, BillId, rationale), "Approval recorded. No payment was initiated.");
++    private Task RejectAsync() => SubmitActionAsync((companyId, rationale) => FinanceApiClient.RejectBillInboxItemAsync(companyId, BillId, rationale), "Rejection recorded.");
++    private Task RequestClarificationAsync() => SubmitActionAsync((companyId, rationale) => FinanceApiClient.RequestBillInboxClarificationAsync(companyId, BillId, rationale), "Clarification request recorded.");
++
++    private async Task SubmitActionAsync(Func<Guid, string, Task<FinanceBillReviewActionResultResponse>> action, string successMessage)
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        if (string.IsNullOrWhiteSpace(Rationale))
++        {
++            ActionStatusMessage = "Enter a rationale before recording the review action.";
++            return;
++        }
++
++        IsSubmittingAction = true;
++        ActionStatusMessage = null;
++
++        try
++        {
++            await action(companyId, Rationale.Trim());
++            Rationale = string.Empty;
++            ActionStatusMessage = successMessage;
++            await LoadAsync(companyId);
++        }
++        catch (FinanceApiException ex)
++        {
++            ActionStatusMessage = ex.Message;
++        }
++        finally
++        {
++            IsSubmittingAction = false;
++        }
++    }
++
++    private RenderFragment RenderWarnings(string title, IReadOnlyList<FinanceBillWarningResponse> warnings) => builder =>
++    {
++        builder.OpenElement(0, "section");
++        builder.AddAttribute(1, "class", "mb-3");
++        builder.OpenElement(2, "h3");
++        builder.AddAttribute(3, "class", "h6");
++        builder.AddContent(4, title);
++        builder.CloseElement();
++
++        if (warnings.Count == 0)
++        {
++            builder.OpenElement(5, "p");
++            builder.AddAttribute(6, "class", "text-body-secondary small mb-0");
++            builder.AddContent(7, "No warnings.");
++            builder.CloseElement();
++        }
++        else
++        {
++            builder.OpenElement(8, "ul");
++            builder.AddAttribute(9, "class", "list-unstyled mb-0");
++            foreach (var warning in warnings)
++            {
++                builder.OpenElement(10, "li");
++                builder.AddAttribute(11, "class", "mb-2");
++                builder.OpenElement(12, "span");
++                builder.AddAttribute(13, "class", "badge text-bg-warning me-2");
++                builder.AddContent(14, warning.Severity);
++                builder.CloseElement();
++                builder.AddContent(15, warning.Message);
++                builder.CloseElement();
++            }
++
++            builder.CloseElement();
++        }
++
++        builder.CloseElement();
++    };
++
++    private static string FormatAmount(decimal? amount, string? currency) =>
++        amount.HasValue ? $"{currency ?? string.Empty} {amount.Value.ToString("N2", CultureInfo.InvariantCulture)}".Trim() : "n/a";
++
++    private static string FormatDate(DateTime? value) => value.HasValue ? value.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : "n/a";
++    private static string FormatDateTime(DateTime value) => value.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
++    private static string FormatConfidence(decimal? value) => value.HasValue ? $"({value.Value:P0})" : string.Empty;
++
++    private static string FormatEvidenceLocation(FinanceBillEvidenceReferenceResponse evidence) =>
++        string.Join(" / ", new[] { evidence.PageReference, evidence.SectionReference, evidence.TextSpan }.Where(x => !string.IsNullOrWhiteSpace(x)));
++}
+END_OF_PATCH

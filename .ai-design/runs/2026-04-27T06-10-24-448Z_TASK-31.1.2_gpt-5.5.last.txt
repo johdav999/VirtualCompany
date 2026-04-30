@@ -1,0 +1,102 @@
+diff --git a/src/VirtualCompany.Api/Controllers/MailboxConnectionCallbacksController.cs b/src/VirtualCompany.Api/Controllers/MailboxConnectionCallbacksController.cs
+index 3d8d9a7..e4c7d19 100644
+--- a/src/VirtualCompany.Api/Controllers/MailboxConnectionCallbacksController.cs
++++ b/src/VirtualCompany.Api/Controllers/MailboxConnectionCallbacksController.cs
+@@ -1,3 +1,4 @@
++using System.Security.Cryptography;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Mailbox;
+@@ -77,7 +78,7 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
+         {
+             state = _stateProtector.Unprotect(protectedState);
+         }
+-        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or UnauthorizedAccessException)
++        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or UnauthorizedAccessException or CryptographicException)
+         {
+             failure = "Mailbox OAuth state was invalid.";
+             return false;
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/MailboxOAuthStateProtector.cs b/src/VirtualCompany.Infrastructure/Mailbox/MailboxOAuthStateProtector.cs
+index 66adf8f..16fb9d5 100644
+--- a/src/VirtualCompany.Infrastructure/Mailbox/MailboxOAuthStateProtector.cs
++++ b/src/VirtualCompany.Infrastructure/Mailbox/MailboxOAuthStateProtector.cs
+@@ -1,7 +1,9 @@
++using System.Security.Cryptography;
+ using System.Text.Json;
+ using Microsoft.AspNetCore.DataProtection;
+ using VirtualCompany.Application.Mailbox;
++using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Infrastructure.Mailbox;
+ 
+@@ -27,8 +29,46 @@ public sealed class DataProtectionMailboxOAuthStateProtector : IMailboxOAuthStat
+ 
+     public MailboxOAuthState Unprotect(string protectedState)
+     {
+-        var json = _protector.Unprotect(protectedState);
+-        return JsonSerializer.Deserialize<MailboxOAuthState>(json, SerializerOptions)
+-            ?? throw new InvalidOperationException("Mailbox OAuth state was invalid.");
++        if (string.IsNullOrWhiteSpace(protectedState))
++        {
++            throw new UnauthorizedAccessException("Mailbox OAuth state was invalid.");
++        }
++
++        try
++        {
++            var json = _protector.Unprotect(protectedState);
++            var state = JsonSerializer.Deserialize<MailboxOAuthState>(json, SerializerOptions)
++                ?? throw new InvalidOperationException("Mailbox OAuth state was invalid.");
++
++            ValidateState(state);
++            return state;
++        }
++        catch (Exception ex) when (IsInvalidStateException(ex))
++        {
++            throw new UnauthorizedAccessException("Mailbox OAuth state was invalid.", ex);
++        }
++    }
++
++    private static void ValidateState(MailboxOAuthState state)
++    {
++        if (state.CompanyId == Guid.Empty || state.UserId == Guid.Empty)
++        {
++            throw new InvalidOperationException("Mailbox OAuth state was invalid.");
++        }
++
++        MailboxProviderValues.EnsureSupported(state.Provider, nameof(state.Provider));
++
++        if (state.ConfiguredFolders is null || state.ExpiresUtc == default)
++        {
++            throw new InvalidOperationException("Mailbox OAuth state was invalid.");
++        }
+     }
++
++    private static bool IsInvalidStateException(Exception exception) =>
++        exception is
++            CryptographicException or
++            JsonException or
++            NotSupportedException or
++            ArgumentException or
++            InvalidOperationException;
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
+index 94a7c8d..a09ab46 100644
+--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
+@@ -154,6 +154,15 @@ public sealed class MailboxConnectionFlowTests
+         Assert.Equal(0, await dbContext.MailboxConnections.CountAsync());
+     }
+ 
++    [Fact]
++    public void State_protector_rejects_tampered_state_as_authentication_failure()
++    {
++        var stateProtector = new DataProtectionMailboxOAuthStateProtector(new EphemeralDataProtectionProvider());
++
++        Assert.Throws<UnauthorizedAccessException>(() =>
++            stateProtector.Unprotect("tampered-state"));
++    }
++
+     [Fact]
+     public async Task Manual_scan_is_user_scoped_uses_last_30_days_and_keyword_filtering()
+     {
+END_OF_PATCH

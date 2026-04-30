@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-31.3.1",
+  "promptPath": ".ai-design/prompts/TASK-31.3.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-27T06:19:40.169Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-27T06-19-40-169Z_TASK-31.3.1_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-27T06-19-40-169Z_TASK-31.3.1.json",
+  "agentsPromptPath": "AGENTS.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-27T06:21:23.215Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "+            DateTime.UtcNow.AddMinutes(10)));\n+\n+        var response = await client.GetAsync($\"/api/companies/{routeCompanyId:D}/mailbox-connections/gmail/callback?error=access_denied&state={Uri.EscapeDataString(state)}\");\n \n-        var response = await client.GetAsync($\"/api/companies/{seed.CompanyId:D}/mailbox-connections/{provider}/callback?code=oauth-code&state=tampered-state\");\n+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);\n+        var location = Assert.IsType<Uri>(response.Headers.Location);\n+        Assert.Contains($\"companyId={stateCompanyId:D}\", location.Query, StringComparison.OrdinalIgnoreCase);\n+        Assert.DoesNotContain($\"companyId={routeCompanyId:D}\", location.Query, StringComparison.OrdinalIgnoreCase);\n+        Assert.Contains(\"mailboxConnection=denied\", location.Query, StringComparison.OrdinalIgnoreCase);\n+    }\n+\n+    [Fact]\n+    public async Task Legacy_callback_invalid_return_uri_falls_back_to_state_company()\n+    {\n+        using var client = _factory.CreateClient();\n+        var stateCompanyId = Guid.NewGuid();\n+        var state = ProtectState(new MailboxOAuthState(\n+            stateCompanyId,\n+            Guid.NewGuid(),\n+            MailboxProvider.Gmail,\n+            [new MailboxFolderSelection(\"INBOX\", \"Inbox\")],\n+            DateTime.UtcNow.AddMinutes(10),\n+            new Uri(\"https://evil.example.test/finance/mailbox\")));\n+\n+        var response = await client.GetAsync($\"/api/companies/{Guid.NewGuid():D}/mailbox-connections/gmail/callback?error=access_denied&state={Uri.EscapeDataString(state)}\");\n \n-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);\n+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);\n+        var location = Assert.IsType<Uri>(response.Headers.Location);\n+        Assert.NotEqual(\"evil.example.test\", location.Host);\n+        Assert.Contains($\"companyId={stateCompanyId:D}\", location.Query, StringComparison.OrdinalIgnoreCase);\n     }\n \n     [Fact]\nEND_OF_PATCH\n",
+  "stderrTail": "lback?error=access_denied&state={Uri.EscapeDataString(state)}\");\n \n-        var response = await client.GetAsync($\"/api/companies/{seed.CompanyId:D}/mailbox-connections/{provider}/callback?code=oauth-code&state=tampered-state\");\n+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);\n+        var location = Assert.IsType<Uri>(response.Headers.Location);\n+        Assert.Contains($\"companyId={stateCompanyId:D}\", location.Query, StringComparison.OrdinalIgnoreCase);\n+        Assert.DoesNotContain($\"companyId={routeCompanyId:D}\", location.Query, StringComparison.OrdinalIgnoreCase);\n+        Assert.Contains(\"mailboxConnection=denied\", location.Query, StringComparison.OrdinalIgnoreCase);\n+    }\n+\n+    [Fact]\n+    public async Task Legacy_callback_invalid_return_uri_falls_back_to_state_company()\n+    {\n+        using var client = _factory.CreateClient();\n+        var stateCompanyId = Guid.NewGuid();\n+        var state = ProtectState(new MailboxOAuthState(\n+            stateCompanyId,\n+            Guid.NewGuid(),\n+            MailboxProvider.Gmail,\n+            [new MailboxFolderSelection(\"INBOX\", \"Inbox\")],\n+            DateTime.UtcNow.AddMinutes(10),\n+            new Uri(\"https://evil.example.test/finance/mailbox\")));\n+\n+        var response = await client.GetAsync($\"/api/companies/{Guid.NewGuid():D}/mailbox-connections/gmail/callback?error=access_denied&state={Uri.EscapeDataString(state)}\");\n \n-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);\n+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);\n+        var location = Assert.IsType<Uri>(response.Headers.Location);\n+        Assert.NotEqual(\"evil.example.test\", location.Host);\n+        Assert.Contains($\"companyId={stateCompanyId:D}\", location.Query, StringComparison.OrdinalIgnoreCase);\n     }\n \n     [Fact]\nEND_OF_PATCH\n2026-04-27T06:21:21.578320Z ERROR codex_core::session: failed to record rollout items: thread 019dcd98-008f-7061-9980-74da6540f771 not found\ntokens used\n57,725\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

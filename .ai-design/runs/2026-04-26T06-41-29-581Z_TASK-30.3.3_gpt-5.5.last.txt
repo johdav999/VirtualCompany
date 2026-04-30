@@ -1,0 +1,544 @@
+diff --git a/src/VirtualCompany.Application/Finance/DocumentExtractionContracts.cs b/src/VirtualCompany.Application/Finance/DocumentExtractionContracts.cs
+index 9a8c2d1..8f17a63 100644
+--- a/src/VirtualCompany.Application/Finance/DocumentExtractionContracts.cs
++++ b/src/VirtualCompany.Application/Finance/DocumentExtractionContracts.cs
+@@ -172,6 +172,16 @@ public interface IBillDuplicateCheckRepository
+         BillDuplicateCheckRequest request,
+         CancellationToken cancellationToken);
+ }
+ 
++public sealed record PersistNormalizedBillExtractionCommand(
++    Guid CompanyId,
++    NormalizedBillCandidateDto Candidate);
++
++public interface IBillExtractionPersistenceRepository
++{
++    Task<Guid> PersistAsync(
++        PersistNormalizedBillExtractionCommand command,
++        CancellationToken cancellationToken);
++}
++
+ public sealed class UnsupportedBillDocumentException : Exception
+ {
+     public UnsupportedBillDocumentException(string message)
+diff --git a/src/VirtualCompany.Application/Finance/DocumentExtractionService.cs b/src/VirtualCompany.Application/Finance/DocumentExtractionService.cs
+index 7d6b9df..f3129bf 100644
+--- a/src/VirtualCompany.Application/Finance/DocumentExtractionService.cs
++++ b/src/VirtualCompany.Application/Finance/DocumentExtractionService.cs
+@@ -30,6 +30,7 @@ public sealed class DocumentExtractionService : IDocumentExtractionService
+     private readonly IBillDuplicateCheckRepository _duplicateChecks;
+     private readonly TimeProvider _timeProvider;
+     private readonly IBillInformationExtractor _billInformationExtractor;
++    private readonly IBillExtractionPersistenceRepository? _billExtractionPersistence;
+ 
+     public DocumentExtractionService(
+         IEnumerable<IDocumentTextExtractor> textExtractors,
+@@ -40,7 +41,7 @@ public sealed class DocumentExtractionService : IDocumentExtractionService
+         _duplicateChecks = duplicateChecks;
+         _timeProvider = timeProvider;
+         _billInformationExtractor = new BillInformationExtractor(duplicateChecks, timeProvider);
++        _billExtractionPersistence = null;
+     }
+ 
+     public DocumentExtractionService(
+@@ -48,12 +49,14 @@ public sealed class DocumentExtractionService : IDocumentExtractionService
+         IBillDuplicateCheckRepository duplicateChecks,
+         TimeProvider timeProvider,
+-        IBillInformationExtractor billInformationExtractor)
++        IBillInformationExtractor billInformationExtractor,
++        IBillExtractionPersistenceRepository? billExtractionPersistence = null)
+     {
+         _textExtractors = textExtractors.ToArray();
+         _duplicateChecks = duplicateChecks;
+         _timeProvider = timeProvider;
+         _billInformationExtractor = billInformationExtractor;
++        _billExtractionPersistence = billExtractionPersistence;
+     }
+ 
+     public async Task<DocumentExtractionResult> ExtractAsync(
+@@ -88,6 +91,13 @@ public sealed class DocumentExtractionService : IDocumentExtractionService
+                 command.SourceDocumentId),
+             cancellationToken);
+ 
++        if (_billExtractionPersistence is not null)
++        {
++            await _billExtractionPersistence.PersistAsync(
++                new PersistNormalizedBillExtractionCommand(command.CompanyId, candidate),
++                cancellationToken);
++        }
++
+         return new DocumentExtractionResult(command.CompanyId, [candidate]);
+     }
+ 
+diff --git a/src/VirtualCompany.Domain/Entities/NormalizedBillExtraction.cs b/src/VirtualCompany.Domain/Entities/NormalizedBillExtraction.cs
+new file mode 100644
+index 0000000..8a1449d
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/NormalizedBillExtraction.cs
+@@ -0,0 +1,180 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class NormalizedBillExtraction : ICompanyOwnedEntity
++{
++    private NormalizedBillExtraction()
++    {
++    }
++
++    public NormalizedBillExtraction(
++        Guid id,
++        Guid companyId,
++        string? supplierName,
++        string? supplierOrgNumber,
++        string? invoiceNumber,
++        DateTime? invoiceDateUtc,
++        DateTime? dueDateUtc,
++        string? currency,
++        decimal? totalAmount,
++        decimal? vatAmount,
++        string? paymentReference,
++        string? bankgiro,
++        string? plusgiro,
++        string? iban,
++        string? bic,
++        string confidence,
++        string? sourceEmailId,
++        string? sourceAttachmentId,
++        string evidenceJson,
++        string validationStatus,
++        string validationFindingsJson,
++        Guid duplicateCheckId,
++        bool requiresReview,
++        bool isEligibleForApprovalProposal,
++        DateTime validationStatusPersistedAtUtc,
++        DateTime? createdUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (duplicateCheckId == Guid.Empty)
++        {
++            throw new ArgumentException("DuplicateCheckId is required.", nameof(duplicateCheckId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        SupplierName = NormalizeOptional(supplierName, nameof(supplierName), 200);
++        SupplierOrgNumber = NormalizeOptional(supplierOrgNumber, nameof(supplierOrgNumber), 64);
++        InvoiceNumber = NormalizeOptional(invoiceNumber, nameof(invoiceNumber), 64);
++        InvoiceDateUtc = NormalizeOptionalUtc(invoiceDateUtc, nameof(invoiceDateUtc));
++        DueDateUtc = NormalizeOptionalUtc(dueDateUtc, nameof(dueDateUtc));
++        Currency = NormalizeOptional(currency, nameof(currency), 3)?.ToUpperInvariant();
++        TotalAmount = totalAmount;
++        VatAmount = vatAmount;
++        PaymentReference = NormalizeOptional(paymentReference, nameof(paymentReference), 128);
++        Bankgiro = NormalizeOptional(bankgiro, nameof(bankgiro), 32);
++        Plusgiro = NormalizeOptional(plusgiro, nameof(plusgiro), 32);
++        Iban = NormalizeOptional(iban, nameof(iban), 34);
++        Bic = NormalizeOptional(bic, nameof(bic), 11);
++        Confidence = NormalizeConfidence(confidence);
++        SourceEmailId = NormalizeOptional(sourceEmailId, nameof(sourceEmailId), 512);
++        SourceAttachmentId = NormalizeOptional(sourceAttachmentId, nameof(sourceAttachmentId), 512);
++        EvidenceJson = NormalizeRequired(evidenceJson, nameof(evidenceJson), int.MaxValue);
++        ValidationStatus = NormalizeValidationStatus(validationStatus);
++        ValidationFindingsJson = NormalizeRequired(validationFindingsJson, nameof(validationFindingsJson), int.MaxValue);
++        DuplicateCheckId = duplicateCheckId;
++        RequiresReview = requiresReview;
++        ValidationStatusPersistedAtUtc = EntityTimestampNormalizer.NormalizeUtc(validationStatusPersistedAtUtc, nameof(validationStatusPersistedAtUtc));
++        IsEligibleForApprovalProposal = validationStatusPersistedAtUtc != default && isEligibleForApprovalProposal;
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string? SupplierName { get; private set; }
++    public string? SupplierOrgNumber { get; private set; }
++    public string? InvoiceNumber { get; private set; }
++    public DateTime? InvoiceDateUtc { get; private set; }
++    public DateTime? DueDateUtc { get; private set; }
++    public string? Currency { get; private set; }
++    public decimal? TotalAmount { get; private set; }
++    public decimal? VatAmount { get; private set; }
++    public string? PaymentReference { get; private set; }
++    public string? Bankgiro { get; private set; }
++    public string? Plusgiro { get; private set; }
++    public string? Iban { get; private set; }
++    public string? Bic { get; private set; }
++    public string Confidence { get; private set; } = null!;
++    public string? SourceEmailId { get; private set; }
++    public string? SourceAttachmentId { get; private set; }
++    public string EvidenceJson { get; private set; } = "[]";
++    public string ValidationStatus { get; private set; } = null!;
++    public string ValidationFindingsJson { get; private set; } = "[]";
++    public Guid DuplicateCheckId { get; private set; }
++    public bool RequiresReview { get; private set; }
++    public bool IsEligibleForApprovalProposal { get; private set; }
++    public DateTime ValidationStatusPersistedAtUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public BillDuplicateCheck DuplicateCheck { get; private set; } = null!;
++
++    private static DateTime? NormalizeOptionalUtc(DateTime? value, string name) =>
++        value.HasValue ? EntityTimestampNormalizer.NormalizeUtc(value.Value, name) : null;
++
++    private static string NormalizeConfidence(string value)
++    {
++        var normalized = NormalizeRequired(value, nameof(value), 16).ToLowerInvariant();
++        return normalized is "high" or "medium" or "low"
++            ? normalized
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported bill confidence.");
++    }
++
++    private static string NormalizeValidationStatus(string value)
++    {
++        var normalized = NormalizeRequired(value, nameof(value), 32).ToLowerInvariant();
++        return normalized is "pending" or "valid" or "flagged" or "rejected"
++            ? normalized
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported bill validation status.");
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index c6b03e0..bc457d0 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -322,6 +322,7 @@ public static class DependencyInjection
+         services.AddScoped<IDocumentExtractionService, DocumentExtractionService>();
+         services.AddScoped<IBillInformationExtractor, BillInformationExtractor>();
+         services.AddScoped<IBillDuplicateCheckRepository, BillDuplicateCheckRepository>();
++        services.AddScoped<IBillExtractionPersistenceRepository, BillExtractionPersistenceRepository>();
+         services.AddScoped<IDocumentTextExtractor, PdfDocumentTextExtractor>();
+         services.AddScoped<IDocumentTextExtractor, DocxDocumentTextExtractor>();
+         services.AddScoped<IDocumentTextExtractor, EmailBodyTextExtractor>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/BillExtractionPersistenceRepository.cs b/src/VirtualCompany.Infrastructure/Finance/BillExtractionPersistenceRepository.cs
+new file mode 100644
+index 0000000..5bd4474
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/BillExtractionPersistenceRepository.cs
+@@ -0,0 +1,82 @@
++using System.Text.Json;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class BillExtractionPersistenceRepository : IBillExtractionPersistenceRepository
++{
++    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly TimeProvider _timeProvider;
++
++    public BillExtractionPersistenceRepository(
++        VirtualCompanyDbContext dbContext,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<Guid> PersistAsync(
++        PersistNormalizedBillExtractionCommand command,
++        CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(command);
++        if (command.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(command));
++        }
++
++        var candidate = command.Candidate;
++        var persistedAt = _timeProvider.GetUtcNow().UtcDateTime;
++        var extraction = new NormalizedBillExtraction(
++            Guid.NewGuid(),
++            command.CompanyId,
++            candidate.SupplierName,
++            candidate.SupplierOrgNumber,
++            candidate.InvoiceNumber,
++            ToUtcDate(candidate.InvoiceDate),
++            ToUtcDate(candidate.DueDate),
++            candidate.Currency,
++            candidate.TotalAmount,
++            candidate.VatAmount,
++            candidate.PaymentReference,
++            candidate.Bankgiro,
++            candidate.Plusgiro,
++            candidate.Iban,
++            candidate.Bic,
++            ToStorageValue(candidate.Confidence),
++            candidate.SourceEmailId,
++            candidate.SourceAttachmentId,
++            JsonSerializer.Serialize(candidate.Evidence, JsonOptions),
++            ToStorageValue(candidate.ValidationStatus),
++            JsonSerializer.Serialize(candidate.ValidationFindings, JsonOptions),
++            candidate.DuplicateCheck.Id,
++            candidate.RequiresReview,
++            candidate.ValidationStatusPersisted && candidate.IsEligibleForApprovalProposal,
++            persistedAt,
++            persistedAt);
++
++        _dbContext.NormalizedBillExtractions.Add(extraction);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return extraction.Id;
++    }
++
++    private static DateTime? ToUtcDate(DateOnly? value) =>
++        value?.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
++
++    private static string ToStorageValue(BillExtractionConfidence confidence) =>
++        confidence switch
++        {
++            BillExtractionConfidence.High => "high",
++            BillExtractionConfidence.Medium => "medium",
++            _ => "low"
++        };
++
++    private static string ToStorageValue(BillValidationStatus status) =>
++        status switch
++        {
++            BillValidationStatus.Valid => "valid",
++            BillValidationStatus.Flagged => "flagged",
++            BillValidationStatus.Rejected => "rejected",
++            _ => "pending"
++        };
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/NormalizedBillExtractionEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/NormalizedBillExtractionEntityConfiguration.cs
+new file mode 100644
+index 0000000..0201d30
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/NormalizedBillExtractionEntityConfiguration.cs
+@@ -0,0 +1,66 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class NormalizedBillExtractionEntityConfiguration : IEntityTypeConfiguration<NormalizedBillExtraction>
++{
++    public void Configure(EntityTypeBuilder<NormalizedBillExtraction> builder)
++    {
++        builder.ToTable("normalized_bill_extractions");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SupplierName).HasColumnName("supplier_name").HasMaxLength(200);
++        builder.Property(x => x.SupplierOrgNumber).HasColumnName("supplier_org_number").HasMaxLength(64);
++        builder.Property(x => x.InvoiceNumber).HasColumnName("invoice_number").HasMaxLength(64);
++        builder.Property(x => x.InvoiceDateUtc).HasColumnName("invoice_date");
++        builder.Property(x => x.DueDateUtc).HasColumnName("due_date");
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3);
++        builder.Property(x => x.TotalAmount).HasColumnName("total_amount").HasColumnType("decimal(18,2)");
++        builder.Property(x => x.VatAmount).HasColumnName("vat_amount").HasColumnType("decimal(18,2)");
++        builder.Property(x => x.PaymentReference).HasColumnName("payment_reference").HasMaxLength(128);
++        builder.Property(x => x.Bankgiro).HasColumnName("bankgiro").HasMaxLength(32);
++        builder.Property(x => x.Plusgiro).HasColumnName("plusgiro").HasMaxLength(32);
++        builder.Property(x => x.Iban).HasColumnName("iban").HasMaxLength(34);
++        builder.Property(x => x.Bic).HasColumnName("bic").HasMaxLength(11);
++        builder.Property(x => x.Confidence).HasColumnName("confidence").HasMaxLength(16).IsRequired();
++        builder.Property(x => x.SourceEmailId).HasColumnName("source_email_id").HasMaxLength(512);
++        builder.Property(x => x.SourceAttachmentId).HasColumnName("source_attachment_id").HasMaxLength(512);
++        builder.Property(x => x.EvidenceJson).HasColumnName("evidence_json").HasColumnType("nvarchar(max)").IsRequired();
++        builder.Property(x => x.ValidationStatus).HasColumnName("validation_status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.ValidationFindingsJson).HasColumnName("validation_findings_json").HasColumnType("nvarchar(max)").IsRequired();
++        builder.Property(x => x.DuplicateCheckId).HasColumnName("duplicate_check_id").IsRequired();
++        builder.Property(x => x.RequiresReview).HasColumnName("requires_review").IsRequired();
++        builder.Property(x => x.IsEligibleForApprovalProposal).HasColumnName("is_eligible_for_approval_proposal").IsRequired();
++        builder.Property(x => x.ValidationStatusPersistedAtUtc).HasColumnName("validation_status_persisted_at").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_normalized_bill_extractions_confidence", "confidence IN ('high', 'medium', 'low')");
++            t.HasCheckConstraint("CK_normalized_bill_extractions_validation_status", "validation_status IN ('pending', 'valid', 'flagged', 'rejected')");
++        });
++
++        builder.HasIndex(x => new { x.CompanyId, x.InvoiceNumber, x.TotalAmount });
++        builder.HasIndex(x => new { x.CompanyId, x.SupplierOrgNumber, x.InvoiceNumber, x.TotalAmount });
++        builder.HasIndex(x => new { x.CompanyId, x.RequiresReview, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.ValidationStatus, x.CreatedUtc });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++
++        builder.HasOne(x => x.DuplicateCheck)
++            .WithMany()
++            .HasForeignKey(x => x.DuplicateCheckId)
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 2fb5b2c..d74d08d 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -116,6 +116,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<EmailMessageSnapshot> EmailMessageSnapshots => Set<EmailMessageSnapshot>();
+     public DbSet<EmailAttachmentSnapshot> EmailAttachmentSnapshots => Set<EmailAttachmentSnapshot>();
+     public DbSet<BillDuplicateCheck> BillDuplicateChecks => Set<BillDuplicateCheck>();
++    public DbSet<NormalizedBillExtraction> NormalizedBillExtractions => Set<NormalizedBillExtraction>();
+     public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
+     public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
+     public DbSet<SimulationCashDeltaRecord> SimulationCashDeltaRecords => Set<SimulationCashDeltaRecord>();
+@@ -246,6 +247,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is EmailIngestionRun ||
+                 entry.Entity is EmailMessageSnapshot ||
+                 entry.Entity is BillDuplicateCheck ||
++                entry.Entity is NormalizedBillExtraction ||
+                 entry.Entity is EmailAttachmentSnapshot ||
+                 entry.Entity is SimulationCashDeltaRecord ||
+                 entry.Entity is SimulationEventRecord)
+@@ -508,6 +510,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<BillDuplicateCheck>()
+             .HasQueryFilter(check =>
+                 CurrentCompanyId.HasValue && check.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<NormalizedBillExtraction>()
++            .HasQueryFilter(extraction =>
++                CurrentCompanyId.HasValue && extraction.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanySimulationState>()
+             .HasQueryFilter(state =>
+                 CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426170000_AddNormalizedBillExtractions.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426170000_AddNormalizedBillExtractions.cs
+new file mode 100644
+index 0000000..98c8ebe
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426170000_AddNormalizedBillExtractions.cs
+@@ -0,0 +1,116 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddNormalizedBillExtractions : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var provider = migrationBuilder.ActiveProvider ?? string.Empty;
++            var isPostgres = provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase);
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var decimalType = isPostgres ? "numeric(18,2)" : "decimal(18,2)";
++            var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++
++            migrationBuilder.CreateTable(
++                name: "normalized_bill_extractions",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    supplier_name = table.Column<string>(maxLength: 200, nullable: true),
++                    supplier_org_number = table.Column<string>(maxLength: 64, nullable: true),
++                    invoice_number = table.Column<string>(maxLength: 64, nullable: true),
++                    invoice_date = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                    due_date = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                    currency = table.Column<string>(maxLength: 3, nullable: true),
++                    total_amount = table.Column<decimal>(type: decimalType, nullable: true),
++                    vat_amount = table.Column<decimal>(type: decimalType, nullable: true),
++                    payment_reference = table.Column<string>(maxLength: 128, nullable: true),
++                    bankgiro = table.Column<string>(maxLength: 32, nullable: true),
++                    plusgiro = table.Column<string>(maxLength: 32, nullable: true),
++                    iban = table.Column<string>(maxLength: 34, nullable: true),
++                    bic = table.Column<string>(maxLength: 11, nullable: true),
++                    confidence = table.Column<string>(maxLength: 16, nullable: false),
++                    source_email_id = table.Column<string>(maxLength: 512, nullable: true),
++                    source_attachment_id = table.Column<string>(maxLength: 512, nullable: true),
++                    evidence_json = table.Column<string>(type: jsonType, nullable: false),
++                    validation_status = table.Column<string>(maxLength: 32, nullable: false),
++                    validation_findings_json = table.Column<string>(type: jsonType, nullable: false),
++                    duplicate_check_id = table.Column<Guid>(type: guidType, nullable: false),
++                    requires_review = table.Column<bool>(nullable: false),
++                    is_eligible_for_approval_proposal = table.Column<bool>(nullable: false),
++                    validation_status_persisted_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_normalized_bill_extractions", x => x.id);
++                    table.UniqueConstraint("AK_normalized_bill_extractions_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(
++                        name: "FK_normalized_bill_extractions_bill_duplicate_checks_duplicate_check_id",
++                        column: x => x.duplicate_check_id,
++                        principalTable: "bill_duplicate_checks",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(
++                        name: "FK_normalized_bill_extractions_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.CheckConstraint("CK_normalized_bill_extractions_confidence", "confidence IN ('high', 'medium', 'low')");
++                    table.CheckConstraint("CK_normalized_bill_extractions_validation_status", "validation_status IN ('pending', 'valid', 'flagged', 'rejected')");
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_normalized_bill_extractions_company_id_invoice_number_total_amount",
++                table: "normalized_bill_extractions",
++                columns: new[] { "company_id", "invoice_number", "total_amount" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_normalized_bill_extractions_company_id_requires_review_created_at",
++                table: "normalized_bill_extractions",
++                columns: new[] { "company_id", "requires_review", "created_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_normalized_bill_extractions_company_id_supplier_org_number_invoice_number_total_amount",
++                table: "normalized_bill_extractions",
++                columns: new[] { "company_id", "supplier_org_number", "invoice_number", "total_amount" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_normalized_bill_extractions_company_id_validation_status_created_at",
++                table: "normalized_bill_extractions",
++                columns: new[] { "company_id", "validation_status", "created_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_normalized_bill_extractions_duplicate_check_id",
++                table: "normalized_bill_extractions",
++                column: "duplicate_check_id");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(name: "normalized_bill_extractions");
++        }
++    }
++}
+END_OF_PATCH

@@ -1,0 +1,178 @@
+@page "/finance/bill-inbox/{BillId:guid}"
+@inherits FinancePageBase
+
+<PageTitle>Finance Bill Review</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Bill review"
+    Description="Review extracted bill data, evidence, warnings, and approval proposal details."
+    LoadingMessage="Loading bill review...">
+    <FinanceDataState
+        IsLoading="@IsDetailLoading"
+        IsEmpty="@(Detail is null)"
+        ErrorMessage="@DetailErrorMessage"
+        LoadingTitle="Loading bill"
+        LoadingMessage="Fetching the tenant-scoped bill review detail."
+        EmptyTitle="Bill not found"
+        EmptyMessage="The selected bill was not found in the active company."
+        OnRetry="@ReloadAsync">
+        @if (Detail is not null)
+        {
+            <div class="row g-4">
+                <div class="col-lg-8">
+                    <div class="wizard-card wizard-card--compact mb-4">
+                        <div class="d-flex justify-content-between gap-3 align-items-start">
+                            <div>
+                                <h2 class="h4 mb-1">@Detail.BillReference</h2>
+                                <div class="text-body-secondary">@Detail.SupplierName</div>
+                            </div>
+                            <span class="badge text-bg-light">@Detail.Status</span>
+                        </div>
+
+                        <dl class="row mt-4 mb-0">
+                            <dt class="col-sm-4">Amount</dt>
+                            <dd class="col-sm-8">@FormatAmount(Detail.Amount, Detail.Currency)</dd>
+                            <dt class="col-sm-4">VAT</dt>
+                            <dd class="col-sm-8">@FormatAmount(Detail.VatAmount, Detail.Currency)</dd>
+                            <dt class="col-sm-4">Bill date</dt>
+                            <dd class="col-sm-8">@FormatDate(Detail.BillDateUtc)</dd>
+                            <dt class="col-sm-4">Due date</dt>
+                            <dd class="col-sm-8">@FormatDate(Detail.DueDateUtc)</dd>
+                            <dt class="col-sm-4">Confidence</dt>
+                            <dd class="col-sm-8">@Detail.ConfidenceLevel @FormatConfidence(Detail.Confidence)</dd>
+                        </dl>
+                    </div>
+
+                    <div class="wizard-card wizard-card--compact mb-4">
+                        <h2 class="h5">Extracted fields</h2>
+                        <div class="table-responsive">
+                            <table class="table align-middle">
+                                <thead>
+                                    <tr>
+                                        <th>Field</th>
+                                        <th>Value</th>
+                                        <th>Confidence</th>
+                                        <th>Evidence</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var field in Detail.ExtractedFields)
+                                    {
+                                        <tr>
+                                            <td>@field.DisplayName</td>
+                                            <td>
+                                                <strong>@(field.NormalizedValue ?? field.RawValue ?? "n/a")</strong>
+                                                @if (!string.IsNullOrWhiteSpace(field.RawValue) && field.RawValue != field.NormalizedValue)
+                                                {
+                                                    <div class="text-body-secondary small">@field.RawValue</div>
+                                                }
+                                            </td>
+                                            <td>@FormatConfidence(field.Confidence)</td>
+                                            <td>
+                                                @foreach (var evidence in field.EvidenceReferences)
+                                                {
+                                                    <div class="small">
+                                                        <strong>@evidence.SourceDocument</strong>
+                                                        <span>@FormatEvidenceLocation(evidence)</span>
+                                                        @if (!string.IsNullOrWhiteSpace(evidence.Snippet))
+                                                        {
+                                                            <div class="text-body-secondary">@evidence.Snippet</div>
+                                                        }
+                                                    </div>
+                                                }
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="wizard-card wizard-card--compact">
+                        <h2 class="h5">Action history</h2>
+                        @if (Detail.ActionHistory.Count == 0)
+                        {
+                            <p class="text-body-secondary mb-0">No review actions have been recorded.</p>
+                        }
+                        else
+                        {
+                            <div class="table-responsive">
+                                <table class="table align-middle mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th>Time</th>
+                                            <th>Actor</th>
+                                            <th>Action</th>
+                                            <th>Status</th>
+                                            <th>Rationale</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var action in Detail.ActionHistory)
+                                        {
+                                            <tr>
+                                                <td>@FormatDateTime(action.OccurredUtc)</td>
+                                                <td>@action.ActorDisplayName</td>
+                                                <td>@action.Action</td>
+                                                <td>@action.PriorStatus -> @action.NewStatus</td>
+                                                <td>@action.Rationale</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <div class="col-lg-4">
+                    <div class="wizard-card wizard-card--compact mb-4">
+                        <h2 class="h5">Proposal</h2>
+                        <h3 class="h6">@Detail.ProposalSummary.Headline</h3>
+                        <p>@Detail.ProposalSummary.Summary</p>
+                        <div class="mb-3">
+                            <div class="small fw-semibold">Risk flags</div>
+                            <ul class="small mb-0">
+                                @foreach (var riskFlag in Detail.ProposalSummary.RiskFlags)
+                                {
+                                    <li>@riskFlag</li>
+                                }
+                            </ul>
+                        </div>
+                        <div class="small"><strong>Recommended action:</strong> @Detail.ProposalSummary.RecommendedAction</div>
+                        <div class="small"><strong>Approval ask:</strong> @Detail.ProposalSummary.ApprovalAsk</div>
+                        <div class="small text-body-secondary mt-2">Payment/export execution: @(Detail.ProposalSummary.InitiatesPayment ? "requested" : "not requested")</div>
+                    </div>
+
+                    <div class="wizard-card wizard-card--compact mb-4">
+                        <h2 class="h5">Warnings</h2>
+                        @RenderWarnings("Validation", Detail.ValidationWarnings)
+                        @RenderWarnings("Duplicate", Detail.DuplicateWarnings)
+                    </div>
+
+                    <div class="wizard-card wizard-card--compact">
+                        <h2 class="h5">Review action</h2>
+                        @if (!string.IsNullOrWhiteSpace(ActionStatusMessage))
+                        {
+                            <div class="alert alert-info">@ActionStatusMessage</div>
+                        }
+                        <label class="form-label" for="bill-action-rationale">Rationale</label>
+                        <textarea id="bill-action-rationale" class="form-control mb-3" rows="4" @bind="Rationale"></textarea>
+                        @if (!Detail.CanApprove && !string.IsNullOrWhiteSpace(Detail.ApprovalBlockedReason))
+                        {
+                            <div class="alert alert-warning">@Detail.ApprovalBlockedReason</div>
+                        }
+                        <div class="d-grid gap-2">
+                            <button class="btn btn-primary" disabled="@(!Detail.CanApprove || IsSubmittingAction)" @onclick="ApproveAsync">Approve proposal</button>
+                            <button class="btn btn-outline-danger" disabled="@IsSubmittingAction" @onclick="RejectAsync">Reject</button>
+                            <button class="btn btn-outline-secondary" disabled="@IsSubmittingAction" @onclick="RequestClarificationAsync">Request clarification</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    </FinanceDataState>
+</FinancePageLayout>

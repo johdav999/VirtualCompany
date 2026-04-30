@@ -1,0 +1,142 @@
+diff --git a/src/VirtualCompany.Api/Controllers/MailboxConnectionCallbacksController.cs b/src/VirtualCompany.Api/Controllers/MailboxConnectionCallbacksController.cs
+index 4e7cb73..d5a1c8a 100644
+--- a/src/VirtualCompany.Api/Controllers/MailboxConnectionCallbacksController.cs
++++ b/src/VirtualCompany.Api/Controllers/MailboxConnectionCallbacksController.cs
+@@ -14,11 +14,14 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
+ {
+     private readonly IMailboxConnectionService _mailboxConnectionService;
+     private readonly IMailboxOAuthStateProtector _stateProtector;
++    private readonly TimeProvider _timeProvider;
+ 
+     public MailboxConnectionCallbacksController(
+         IMailboxConnectionService mailboxConnectionService,
+-        IMailboxOAuthStateProtector stateProtector)
++        IMailboxOAuthStateProtector stateProtector,
++        TimeProvider timeProvider)
+     {
+         _mailboxConnectionService = mailboxConnectionService;
+         _stateProtector = stateProtector;
++        _timeProvider = timeProvider;
+     }
+ 
+     [HttpGet("gmail/callback")]
+@@ -114,6 +117,12 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
+             return false;
+         }
+ 
++        if (state.ExpiresUtc <= _timeProvider.GetUtcNow().UtcDateTime)
++        {
++            failure = "Mailbox OAuth state has expired.";
++            return false;
++        }
++
+         return true;
+     }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs b/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
+index 155f52c..2e72f5f 100644
+--- a/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
++++ b/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
+@@ -136,7 +136,7 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
+         CancellationToken cancellationToken)
+     {
+         var state = _stateProtector.Unprotect(command.State);
+-        if (state.ExpiresUtc < UtcNow())
++        if (state.ExpiresUtc <= UtcNow())
+         {
+             throw new InvalidOperationException("Mailbox OAuth state has expired.");
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/MailboxOAuthStateProtector.cs b/src/VirtualCompany.Infrastructure/Mailbox/MailboxOAuthStateProtector.cs
+index 58acb5a..a1d07f5 100644
+--- a/src/VirtualCompany.Infrastructure/Mailbox/MailboxOAuthStateProtector.cs
++++ b/src/VirtualCompany.Infrastructure/Mailbox/MailboxOAuthStateProtector.cs
+@@ -23,6 +23,8 @@ public sealed class DataProtectionMailboxOAuthStateProtector : IMailboxOAuthStat
+             throw new ArgumentException("Mailbox OAuth state requires tenant and user identifiers.", nameof(state));
+         }
+ 
++        ValidateState(state);
++
+         return _protector.Protect(JsonSerializer.Serialize(state, SerializerOptions));
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs
+index 2faec8a..5556a3e 100644
+--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs
+@@ -1,6 +1,9 @@
+ using System.Net;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Mailbox;
++using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ using Xunit;
+ 
+ namespace VirtualCompany.Api.Tests;
+@@ -43,6 +46,58 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
+         Assert.Equal(0, await CountMailboxConnectionsAsync());
+     }
+ 
++    [Fact]
++    public async Task Expired_state_on_provider_scoped_callback_returns_authentication_failure_without_persistence()
++    {
++        using var client = _factory.CreateClient();
++        var state = ProtectState(new MailboxOAuthState(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            MailboxProvider.Gmail,
++            [new MailboxFolderSelection("INBOX", "Inbox")],
++            new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc),
++            new Uri("https://localhost/finance/mailbox")));
++
++        var response = await client.GetAsync($"/api/mailbox-connections/gmail/callback?code=oauth-code&state={Uri.EscapeDataString(state)}");
++
++        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
++        Assert.Equal(0, await CountMailboxConnectionsAsync());
++    }
++
++    [Fact]
++    public async Task Provider_mismatch_between_route_and_state_returns_authentication_failure_without_persistence()
++    {
++        using var client = _factory.CreateClient();
++        var state = ProtectState(new MailboxOAuthState(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            MailboxProvider.Gmail,
++            [new MailboxFolderSelection("INBOX", "Inbox")],
++            DateTime.UtcNow.AddMinutes(10),
++            new Uri("https://localhost/finance/mailbox")));
++
++        var response = await client.GetAsync($"/api/mailbox-connections/microsoft365/callback?code=oauth-code&state={Uri.EscapeDataString(state)}");
++
++        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
++        Assert.Equal(0, await CountMailboxConnectionsAsync());
++    }
++
++    [Fact]
++    public async Task Company_and_user_query_spoofing_are_ignored_when_valid_state_fails_provider_match()
++    {
++        using var client = _factory.CreateClient();
++        var stateCompanyId = Guid.NewGuid();
++        var stateUserId = Guid.NewGuid();
++        var state = ProtectState(new MailboxOAuthState(
++            stateCompanyId,
++            stateUserId,
++            MailboxProvider.Gmail,
++            [new MailboxFolderSelection("INBOX", "Inbox")],
++            DateTime.UtcNow.AddMinutes(10),
++            new Uri("https://localhost/finance/mailbox")));
++
++        var response = await client.GetAsync($"/api/mailbox-connections/microsoft365/callback?code=oauth-code&state={Uri.EscapeDataString(state)}&companyId={Guid.NewGuid():D}&userId={Guid.NewGuid():D}");
++
++        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
++        Assert.Equal(0, await CountMailboxConnectionsAsync());
++    }
++
+     private Task<int> CountMailboxConnectionsAsync() =>
+         _factory.ExecuteDbContextAsync(dbContext =>
+             Task.FromResult(dbContext.MailboxConnections.IgnoreQueryFilters().Count()));
++
++    private string ProtectState(MailboxOAuthState state) =>
++        _factory.Services.GetRequiredService<IMailboxOAuthStateProtector>().Protect(state);
+ }
+END_OF_PATCH

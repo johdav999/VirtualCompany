@@ -1,10 +1,12 @@
 using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 
 #nullable disable
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
     [Migration("20260425100000_RepairFinancialStatementSnapshotTables")]
+    [DbContext(typeof(VirtualCompanyDbContext))]
     public partial class RepairFinancialStatementSnapshotTables : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -28,7 +30,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                             [currency] nvarchar(3) NOT NULL,
                             CONSTRAINT [PK_financial_statement_snapshots] PRIMARY KEY ([id]),
                             CONSTRAINT [CK_financial_statement_snapshots_statement_type] CHECK (statement_type IN ('balance_sheet', 'cash_flow', 'profit_and_loss')),
-                            CONSTRAINT [FK_financial_statement_snapshots_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([id]) ON DELETE CASCADE,
+                            CONSTRAINT [FK_financial_statement_snapshots_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
                             CONSTRAINT [FK_financial_statement_snapshots_finance_fiscal_periods_company_id_fiscal_period_id] FOREIGN KEY ([company_id], [fiscal_period_id]) REFERENCES [finance_fiscal_periods] ([company_id], [id]) ON DELETE NO ACTION
                         );
                     END
@@ -53,7 +55,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                             CONSTRAINT [PK_financial_statement_snapshot_lines] PRIMARY KEY ([id]),
                             CONSTRAINT [CK_financial_statement_snapshot_lines_report_section] CHECK (report_section IN ('balance_sheet_assets', 'balance_sheet_equity', 'balance_sheet_liabilities', 'cash_flow_financing_activities', 'cash_flow_investing_activities', 'cash_flow_operating_activities', 'cash_flow_supplemental_disclosures', 'profit_and_loss_cost_of_sales', 'profit_and_loss_operating_expenses', 'profit_and_loss_other_income_expense', 'profit_and_loss_revenue', 'profit_and_loss_taxes')),
                             CONSTRAINT [CK_financial_statement_snapshot_lines_line_classification] CHECK (line_classification IN ('cash_disbursement', 'cash_receipt', 'contra_revenue', 'cost_of_sales', 'current_asset', 'current_liability', 'depreciation_and_amortization', 'equity', 'financing_cash_inflow', 'financing_cash_outflow', 'income_tax', 'investing_cash_inflow', 'investing_cash_outflow', 'non_cash_adjustment', 'non_current_asset', 'non_current_liability', 'non_operating_expense', 'non_operating_income', 'operating_expense', 'revenue', 'supplemental_disclosure', 'working_capital')),
-                            CONSTRAINT [FK_financial_statement_snapshot_lines_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([id]) ON DELETE CASCADE,
+                            CONSTRAINT [FK_financial_statement_snapshot_lines_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE NO ACTION,
                             CONSTRAINT [FK_financial_statement_snapshot_lines_finance_accounts_company_id_finance_account_id] FOREIGN KEY ([company_id], [finance_account_id]) REFERENCES [finance_accounts] ([company_id], [id]) ON DELETE NO ACTION,
                             CONSTRAINT [FK_financial_statement_snapshot_lines_financial_statement_snapshots_snapshot_id] FOREIGN KEY ([snapshot_id]) REFERENCES [financial_statement_snapshots] ([id]) ON DELETE CASCADE
                         );

@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-30.2.3",
+  "promptPath": ".ai-design/prompts/TASK-30.2.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-26T06:30:28.912Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-26T06-30-28-912Z_TASK-30.2.3_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-26T06-30-28-912Z_TASK-30.2.3.json",
+  "agentsPromptPath": "AGENTS.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-26T06:32:47.591Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "wGuid();\n+        var userId = Guid.NewGuid();\n+        var provider = new FakeProvider(MailboxProvider.Gmail)\n+        {\n+            Messages =\n+            [\n+                new MailboxMessageSummary(\n+                    \"same-message\",\n+                    \"Monthly invoice\",\n+                    null,\n+                    null,\n+                    [\"invoice.pdf\"],\n+                    \"billing@supplier.example\",\n+                    null,\n+                    DateTime.UtcNow,\n+                    \"INBOX\",\n+                    \"Invoices\",\n+                    null,\n+                    [new MailboxAttachmentSummary(\"a1\", \"invoice.pdf\", \"application/pdf\", 1000, UntrustedExtractedText: \"Invoice amount due\")])\n+            ]\n+        };\n+        var service = CreateService(connection, companyId, userId, provider);\n+        await SeedConnectedMailboxAsync(connection, companyId, userId, MailboxProvider.Gmail);\n+\n+        await service.TriggerManualScanAsync(new TriggerManualMailboxScanCommand(companyId, userId), CancellationToken.None);\n+        var second = await service.TriggerManualScanAsync(new TriggerManualMailboxScanCommand(companyId, userId), CancellationToken.None);\n+\n+        Assert.Equal(1, second.ScannedMessageCount);\n+        Assert.Equal(1, second.DetectedCandidateCount);\n+        Assert.Equal(0, second.CandidateAttachmentSnapshotCount);\n+\n+        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));\n+        Assert.Equal(2, await dbContext.EmailIngestionRuns.CountAsync());\n+        Assert.Equal(1, await dbContext.EmailMessageSnapshots.CountAsync());\n+        Assert.Equal(1, await dbContext.EmailAttachmentSnapshots.CountAsync());\n+        Assert.Equal(0, await dbContext.Payments.CountAsync());\n+        Assert.Equal(0, await dbContext.ApprovalRequests.CountAsync());\n+    }\n+\n     [Fact]\n     public async Task Status_query_returns_current_users_connection_and_latest_audit_summary()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "+                new MailboxMessageSummary(\n+                    \"same-message\",\n+                    \"Monthly invoice\",\n+                    null,\n+                    null,\n+                    [\"invoice.pdf\"],\n+                    \"billing@supplier.example\",\n+                    null,\n+                    DateTime.UtcNow,\n+                    \"INBOX\",\n+                    \"Invoices\",\n+                    null,\n+                    [new MailboxAttachmentSummary(\"a1\", \"invoice.pdf\", \"application/pdf\", 1000, UntrustedExtractedText: \"Invoice amount due\")])\n+            ]\n+        };\n+        var service = CreateService(connection, companyId, userId, provider);\n+        await SeedConnectedMailboxAsync(connection, companyId, userId, MailboxProvider.Gmail);\n+\n+        await service.TriggerManualScanAsync(new TriggerManualMailboxScanCommand(companyId, userId), CancellationToken.None);\n+        var second = await service.TriggerManualScanAsync(new TriggerManualMailboxScanCommand(companyId, userId), CancellationToken.None);\n+\n+        Assert.Equal(1, second.ScannedMessageCount);\n+        Assert.Equal(1, second.DetectedCandidateCount);\n+        Assert.Equal(0, second.CandidateAttachmentSnapshotCount);\n+\n+        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));\n+        Assert.Equal(2, await dbContext.EmailIngestionRuns.CountAsync());\n+        Assert.Equal(1, await dbContext.EmailMessageSnapshots.CountAsync());\n+        Assert.Equal(1, await dbContext.EmailAttachmentSnapshots.CountAsync());\n+        Assert.Equal(0, await dbContext.Payments.CountAsync());\n+        Assert.Equal(0, await dbContext.ApprovalRequests.CountAsync());\n+    }\n+\n     [Fact]\n     public async Task Status_query_returns_current_users_connection_and_latest_audit_summary()\n     {\nEND_OF_PATCH\n2026-04-26T06:32:44.571738Z ERROR codex_core::session: failed to record rollout items: thread 019dc87b-83d1-7b60-849d-2245a7428b5f not found\ntokens used\n111,549\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

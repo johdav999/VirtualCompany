@@ -1,0 +1,127 @@
+@page "/finance/settings"
+@page "/finance/settings/email-settings"
+@rendermode InteractiveServer
+@inherits FinancePageBase
+
+<PageTitle>Finance settings</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Finance settings"
+    Description="Configure app-level finance integrations for the active company."
+    LoadingMessage="Loading finance settings...">
+    <div class="wizard-card wizard-card--compact">
+        <ul class="nav nav-pills mb-4" aria-label="Finance settings sections">
+            <li class="nav-item">
+                <NavLink class="nav-link" href="@EmailSettingsHref" Match="NavLinkMatch.Prefix">Email settings</NavLink>
+            </li>
+        </ul>
+
+        <FinanceDataState
+            IsLoading="@IsSettingsLoading"
+            IsEmpty="false"
+            ErrorMessage="@SettingsErrorMessage"
+            LoadingTitle="Loading email settings"
+            LoadingMessage="Reading mailbox provider configuration state."
+            ErrorTitle="Email settings are unavailable"
+            OnRetry="@ReloadAsync">
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+                <div>
+                    <h2 class="h5 mb-1">Email integration settings</h2>
+                    <p class="text-body-secondary mb-0">
+                        Configure the app-owned OAuth clients that allow users to connect their own Gmail or Microsoft 365 mailbox.
+                    </p>
+                </div>
+                <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync" disabled="@IsBusy">Refresh</button>
+            </div>
+
+            @if (Settings?.IsWritable != true)
+            {
+                <div class="alert alert-warning" role="status">
+                    Runtime editing is only available in the API Development environment.
+                </div>
+            }
+
+            <section class="border rounded-3 p-3 mb-4">
+                <h3 class="h6 mb-2">Provider redirect URIs</h3>
+                <p class="small text-body-secondary mb-3">
+                    Register one redirect URI per provider per environment. The callback path is stable and provider-scoped; company context is carried in protected OAuth state.
+                </p>
+                <dl class="row small mb-0">
+                    <dt class="col-12 col-md-3">Gmail local development</dt>
+                    <dd class="col-12 col-md-9">
+                        <code>http://localhost:5301/api/mailbox-connections/gmail/callback</code>
+                    </dd>
+                    <dt class="col-12 col-md-3">Microsoft 365 local development</dt>
+                    <dd class="col-12 col-md-9">
+                        <code>http://localhost:5301/api/mailbox-connections/microsoft365/callback</code>
+                    </dd>
+                    <dt class="col-12 col-md-3">Production</dt>
+                    <dd class="col-12 col-md-9 mb-0">
+                        Use the same provider callback paths on the public API host for that environment.
+                    </dd>
+                </dl>
+            </section>
+
+            <div class="row g-4">
+                <div class="col-12 col-xl-6">
+                    <section class="border rounded-3 p-3 h-100">
+                        <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+                            <div>
+                                <h3 class="h6 mb-1">Gmail</h3>
+                                <p class="small text-body-secondary mb-0">Enables the end-user Connect Gmail flow.</p>
+                            </div>
+                            <span class="@GetProviderBadgeClass(Settings?.Gmail)">@GetProviderStatus(Settings?.Gmail)</span>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label" for="gmail-client-id">Client ID</label>
+                            <input id="gmail-client-id" class="form-control" autocomplete="off" @bind="GmailClientId" disabled="@IsFormDisabled" />
+                        </div>
+                        <div>
+                            <label class="form-label" for="gmail-client-secret">Client secret</label>
+                            <input id="gmail-client-secret" class="form-control" type="password" autocomplete="new-password" placeholder="@GetSecretPlaceholder(Settings?.Gmail)" @bind="GmailClientSecret" disabled="@IsFormDisabled" />
+                        </div>
+                    </section>
+                </div>
+
+                <div class="col-12 col-xl-6">
+                    <section class="border rounded-3 p-3 h-100">
+                        <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+                            <div>
+                                <h3 class="h6 mb-1">Microsoft 365</h3>
+                                <p class="small text-body-secondary mb-0">Enables the end-user Connect Microsoft 365 flow.</p>
+                            </div>
+                            <span class="@GetProviderBadgeClass(Settings?.Microsoft365)">@GetProviderStatus(Settings?.Microsoft365)</span>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label" for="microsoft-client-id">Client ID</label>
+                            <input id="microsoft-client-id" class="form-control" autocomplete="off" @bind="Microsoft365ClientId" disabled="@IsFormDisabled" />
+                        </div>
+                        <div>
+                            <label class="form-label" for="microsoft-client-secret">Client secret</label>
+                            <input id="microsoft-client-secret" class="form-control" type="password" autocomplete="new-password" placeholder="@GetSecretPlaceholder(Settings?.Microsoft365)" @bind="Microsoft365ClientSecret" disabled="@IsFormDisabled" />
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <div class="d-flex flex-wrap gap-2 mt-4">
+                <button class="btn btn-primary" type="button" @onclick="SaveAsync" disabled="@IsFormDisabled">
+                    @(IsSaving ? "Saving..." : "Save email settings")
+                </button>
+                <NavLink class="btn btn-outline-secondary" href="@MailboxHref">Back to mailbox</NavLink>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(SuccessMessage))
+            {
+                <div class="alert alert-success mt-3 mb-0" role="status">@SuccessMessage</div>
+            }
+            @if (!string.IsNullOrWhiteSpace(SaveErrorMessage))
+            {
+                <div class="alert alert-danger mt-3 mb-0" role="alert">@SaveErrorMessage</div>
+            }
+        </FinanceDataState>
+    </div>
+</FinancePageLayout>

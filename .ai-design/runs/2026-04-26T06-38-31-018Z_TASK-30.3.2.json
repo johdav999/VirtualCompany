@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-30.3.2",
+  "promptPath": ".ai-design/prompts/TASK-30.3.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-26T06:38:31.018Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-26T06-38-31-018Z_TASK-30.3.2_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-26T06-38-31-018Z_TASK-30.3.2.json",
+  "agentsPromptPath": "AGENTS.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-26T06:41:28.503Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "cs\n+++ b/tests/VirtualCompany.Api.Tests/DocumentExtractionServiceTests.cs\n@@ -36,6 +36,7 @@ public sealed class DocumentExtractionServiceTests\n         Assert.True(candidate.IsEligibleForApprovalProposal);\n         Assert.Contains(candidate.Evidence, x => x.FieldName == \"totalAmount\" && x.PageOrSectionReference == \"body\");\n+        Assert.Equal(BillValidationStatus.Valid, candidate.ValidationStatus);\n     }\n \n     [Fact]\n@@ -125,6 +126,7 @@ public sealed class DocumentExtractionServiceTests\n         Assert.Equal(BillExtractionConfidence.Medium, candidate.Confidence);\n         Assert.True(candidate.RequiresReview);\n         Assert.Contains(candidate.ValidationFindings, x => x.Code == \"implausible_vat_ratio\");\n+        Assert.Equal(BillValidationStatus.Flagged, candidate.ValidationStatus);\n     }\n \n     [Fact]\n@@ -145,6 +147,22 @@ public sealed class DocumentExtractionServiceTests\n         Assert.Contains(candidate.ValidationFindings, x => x.Code == \"duplicate_invoice_number\");\n     }\n \n+    [Fact]\n+    public async Task Bill_information_extractor_handles_detected_candidate_without_document_text_pipeline()\n+    {\n+        var extractor = new BillInformationExtractor(new FakeDuplicateRepository(false), TimeProvider.System);\n+        var document = new ExtractedDocumentText(\"email_body\", [new ExtractedDocumentSection(\"body\", SampleInvoiceText(), 0)]);\n+\n+        var candidate = await extractor.ExtractAsync(\n+            new DetectedBillCandidateCommand(Guid.NewGuid(), document, \"email-body\", \"email-1\", \"att-1\"),\n+            CancellationToken.None);\n+\n+        Assert.Equal(\"INV-1001\", candidate.InvoiceNumber);\n+        Assert.Equal(\"email-1\", candidate.SourceEmailId);\n+        Assert.Equal(\"att-1\", candidate.SourceAttachmentId);\n+        Assert.All(candidate.Evidence, evidence => Assert.False(string.IsNullOrWhiteSpace(evidence.TextSpanOrLocator)));\n+    }\n+\n     [Fact]\n     public async Task Duplicate_check_repository_persists_tenant_scoped_result()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "rue(candidate.IsEligibleForApprovalProposal);\n         Assert.Contains(candidate.Evidence, x => x.FieldName == \"totalAmount\" && x.PageOrSectionReference == \"body\");\n+        Assert.Equal(BillValidationStatus.Valid, candidate.ValidationStatus);\n     }\n \n     [Fact]\n@@ -125,6 +126,7 @@ public sealed class DocumentExtractionServiceTests\n         Assert.Equal(BillExtractionConfidence.Medium, candidate.Confidence);\n         Assert.True(candidate.RequiresReview);\n         Assert.Contains(candidate.ValidationFindings, x => x.Code == \"implausible_vat_ratio\");\n+        Assert.Equal(BillValidationStatus.Flagged, candidate.ValidationStatus);\n     }\n \n     [Fact]\n@@ -145,6 +147,22 @@ public sealed class DocumentExtractionServiceTests\n         Assert.Contains(candidate.ValidationFindings, x => x.Code == \"duplicate_invoice_number\");\n     }\n \n+    [Fact]\n+    public async Task Bill_information_extractor_handles_detected_candidate_without_document_text_pipeline()\n+    {\n+        var extractor = new BillInformationExtractor(new FakeDuplicateRepository(false), TimeProvider.System);\n+        var document = new ExtractedDocumentText(\"email_body\", [new ExtractedDocumentSection(\"body\", SampleInvoiceText(), 0)]);\n+\n+        var candidate = await extractor.ExtractAsync(\n+            new DetectedBillCandidateCommand(Guid.NewGuid(), document, \"email-body\", \"email-1\", \"att-1\"),\n+            CancellationToken.None);\n+\n+        Assert.Equal(\"INV-1001\", candidate.InvoiceNumber);\n+        Assert.Equal(\"email-1\", candidate.SourceEmailId);\n+        Assert.Equal(\"att-1\", candidate.SourceAttachmentId);\n+        Assert.All(candidate.Evidence, evidence => Assert.False(string.IsNullOrWhiteSpace(evidence.TextSpanOrLocator)));\n+    }\n+\n     [Fact]\n     public async Task Duplicate_check_repository_persists_tenant_scoped_result()\n     {\nEND_OF_PATCH\n2026-04-26T06:41:26.546787Z ERROR codex_core::session: failed to record rollout items: thread 019dc882-e2af-7622-9920-50193d4f83b1 not found\ntokens used\n46,006\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

@@ -1,0 +1,1274 @@
+diff --git a/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs b/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs
+new file mode 100644
+index 0000000..c5f18c1
+--- /dev/null
++++ b/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs
+@@ -0,0 +1,125 @@
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Application.Mailbox;
++
++public sealed record StartMailboxOAuthConnectionCommand(
++    Guid CompanyId,
++    Guid UserId,
++    MailboxProvider Provider,
++    Uri CallbackUri,
++    IReadOnlyCollection<MailboxFolderSelection>? ConfiguredFolders = null);
++
++public sealed record CompleteMailboxOAuthConnectionCommand(
++    string State,
++    string Code,
++    Uri CallbackUri);
++
++public sealed record TriggerManualMailboxScanCommand(
++    Guid CompanyId,
++    Guid UserId,
++    Guid MailboxConnectionId);
++
++public sealed record MailboxOAuthStartResult(
++    MailboxProvider Provider,
++    Uri AuthorizationUrl);
++
++public sealed record MailboxOAuthCompletionResult(
++    Guid MailboxConnectionId,
++    MailboxProvider Provider,
++    string EmailAddress,
++    string Status);
++
++public sealed record ManualMailboxScanResult(
++    Guid IngestionRunId,
++    Guid MailboxConnectionId,
++    DateTime ScanFromUtc,
++    DateTime ScanToUtc,
++    int ScannedMessageCount,
++    int DetectedCandidateCount,
++    string? FailureDetails);
++
++public sealed record MailboxOAuthState(
++    Guid CompanyId,
++    Guid UserId,
++    MailboxProvider Provider,
++    IReadOnlyCollection<MailboxFolderSelection> ConfiguredFolders,
++    DateTime ExpiresUtc);
++
++public sealed record MailboxOAuthTokenResult(
++    string AccessToken,
++    string? RefreshToken,
++    DateTime? AccessTokenExpiresUtc,
++    IReadOnlyCollection<string> GrantedScopes);
++
++public sealed record MailboxAccountProfile(
++    string EmailAddress,
++    string? DisplayName,
++    string ProviderAccountId);
++
++public sealed record MailboxMessageQuery(
++    DateTime FromUtc,
++    DateTime ToUtc,
++    IReadOnlyCollection<MailboxFolderSelection> Folders);
++
++public sealed record MailboxMessageSummary(
++    string ProviderMessageId,
++    string? Subject,
++    string? Snippet,
++    string? BodyPreview,
++    IReadOnlyCollection<string> AttachmentFileNames);
++
++public interface IMailboxConnectionService
++{
++    Task<MailboxOAuthStartResult> StartOAuthConnectionAsync(StartMailboxOAuthConnectionCommand command, CancellationToken cancellationToken);
++    Task<MailboxOAuthCompletionResult> CompleteOAuthConnectionAsync(CompleteMailboxOAuthConnectionCommand command, CancellationToken cancellationToken);
++    Task<ManualMailboxScanResult> TriggerManualScanAsync(TriggerManualMailboxScanCommand command, CancellationToken cancellationToken);
++}
++
++public interface IMailboxOAuthStateProtector
++{
++    string Protect(MailboxOAuthState state);
++    MailboxOAuthState Unprotect(string protectedState);
++}
++
++public interface IMailboxProviderRegistry
++{
++    IMailboxProviderClient Resolve(MailboxProvider provider);
++}
++
++public interface IMailboxProviderClient
++{
++    MailboxProvider Provider { get; }
++    IReadOnlyCollection<string> DefaultScopes { get; }
++    Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request);
++    Task<MailboxOAuthTokenResult> ExchangeCodeAsync(MailboxTokenExchangeRequest request, CancellationToken cancellationToken);
++    Task<MailboxOAuthTokenResult> RefreshTokenAsync(MailboxRefreshTokenRequest request, CancellationToken cancellationToken);
++    Task<MailboxAccountProfile> GetAccountProfileAsync(string accessToken, CancellationToken cancellationToken);
++    Task<IReadOnlyList<MailboxMessageSummary>> ListMessagesAsync(string accessToken, MailboxMessageQuery query, CancellationToken cancellationToken);
++}
++
++public sealed record MailboxAuthorizationRequest(
++    Guid CompanyId,
++    Guid UserId,
++    Uri CallbackUri,
++    string State);
++
++public sealed record MailboxTokenExchangeRequest(
++    string Code,
++    Uri CallbackUri);
++
++public sealed record MailboxRefreshTokenRequest(
++    string RefreshToken);
++
++public static class MailboxBillKeywordFilter
++{
++    public static readonly IReadOnlyList<string> RequiredKeywords =
++    [
++        "invoice",
++        "bill",
++        "faktura",
++        "payment due",
++        "amount due",
++        "OCR",
++        "IBAN",
++        "bankgiro",
++        "plusgiro"
++    ];
++
++    public static bool IsBillCandidate(MailboxMessageSummary message) =>
++        RequiredKeywords.Any(keyword => Contains(message.Subject, keyword) || Contains(message.Snippet, keyword) ||
++            Contains(message.BodyPreview, keyword) || message.AttachmentFileNames.Any(name => Contains(name, keyword)));
++
++    private static bool Contains(string? value, string keyword) =>
++        !string.IsNullOrWhiteSpace(value) && value.Contains(keyword, StringComparison.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Api/Controllers/MailboxConnectionsController.cs b/src/VirtualCompany.Api/Controllers/MailboxConnectionsController.cs
+new file mode 100644
+index 0000000..853b23e
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/MailboxConnectionsController.cs
+@@ -0,0 +1,101 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Mailbox;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/mailbox-connections")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class MailboxConnectionsController : ControllerBase
++{
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++    private readonly IMailboxConnectionService _mailboxConnectionService;
++
++    public MailboxConnectionsController(
++        ICompanyContextAccessor companyContextAccessor,
++        IMailboxConnectionService mailboxConnectionService)
++    {
++        _companyContextAccessor = companyContextAccessor;
++        _mailboxConnectionService = mailboxConnectionService;
++    }
++
++    [HttpPost("{provider}/start")]
++    public async Task<ActionResult<StartMailboxConnectionResponse>> StartAsync(
++        Guid companyId,
++        string provider,
++        [FromBody] StartMailboxConnectionRequest request,
++        CancellationToken cancellationToken)
++    {
++        var userId = ResolveUserId();
++        var parsedProvider = ParseProvider(provider);
++        var callbackUri = BuildCallbackUri(companyId, parsedProvider, request.CallbackUri);
++        var result = await _mailboxConnectionService.StartOAuthConnectionAsync(
++            new StartMailboxOAuthConnectionCommand(
++                companyId,
++                userId,
++                parsedProvider,
++                callbackUri,
++                request.ConfiguredFolders?.Select(x => new MailboxFolderSelection(x.ProviderFolderId, x.DisplayName)).ToArray()),
++            cancellationToken);
++
++        return Ok(new StartMailboxConnectionResponse(result.AuthorizationUrl.ToString()));
++    }
++
++    [HttpGet("{provider}/callback")]
++    public async Task<ActionResult<MailboxOAuthCompletionResult>> CallbackAsync(
++        Guid companyId,
++        string provider,
++        [FromQuery] string? code,
++        [FromQuery] string? state,
++        [FromQuery] string? error,
++        CancellationToken cancellationToken)
++    {
++        if (!string.IsNullOrWhiteSpace(error))
++        {
++            return BadRequest(new { error = "mailbox_oauth_denied" });
++        }
++
++        if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state))
++        {
++            return BadRequest(new { error = "mailbox_oauth_callback_missing_code_or_state" });
++        }
++
++        var parsedProvider = ParseProvider(provider);
++        var callbackUri = BuildCallbackUri(companyId, parsedProvider, null);
++        var result = await _mailboxConnectionService.CompleteOAuthConnectionAsync(
++            new CompleteMailboxOAuthConnectionCommand(state, code, callbackUri),
++            cancellationToken);
++
++        return Ok(result);
++    }
++
++    [HttpPost("{mailboxConnectionId:guid}/scan")]
++    public async Task<ActionResult<ManualMailboxScanResult>> ScanAsync(
++        Guid companyId,
++        Guid mailboxConnectionId,
++        CancellationToken cancellationToken)
++    {
++        var userId = ResolveUserId();
++        return Ok(await _mailboxConnectionService.TriggerManualScanAsync(
++            new TriggerManualMailboxScanCommand(companyId, userId, mailboxConnectionId),
++            cancellationToken));
++    }
++
++    private Guid ResolveUserId() =>
++        _companyContextAccessor.UserId is { } userId && userId != Guid.Empty
++            ? userId
++            : throw new UnauthorizedAccessException("A resolved user is required.");
++
++    private Uri BuildCallbackUri(Guid companyId, MailboxProvider provider, string? explicitCallbackUri) =>
++        !string.IsNullOrWhiteSpace(explicitCallbackUri)
++            ? new Uri(explicitCallbackUri, UriKind.Absolute)
++            : new Uri(Url.ActionLink(nameof(CallbackAsync), values: new { companyId, provider = provider.ToStorageValue() })!);
++
++    private static MailboxProvider ParseProvider(string provider) => MailboxProviderValues.Parse(provider);
++
++    public sealed record StartMailboxConnectionRequest(
++        string? CallbackUri,
++        IReadOnlyCollection<MailboxFolderSelectionRequest>? ConfiguredFolders);
++
++    public sealed record MailboxFolderSelectionRequest(string ProviderFolderId, string? DisplayName);
++    public sealed record StartMailboxConnectionResponse(string AuthorizationUrl);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 2e1a7fa..9f60e7d 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -22,6 +22,7 @@ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Application.Insights;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Tasks;
++using VirtualCompany.Application.Mailbox;
+ using VirtualCompany.Application.Documents;
+ using VirtualCompany.Application.Memory;
+ using VirtualCompany.Application.Workflows;
+@@ -40,6 +41,7 @@ using VirtualCompany.Infrastructure.Context;
+ using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Documents;
+ using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Mailbox;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Memory;
+ using VirtualCompany.Infrastructure.Observability;
+@@ -69,6 +71,8 @@ public static class DependencyInjection
+         services.AddOptions<CompanyDocumentOptions>()
+             .Bind(configuration.GetSection(CompanyDocumentOptions.SectionName));
+ 
++        services.AddOptions<MailboxIntegrationOptions>().Bind(configuration.GetSection(MailboxIntegrationOptions.SectionName));
++
+         services.AddOptions<CompanyOutboxDispatcherOptions>()
+             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
+ 
+@@ -212,6 +216,8 @@ public static class DependencyInjection
+         services.AddSingleton<ExecutiveCockpitCacheKeyBuilder>();
+         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
+         services.AddHttpClient(CompanyDashboardBriefingSummaryService.ClientName);
++        services.AddHttpClient(GmailMailboxProviderClient.ClientName);
++        services.AddHttpClient(Microsoft365MailboxProviderClient.ClientName);
+         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
+         services.AddVirtualCompanyObservability(configuration);
+         services.AddOptions<WorkflowSchedulerOptions>()
+@@ -295,6 +301,12 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyDocumentStorage, LocalCompanyDocumentStorage>();
+         services.AddScoped<ICompanyDocumentTextExtractor, CompanyDocumentTextExtractor>();
+         services.AddScoped<IKnowledgeChunker, DefaultKnowledgeChunker>();
++        services.AddSingleton<IMailboxOAuthStateProtector, DataProtectionMailboxOAuthStateProtector>();
++        services.AddScoped<GmailMailboxProviderClient>();
++        services.AddScoped<Microsoft365MailboxProviderClient>();
++        services.AddScoped<IMailboxProviderClient>(provider => provider.GetRequiredService<GmailMailboxProviderClient>());
++        services.AddScoped<IMailboxProviderClient>(provider => provider.GetRequiredService<Microsoft365MailboxProviderClient>());
++        services.AddScoped<IMailboxProviderRegistry, MailboxProviderRegistry>();
++        services.AddScoped<IMailboxConnectionService, CompanyMailboxConnectionService>();
+         services.AddScoped<IEmbeddingGenerator, OpenAiCompatibleEmbeddingGenerator>();
+         services.AddScoped<IKnowledgeAccessPolicyEvaluator, KnowledgeAccessPolicyEvaluator>();
+         services.AddScoped<ICompanyKnowledgeIndexingProcessor, CompanyKnowledgeIndexingProcessor>();
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs b/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
+new file mode 100644
+index 0000000..50d3f54
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
+@@ -0,0 +1,242 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Mailbox;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Security;
++
++namespace VirtualCompany.Infrastructure.Mailbox;
++
++public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
++{
++    private static readonly TimeSpan OAuthStateTtl = TimeSpan.FromMinutes(10);
++    private static readonly TimeSpan ManualScanWindow = TimeSpan.FromDays(30);
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++    private readonly IMailboxOAuthStateProtector _stateProtector;
++    private readonly IMailboxProviderRegistry _providerRegistry;
++    private readonly IFieldEncryptionService _fieldEncryption;
++    private readonly TimeProvider _timeProvider;
++    private readonly ILogger<CompanyMailboxConnectionService> _logger;
++
++    public CompanyMailboxConnectionService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor companyContextAccessor,
++        IMailboxOAuthStateProtector stateProtector,
++        IMailboxProviderRegistry providerRegistry,
++        IFieldEncryptionService fieldEncryption,
++        TimeProvider timeProvider,
++        ILogger<CompanyMailboxConnectionService> logger)
++    {
++        _dbContext = dbContext;
++        _companyContextAccessor = companyContextAccessor;
++        _stateProtector = stateProtector;
++        _providerRegistry = providerRegistry;
++        _fieldEncryption = fieldEncryption;
++        _timeProvider = timeProvider;
++        _logger = logger;
++    }
++
++    public Task<MailboxOAuthStartResult> StartOAuthConnectionAsync(
++        StartMailboxOAuthConnectionCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureCurrentTenantUser(command.CompanyId, command.UserId);
++        var provider = _providerRegistry.Resolve(command.Provider);
++        var now = UtcNow();
++        var configuredFolders = NormalizeFolders(command.ConfiguredFolders, command.Provider);
++        var state = _stateProtector.Protect(new MailboxOAuthState(
++            command.CompanyId,
++            command.UserId,
++            command.Provider,
++            configuredFolders,
++            now.Add(OAuthStateTtl)));
++
++        var authorizationUrl = provider.BuildAuthorizationUrl(new MailboxAuthorizationRequest(
++            command.CompanyId,
++            command.UserId,
++            command.CallbackUri,
++            state));
++
++        _logger.LogInformation(
++            "Mailbox OAuth start built. CompanyId: {CompanyId}. UserId: {UserId}. Provider: {Provider}.",
++            command.CompanyId,
++            command.UserId,
++            command.Provider);
++
++        return Task.FromResult(new MailboxOAuthStartResult(command.Provider, authorizationUrl));
++    }
++
++    public async Task<MailboxOAuthCompletionResult> CompleteOAuthConnectionAsync(
++        CompleteMailboxOAuthConnectionCommand command,
++        CancellationToken cancellationToken)
++    {
++        var state = _stateProtector.Unprotect(command.State);
++        if (state.ExpiresUtc < UtcNow())
++        {
++            throw new InvalidOperationException("Mailbox OAuth state has expired.");
++        }
++
++        EnsureCurrentTenantUser(state.CompanyId, state.UserId);
++        var provider = _providerRegistry.Resolve(state.Provider);
++        var tokenResult = await provider.ExchangeCodeAsync(
++            new MailboxTokenExchangeRequest(command.Code, command.CallbackUri),
++            cancellationToken);
++        var profile = await provider.GetAccountProfileAsync(tokenResult.AccessToken, cancellationToken);
++        var normalizedEmail = profile.EmailAddress.Trim().ToLowerInvariant();
++        var existing = await _dbContext.MailboxConnections
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == state.CompanyId &&
++                    x.UserId == state.UserId &&
++                    x.Provider == state.Provider &&
++                    x.EmailAddress == normalizedEmail,
++                cancellationToken);
++
++        var now = UtcNow();
++        var connection = existing ?? new MailboxConnection(
++            Guid.NewGuid(),
++            state.CompanyId,
++            state.UserId,
++            state.Provider,
++            normalizedEmail,
++            profile.DisplayName,
++            now);
++
++        connection.UpdateMailboxProfile(normalizedEmail, profile.DisplayName, profile.ProviderAccountId);
++        connection.ConfigureFolders(state.ConfiguredFolders);
++        connection.StoreEncryptedCredentials(
++            _fieldEncryption.Encrypt(state.CompanyId, BuildTokenPurpose(state.Provider, "access_token"), tokenResult.AccessToken),
++            string.IsNullOrEmpty(tokenResult.RefreshToken)
++                ? connection.EncryptedRefreshToken
++                : _fieldEncryption.Encrypt(state.CompanyId, BuildTokenPurpose(state.Provider, "refresh_token"), tokenResult.RefreshToken),
++            tokenResult.AccessTokenExpiresUtc,
++            tokenResult.GrantedScopes);
++        connection.SetStatus(MailboxConnectionStatus.Active);
++
++        if (existing is null)
++        {
++            _dbContext.MailboxConnections.Add(connection);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        _logger.LogInformation(
++            "Mailbox OAuth connection completed. CompanyId: {CompanyId}. UserId: {UserId}. Provider: {Provider}. ConnectionId: {ConnectionId}.",
++            state.CompanyId,
++            state.UserId,
++            state.Provider,
++            connection.Id);
++
++        return new MailboxOAuthCompletionResult(
++            connection.Id,
++            connection.Provider,
++            connection.EmailAddress,
++            connection.Status.ToStorageValue());
++    }
++
++    public async Task<ManualMailboxScanResult> TriggerManualScanAsync(
++        TriggerManualMailboxScanCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureCurrentTenantUser(command.CompanyId, command.UserId);
++        var connection = await _dbContext.MailboxConnections
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == command.CompanyId &&
++                    x.UserId == command.UserId &&
++                    x.Id == command.MailboxConnectionId,
++                cancellationToken);
++
++        if (connection is null)
++        {
++            throw new KeyNotFoundException("Mailbox connection was not found.");
++        }
++
++        if (connection.Status != MailboxConnectionStatus.Active)
++        {
++            throw new InvalidOperationException("Mailbox connection is not active.");
++        }
++
++        var now = UtcNow();
++        var scanFromUtc = now.Subtract(ManualScanWindow);
++        var scanToUtc = now;
++        var run = new EmailIngestionRun(
++            Guid.NewGuid(),
++            command.CompanyId,
++            connection.Id,
++            command.UserId,
++            connection.Provider,
++            now,
++            scanFromUtc,
++            scanToUtc);
++        _dbContext.EmailIngestionRuns.Add(run);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        var scanned = 0;
++        var detected = 0;
++        try
++        {
++            var accessToken = _fieldEncryption.Decrypt(
++                command.CompanyId,
++                BuildTokenPurpose(connection.Provider, "access_token"),
++                connection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
++
++            var messages = await _providerRegistry.Resolve(connection.Provider).ListMessagesAsync(
++                accessToken,
++                new MailboxMessageQuery(scanFromUtc, scanToUtc, NormalizeFolders(connection.ConfiguredFolders, connection.Provider)),
++                cancellationToken);
++
++            scanned = messages.Count;
++            detected = messages.Count(MailboxBillKeywordFilter.IsBillCandidate);
++            var completedUtc = UtcNow();
++            run.Complete(completedUtc, scanned, detected);
++            connection.MarkScanSucceeded(completedUtc);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++
++            _logger.LogInformation(
++                "Manual mailbox scan completed. CompanyId: {CompanyId}. Provider: {Provider}. ConnectionId: {ConnectionId}. RunId: {RunId}. Scanned: {Scanned}. Candidates: {Candidates}.",
++                command.CompanyId,
++                connection.Provider,
++                connection.Id,
++                run.Id,
++                scanned,
++                detected);
++        }
++        catch (Exception ex)
++        {
++            var completedUtc = UtcNow();
++            var failure = ex.Message.Length > 1000 ? ex.Message[..1000] : ex.Message;
++            run.Fail(completedUtc, scanned, detected, failure);
++            connection.SetStatus(MailboxConnectionStatus.Failed, failure);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            _logger.LogWarning(
++                ex,
++                "Manual mailbox scan failed. CompanyId: {CompanyId}. Provider: {Provider}. ConnectionId: {ConnectionId}. RunId: {RunId}.",
++                command.CompanyId,
++                connection.Provider,
++                connection.Id,
++                run.Id);
++        }
++
++        return new ManualMailboxScanResult(
++            run.Id,
++            connection.Id,
++            scanFromUtc,
++            scanToUtc,
++            run.ScannedMessageCount,
++            run.DetectedCandidateCount,
++            run.FailureDetails);
++    }
++
++    private void EnsureCurrentTenantUser(Guid companyId, Guid userId)
++    {
++        if (!_companyContextAccessor.IsResolved ||
++            _companyContextAccessor.CompanyId != companyId ||
++            _companyContextAccessor.UserId != userId)
++        {
++            throw new UnauthorizedAccessException("Mailbox connections are scoped to the current tenant and user.");
++        }
++    }
++
++    private DateTime UtcNow() => _timeProvider.GetUtcNow().UtcDateTime;
++
++    private static IReadOnlyCollection<MailboxFolderSelection> NormalizeFolders(
++        IReadOnlyCollection<MailboxFolderSelection>? folders,
++        MailboxProvider provider)
++    {
++        var normalized = folders?.Select(x => x.Normalize()).Where(x => !string.IsNullOrWhiteSpace(x.ProviderFolderId)).ToArray();
++        if (normalized is { Length: > 0 })
++        {
++            return normalized;
++        }
++
++        // Until folder configuration UI exists, default to inbox only instead of scanning all mail.
++        return [new MailboxFolderSelection(provider == MailboxProvider.Gmail ? "INBOX" : "inbox", "Inbox")];
++    }
++
++    private static string BuildTokenPurpose(MailboxProvider provider, string tokenKind) =>
++        $"mailbox:{provider.ToStorageValue()}:{tokenKind}";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/MailboxOAuthStateProtector.cs b/src/VirtualCompany.Infrastructure/Mailbox/MailboxOAuthStateProtector.cs
+new file mode 100644
+index 0000000..3e44753
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Mailbox/MailboxOAuthStateProtector.cs
+@@ -0,0 +1,31 @@
++using System.Text.Json;
++using Microsoft.AspNetCore.DataProtection;
++using VirtualCompany.Application.Mailbox;
++
++namespace VirtualCompany.Infrastructure.Mailbox;
++
++public sealed class DataProtectionMailboxOAuthStateProtector : IMailboxOAuthStateProtector
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly IDataProtector _protector;
++
++    public DataProtectionMailboxOAuthStateProtector(IDataProtectionProvider dataProtectionProvider)
++    {
++        _protector = dataProtectionProvider.CreateProtector("VirtualCompany.MailboxOAuthState.v1");
++    }
++
++    public string Protect(MailboxOAuthState state)
++    {
++        if (state.CompanyId == Guid.Empty || state.UserId == Guid.Empty)
++        {
++            throw new ArgumentException("Mailbox OAuth state requires tenant and user identifiers.", nameof(state));
++        }
++
++        return _protector.Protect(JsonSerializer.Serialize(state, SerializerOptions));
++    }
++
++    public MailboxOAuthState Unprotect(string protectedState)
++    {
++        var json = _protector.Unprotect(protectedState);
++        return JsonSerializer.Deserialize<MailboxOAuthState>(json, SerializerOptions)
++            ?? throw new InvalidOperationException("Mailbox OAuth state was invalid.");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/MailboxProviderClients.cs b/src/VirtualCompany.Infrastructure/Mailbox/MailboxProviderClients.cs
+new file mode 100644
+index 0000000..cdf9b53
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Mailbox/MailboxProviderClients.cs
+@@ -0,0 +1,280 @@
++using System.Net.Http.Headers;
++using System.Text.Json;
++using Microsoft.AspNetCore.WebUtilities;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Mailbox;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Mailbox;
++
++public sealed class MailboxIntegrationOptions
++{
++    public const string SectionName = "MailboxIntegrations";
++
++    public OAuthProviderOptions Gmail { get; init; } = new()
++    {
++        AuthorizationEndpoint = "https://accounts.google.com/o/oauth2/v2/auth",
++        TokenEndpoint = "https://oauth2.googleapis.com/token",
++        ProfileEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/profile",
++        MessagesEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
++    };
++
++    public OAuthProviderOptions Microsoft365 { get; init; } = new()
++    {
++        AuthorizationEndpoint = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
++        TokenEndpoint = "https://login.microsoftonline.com/common/oauth2/v2.0/token",
++        ProfileEndpoint = "https://graph.microsoft.com/v1.0/me",
++        MessagesEndpoint = "https://graph.microsoft.com/v1.0/me/mailFolders/{folderId}/messages"
++    };
++
++    public sealed class OAuthProviderOptions
++    {
++        public string ClientId { get; init; } = string.Empty;
++        public string ClientSecret { get; init; } = string.Empty;
++        public string AuthorizationEndpoint { get; init; } = string.Empty;
++        public string TokenEndpoint { get; init; } = string.Empty;
++        public string ProfileEndpoint { get; init; } = string.Empty;
++        public string MessagesEndpoint { get; init; } = string.Empty;
++    }
++}
++
++public sealed class MailboxProviderRegistry : IMailboxProviderRegistry
++{
++    private readonly IReadOnlyDictionary<MailboxProvider, IMailboxProviderClient> _providers;
++
++    public MailboxProviderRegistry(IEnumerable<IMailboxProviderClient> providers)
++    {
++        _providers = providers.ToDictionary(x => x.Provider);
++    }
++
++    public IMailboxProviderClient Resolve(MailboxProvider provider) =>
++        _providers.TryGetValue(provider, out var client)
++            ? client
++            : throw new ArgumentOutOfRangeException(nameof(provider), "Unsupported mailbox provider.");
++}
++
++public sealed class GmailMailboxProviderClient : IMailboxProviderClient
++{
++    public const string ClientName = "gmail-mailbox";
++    private readonly IHttpClientFactory _httpClientFactory;
++    private readonly MailboxIntegrationOptions.OAuthProviderOptions _options;
++
++    public GmailMailboxProviderClient(IHttpClientFactory httpClientFactory, IOptions<MailboxIntegrationOptions> options)
++    {
++        _httpClientFactory = httpClientFactory;
++        _options = options.Value.Gmail;
++    }
++
++    public MailboxProvider Provider => MailboxProvider.Gmail;
++
++    // Gmail readonly supports message and attachment retrieval without send/modify/delete permissions.
++    public IReadOnlyCollection<string> DefaultScopes { get; } =
++    [
++        "openid",
++        "email",
++        "profile",
++        "https://www.googleapis.com/auth/gmail.readonly"
++    ];
++
++    public Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request)
++    {
++        EnsureConfigured();
++        var query = new Dictionary<string, string?>
++        {
++            ["client_id"] = _options.ClientId,
++            ["redirect_uri"] = request.CallbackUri.ToString(),
++            ["response_type"] = "code",
++            ["scope"] = string.Join(' ', DefaultScopes),
++            ["state"] = request.State,
++            ["access_type"] = "offline",
++            ["prompt"] = "consent"
++        };
++
++        return new Uri(QueryHelpers.AddQueryString(_options.AuthorizationEndpoint, query));
++    }
++
++    public async Task<MailboxOAuthTokenResult> ExchangeCodeAsync(MailboxTokenExchangeRequest request, CancellationToken cancellationToken)
++    {
++        EnsureConfigured();
++        var form = new Dictionary<string, string>
++        {
++            ["client_id"] = _options.ClientId,
++            ["client_secret"] = _options.ClientSecret,
++            ["code"] = request.Code,
++            ["grant_type"] = "authorization_code",
++            ["redirect_uri"] = request.CallbackUri.ToString()
++        };
++
++        return await SendTokenRequestAsync(form, cancellationToken);
++    }
++
++    public async Task<MailboxOAuthTokenResult> RefreshTokenAsync(MailboxRefreshTokenRequest request, CancellationToken cancellationToken)
++    {
++        EnsureConfigured();
++        var form = new Dictionary<string, string>
++        {
++            ["client_id"] = _options.ClientId,
++            ["client_secret"] = _options.ClientSecret,
++            ["refresh_token"] = request.RefreshToken,
++            ["grant_type"] = "refresh_token"
++        };
++
++        return await SendTokenRequestAsync(form, cancellationToken);
++    }
++
++    public async Task<MailboxAccountProfile> GetAccountProfileAsync(string accessToken, CancellationToken cancellationToken)
++    {
++        using var request = new HttpRequestMessage(HttpMethod.Get, _options.ProfileEndpoint);
++        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(request, cancellationToken);
++        response.EnsureSuccessStatusCode();
++        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
++        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
++        var root = json.RootElement;
++        var email = root.TryGetProperty("emailAddress", out var emailElement) ? emailElement.GetString() : null;
++        if (string.IsNullOrWhiteSpace(email))
++        {
++            throw new InvalidOperationException("Gmail profile did not include an email address.");
++        }
++
++        var id = root.TryGetProperty("messagesTotal", out var messagesTotal) ? messagesTotal.GetRawText() : email;
++        return new MailboxAccountProfile(email, email, id ?? email);
++    }
++
++    public async Task<IReadOnlyList<MailboxMessageSummary>> ListMessagesAsync(string accessToken, MailboxMessageQuery query, CancellationToken cancellationToken)
++    {
++        var result = new List<MailboxMessageSummary>();
++        var after = new DateTimeOffset(query.FromUtc).ToUnixTimeSeconds();
++        var before = new DateTimeOffset(query.ToUtc).ToUnixTimeSeconds();
++        foreach (var folder in query.Folders)
++        {
++            var listUri = QueryHelpers.AddQueryString(_options.MessagesEndpoint, new Dictionary<string, string?>
++            {
++                ["labelIds"] = folder.ProviderFolderId,
++                ["q"] = $"after:{after} before:{before}"
++            });
++
++            using var request = new HttpRequestMessage(HttpMethod.Get, listUri);
++            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++            using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(request, cancellationToken);
++            response.EnsureSuccessStatusCode();
++            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
++            using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
++            if (!json.RootElement.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
++            {
++                continue;
++            }
++
++            foreach (var message in messages.EnumerateArray())
++            {
++                if (!message.TryGetProperty("id", out var idElement))
++                {
++                    continue;
++                }
++
++                result.Add(await FetchMessageSummaryAsync(accessToken, idElement.GetString()!, cancellationToken));
++            }
++        }
++
++        return result;
++    }
++
++    private async Task<MailboxMessageSummary> FetchMessageSummaryAsync(string accessToken, string messageId, CancellationToken cancellationToken)
++    {
++        var uri = QueryHelpers.AddQueryString($"{_options.MessagesEndpoint}/{Uri.EscapeDataString(messageId)}", "format", "metadata");
++        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
++        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(request, cancellationToken);
++        response.EnsureSuccessStatusCode();
++        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
++        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
++        var root = json.RootElement;
++        var subject = TryReadGmailHeader(root, "Subject");
++        var snippet = root.TryGetProperty("snippet", out var snippetElement) ? snippetElement.GetString() : null;
++        var attachments = ReadGmailAttachmentNames(root).ToArray();
++        return new MailboxMessageSummary(messageId, subject, snippet, null, attachments);
++    }
++
++    private async Task<MailboxOAuthTokenResult> SendTokenRequestAsync(Dictionary<string, string> form, CancellationToken cancellationToken)
++    {
++        using var response = await _httpClientFactory.CreateClient(ClientName)
++            .PostAsync(_options.TokenEndpoint, new FormUrlEncodedContent(form), cancellationToken);
++        response.EnsureSuccessStatusCode();
++        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
++        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
++        return ParseTokenResult(json.RootElement, DefaultScopes);
++    }
++
++    private void EnsureConfigured()
++    {
++        if (string.IsNullOrWhiteSpace(_options.ClientId) || string.IsNullOrWhiteSpace(_options.ClientSecret))
++        {
++            throw new InvalidOperationException("Gmail mailbox OAuth client settings are not configured.");
++        }
++    }
++
++    private static string? TryReadGmailHeader(JsonElement root, string name)
++    {
++        if (!root.TryGetProperty("payload", out var payload) ||
++            !payload.TryGetProperty("headers", out var headers) ||
++            headers.ValueKind != JsonValueKind.Array)
++        {
++            return null;
++        }
++
++        return headers.EnumerateArray()
++            .FirstOrDefault(x => x.TryGetProperty("name", out var headerName) &&
++                string.Equals(headerName.GetString(), name, StringComparison.OrdinalIgnoreCase))
++            .TryGetProperty("value", out var value)
++                ? value.GetString()
++                : null;
++    }
++
++    private static IEnumerable<string> ReadGmailAttachmentNames(JsonElement root)
++    {
++        if (!root.TryGetProperty("payload", out var payload) ||
++            !payload.TryGetProperty("parts", out var parts) ||
++            parts.ValueKind != JsonValueKind.Array)
++        {
++            yield break;
++        }
++
++        foreach (var part in parts.EnumerateArray())
++        {
++            if (part.TryGetProperty("filename", out var filename) && !string.IsNullOrWhiteSpace(filename.GetString()))
++            {
++                yield return filename.GetString()!;
++            }
++        }
++    }
++
++    private static MailboxOAuthTokenResult ParseTokenResult(JsonElement root, IReadOnlyCollection<string> fallbackScopes)
++    {
++        var accessToken = root.GetProperty("access_token").GetString() ?? throw new InvalidOperationException("OAuth token response did not include an access token.");
++        var refreshToken = root.TryGetProperty("refresh_token", out var refreshElement) ? refreshElement.GetString() : null;
++        var expiresUtc = root.TryGetProperty("expires_in", out var expiresElement)
++            ? DateTime.UtcNow.AddSeconds(expiresElement.GetInt32())
++            : (DateTime?)null;
++        var scopes = root.TryGetProperty("scope", out var scopeElement) && !string.IsNullOrWhiteSpace(scopeElement.GetString())
++            ? scopeElement.GetString()!.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
++            : fallbackScopes;
++        return new MailboxOAuthTokenResult(accessToken, refreshToken, expiresUtc, scopes);
++    }
++}
++
++public sealed class Microsoft365MailboxProviderClient : IMailboxProviderClient
++{
++    public const string ClientName = "microsoft365-mailbox";
++    private readonly IHttpClientFactory _httpClientFactory;
++    private readonly MailboxIntegrationOptions.OAuthProviderOptions _options;
++
++    public Microsoft365MailboxProviderClient(IHttpClientFactory httpClientFactory, IOptions<MailboxIntegrationOptions> options)
++    {
++        _httpClientFactory = httpClientFactory;
++        _options = options.Value.Microsoft365;
++    }
++
++    public MailboxProvider Provider => MailboxProvider.Microsoft365;
++
++    // Mail.Read reads message and attachment metadata; User.Read binds the signed-in mailbox; offline_access enables refresh tokens.
++    public IReadOnlyCollection<string> DefaultScopes { get; } = ["offline_access", "User.Read", "Mail.Read"];
++
++    public Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request)
++    {
++        EnsureConfigured();
++        var query = new Dictionary<string, string?>
++        {
++            ["client_id"] = _options.ClientId,
++            ["redirect_uri"] = request.CallbackUri.ToString(),
++            ["response_type"] = "code",
++            ["response_mode"] = "query",
++            ["scope"] = string.Join(' ', DefaultScopes),
++            ["state"] = request.State
++        };
++
++        return new Uri(QueryHelpers.AddQueryString(_options.AuthorizationEndpoint, query));
++    }
++
++    public async Task<MailboxOAuthTokenResult> ExchangeCodeAsync(MailboxTokenExchangeRequest request, CancellationToken cancellationToken)
++    {
++        EnsureConfigured();
++        var form = new Dictionary<string, string>
++        {
++            ["client_id"] = _options.ClientId,
++            ["client_secret"] = _options.ClientSecret,
++            ["code"] = request.Code,
++            ["grant_type"] = "authorization_code",
++            ["redirect_uri"] = request.CallbackUri.ToString(),
++            ["scope"] = string.Join(' ', DefaultScopes)
++        };
++
++        return await SendTokenRequestAsync(form, cancellationToken);
++    }
++
++    public async Task<MailboxOAuthTokenResult> RefreshTokenAsync(MailboxRefreshTokenRequest request, CancellationToken cancellationToken)
++    {
++        EnsureConfigured();
++        var form = new Dictionary<string, string>
++        {
++            ["client_id"] = _options.ClientId,
++            ["client_secret"] = _options.ClientSecret,
++            ["refresh_token"] = request.RefreshToken,
++            ["grant_type"] = "refresh_token",
++            ["scope"] = string.Join(' ', DefaultScopes)
++        };
++
++        return await SendTokenRequestAsync(form, cancellationToken);
++    }
++
++    public async Task<MailboxAccountProfile> GetAccountProfileAsync(string accessToken, CancellationToken cancellationToken)
++    {
++        using var request = new HttpRequestMessage(HttpMethod.Get, _options.ProfileEndpoint);
++        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(request, cancellationToken);
++        response.EnsureSuccessStatusCode();
++        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
++        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
++        var root = json.RootElement;
++        var email = root.TryGetProperty("mail", out var mail) && !string.IsNullOrWhiteSpace(mail.GetString())
++            ? mail.GetString()
++            : root.GetProperty("userPrincipalName").GetString();
++        var name = root.TryGetProperty("displayName", out var displayName) ? displayName.GetString() : email;
++        var id = root.TryGetProperty("id", out var idElement) ? idElement.GetString() : email;
++        return new MailboxAccountProfile(email ?? throw new InvalidOperationException("Microsoft profile did not include an email address."), name, id ?? email!);
++    }
++
++    public async Task<IReadOnlyList<MailboxMessageSummary>> ListMessagesAsync(string accessToken, MailboxMessageQuery query, CancellationToken cancellationToken)
++    {
++        var result = new List<MailboxMessageSummary>();
++        foreach (var folder in query.Folders)
++        {
++            var endpoint = _options.MessagesEndpoint.Replace("{folderId}", Uri.EscapeDataString(folder.ProviderFolderId), StringComparison.Ordinal);
++            var uri = QueryHelpers.AddQueryString(endpoint, new Dictionary<string, string?>
++            {
++                ["$select"] = "id,subject,bodyPreview,hasAttachments",
++                ["$filter"] = $"receivedDateTime ge {query.FromUtc:O} and receivedDateTime le {query.ToUtc:O}"
++            });
++            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
++            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++            using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(request, cancellationToken);
++            response.EnsureSuccessStatusCode();
++            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
++            using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
++            if (!json.RootElement.TryGetProperty("value", out var messages) || messages.ValueKind != JsonValueKind.Array)
++            {
++                continue;
++            }
++
++            foreach (var message in messages.EnumerateArray())
++            {
++                var id = message.GetProperty("id").GetString()!;
++                result.Add(new MailboxMessageSummary(
++                    id,
++                    message.TryGetProperty("subject", out var subject) ? subject.GetString() : null,
++                    null,
++                    message.TryGetProperty("bodyPreview", out var bodyPreview) ? bodyPreview.GetString() : null,
++                    []));
++            }
++        }
++
++        return result;
++    }
++
++    private async Task<MailboxOAuthTokenResult> SendTokenRequestAsync(Dictionary<string, string> form, CancellationToken cancellationToken)
++    {
++        using var response = await _httpClientFactory.CreateClient(ClientName)
++            .PostAsync(_options.TokenEndpoint, new FormUrlEncodedContent(form), cancellationToken);
++        response.EnsureSuccessStatusCode();
++        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
++        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
++        var root = json.RootElement;
++        var accessToken = root.GetProperty("access_token").GetString() ?? throw new InvalidOperationException("OAuth token response did not include an access token.");
++        var refreshToken = root.TryGetProperty("refresh_token", out var refreshElement) ? refreshElement.GetString() : null;
++        var expiresUtc = root.TryGetProperty("expires_in", out var expiresElement)
++            ? DateTime.UtcNow.AddSeconds(expiresElement.GetInt32())
++            : (DateTime?)null;
++        var scopes = root.TryGetProperty("scope", out var scopeElement) && !string.IsNullOrWhiteSpace(scopeElement.GetString())
++            ? scopeElement.GetString()!.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
++            : DefaultScopes;
++        return new MailboxOAuthTokenResult(accessToken, refreshToken, expiresUtc, scopes);
++    }
++
++    private void EnsureConfigured()
++    {
++        if (string.IsNullOrWhiteSpace(_options.ClientId) || string.IsNullOrWhiteSpace(_options.ClientSecret))
++        {
++            throw new InvalidOperationException("Microsoft 365 mailbox OAuth client settings are not configured.");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
+new file mode 100644
+index 0000000..70b07f4
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
+@@ -0,0 +1,228 @@
++using Microsoft.AspNetCore.DataProtection;
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging.Abstractions;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Mailbox;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Mailbox;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Security;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class MailboxConnectionFlowTests
++{
++    [Fact]
++    public async Task Start_oauth_returns_provider_authorization_url_with_minimal_scopes()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var provider = new FakeProvider(MailboxProvider.Gmail);
++        var service = CreateService(connection, companyId, userId, provider);
++
++        var result = await service.StartOAuthConnectionAsync(
++            new StartMailboxOAuthConnectionCommand(
++                companyId,
++                userId,
++                MailboxProvider.Gmail,
++                new Uri("https://app.example.test/callback"),
++                [new MailboxFolderSelection("INBOX", "Inbox")]),
++            CancellationToken.None);
++
++        Assert.Contains("scope=gmail.readonly", result.AuthorizationUrl.Query);
++        Assert.DoesNotContain("gmail.modify", result.AuthorizationUrl.Query);
++        Assert.DoesNotContain("gmail.send", result.AuthorizationUrl.Query);
++    }
++
++    [Fact]
++    public async Task Callback_persists_connected_connection_with_encrypted_tokens()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var provider = new FakeProvider(MailboxProvider.Microsoft365);
++        var service = CreateService(connection, companyId, userId, provider);
++        var start = await service.StartOAuthConnectionAsync(
++            new StartMailboxOAuthConnectionCommand(companyId, userId, MailboxProvider.Microsoft365, new Uri("https://app.example.test/callback")),
++            CancellationToken.None);
++        var state = System.Web.HttpUtility.ParseQueryString(start.AuthorizationUrl.Query)["state"]!;
++
++        var result = await service.CompleteOAuthConnectionAsync(
++            new CompleteMailboxOAuthConnectionCommand(state, "oauth-code", new Uri("https://app.example.test/callback")),
++            CancellationToken.None);
++
++        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
++        var stored = await dbContext.MailboxConnections.SingleAsync();
++        Assert.Equal(result.MailboxConnectionId, stored.Id);
++        Assert.Equal(MailboxConnectionStatus.Active, stored.Status);
++        Assert.NotEqual("access-token", stored.EncryptedAccessToken);
++        Assert.NotEqual("refresh-token", stored.EncryptedRefreshToken);
++        Assert.Equal(0, await dbContext.Payments.CountAsync());
++        Assert.Equal(0, await dbContext.ApprovalRequests.CountAsync());
++    }
++
++    [Fact]
++    public async Task Manual_scan_is_user_scoped_uses_last_30_days_and_keyword_filtering()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var provider = new FakeProvider(MailboxProvider.Gmail)
++        {
++            Messages =
++            [
++                new MailboxMessageSummary("1", "Monthly invoice", null, null, []),
++                new MailboxMessageSummary("2", "Hello", "No keyword", null, []),
++                new MailboxMessageSummary("3", null, null, null, ["bankgiro.pdf"])
++            ]
++        };
++        var service = CreateService(connection, companyId, userId, provider, nowUtc: new DateTime(2026, 4, 26, 12, 0, 0, DateTimeKind.Utc));
++        await SeedConnectedMailboxAsync(connection, companyId, userId, MailboxProvider.Gmail);
++
++        var result = await service.TriggerManualScanAsync(
++            new TriggerManualMailboxScanCommand(companyId, userId, await ReadMailboxConnectionIdAsync(connection)),
++            CancellationToken.None);
++
++        Assert.Equal(new DateTime(2026, 3, 27, 12, 0, 0, DateTimeKind.Utc), result.ScanFromUtc);
++        Assert.Equal(new DateTime(2026, 4, 26, 12, 0, 0, DateTimeKind.Utc), result.ScanToUtc);
++        Assert.Equal(3, result.ScannedMessageCount);
++        Assert.Equal(2, result.DetectedCandidateCount);
++        Assert.Equal(result.ScanFromUtc, provider.LastQuery!.FromUtc);
++        Assert.Equal(result.ScanToUtc, provider.LastQuery.ToUtc);
++        Assert.Single(provider.LastQuery.Folders);
++        Assert.Equal("INBOX", provider.LastQuery.Folders.Single().ProviderFolderId);
++
++        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
++        Assert.Single(await dbContext.EmailIngestionRuns.ToListAsync());
++        Assert.Equal(0, await dbContext.Payments.CountAsync());
++        Assert.Equal(0, await dbContext.ApprovalRequests.CountAsync());
++    }
++
++    [Fact]
++    public async Task Manual_scan_failure_still_persists_ingestion_run()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var provider = new FakeProvider(MailboxProvider.Gmail) { ThrowOnList = true };
++        var service = CreateService(connection, companyId, userId, provider);
++        await SeedConnectedMailboxAsync(connection, companyId, userId, MailboxProvider.Gmail);
++
++        var result = await service.TriggerManualScanAsync(
++            new TriggerManualMailboxScanCommand(companyId, userId, await ReadMailboxConnectionIdAsync(connection)),
++            CancellationToken.None);
++
++        Assert.NotNull(result.FailureDetails);
++        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
++        var run = await dbContext.EmailIngestionRuns.SingleAsync();
++        Assert.NotNull(run.CompletedUtc);
++        Assert.NotNull(run.FailureDetails);
++    }
++
++    private static async Task SeedConnectedMailboxAsync(SqliteConnection connection, Guid companyId, Guid userId, MailboxProvider provider)
++    {
++        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
++        await dbContext.Database.EnsureCreatedAsync();
++        dbContext.Companies.Add(new Company(companyId, "Mailbox Flow Company"));
++        dbContext.Users.Add(new User(userId, $"user-{userId:N}@example.com", "Mailbox User", "test", userId.ToString("N")));
++        var encryption = new DataProtectionFieldEncryptionService(new EphemeralDataProtectionProvider());
++        var mailbox = new MailboxConnection(Guid.NewGuid(), companyId, userId, provider, "ap@example.com");
++        mailbox.StoreEncryptedCredentials(
++            encryption.Encrypt(companyId, $"mailbox:{provider.ToStorageValue()}:access_token", "access-token"),
++            encryption.Encrypt(companyId, $"mailbox:{provider.ToStorageValue()}:refresh_token", "refresh-token"),
++            DateTime.UtcNow.AddHours(1),
++            ["scope"]);
++        mailbox.ConfigureFolders([new MailboxFolderSelection("INBOX", "Inbox")]);
++        mailbox.SetStatus(MailboxConnectionStatus.Active);
++        dbContext.MailboxConnections.Add(mailbox);
++        await dbContext.SaveChangesAsync();
++    }
++
++    private static async Task<Guid> ReadMailboxConnectionIdAsync(SqliteConnection connection)
++    {
++        using var command = connection.CreateCommand();
++        command.CommandText = "SELECT id FROM mailbox_connections LIMIT 1;";
++        return Guid.Parse((string)(await command.ExecuteScalarAsync())!);
++    }
++
++    private static CompanyMailboxConnectionService CreateService(
++        SqliteConnection connection,
++        Guid companyId,
++        Guid userId,
++        FakeProvider provider,
++        DateTime? nowUtc = null) =>
++        new(
++            CreateContext(connection, new TestCompanyContextAccessor(companyId, userId)),
++            new TestCompanyContextAccessor(companyId, userId),
++            new DataProtectionMailboxOAuthStateProtector(new EphemeralDataProtectionProvider()),
++            new FakeProviderRegistry(provider),
++            new DataProtectionFieldEncryptionService(new EphemeralDataProtectionProvider()),
++            new FakeTimeProvider(nowUtc ?? new DateTime(2026, 4, 26, 8, 0, 0, DateTimeKind.Utc)),
++            NullLogger<CompanyMailboxConnectionService>.Instance);
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection, ICompanyContextAccessor accessor) =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options, accessor);
++
++    private sealed class FakeProviderRegistry : IMailboxProviderRegistry
++    {
++        private readonly FakeProvider _provider;
++        public FakeProviderRegistry(FakeProvider provider) => _provider = provider;
++        public IMailboxProviderClient Resolve(MailboxProvider provider) => _provider.Provider == provider ? _provider : throw new InvalidOperationException();
++    }
++
++    private sealed class FakeProvider : IMailboxProviderClient
++    {
++        public FakeProvider(MailboxProvider provider) => Provider = provider;
++        public MailboxProvider Provider { get; }
++        public IReadOnlyCollection<string> DefaultScopes { get; } = ["gmail.readonly"];
++        public IReadOnlyList<MailboxMessageSummary> Messages { get; init; } = [];
++        public MailboxMessageQuery? LastQuery { get; private set; }
++        public bool ThrowOnList { get; init; }
++
++        public Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request) =>
++            new($"https://provider.example.test/oauth?scope={string.Join('%', DefaultScopes)}&state={Uri.EscapeDataString(request.State)}");
++
++        public Task<MailboxOAuthTokenResult> ExchangeCodeAsync(MailboxTokenExchangeRequest request, CancellationToken cancellationToken) =>
++            Task.FromResult(new MailboxOAuthTokenResult("access-token", "refresh-token", DateTime.UtcNow.AddHours(1), DefaultScopes));
++
++        public Task<MailboxOAuthTokenResult> RefreshTokenAsync(MailboxRefreshTokenRequest request, CancellationToken cancellationToken) =>
++            Task.FromResult(new MailboxOAuthTokenResult("access-token", "refresh-token", DateTime.UtcNow.AddHours(1), DefaultScopes));
++
++        public Task<MailboxAccountProfile> GetAccountProfileAsync(string accessToken, CancellationToken cancellationToken) =>
++            Task.FromResult(new MailboxAccountProfile("ap@example.com", "AP", "provider-account"));
++
++        public Task<IReadOnlyList<MailboxMessageSummary>> ListMessagesAsync(string accessToken, MailboxMessageQuery query, CancellationToken cancellationToken)
++        {
++            if (ThrowOnList)
++            {
++                throw new InvalidOperationException("Provider throttled.");
++            }
++
++            LastQuery = query;
++            return Task.FromResult(Messages);
++        }
++    }
++
++    private sealed class FakeTimeProvider : TimeProvider
++    {
++        private readonly DateTimeOffset _now;
++        public FakeTimeProvider(DateTime nowUtc) => _now = new DateTimeOffset(nowUtc);
++        public override DateTimeOffset GetUtcNow() => _now;
++    }
++
++    private sealed class TestCompanyContextAccessor : ICompanyContextAccessor
++    {
++        public TestCompanyContextAccessor(Guid companyId, Guid userId)
++        {
++            CompanyId = companyId;
++            UserId = userId;
++        }
++
++        public Guid? CompanyId { get; private set; }
++        public Guid? UserId { get; private set; }
++        public bool IsResolved => CompanyId.HasValue && UserId.HasValue;
++        public ResolvedCompanyMembershipContext? Membership => null;
++        public void SetCompanyId(Guid? companyId) => CompanyId = companyId;
++        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext) { }
++    }
++}
+END_OF_PATCH

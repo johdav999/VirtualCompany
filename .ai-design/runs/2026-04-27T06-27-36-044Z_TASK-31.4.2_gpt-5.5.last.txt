@@ -1,0 +1,235 @@
+diff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs
+index 3f8b2a1..b1d7d0a 100644
+--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs
+@@ -1,6 +1,7 @@
+ using System.Net;
+ using System.Net.Http.Json;
+ using Microsoft.AspNetCore.Hosting;
++using Microsoft.AspNetCore.Mvc.Testing;
+ using Microsoft.AspNetCore.WebUtilities;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+@@ -18,15 +19,18 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
+ {
+     private readonly TestWebApplicationFactory _factory;
+ 
++    private static readonly Uri LocalDevelopmentBaseAddress = new("http://localhost:5301");
++
+     public MailboxConnectionCallbackEndpointTests(TestWebApplicationFactory factory)
+     {
+         _factory = factory;
+     }
+ 
+     [Theory]
+-    [InlineData("gmail", "https://localhost/api/mailbox-connections/gmail/callback", MailboxProvider.Gmail)]
+-    [InlineData("microsoft365", "https://localhost/api/mailbox-connections/microsoft365/callback", MailboxProvider.Microsoft365)]
+-    public async Task Start_flow_uses_provider_scoped_redirect_uri_and_protected_state(
++    [InlineData("gmail", "http://localhost:5301/api/mailbox-connections/gmail/callback", MailboxProvider.Gmail)]
++    [InlineData("microsoft365", "http://localhost:5301/api/mailbox-connections/microsoft365/callback", MailboxProvider.Microsoft365)]
++    public async Task Start_flow_uses_local_development_stable_callback_uri_and_protected_state(
+         string provider,
+         string expectedRedirectUri,
+         MailboxProvider expectedProvider)
+@@ -34,7 +38,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
+         using var factory = CreateFactoryWithMailboxOAuthOptions();
+         var seed = await SeedMailboxCompanyAsync(factory);
+-        using var client = CreateAuthenticatedClient(factory);
++        using var client = CreateAuthenticatedClient(factory, LocalDevelopmentBaseAddress);
+         var returnUri = $"https://localhost/finance/mailbox?companyId={seed.CompanyId:D}";
+ 
+         var response = await client.PostAsJsonAsync(
+@@ -165,6 +169,41 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
+         Assert.Contains("mailboxConnection=denied", location.Query, StringComparison.OrdinalIgnoreCase);
+     }
+ 
++    [Theory]
++    [InlineData("gmail", MailboxProvider.Gmail, "http://localhost:5301/api/mailbox-connections/gmail/callback")]
++    [InlineData("microsoft365", MailboxProvider.Microsoft365, "http://localhost:5301/api/mailbox-connections/microsoft365/callback")]
++    public async Task Provider_scoped_callback_with_valid_protected_state_completes_connection(
++        string provider,
++        MailboxProvider expectedProvider,
++        string expectedCallbackUri)
++    {
++        var registry = new FakeMailboxProviderRegistry(expectedProvider);
++        using var factory = new MailboxProviderTestFactory(registry);
++        var seed = await SeedMailboxCompanyAsync(factory);
++        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
++        {
++            BaseAddress = LocalDevelopmentBaseAddress
++        });
++        var returnUri = new Uri($"http://localhost:5301/finance/mailbox?companyId={seed.CompanyId:D}&tab=connections");
++        var state = ProtectState(factory, new MailboxOAuthState(
++            seed.CompanyId,
++            seed.UserId,
++            expectedProvider,
++            [new MailboxFolderSelection(expectedProvider == MailboxProvider.Gmail ? "INBOX" : "inbox", "Inbox")],
++            DateTime.UtcNow.AddMinutes(10),
++            returnUri));
++
++        var response = await client.GetAsync($"/api/mailbox-connections/{provider}/callback?code=oauth-code&state={Uri.EscapeDataString(state)}");
++
++        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
++        var location = Assert.IsType<Uri>(response.Headers.Location);
++        Assert.Equal("/finance/mailbox", location.AbsolutePath);
++        Assert.Contains($"companyId={seed.CompanyId:D}", location.Query, StringComparison.OrdinalIgnoreCase);
++        Assert.Contains("mailboxConnection=connected", location.Query, StringComparison.OrdinalIgnoreCase);
++        Assert.Equal(new Uri(expectedCallbackUri), registry.ProviderClient.LastTokenExchangeRequest?.CallbackUri);
++
++        var connections = await CountMailboxConnectionsAsync(factory);
++        Assert.Equal(1, connections);
++    }
++
+     [Fact]
+     public async Task Successful_legacy_callback_completes_with_state_company_and_redirects_to_valid_state_return_uri()
+     {
+@@ -240,34 +279,41 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
+         });
+     }
+ 
+-    [Fact]
+-    public async Task Invalid_state_on_provider_scoped_callback_does_not_persist_mailbox_connection()
++    [Theory]
++    [InlineData("gmail")]
++    [InlineData("microsoft365")]
++    public async Task Invalid_state_on_provider_scoped_callback_does_not_persist_mailbox_connection(string provider)
+     {
+         using var client = _factory.CreateClient();
+ 
+-        var response = await client.GetAsync("/api/mailbox-connections/gmail/callback?code=oauth-code&state=tampered-state");
++        var response = await client.GetAsync($"/api/mailbox-connections/{provider}/callback?code=oauth-code&state=tampered-state");
+ 
+         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+         Assert.Equal(0, await CountMailboxConnectionsAsync());
+     }
+ 
+-    [Fact]
+-    public async Task Company_and_user_query_spoofing_is_ignored_without_valid_protected_state()
++    [Theory]
++    [InlineData("gmail")]
++    [InlineData("microsoft365")]
++    public async Task Company_and_user_query_spoofing_is_ignored_without_valid_protected_state(string provider)
+     {
+         using var client = _factory.CreateClient();
+         var spoofedCompanyId = Guid.NewGuid();
+         var spoofedUserId = Guid.NewGuid();
+ 
+-        var response = await client.GetAsync($"/api/mailbox-connections/microsoft365/callback?code=oauth-code&state=tampered-state&companyId={spoofedCompanyId:D}&userId={spoofedUserId:D}");
++        var response = await client.GetAsync($"/api/mailbox-connections/{provider}/callback?code=oauth-code&state=tampered-state&companyId={spoofedCompanyId:D}&userId={spoofedUserId:D}");
+ 
+         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+         Assert.Equal(0, await CountMailboxConnectionsAsync());
+     }
+ 
+-    [Fact]
+-    public async Task Expired_state_on_provider_scoped_callback_returns_authentication_failure_without_persistence()
++    [Theory]
++    [InlineData("gmail", MailboxProvider.Gmail)]
++    [InlineData("microsoft365", MailboxProvider.Microsoft365)]
++    public async Task Expired_state_on_provider_scoped_callback_returns_authentication_failure_without_persistence(
++        string provider,
++        MailboxProvider expectedProvider)
+     {
+         using var client = _factory.CreateClient();
+         var state = ProtectState(new MailboxOAuthState(
+             Guid.NewGuid(),
+             Guid.NewGuid(),
+-            MailboxProvider.Gmail,
++            expectedProvider,
+             [new MailboxFolderSelection("INBOX", "Inbox")],
+             new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+             new Uri("https://localhost/finance/mailbox")));
+ 
+-        var response = await client.GetAsync($"/api/mailbox-connections/gmail/callback?code=oauth-code&state={Uri.EscapeDataString(state)}");
++        var response = await client.GetAsync($"/api/mailbox-connections/{provider}/callback?code=oauth-code&state={Uri.EscapeDataString(state)}");
+ 
+         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+         Assert.Equal(0, await CountMailboxConnectionsAsync());
+@@ -317,6 +363,34 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
+         Assert.Equal(0, await CountMailboxConnectionsAsync());
+     }
+ 
++    [Fact]
++    public async Task Callback_rejects_cross_tenant_completion_when_request_company_context_differs_from_protected_state()
++    {
++        using var factory = new MailboxProviderTestFactory(new FakeMailboxProviderRegistry(MailboxProvider.Gmail));
++        using var client = factory.CreateClient();
++        var stateCompanyId = Guid.NewGuid();
++        var requestCompanyId = Guid.NewGuid();
++        var state = ProtectState(factory, new MailboxOAuthState(
++            stateCompanyId,
++            Guid.NewGuid(),
++            MailboxProvider.Gmail,
++            [new MailboxFolderSelection("INBOX", "Inbox")],
++            DateTime.UtcNow.AddMinutes(10),
++            new Uri($"http://localhost/finance/mailbox?companyId={stateCompanyId:D}")));
++
++        client.DefaultRequestHeaders.Add("X-Company-Id", requestCompanyId.ToString("D"));
++
++        var response = await client.GetAsync($"/api/mailbox-connections/gmail/callback?code=oauth-code&state={Uri.EscapeDataString(state)}");
++
++        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
++        var body = await response.Content.ReadAsStringAsync();
++        Assert.DoesNotContain(stateCompanyId.ToString("D"), body, StringComparison.OrdinalIgnoreCase);
++        Assert.DoesNotContain(requestCompanyId.ToString("D"), body, StringComparison.OrdinalIgnoreCase);
++
++        await factory.ExecuteDbContextAsync(dbContext =>
++            Task.FromResult(Assert.Empty(dbContext.MailboxConnections.IgnoreQueryFilters())));
++    }
++
+     private Task<int> CountMailboxConnectionsAsync() =>
+         CountMailboxConnectionsAsync(_factory);
+ 
+@@ -346,9 +420,13 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
+             [$"{MailboxIntegrationOptions.SectionName}:Microsoft365:AuthorizationEndpoint"] = "https://provider.example.test/microsoft365/oauth"
+         });
+ 
+-    private static HttpClient CreateAuthenticatedClient(TestWebApplicationFactory factory)
++    private static HttpClient CreateAuthenticatedClient(TestWebApplicationFactory factory, Uri? baseAddress = null)
+     {
+-        var client = factory.CreateClient();
++        var client = baseAddress is null
++            ? factory.CreateClient()
++            : factory.CreateClient(new WebApplicationFactoryClientOptions
++            {
++                BaseAddress = baseAddress
++            });
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "mailbox-owner");
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "mailbox-owner@example.com");
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Mailbox Owner");
+@@ -406,6 +484,8 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
+             _provider = new FakeMailboxProviderClient(provider);
+         }
+ 
++        public FakeMailboxProviderClient ProviderClient => _provider;
++
+         public IMailboxProviderClient Resolve(MailboxProvider provider) =>
+             _provider.Provider == provider
+                 ? _provider
+@@ -420,6 +500,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
+ 
+         public MailboxProvider Provider { get; }
+         public IReadOnlyCollection<string> DefaultScopes { get; } = ["mail.read"];
++        public MailboxTokenExchangeRequest? LastTokenExchangeRequest { get; private set; }
+ 
+         public Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request) =>
+             new($"https://provider.example.test/oauth?redirect_uri={Uri.EscapeDataString(request.CallbackUri.ToString())}&state={Uri.EscapeDataString(request.State)}");
+@@ -427,11 +508,14 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
+         public Task<MailboxOAuthTokenResult> ExchangeCodeAsync(MailboxTokenExchangeRequest request, CancellationToken cancellationToken) =>
+-            Task.FromResult(new MailboxOAuthTokenResult(
+-                "access-token",
+-                "refresh-token",
+-                DateTime.UtcNow.AddHours(1),
+-                DefaultScopes));
++        {
++            LastTokenExchangeRequest = request;
++            return Task.FromResult(new MailboxOAuthTokenResult(
++                    "access-token",
++                    "refresh-token",
++                    DateTime.UtcNow.AddHours(1),
++                    DefaultScopes));
++        }
+ 
+         public Task<MailboxOAuthTokenResult> RefreshTokenAsync(MailboxRefreshTokenRequest request, CancellationToken cancellationToken) =>
+             Task.FromResult(new MailboxOAuthTokenResult("access-token", "refresh-token", DateTime.UtcNow.AddHours(1), DefaultScopes));
+END_OF_PATCH

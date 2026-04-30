@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-30.2.2",
+  "promptPath": ".ai-design/prompts/TASK-30.2.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-26T06:26:38.596Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-26T06-26-38-596Z_TASK-30.2.2_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-26T06-26-38-596Z_TASK-30.2.2.json",
+  "agentsPromptPath": "AGENTS.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-26T06:30:28.212Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "entSnapshot(Guid.NewGuid(), companyId, message.Id, \"att-1\", \"invoice.pdf\", \"application/pdf\", 1000, \"hash\", \"provider-ref\", BillSourceType.PdfAttachment, \"Invoice text\", true, Guid.NewGuid()));\n             dbContext.EmailMessageSnapshots.Add(message);\n             await dbContext.SaveChangesAsync();\n         }\n@@ -212,7 +224,11 @@ public sealed class MailboxConnectionPersistenceTests\n         Assert.Equal(\"external-message-1\", loaded.ExternalMessageId);\n         Assert.Equal(BillSourceType.PdfAttachment, loaded.SourceType);\n+        Assert.Equal(EmailCandidateDecision.Candidate, loaded.CandidateDecision);\n+        Assert.Equal(\"supplier.example\", loaded.SenderDomain);\n         Assert.Null(loaded.UntrustedBodyText);\n-        Assert.Equal(\"Invoice text\", loaded.Attachments.Single().UntrustedExtractedText);\n+        var attachment = loaded.Attachments.Single();\n+        Assert.Equal(\"Invoice text\", attachment.UntrustedExtractedText);\n+        Assert.True(attachment.IsDuplicateByHash);\n+        Assert.NotNull(attachment.CanonicalAttachmentSnapshotId);\n     }\ndiff --git a/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs b/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs\nindex db68867..0aa2e0d 100644\n--- a/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs\n@@ -78,6 +78,19 @@ public sealed class BillDetectionServiceTests\n         Assert.Empty(result.DetectedSourceTypes);\n     }\n \n+    [Fact]\n+    public void Rejects_keyword_only_without_sender_folder_or_supported_attachment_signal()\n+    {\n+        var result = _service.Detect(new MailboxMessageSummary(\n+            \"msg-4b\",\n+            \"Invoice\",\n+            null,\n+            \"Please mention invoice in the meeting notes.\",\n+            [],\n+            \"person@example.com\"));\n+\n+        Assert.False(result.IsCandidate);\n+    }\n+\n     [Fact]\n     public void Rejects_image_only_pdf_as_supported_source()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "ce text\", true, Guid.NewGuid()));\n             dbContext.EmailMessageSnapshots.Add(message);\n             await dbContext.SaveChangesAsync();\n         }\n@@ -212,7 +224,11 @@ public sealed class MailboxConnectionPersistenceTests\n         Assert.Equal(\"external-message-1\", loaded.ExternalMessageId);\n         Assert.Equal(BillSourceType.PdfAttachment, loaded.SourceType);\n+        Assert.Equal(EmailCandidateDecision.Candidate, loaded.CandidateDecision);\n+        Assert.Equal(\"supplier.example\", loaded.SenderDomain);\n         Assert.Null(loaded.UntrustedBodyText);\n-        Assert.Equal(\"Invoice text\", loaded.Attachments.Single().UntrustedExtractedText);\n+        var attachment = loaded.Attachments.Single();\n+        Assert.Equal(\"Invoice text\", attachment.UntrustedExtractedText);\n+        Assert.True(attachment.IsDuplicateByHash);\n+        Assert.NotNull(attachment.CanonicalAttachmentSnapshotId);\n     }\ndiff --git a/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs b/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs\nindex db68867..0aa2e0d 100644\n--- a/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs\n@@ -78,6 +78,19 @@ public sealed class BillDetectionServiceTests\n         Assert.Empty(result.DetectedSourceTypes);\n     }\n \n+    [Fact]\n+    public void Rejects_keyword_only_without_sender_folder_or_supported_attachment_signal()\n+    {\n+        var result = _service.Detect(new MailboxMessageSummary(\n+            \"msg-4b\",\n+            \"Invoice\",\n+            null,\n+            \"Please mention invoice in the meeting notes.\",\n+            [],\n+            \"person@example.com\"));\n+\n+        Assert.False(result.IsCandidate);\n+    }\n+\n     [Fact]\n     public void Rejects_image_only_pdf_as_supported_source()\n     {\nEND_OF_PATCH\n2026-04-26T06:30:24.715735Z ERROR codex_core::session: failed to record rollout items: thread 019dc877-ff6c-7862-9a23-14ce9098c0aa not found\ntokens used\n71,192\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

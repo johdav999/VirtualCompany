@@ -143,7 +143,8 @@ internal sealed class BriefingUpdateJobProducer : IBriefingUpdateJobProducer
             job.Id,
             job.CompanyId,
             job.AttemptCount,
-            job.NextAttemptAt);
+            job.NextAttemptAt,
+            job.LastErrorCode);
     }
 
     public async Task RecordFinalFailureAsync(
@@ -163,6 +164,7 @@ internal sealed class BriefingUpdateJobProducer : IBriefingUpdateJobProducer
             job.Id,
             job.CompanyId,
             job.AttemptCount,
+            job.LastErrorCode,
             job.LastError);
     }
 

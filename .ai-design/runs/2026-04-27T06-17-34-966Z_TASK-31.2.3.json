@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-31.2.3",
+  "promptPath": ".ai-design/prompts/TASK-31.2.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-27T06:17:34.966Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-27T06-17-34-966Z_TASK-31.2.3_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-27T06-17-34-966Z_TASK-31.2.3.json",
+  "agentsPromptPath": "AGENTS.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-27T06:19:37.137Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ng Rationale);\n \n public sealed class StartMailboxConnectionRequest\n {\n-    public string? CallbackUri { get; set; }\n     public string? ReturnUri { get; set; }\n     public List<MailboxFolderSelectionRequest>? ConfiguredFolders { get; set; }\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs\nindex 2964d27..8fbca7b 100644\n--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs\n@@ -39,9 +39,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW\n \n         var response = await client.PostAsJsonAsync(\n             $\"/api/companies/{seed.CompanyId:D}/mailbox-connections/{provider}/start\",\n-            new\n-            {\n-                callbackUri = $\"https://localhost/api/companies/{seed.CompanyId:D}/mailbox-connections/{provider}/callback\",\n+            new\n+            {\n                 returnUri\n             });\n \n@@ -103,6 +101,18 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW\n         Assert.NotEqual(HttpStatusCode.NotFound, response.StatusCode);\n     }\n \n+    [Theory]\n+    [InlineData(\"gmail\")]\n+    [InlineData(\"microsoft365\")]\n+    public async Task Company_scoped_callback_routes_are_not_oauth_redirect_targets(string provider)\n+    {\n+        using var factory = CreateFactoryWithMailboxOAuthOptions();\n+        var seed = await SeedMailboxCompanyAsync(factory);\n+        using var client = factory.CreateClient();\n+\n+        var response = await client.GetAsync($\"/api/companies/{seed.CompanyId:D}/mailbox-connections/{provider}/callback?code=oauth-code&state=tampered-state\");\n+\n+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task Invalid_state_on_provider_scoped_callback_does_not_persist_mailbox_connection()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "\n     public List<MailboxFolderSelectionRequest>? ConfiguredFolders { get; set; }\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs\nindex 2964d27..8fbca7b 100644\n--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionCallbackEndpointTests.cs\n@@ -39,9 +39,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW\n \n         var response = await client.PostAsJsonAsync(\n             $\"/api/companies/{seed.CompanyId:D}/mailbox-connections/{provider}/start\",\n-            new\n-            {\n-                callbackUri = $\"https://localhost/api/companies/{seed.CompanyId:D}/mailbox-connections/{provider}/callback\",\n+            new\n+            {\n                 returnUri\n             });\n \n@@ -103,6 +101,18 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW\n         Assert.NotEqual(HttpStatusCode.NotFound, response.StatusCode);\n     }\n \n+    [Theory]\n+    [InlineData(\"gmail\")]\n+    [InlineData(\"microsoft365\")]\n+    public async Task Company_scoped_callback_routes_are_not_oauth_redirect_targets(string provider)\n+    {\n+        using var factory = CreateFactoryWithMailboxOAuthOptions();\n+        var seed = await SeedMailboxCompanyAsync(factory);\n+        using var client = factory.CreateClient();\n+\n+        var response = await client.GetAsync($\"/api/companies/{seed.CompanyId:D}/mailbox-connections/{provider}/callback?code=oauth-code&state=tampered-state\");\n+\n+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task Invalid_state_on_provider_scoped_callback_does_not_persist_mailbox_connection()\n     {\nEND_OF_PATCH\n2026-04-27T06:19:34.169041Z ERROR codex_core::session: failed to record rollout items: thread 019dcd96-160b-7320-8fa5-842404ab92c9 not found\ntokens used\n67,151\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

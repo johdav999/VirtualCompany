@@ -420,6 +420,105 @@ public sealed class FinanceApiClient
             ? Task.FromResult<FinanceBillDetailResponse?>(null)
             : GetAsync<FinanceBillDetailResponse>(companyId, $"internal/companies/{companyId}/finance/bills/{billId}", allowNotFound: true, cancellationToken);
 
+    public Task<IReadOnlyList<FinanceBillInboxRowResponse>> GetBillInboxAsync(
+        Guid companyId,
+        int limit = 100,
+        CancellationToken cancellationToken = default)
+    {
+        if (_useOfflineMode)
+        {
+            return Task.FromResult<IReadOnlyList<FinanceBillInboxRowResponse>>([]);
+        }
+
+        var uri = $"internal/companies/{companyId}/finance/bill-inbox{BuildQuery(("limit", limit.ToString(CultureInfo.InvariantCulture)))}";
+        return GetListAsync<FinanceBillInboxRowResponse>(companyId, uri, cancellationToken);
+    }
+
+    public Task<FinanceBillInboxDetailResponse?> GetBillInboxDetailAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult<FinanceBillInboxDetailResponse?>(null)
+            : GetAsync<FinanceBillInboxDetailResponse>(companyId, $"internal/companies/{companyId}/finance/bill-inbox/{billId}", allowNotFound: true, cancellationToken);
+
+    public Task<FinanceBillReviewActionResultResponse> ApproveBillInboxItemAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillReviewActionResultResponse>(
+            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/approve", new FinanceBillReviewActionRequest(rationale), cancellationToken);
+
+    public Task<FinanceBillReviewActionResultResponse> RejectBillInboxItemAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillReviewActionResultResponse>(
+            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/reject", new FinanceBillReviewActionRequest(rationale), cancellationToken);
+
+    public Task<FinanceBillReviewActionResultResponse> RequestBillInboxClarificationAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillReviewActionResultResponse>(
+            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/request-clarification", new FinanceBillReviewActionRequest(rationale), cancellationToken);
+
+    public Task<MailboxConnectionStatusResponse?> GetMailboxConnectionStatusAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult<MailboxConnectionStatusResponse?>(new MailboxConnectionStatusResponse())
+            : GetAsync<MailboxConnectionStatusResponse>(companyId, $"api/companies/{companyId}/mailbox-connections/current", allowNotFound: false, cancellationToken);
+
+    public Task<MailboxProviderAvailabilityResponse> GetMailboxProviderAvailabilityAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult(new MailboxProviderAvailabilityResponse())
+            : GetAsync<MailboxProviderAvailabilityResponse>(companyId, $"api/companies/{companyId}/mailbox-connections/providers", allowNotFound: false, cancellationToken)!;
+
+    public Task<IReadOnlyList<MailboxScannedMessageResponse>> GetMailboxScannedMessagesAsync(
+        Guid companyId,
+        int limit = 50,
+        CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult<IReadOnlyList<MailboxScannedMessageResponse>>([])
+            : GetListAsync<MailboxScannedMessageResponse>(
+                companyId,
+                $"api/companies/{companyId}/mailbox-connections/messages{BuildQuery(("limit", limit.ToString(CultureInfo.InvariantCulture)))}",
+                cancellationToken);
+
+    public async Task<string> StartMailboxConnectionAsync(
+        Guid companyId,
+        string provider,
+        string? returnUri = null,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureOnlineMutation();
+        var response = await SendCompanyScopedAsync<StartMailboxConnectionRequest, StartMailboxConnectionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"api/companies/{companyId}/mailbox-connections/{provider}/start",
+            new StartMailboxConnectionRequest { ReturnUri = returnUri },
+            cancellationToken);
+
+        return response.AuthorizationUrl;
+    }
+
+    public Task<ManualMailboxScanResponse> TriggerManualMailboxScanAsync(Guid companyId, CancellationToken cancellationToken = default)
+    {
+        EnsureOnlineMutation();
+        return SendCompanyScopedAsync<object, ManualMailboxScanResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"api/companies/{companyId}/mailbox-connections/scan",
+            new { },
+            cancellationToken);
+    }
+
+    public Task<FinanceEmailSettingsResponse> GetEmailSettingsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult(new FinanceEmailSettingsResponse())
+            : GetAsync<FinanceEmailSettingsResponse>(companyId, $"internal/companies/{companyId}/finance/settings/email", allowNotFound: false, cancellationToken)!;
+
+    public Task<FinanceEmailSettingsResponse> UpdateEmailSettingsAsync(
+        Guid companyId,
+        UpdateFinanceEmailSettingsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureOnlineMutation();
+        return SendCompanyScopedAsync<UpdateFinanceEmailSettingsRequest, FinanceEmailSettingsResponse>(
+            companyId,
+            HttpMethod.Put,
+            $"internal/companies/{companyId}/finance/settings/email",
+            request,
+            cancellationToken);
+    }
+
     public Task<FinancePaymentResponse> CreatePaymentAsync(
         Guid companyId,
         CreateFinancePaymentRequest request,
@@ -710,6 +809,10 @@ public sealed class FinanceApiClient
         {
             return new FinanceNotInitializedApiException(problem.ToFinanceInitializationProblemResponse());
         }
+        if (IsMailboxProviderConfigurationProblem(problem))
+        {
+            return new MailboxProviderNotConfiguredApiException(problem.Detail ?? problem.Title ?? "Mailbox provider OAuth client settings are not configured.");
+        }
         if (problem?.Errors is { Count: > 0 })
         {
             return new FinanceApiValidationException(FormatProblemMessage(problem), problem.Errors);
@@ -757,6 +860,11 @@ public sealed class FinanceApiClient
             ? baseMessage
             : $"{baseMessage} ({string.Join(", ", identifiers)})";
     }
+
+    private static bool IsMailboxProviderConfigurationProblem(ApiProblemResponse? problem) =>
+        problem is not null &&
+        (string.Equals(problem.Title, "Mailbox provider is not configured.", StringComparison.OrdinalIgnoreCase) ||
+            (problem.Detail?.Contains("mailbox OAuth client settings are not configured", StringComparison.OrdinalIgnoreCase) ?? false));
 
     private sealed class ApiProblemResponse
     {
@@ -834,6 +942,13 @@ public sealed class FinanceNotInitializedApiException : FinanceApiException
     public FinanceInitializationProblemResponse Problem { get; }
 }
 
+public sealed class MailboxProviderNotConfiguredApiException : FinanceApiException
+{
+    public MailboxProviderNotConfiguredApiException(string message) : base(message)
+    {
+    }
+}
+
 public sealed class FinanceApiValidationException : FinanceApiException
 {
     public FinanceApiValidationException(string message, IDictionary<string, string[]> errors)
@@ -868,6 +983,33 @@ public sealed class FinanceCashPositionResponse
     public string Rationale { get; set; } = string.Empty;
     public decimal Confidence { get; set; }
     public string SourceWorkflow { get; set; } = string.Empty;
+}
+
+public sealed class FinanceEmailSettingsResponse
+{
+    public bool IsWritable { get; set; }
+    public bool RequiresRestart { get; set; }
+    public FinanceEmailProviderSettingsResponse Gmail { get; set; } = new();
+    public FinanceEmailProviderSettingsResponse Microsoft365 { get; set; } = new();
+}
+
+public sealed class FinanceEmailProviderSettingsResponse
+{
+    public string ClientId { get; set; } = string.Empty;
+    public bool IsClientIdConfigured { get; set; }
+    public bool IsClientSecretConfigured { get; set; }
+}
+
+public sealed class UpdateFinanceEmailSettingsRequest
+{
+    public UpdateFinanceEmailProviderSettingsRequest Gmail { get; set; } = new();
+    public UpdateFinanceEmailProviderSettingsRequest Microsoft365 { get; set; } = new();
+}
+
+public sealed class UpdateFinanceEmailProviderSettingsRequest
+{
+    public string? ClientId { get; set; }
+    public string? ClientSecret { get; set; }
 }
 
 public sealed class FinanceCashPositionThresholdsResponse
@@ -1083,6 +1225,220 @@ public sealed class FinanceBillDetailResponse
     public FinanceActionPermissionsResponse Permissions { get; set; } = new();
     public FinanceLinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
     public List<NormalizedFinanceInsightResponse> AgentInsights { get; set; } = [];
+}
+
+public sealed class FinanceBillInboxRowResponse
+{
+    public Guid Id { get; set; }
+    public string SupplierName { get; set; } = string.Empty;
+    public string BillReference { get; set; } = string.Empty;
+    public decimal? Amount { get; set; }
+    public string? Currency { get; set; }
+    public DateTime DetectedUtc { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public string ConfidenceLevel { get; set; } = string.Empty;
+    public int ValidationWarningCount { get; set; }
+    public int DuplicateWarningCount { get; set; }
+}
+
+public sealed class FinanceBillInboxDetailResponse
+{
+    public Guid Id { get; set; }
+    public string SupplierName { get; set; } = string.Empty;
+    public string? SupplierOrgNumber { get; set; }
+    public string BillReference { get; set; } = string.Empty;
+    public DateTime? BillDateUtc { get; set; }
+    public DateTime? DueDateUtc { get; set; }
+    public decimal? Amount { get; set; }
+    public decimal? VatAmount { get; set; }
+    public string? Currency { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public decimal? Confidence { get; set; }
+    public string ConfidenceLevel { get; set; } = string.Empty;
+    public List<FinanceBillExtractedFieldResponse> ExtractedFields { get; set; } = [];
+    public List<FinanceBillWarningResponse> ValidationWarnings { get; set; } = [];
+    public List<FinanceBillWarningResponse> DuplicateWarnings { get; set; } = [];
+    public FinanceBillProposalSummaryResponse ProposalSummary { get; set; } = new();
+    public List<FinanceBillReviewActionResponse> ActionHistory { get; set; } = [];
+    public bool CanApprove { get; set; }
+    public string? ApprovalBlockedReason { get; set; }
+}
+
+public sealed class FinanceBillExtractedFieldResponse
+{
+    public string FieldName { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string? RawValue { get; set; }
+    public string? NormalizedValue { get; set; }
+    public decimal? Confidence { get; set; }
+    public List<FinanceBillEvidenceReferenceResponse> EvidenceReferences { get; set; } = [];
+}
+
+public sealed class FinanceBillEvidenceReferenceResponse
+{
+    public string SourceDocument { get; set; } = string.Empty;
+    public string? SourceDocumentType { get; set; }
+    public string? PageReference { get; set; }
+    public string? SectionReference { get; set; }
+    public string? TextSpan { get; set; }
+    public string? Locator { get; set; }
+    public string? Snippet { get; set; }
+}
+
+public sealed class FinanceBillWarningResponse
+{
+    public string Code { get; set; } = string.Empty;
+    public string Severity { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public bool IsResolved { get; set; }
+}
+
+public sealed class FinanceBillProposalSummaryResponse
+{
+    public string Headline { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public List<string> RiskFlags { get; set; } = [];
+    public string ApprovalAsk { get; set; } = string.Empty;
+    public string RecommendedAction { get; set; } = string.Empty;
+    public bool ExplicitlyRequestsApproval { get; set; }
+    public bool InitiatesPayment { get; set; }
+}
+
+public sealed class FinanceBillReviewActionResponse
+{
+    public Guid Id { get; set; }
+    public string Action { get; set; } = string.Empty;
+    public string ActorDisplayName { get; set; } = string.Empty;
+    public Guid? ActorUserId { get; set; }
+    public DateTime OccurredUtc { get; set; }
+    public string PriorStatus { get; set; } = string.Empty;
+    public string NewStatus { get; set; } = string.Empty;
+    public string Rationale { get; set; } = string.Empty;
+}
+
+public sealed class FinanceBillReviewActionResultResponse
+{
+    public Guid BillId { get; set; }
+    public string PriorStatus { get; set; } = string.Empty;
+    public string NewStatus { get; set; } = string.Empty;
+    public DateTime OccurredUtc { get; set; }
+}
+
+public sealed record FinanceBillReviewActionRequest(string Rationale);
+
+public sealed class StartMailboxConnectionRequest
+{
+    public string? ReturnUri { get; set; }
+    public List<MailboxFolderSelectionRequest>? ConfiguredFolders { get; set; }
+}
+
+public sealed class MailboxFolderSelectionRequest
+{
+    public string ProviderFolderId { get; set; } = string.Empty;
+    public string? DisplayName { get; set; }
+}
+
+public sealed class StartMailboxConnectionResponse
+{
+    public string AuthorizationUrl { get; set; } = string.Empty;
+}
+
+public sealed class MailboxConnectionStatusResponse
+{
+    public bool IsConnected { get; set; }
+    public Guid? MailboxConnectionId { get; set; }
+    public string? Provider { get; set; }
+    public string? ConnectionStatus { get; set; }
+    public string? EmailAddress { get; set; }
+    public string? DisplayName { get; set; }
+    public DateTime? ConnectedAtUtc { get; set; }
+    public DateTime? LastSuccessfulScanAtUtc { get; set; }
+    public string? LastErrorSummary { get; set; }
+    public List<MailboxFolderSelectionSummaryResponse> ConfiguredFolders { get; set; } = [];
+    public EmailIngestionRunSummaryResponse? LastRun { get; set; }
+}
+
+public sealed class MailboxProviderAvailabilityResponse
+{
+    public MailboxProviderAvailability Gmail { get; set; } = new()
+    {
+        Provider = "gmail",
+        DisplayName = "Gmail"
+    };
+
+    public MailboxProviderAvailability Microsoft365 { get; set; } = new()
+    {
+        Provider = "microsoft365",
+        DisplayName = "Microsoft 365"
+    };
+}
+
+public sealed class MailboxProviderAvailability
+{
+    public string Provider { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public bool IsConfigured { get; set; }
+    public string? UnavailableReason { get; set; }
+}
+
+public sealed class MailboxFolderSelectionSummaryResponse
+{
+    public string ProviderFolderId { get; set; } = string.Empty;
+    public string? DisplayName { get; set; }
+}
+
+public sealed class EmailIngestionRunSummaryResponse
+{
+    public Guid Id { get; set; }
+    public DateTime StartedUtc { get; set; }
+    public DateTime? CompletedUtc { get; set; }
+    public string Provider { get; set; } = string.Empty;
+    public DateTime? ScanFromUtc { get; set; }
+    public DateTime? ScanToUtc { get; set; }
+    public int ScannedMessageCount { get; set; }
+    public int DetectedCandidateCount { get; set; }
+    public string? FailureDetails { get; set; }
+}
+
+public sealed class MailboxScannedMessageResponse
+{
+    public Guid Id { get; set; }
+    public Guid EmailIngestionRunId { get; set; }
+    public string ExternalMessageId { get; set; } = string.Empty;
+    public string? FromAddress { get; set; }
+    public string? FromDisplayName { get; set; }
+    public string? Subject { get; set; }
+    public DateTime? ReceivedUtc { get; set; }
+    public string? FolderId { get; set; }
+    public string? FolderDisplayName { get; set; }
+    public string SourceType { get; set; } = string.Empty;
+    public string CandidateDecision { get; set; } = string.Empty;
+    public List<string> MatchedRules { get; set; } = [];
+    public string ReasonSummary { get; set; } = string.Empty;
+    public string? BodyPreview { get; set; }
+    public List<MailboxScannedAttachmentResponse> Attachments { get; set; } = [];
+    public DateTime CreatedUtc { get; set; }
+}
+
+public sealed class MailboxScannedAttachmentResponse
+{
+    public string? FileName { get; set; }
+    public string? MimeType { get; set; }
+    public long? SizeBytes { get; set; }
+    public string SourceType { get; set; } = string.Empty;
+    public bool IsDuplicateByHash { get; set; }
+}
+
+public sealed class ManualMailboxScanResponse
+{
+    public Guid IngestionRunId { get; set; }
+    public Guid MailboxConnectionId { get; set; }
+    public DateTime ScanFromUtc { get; set; }
+    public DateTime ScanToUtc { get; set; }
+    public int ScannedMessageCount { get; set; }
+    public int DetectedCandidateCount { get; set; }
+    public string? FailureDetails { get; set; }
+    public string Status { get; set; } = string.Empty;
 }
 
 public sealed class FinanceInvoiceReviewListItemResponse

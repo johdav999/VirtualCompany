@@ -1,0 +1,67 @@
+@page "/finance/bill-inbox"
+@inherits FinancePageBase
+
+<PageTitle>Finance Bill Inbox</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Bill inbox"
+    Description="Review detected supplier bills, warnings, confidence, and bounded approval proposals."
+    LoadingMessage="Loading bill inbox...">
+    <div class="wizard-card wizard-card--compact">
+        <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
+            <div>
+                <h2 class="h5 mb-1">Inbox</h2>
+                <p class="text-body-secondary mb-0">Only review-flow bill statuses are shown.</p>
+            </div>
+            <span class="badge text-bg-light">@Items.Count item@(Items.Count == 1 ? string.Empty : "s")</span>
+        </div>
+
+        <FinanceDataState
+            IsLoading="@IsListLoading"
+            IsEmpty="@IsListEmpty"
+            ErrorMessage="@ListErrorMessage"
+            LoadingTitle="Loading inbox"
+            LoadingMessage="Fetching tenant-scoped finance bill inbox items."
+            EmptyTitle="No bill inbox items"
+            EmptyMessage="Detected bills that require review will appear here."
+            OnRetry="@ReloadAsync">
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead>
+                        <tr>
+                            <th>Bill</th>
+                            <th>Supplier</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                            <th>Confidence</th>
+                            <th>Warnings</th>
+                            <th class="text-end">Review</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in Items)
+                        {
+                            <tr>
+                                <td>
+                                    <strong>@item.BillReference</strong>
+                                    <div class="text-body-secondary small">@FormatDate(item.DetectedUtc)</div>
+                                </td>
+                                <td>@item.SupplierName</td>
+                                <td>@FormatAmount(item.Amount, item.Currency)</td>
+                                <td><span class="badge text-bg-light">@item.Status</span></td>
+                                <td>@item.ConfidenceLevel</td>
+                                <td>@FormatWarnings(item)</td>
+                                <td class="text-end">
+                                    <a class="btn btn-sm btn-outline-primary" href="@BuildDetailHref(item.Id)">Open</a>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </FinanceDataState>
+    </div>
+</FinancePageLayout>

@@ -1,0 +1,279 @@
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
+--- a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
+@@ -43,6 +43,27 @@
+                     Runtime editing is only available in the API Development environment.
+                 </div>
+             }
+ 
++            <section class="border rounded-3 p-3 mb-4">
++                <h3 class="h6 mb-2">Provider redirect URIs</h3>
++                <p class="small text-body-secondary mb-3">
++                    Register one redirect URI per provider per environment. The callback path is stable and provider-scoped; company context is carried in protected OAuth state.
++                </p>
++                <dl class="row small mb-0">
++                    <dt class="col-12 col-md-3">Gmail local development</dt>
++                    <dd class="col-12 col-md-9">
++                        <code>http://localhost:5301/api/mailbox-connections/gmail/callback</code>
++                    </dd>
++                    <dt class="col-12 col-md-3">Microsoft 365 local development</dt>
++                    <dd class="col-12 col-md-9">
++                        <code>http://localhost:5301/api/mailbox-connections/microsoft365/callback</code>
++                    </dd>
++                    <dt class="col-12 col-md-3">Production</dt>
++                    <dd class="col-12 col-md-9 mb-0">
++                        Use the same provider callback paths on the public API host for that environment.
++                    </dd>
++                </dl>
++            </section>
++
+             <div class="row g-4">
+                 <div class="col-12 col-xl-6">
+                     <section class="border rounded-3 p-3 h-100">
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceEmailSettingsPageTests.cs b/tests/VirtualCompany.Api.Tests/FinanceEmailSettingsPageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceEmailSettingsPageTests.cs
+@@ -0,0 +1,139 @@
++using System.Net;
++using System.Net.Http.Json;
++using Bunit;
++using Bunit.TestDoubles;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Shared;
++using VirtualCompany.Web.Pages.Finance;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceEmailSettingsPageTests
++{
++    [Fact]
++    public void Settings_page_shows_stable_provider_redirect_uris()
++    {
++        var companyId = Guid.Parse("f73175bd-58d6-4d5d-96d6-10b721ffbd5a");
++
++        using var harness = CreateHarness(companyId);
++        harness.Navigation.NavigateTo($"http://localhost/finance/settings/email-settings?companyId={companyId:D}");
++
++        var cut = harness.Context.RenderComponent<SettingsPage>(parameters => parameters
++            .Add(x => x.CompanyId, companyId));
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Register one redirect URI per provider per environment.", cut.Markup);
++            Assert.Contains("http://localhost:5301/api/mailbox-connections/gmail/callback", cut.Markup);
++            Assert.Contains("http://localhost:5301/api/mailbox-connections/microsoft365/callback", cut.Markup);
++            Assert.Contains("company context is carried in protected OAuth state", cut.Markup, StringComparison.OrdinalIgnoreCase);
++            Assert.DoesNotContain($"/api/companies/{companyId:D}/mailbox-connections/gmail/callback", cut.Markup, StringComparison.OrdinalIgnoreCase);
++            Assert.DoesNotContain($"/api/companies/{companyId:D}/mailbox-connections/microsoft365/callback", cut.Markup, StringComparison.OrdinalIgnoreCase);
++        });
++    }
++
++    private static EmailSettingsHarness CreateHarness(Guid companyId)
++    {
++        var context = new TestContext();
++        context.Services.AddOptions();
++        context.Services.AddSingleton(new FinanceAccessResolver());
++
++        context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            return Task.FromResult(request.RequestUri?.AbsolutePath switch
++            {
++                "/api/auth/me" => CreateJsonResponse(CreateCurrentUser(companyId, "owner")),
++                _ => CreateNotFoundResponse()
++            });
++        }))
++        {
++            BaseAddress = new Uri("http://localhost/")
++        }));
++
++        context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
++        {
++            if (request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/settings/email" &&
++                request.Method == HttpMethod.Get)
++            {
++                return Task.FromResult(CreateJsonResponse(new FinanceEmailSettingsResponse
++                {
++                    IsWritable = true,
++                    RequiresRestart = false,
++                    Gmail = new FinanceEmailProviderSettingsResponse
++                    {
++                        ClientId = "gmail-client",
++                        IsClientIdConfigured = true,
++                        IsClientSecretConfigured = true
++                    },
++                    Microsoft365 = new FinanceEmailProviderSettingsResponse
++                    {
++                        ClientId = "microsoft-client",
++                        IsClientIdConfigured = true,
++                        IsClientSecretConfigured = true
++                    }
++                }));
++            }
++
++            return Task.FromResult(CreateNotFoundResponse());
++        }))
++        {
++            BaseAddress = new Uri("http://localhost/")
++        }));
++
++        return new EmailSettingsHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
++    }
++
++    private static CurrentUserContextViewModel CreateCurrentUser(Guid companyId, string membershipRole) =>
++        new()
++        {
++            Memberships =
++            [
++                new CompanyMembershipViewModel
++                {
++                    MembershipId = Guid.NewGuid(),
++                    CompanyId = companyId,
++                    CompanyName = "Contoso Finance",
++                    MembershipRole = membershipRole,
++                    Status = "active"
++                }
++            ],
++            ActiveCompany = new ResolvedCompanyContextViewModel
++            {
++                MembershipId = Guid.NewGuid(),
++                CompanyId = companyId,
++                CompanyName = "Contoso Finance",
++                MembershipRole = membershipRole,
++                Status = "active"
++            }
++        };
++
++    private static HttpResponseMessage CreateJsonResponse<T>(T payload) =>
++        new(HttpStatusCode.OK)
++        {
++            Content = JsonContent.Create(payload)
++        };
++
++    private static HttpResponseMessage CreateNotFoundResponse() =>
++        new(HttpStatusCode.NotFound)
++        {
++            Content = JsonContent.Create(new { title = "Not found", detail = "Not found." })
++        };
++
++    private sealed record EmailSettingsHarness(TestContext Context, FakeNavigationManager Navigation) : IDisposable
++    {
++        public void Dispose() => Context.Dispose();
++    }
++
++    private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler
++    {
++        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
++
++        public AsyncStubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
++        {
++            _handler = handler;
++        }
++
++        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
++            _handler(request, cancellationToken);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
+--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
+@@ -207,6 +207,38 @@ public sealed class MailboxConnectionFlowTests
+         await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
+         Assert.Equal(0, await dbContext.MailboxConnections.CountAsync());
+     }
+ 
++    [Fact]
++    public async Task Callback_rejects_cross_tenant_completion_before_token_exchange_and_persistence()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var stateProtector = new DataProtectionMailboxOAuthStateProtector(new EphemeralDataProtectionProvider());
++        var protectedState = stateProtector.Protect(new MailboxOAuthState(
++            companyId,
++            userId,
++            MailboxProvider.Gmail,
++            [new MailboxFolderSelection("INBOX", "Inbox")],
++            new DateTime(2026, 4, 26, 8, 10, 0, DateTimeKind.Utc),
++            new Uri("https://app.example.test/finance/mailbox")));
++        var provider = new FakeProvider(MailboxProvider.Gmail);
++        var service = CreateService(
++            connection,
++            companyId,
++            userId,
++            provider,
++            stateProtector: stateProtector,
++            contextAccessor: new TestCompanyContextAccessor(otherCompanyId, null));
++
++        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => service.CompleteOAuthConnectionAsync(
++            new CompleteMailboxOAuthConnectionCommand(protectedState, "oauth-code", new Uri("https://app.example.test/api/mailbox-connections/gmail/callback"), MailboxProvider.Gmail),
++            CancellationToken.None));
++
++        Assert.Equal(0, provider.ExchangeCallCount);
++        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
++        Assert.Equal(0, await dbContext.MailboxConnections.CountAsync());
++    }
++
+     [Fact]
+     public void State_protector_rejects_tampered_state_as_authentication_failure()
+     {
+         var stateProtector = new DataProtectionMailboxOAuthStateProtector(new EphemeralDataProtectionProvider());
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -89,6 +89,20 @@ On first authenticated request, the API provisions or updates the internal `User`
+ 
+ ## Company Context Resolution
+ 
+ Tenant-owned API requests resolve company context from:
++
++## Mailbox OAuth Redirect URIs
++
++Mailbox integrations use stable provider callback URLs. Register one redirect URI per provider per environment; do not register tenant-specific or company-specific callback URLs. Tenant and user correlation is stored in protected OAuth state.
++
++Local development API redirect URIs:
++
++- Gmail: `http://localhost:5301/api/mailbox-connections/gmail/callback`
++- Microsoft 365: `http://localhost:5301/api/mailbox-connections/microsoft365/callback`
++
++Production redirect URIs use the same provider callback paths on the public API host for that environment, for example `https://<api-host>/api/mailbox-connections/gmail/callback` and `https://<api-host>/api/mailbox-connections/microsoft365/callback`.
++
++Additional setup details are in `docs/mailbox-oauth-redirect-uris.md`.
++
+ ### Executive cockpit performance validation
+ 
+ The executive cockpit supports aggregate dashboard loading plus widget-scoped refresh endpoints under
+diff --git a/docs/mailbox-oauth-redirect-uris.md b/docs/mailbox-oauth-redirect-uris.md
+new file mode 100644
+--- /dev/null
++++ b/docs/mailbox-oauth-redirect-uris.md
+@@ -0,0 +1,25 @@
++# Mailbox OAuth Redirect URIs
++
++Mailbox OAuth callbacks are stable per provider and environment. Register one redirect URI per provider per environment in Gmail and Microsoft Entra; do not create tenant-specific or company-specific callback URLs.
++
++Tenant and user context is carried in protected OAuth state, not in the redirect URI path.
++
++## Local Development
++
++Use the API development host:
++
++- Gmail: `http://localhost:5301/api/mailbox-connections/gmail/callback`
++- Microsoft 365: `http://localhost:5301/api/mailbox-connections/microsoft365/callback`
++
++## Production
++
++Use the public API host for the target environment with the same provider callback paths:
++
++- Gmail: `https://<api-host>/api/mailbox-connections/gmail/callback`
++- Microsoft 365: `https://<api-host>/api/mailbox-connections/microsoft365/callback`
++
++Replace `<api-host>` with the externally reachable API hostname for the environment. Each deployed environment needs its own pair of provider redirect URIs.
++
++## Provider Registration Rule
++
++Exactly one redirect URI per provider per environment is required. For example, a development environment registers the two localhost URIs above, and a production environment registers the two production API-host URIs. Do not add `/api/companies/{companyId}/...` callback URLs for new provider registrations.
+END_OF_PATCH

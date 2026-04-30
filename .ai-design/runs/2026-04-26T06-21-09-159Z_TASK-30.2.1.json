@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-30.2.1",
+  "promptPath": ".ai-design/prompts/TASK-30.2.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-26T06:21:09.159Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-26T06-21-09-159Z_TASK-30.2.1_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-26T06-21-09-159Z_TASK-30.2.1.json",
+  "agentsPromptPath": "AGENTS.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-26T06:26:37.996Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "d);\n+            dbContext.MailboxConnections.Add(new MailboxConnection(mailboxConnectionId, companyId, userId, MailboxProvider.Gmail, \"ap@example.com\"));\n+            dbContext.EmailIngestionRuns.Add(new EmailIngestionRun(runId, companyId, mailboxConnectionId, userId, MailboxProvider.Gmail, DateTime.UtcNow));\n+            var message = new EmailMessageSnapshot(\n+                Guid.NewGuid(),\n+                companyId,\n+                mailboxConnectionId,\n+                runId,\n+                \"external-message-1\",\n+                \"billing@supplier.example\",\n+                \"Supplier Billing\",\n+                \"Invoice attached\",\n+                DateTime.UtcNow,\n+                \"INBOX\",\n+                \"Invoices\",\n+                \"provider-body-ref\",\n+                null,\n+                BillSourceType.PdfAttachment,\n+                [BillDetectionRuleMatch.SenderMatch, BillDetectionRuleMatch.AttachmentPresent],\n+                \"Matched deterministic bill detection rules: sender, supported_attachment.\");\n+            message.Attachments.Add(new EmailAttachmentSnapshot(Guid.NewGuid(), companyId, message.Id, \"att-1\", \"invoice.pdf\", \"application/pdf\", 1000, \"hash\", \"provider-ref\", BillSourceType.PdfAttachment, \"Invoice text\"));\n+            dbContext.EmailMessageSnapshots.Add(message);\n+            await dbContext.SaveChangesAsync();\n+        }\n+\n+        await using var readContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));\n+        var loaded = await readContext.EmailMessageSnapshots.Include(x => x.Attachments).SingleAsync();\n+        Assert.Equal(\"external-message-1\", loaded.ExternalMessageId);\n+        Assert.Equal(BillSourceType.PdfAttachment, loaded.SourceType);\n+        Assert.Null(loaded.UntrustedBodyText);\n+        Assert.Equal(\"Invoice text\", loaded.Attachments.Single().UntrustedExtractedText);\n+    }\n+\n     [Fact]\n     public async Task Query_filters_keep_mailbox_records_tenant_scoped()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "        dbContext.EmailIngestionRuns.Add(new EmailIngestionRun(runId, companyId, mailboxConnectionId, userId, MailboxProvider.Gmail, DateTime.UtcNow));\n+            var message = new EmailMessageSnapshot(\n+                Guid.NewGuid(),\n+                companyId,\n+                mailboxConnectionId,\n+                runId,\n+                \"external-message-1\",\n+                \"billing@supplier.example\",\n+                \"Supplier Billing\",\n+                \"Invoice attached\",\n+                DateTime.UtcNow,\n+                \"INBOX\",\n+                \"Invoices\",\n+                \"provider-body-ref\",\n+                null,\n+                BillSourceType.PdfAttachment,\n+                [BillDetectionRuleMatch.SenderMatch, BillDetectionRuleMatch.AttachmentPresent],\n+                \"Matched deterministic bill detection rules: sender, supported_attachment.\");\n+            message.Attachments.Add(new EmailAttachmentSnapshot(Guid.NewGuid(), companyId, message.Id, \"att-1\", \"invoice.pdf\", \"application/pdf\", 1000, \"hash\", \"provider-ref\", BillSourceType.PdfAttachment, \"Invoice text\"));\n+            dbContext.EmailMessageSnapshots.Add(message);\n+            await dbContext.SaveChangesAsync();\n+        }\n+\n+        await using var readContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));\n+        var loaded = await readContext.EmailMessageSnapshots.Include(x => x.Attachments).SingleAsync();\n+        Assert.Equal(\"external-message-1\", loaded.ExternalMessageId);\n+        Assert.Equal(BillSourceType.PdfAttachment, loaded.SourceType);\n+        Assert.Null(loaded.UntrustedBodyText);\n+        Assert.Equal(\"Invoice text\", loaded.Attachments.Single().UntrustedExtractedText);\n+    }\n+\n     [Fact]\n     public async Task Query_filters_keep_mailbox_records_tenant_scoped()\n     {\nEND_OF_PATCH\n2026-04-26T06:26:36.921715Z ERROR codex_core::session: failed to record rollout items: thread 019dc872-f63f-75b3-9df6-caab32062585 not found\ntokens used\n97,403\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-31.1.2",
+  "promptPath": ".ai-design/prompts/TASK-31.1.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-27T06:10:24.448Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-27T06-10-24-448Z_TASK-31.1.2_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-27T06-10-24-448Z_TASK-31.1.2.json",
+  "agentsPromptPath": "AGENTS.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-27T06:11:42.606Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "            ValidateState(state);\n+            return state;\n+        }\n+        catch (Exception ex) when (IsInvalidStateException(ex))\n+        {\n+            throw new UnauthorizedAccessException(\"Mailbox OAuth state was invalid.\", ex);\n+        }\n+    }\n+\n+    private static void ValidateState(MailboxOAuthState state)\n+    {\n+        if (state.CompanyId == Guid.Empty || state.UserId == Guid.Empty)\n+        {\n+            throw new InvalidOperationException(\"Mailbox OAuth state was invalid.\");\n+        }\n+\n+        MailboxProviderValues.EnsureSupported(state.Provider, nameof(state.Provider));\n+\n+        if (state.ConfiguredFolders is null || state.ExpiresUtc == default)\n+        {\n+            throw new InvalidOperationException(\"Mailbox OAuth state was invalid.\");\n+        }\n     }\n+\n+    private static bool IsInvalidStateException(Exception exception) =>\n+        exception is\n+            CryptographicException or\n+            JsonException or\n+            NotSupportedException or\n+            ArgumentException or\n+            InvalidOperationException;\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs\nindex 94a7c8d..a09ab46 100644\n--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs\n@@ -154,6 +154,15 @@ public sealed class MailboxConnectionFlowTests\n         Assert.Equal(0, await dbContext.MailboxConnections.CountAsync());\n     }\n \n+    [Fact]\n+    public void State_protector_rejects_tampered_state_as_authentication_failure()\n+    {\n+        var stateProtector = new DataProtectionMailboxOAuthStateProtector(new EphemeralDataProtectionProvider());\n+\n+        Assert.Throws<UnauthorizedAccessException>(() =>\n+            stateProtector.Unprotect(\"tampered-state\"));\n+    }\n+\n     [Fact]\n     public async Task Manual_scan_is_user_scoped_uses_last_30_days_and_keyword_filtering()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": " throw new UnauthorizedAccessException(\"Mailbox OAuth state was invalid.\", ex);\n+        }\n+    }\n+\n+    private static void ValidateState(MailboxOAuthState state)\n+    {\n+        if (state.CompanyId == Guid.Empty || state.UserId == Guid.Empty)\n+        {\n+            throw new InvalidOperationException(\"Mailbox OAuth state was invalid.\");\n+        }\n+\n+        MailboxProviderValues.EnsureSupported(state.Provider, nameof(state.Provider));\n+\n+        if (state.ConfiguredFolders is null || state.ExpiresUtc == default)\n+        {\n+            throw new InvalidOperationException(\"Mailbox OAuth state was invalid.\");\n+        }\n     }\n+\n+    private static bool IsInvalidStateException(Exception exception) =>\n+        exception is\n+            CryptographicException or\n+            JsonException or\n+            NotSupportedException or\n+            ArgumentException or\n+            InvalidOperationException;\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs\nindex 94a7c8d..a09ab46 100644\n--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs\n@@ -154,6 +154,15 @@ public sealed class MailboxConnectionFlowTests\n         Assert.Equal(0, await dbContext.MailboxConnections.CountAsync());\n     }\n \n+    [Fact]\n+    public void State_protector_rejects_tampered_state_as_authentication_failure()\n+    {\n+        var stateProtector = new DataProtectionMailboxOAuthStateProtector(new EphemeralDataProtectionProvider());\n+\n+        Assert.Throws<UnauthorizedAccessException>(() =>\n+            stateProtector.Unprotect(\"tampered-state\"));\n+    }\n+\n     [Fact]\n     public async Task Manual_scan_is_user_scoped_uses_last_30_days_and_keyword_filtering()\n     {\nEND_OF_PATCH\n2026-04-27T06:11:41.877320Z ERROR codex_core::session: failed to record rollout items: thread 019dcd8f-7958-7242-a240-b776f1f3738a not found\ntokens used\n68,797\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

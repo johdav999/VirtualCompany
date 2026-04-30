@@ -1,0 +1,735 @@
+diff --git a/src/VirtualCompany.Domain/Enums/MailboxConnectionEnums.cs b/src/VirtualCompany.Domain/Enums/MailboxConnectionEnums.cs
+index 6a4e1c1..23b6fd9 100644
+--- a/src/VirtualCompany.Domain/Enums/MailboxConnectionEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/MailboxConnectionEnums.cs
+@@ -23,6 +23,12 @@ public enum MailboxFolderSelectionMode
+     Exclude = 2
+ }
+ 
++public enum EmailCandidateDecision
++{
++    Candidate = 1,
++    NotCandidate = 2
++}
++
+ public enum BillSourceType
+ {
+     PdfAttachment = 1,
+@@ -176,6 +182,49 @@ public static class MailboxFolderSelectionModeValues
+     }
+ }
+ 
++public static class EmailCandidateDecisionValues
++{
++    public const string Candidate = "candidate";
++    public const string NotCandidate = "not_candidate";
++
++    private static readonly string[] AllowedStorageValues =
++    [
++        Candidate,
++        NotCandidate
++    ];
++
++    public static IReadOnlyList<string> AllowedValues => AllowedStorageValues;
++
++    public static string ToStorageValue(this EmailCandidateDecision decision) =>
++        decision switch
++        {
++            EmailCandidateDecision.Candidate => Candidate,
++            EmailCandidateDecision.NotCandidate => NotCandidate,
++            _ => throw new ArgumentOutOfRangeException(nameof(decision), "Unsupported email candidate decision.")
++        };
++
++    public static EmailCandidateDecision Parse(string value) =>
++        Normalize(value) switch
++        {
++            Candidate => EmailCandidateDecision.Candidate,
++            NotCandidate => EmailCandidateDecision.NotCandidate,
++            _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported email candidate decision.")
++        };
++
++    public static void EnsureSupported(EmailCandidateDecision decision, string parameterName)
++    {
++        if (!Enum.IsDefined(decision))
++        {
++            throw new ArgumentOutOfRangeException(parameterName, "Unsupported email candidate decision.");
++        }
++    }
++
++    public static string BuildCheckConstraintSql(string columnName)
++    {
++        if (string.IsNullOrWhiteSpace(columnName))
++        {
++            throw new ArgumentException("Column name is required.", nameof(columnName));
++        }
++
++        return $"{columnName} IN ({string.Join(", ", AllowedValues.Select(value => $"'{value}'"))})";
++    }
++
++    private static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace("-", "_").Replace(" ", "_").ToLowerInvariant();
++}
++
+ public static class BillSourceTypeValues
+ {
+     public const string PdfAttachment = "pdf_attachment";
+diff --git a/src/VirtualCompany.Domain/Entities/MailboxConnectionEntities.cs b/src/VirtualCompany.Domain/Entities/MailboxConnectionEntities.cs
+index 5fb9f7e..b732531 100644
+--- a/src/VirtualCompany.Domain/Entities/MailboxConnectionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/MailboxConnectionEntities.cs
+@@ -223,6 +223,9 @@ public sealed class EmailIngestionRun : ICompanyOwnedEntity
+     public DateTime? ScanToUtc { get; private set; }
+     public int ScannedMessageCount { get; private set; }
+     public int DetectedCandidateCount { get; private set; }
++    public int NonCandidateMessageCount { get; private set; }
++    public int CandidateAttachmentSnapshotCount { get; private set; }
++    public int DeduplicatedAttachmentCount { get; private set; }
+     public string? FailureDetails { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+@@ -231,7 +234,13 @@ public sealed class EmailIngestionRun : ICompanyOwnedEntity
+ 
+     public void Complete(DateTime completedUtc, int scannedMessageCount, int detectedCandidateCount)
+     {
+-        if (scannedMessageCount < 0)
++        Complete(completedUtc, scannedMessageCount, detectedCandidateCount, scannedMessageCount - detectedCandidateCount, 0, 0);
++    }
++
++    public void Complete(
++        DateTime completedUtc,
++        int scannedMessageCount,
++        int detectedCandidateCount,
++        int nonCandidateMessageCount,
++        int candidateAttachmentSnapshotCount,
++        int deduplicatedAttachmentCount)
++    {
++        if (scannedMessageCount < 0)
+         {
+             throw new ArgumentOutOfRangeException(nameof(scannedMessageCount), "Scanned message count cannot be negative.");
+         }
+@@ -241,10 +250,28 @@ public sealed class EmailIngestionRun : ICompanyOwnedEntity
+             throw new ArgumentOutOfRangeException(nameof(detectedCandidateCount), "Detected candidate count cannot be negative.");
+         }
+ 
++        if (nonCandidateMessageCount < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(nonCandidateMessageCount), "Non-candidate message count cannot be negative.");
++        }
++
++        if (candidateAttachmentSnapshotCount < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(candidateAttachmentSnapshotCount), "Candidate attachment snapshot count cannot be negative.");
++        }
++
++        if (deduplicatedAttachmentCount < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(deduplicatedAttachmentCount), "Deduplicated attachment count cannot be negative.");
++        }
++
+         CompletedUtc = EntityTimestampNormalizer.NormalizeUtc(completedUtc, nameof(completedUtc));
+         ScannedMessageCount = scannedMessageCount;
+         DetectedCandidateCount = detectedCandidateCount;
++        NonCandidateMessageCount = nonCandidateMessageCount;
++        CandidateAttachmentSnapshotCount = candidateAttachmentSnapshotCount;
++        DeduplicatedAttachmentCount = deduplicatedAttachmentCount;
+         FailureDetails = null;
+     }
+ 
+     public void Fail(DateTime completedUtc, int scannedMessageCount, int detectedCandidateCount, string failureDetails)
+@@ -306,6 +333,7 @@ public sealed class EmailMessageSnapshot : ICompanyOwnedEntity
+         string? bodyReference,
+         string? untrustedBodyText,
+         BillSourceType sourceType,
++        EmailCandidateDecision candidateDecision,
+         IReadOnlyCollection<BillDetectionRuleMatch> matchedRules,
+         string reasonSummary,
+         DateTime? createdUtc = null)
+@@ -328,6 +356,7 @@ public sealed class EmailMessageSnapshot : ICompanyOwnedEntity
+         }
+ 
+         BillSourceTypeValues.EnsureSupported(sourceType, nameof(sourceType));
++        EmailCandidateDecisionValues.EnsureSupported(candidateDecision, nameof(candidateDecision));
+ 
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+@@ -337,6 +366,7 @@ public sealed class EmailMessageSnapshot : ICompanyOwnedEntity
+         FromAddress = NormalizeOptional(fromAddress, nameof(fromAddress), 320);
+         FromDisplayName = NormalizeOptional(fromDisplayName, nameof(fromDisplayName), 256);
+         Subject = NormalizeOptional(subject, nameof(subject), 500);
++        SenderDomain = ExtractSenderDomain(FromAddress);
+         ReceivedUtc = receivedUtc.HasValue ? EntityTimestampNormalizer.NormalizeUtc(receivedUtc.Value, nameof(receivedUtc)) : null;
+         FolderId = NormalizeOptional(folderId, nameof(folderId), 256);
+         FolderDisplayName = NormalizeOptional(folderDisplayName, nameof(folderDisplayName), 256);
+@@ -344,6 +374,7 @@ public sealed class EmailMessageSnapshot : ICompanyOwnedEntity
+         UntrustedBodyText = NormalizeOptional(untrustedBodyText, nameof(untrustedBodyText), 16000);
+         SourceType = sourceType;
++        CandidateDecision = candidateDecision;
+         MatchedRules = matchedRules?.Distinct().ToList() ?? [];
+         ReasonSummary = NormalizeRequired(reasonSummary, nameof(reasonSummary), 1000);
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
+@@ -358,12 +389,14 @@ public sealed class EmailMessageSnapshot : ICompanyOwnedEntity
+     public string? FromAddress { get; private set; }
+     public string? FromDisplayName { get; private set; }
+     public string? Subject { get; private set; }
++    public string? SenderDomain { get; private set; }
+     public DateTime? ReceivedUtc { get; private set; }
+     public string? FolderId { get; private set; }
+     public string? FolderDisplayName { get; private set; }
+     public string? BodyReference { get; private set; }
+     public string? UntrustedBodyText { get; private set; }
+     public BillSourceType SourceType { get; private set; }
++    public EmailCandidateDecision CandidateDecision { get; private set; }
+     public List<BillDetectionRuleMatch> MatchedRules { get; private set; } = [];
+     public string ReasonSummary { get; private set; } = null!;
+     public DateTime CreatedUtc { get; private set; }
+@@ -392,6 +425,20 @@ public sealed class EmailMessageSnapshot : ICompanyOwnedEntity
+         return trimmed;
+     }
++
++    private static string? ExtractSenderDomain(string? fromAddress)
++    {
++        if (string.IsNullOrWhiteSpace(fromAddress))
++        {
++            return null;
++        }
++
++        var at = fromAddress.IndexOf('@', StringComparison.Ordinal);
++        if (at < 0 || at == fromAddress.Length - 1)
++        {
++            return null;
++        }
++
++        return NormalizeOptional(fromAddress[(at + 1)..].ToLowerInvariant(), nameof(fromAddress), 256);
++    }
+ }
+ 
+ public sealed class EmailAttachmentSnapshot : ICompanyOwnedEntity
+@@ -416,6 +463,8 @@ public sealed class EmailAttachmentSnapshot : ICompanyOwnedEntity
+         string? storageReference,
+         BillSourceType sourceType,
+         string? untrustedExtractedText,
++        bool isDuplicateByHash = false,
++        Guid? canonicalAttachmentSnapshotId = null,
+         DateTime? createdUtc = null)
+     {
+         if (companyId == Guid.Empty)
+@@ -456,6 +505,8 @@ public sealed class EmailAttachmentSnapshot : ICompanyOwnedEntity
+         StorageReference = NormalizeOptional(storageReference, nameof(storageReference), 512);
+         SourceType = sourceType;
+         UntrustedExtractedText = NormalizeOptional(untrustedExtractedText, nameof(untrustedExtractedText), 16000);
++        IsDuplicateByHash = isDuplicateByHash;
++        CanonicalAttachmentSnapshotId = canonicalAttachmentSnapshotId;
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
+     }
+ 
+@@ -470,6 +521,8 @@ public sealed class EmailAttachmentSnapshot : ICompanyOwnedEntity
+     public string? StorageReference { get; private set; }
+     public BillSourceType SourceType { get; private set; }
+     public string? UntrustedExtractedText { get; private set; }
++    public bool IsDuplicateByHash { get; private set; }
++    public Guid? CanonicalAttachmentSnapshotId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public EmailMessageSnapshot EmailMessageSnapshot { get; private set; } = null!;
+diff --git a/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs b/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs
+index f2b9f86..27c20a5 100644
+--- a/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs
++++ b/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs
+@@ -26,6 +26,9 @@ public sealed record ManualMailboxScanResult(
+     DateTime ScanToUtc,
+     int ScannedMessageCount,
+     int DetectedCandidateCount,
++    int NonCandidateMessageCount,
++    int CandidateAttachmentSnapshotCount,
++    int DeduplicatedAttachmentCount,
+     string? FailureDetails,
+     string Status = "completed");
+ 
+@@ -64,6 +67,9 @@ public sealed record EmailIngestionRunSummary(
+     DateTime? ScanToUtc,
+     int ScannedMessageCount,
+     int DetectedCandidateCount,
++    int NonCandidateMessageCount,
++    int CandidateAttachmentSnapshotCount,
++    int DeduplicatedAttachmentCount,
+     string? FailureDetails);
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs b/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
+index 0e0a03a..6de73d1 100644
+--- a/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
++++ b/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
+@@ -127,6 +127,9 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
+                 lastRun.ScanToUtc,
+                 lastRun.ScannedMessageCount,
+                 lastRun.DetectedCandidateCount,
++                lastRun.NonCandidateMessageCount,
++                lastRun.CandidateAttachmentSnapshotCount,
++                lastRun.DeduplicatedAttachmentCount,
+                 lastRun.FailureDetails));
+     }
+ 
+@@ -251,6 +254,9 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
+             completedRun.ScanToUtc ?? scanToUtc,
+             completedRun.ScannedMessageCount,
+             completedRun.DetectedCandidateCount,
++            completedRun.NonCandidateMessageCount,
++            completedRun.CandidateAttachmentSnapshotCount,
++            completedRun.DeduplicatedAttachmentCount,
+             completedRun.FailureDetails,
+             completedRun.FailureDetails is null ? "completed" : "failed");
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/ManualInboxBillScanOrchestration.cs b/src/VirtualCompany.Infrastructure/Mailbox/ManualInboxBillScanOrchestration.cs
+index 61a5a23..05dcf42 100644
+--- a/src/VirtualCompany.Infrastructure/Mailbox/ManualInboxBillScanOrchestration.cs
++++ b/src/VirtualCompany.Infrastructure/Mailbox/ManualInboxBillScanOrchestration.cs
+@@ -99,6 +99,8 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
+         var scanFromUtc = job.ScanFromUtc < minimumScanFromUtc ? minimumScanFromUtc : job.ScanFromUtc;
+         var scanned = 0;
+         var detected = 0;
++        var attachmentSnapshots = 0;
++        var deduplicatedAttachments = 0;
+ 
+         try
+         {
+@@ -124,6 +126,12 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
+                 cancellationToken);
+ 
+             scanned = messages.Count;
++            var knownAttachmentSnapshotIdsByHash = await _dbContext.EmailAttachmentSnapshots
++                .Where(x => x.CompanyId == job.CompanyId)
++                .GroupBy(x => x.ContentHash)
++                .Select(x => new { ContentHash = x.Key, SnapshotId = x.Min(y => y.Id) })
++                .ToDictionaryAsync(x => x.ContentHash, x => x.SnapshotId, StringComparer.OrdinalIgnoreCase, cancellationToken);
++
+             foreach (var message in messages)
+             {
+                 var detection = _billDetectionService.Detect(message);
+@@ -143,11 +151,16 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
+                     continue;
+                 }
+ 
+-                _dbContext.EmailMessageSnapshots.Add(CreateSnapshot(job, connection.Id, message, detection, completedUtc: null));
++                var snapshot = CreateSnapshot(job, connection.Id, message, detection, knownAttachmentSnapshotIdsByHash, completedUtc: null);
++                attachmentSnapshots += snapshot.Attachments.Count;
++                deduplicatedAttachments += snapshot.Attachments.Count(x => x.IsDuplicateByHash);
++                _dbContext.EmailMessageSnapshots.Add(snapshot);
+             }
+ 
+             var completedUtc = _timeProvider.GetUtcNow().UtcDateTime;
+-            run.Complete(completedUtc, scanned, detected);
++            run.Complete(
++                completedUtc,
++                scanned,
++                detected,
++                scanned - detected,
++                attachmentSnapshots,
++                deduplicatedAttachments);
+             connection.MarkScanSucceeded(completedUtc);
+             await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+@@ -185,6 +198,7 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
+         Guid mailboxConnectionId,
+         MailboxMessageSummary message,
+         BillDetectionResult detection,
++        IDictionary<string, Guid> knownAttachmentSnapshotIdsByHash,
+         DateTime? completedUtc)
+     {
+         var sourceType = detection.DetectedSourceTypes.FirstOrDefault();
+@@ -211,10 +225,13 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
+             sourceType == BillSourceType.EmailBodyOnly ? message.BodyPreview ?? message.Snippet : null,
+             sourceType,
++            EmailCandidateDecision.Candidate,
+             detection.MatchedRules,
+             detection.ReasonSummary,
+             completedUtc);
+ 
+         foreach (var attachment in detection.CandidateAttachments)
+         {
+@@ -224,8 +241,12 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
+                 continue;
+             }
+ 
+-            snapshot.Attachments.Add(new EmailAttachmentSnapshot(
+-                Guid.NewGuid(),
++            var duplicateByHash = knownAttachmentSnapshotIdsByHash.TryGetValue(attachment.ContentHash, out var canonicalAttachmentSnapshotId);
++            var attachmentSnapshotId = Guid.NewGuid();
++            if (!duplicateByHash)
++            {
++                knownAttachmentSnapshotIdsByHash[attachment.ContentHash] = attachmentSnapshotId;
++            }
++
++            snapshot.Attachments.Add(new EmailAttachmentSnapshot(
++                attachmentSnapshotId,
+                 job.CompanyId,
+                 snapshot.Id,
+                 attachment.ExternalAttachmentId,
+@@ -236,6 +257,8 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
+                 attachment.StorageReference,
+                 attachment.SourceType,
+                 attachment.UntrustedExtractedText,
++                duplicateByHash,
++                duplicateByHash ? canonicalAttachmentSnapshotId : null,
+                 completedUtc));
+         }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/MailboxConnectionEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/MailboxConnectionEntityConfiguration.cs
+index 79f7a25..385845e 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/MailboxConnectionEntityConfiguration.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/MailboxConnectionEntityConfiguration.cs
+@@ -91,6 +91,9 @@ internal sealed class EmailIngestionRunEntityConfiguration : IEntityTypeConfigur
+             t.HasCheckConstraint("CK_email_ingestion_runs_provider", MailboxProviderValues.BuildCheckConstraintSql("provider"));
+             t.HasCheckConstraint("CK_email_ingestion_runs_scanned_message_count_nonnegative", "scanned_message_count >= 0");
+             t.HasCheckConstraint("CK_email_ingestion_runs_detected_candidate_count_nonnegative", "detected_candidate_count >= 0");
++            t.HasCheckConstraint("CK_email_ingestion_runs_non_candidate_message_count_nonnegative", "non_candidate_message_count >= 0");
++            t.HasCheckConstraint("CK_email_ingestion_runs_candidate_attachment_snapshot_count_nonnegative", "candidate_attachment_snapshot_count >= 0");
++            t.HasCheckConstraint("CK_email_ingestion_runs_deduplicated_attachment_count_nonnegative", "deduplicated_attachment_count >= 0");
+         });
+ 
+         builder.HasKey(x => x.Id);
+@@ -109,6 +112,9 @@ internal sealed class EmailIngestionRunEntityConfiguration : IEntityTypeConfigur
+         builder.Property(x => x.ScanToUtc).HasColumnName("scan_to_at");
+         builder.Property(x => x.ScannedMessageCount).HasColumnName("scanned_message_count").HasDefaultValue(0).IsRequired();
+         builder.Property(x => x.DetectedCandidateCount).HasColumnName("detected_candidate_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.NonCandidateMessageCount).HasColumnName("non_candidate_message_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.CandidateAttachmentSnapshotCount).HasColumnName("candidate_attachment_snapshot_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.DeduplicatedAttachmentCount).HasColumnName("deduplicated_attachment_count").HasDefaultValue(0).IsRequired();
+         builder.Property(x => x.FailureDetails).HasColumnName("failure_details").HasMaxLength(4000);
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+ 
+@@ -127,6 +133,7 @@ internal sealed class EmailMessageSnapshotEntityConfiguration : IEntityTypeConfi
+         builder.ToTable("email_message_snapshots");
+         builder.ToTable(t =>
+         {
++            t.HasCheckConstraint("CK_email_message_snapshots_candidate_decision", EmailCandidateDecisionValues.BuildCheckConstraintSql("candidate_decision"));
+             t.HasCheckConstraint("CK_email_message_snapshots_source_type", BillSourceTypeValues.BuildCheckConstraintSql("source_type"));
+         });
+ 
+@@ -141,6 +148,7 @@ internal sealed class EmailMessageSnapshotEntityConfiguration : IEntityTypeConfi
+         builder.Property(x => x.FromAddress).HasColumnName("from_address").HasMaxLength(320);
+         builder.Property(x => x.FromDisplayName).HasColumnName("from_display_name").HasMaxLength(256);
+         builder.Property(x => x.Subject).HasColumnName("subject").HasMaxLength(500);
++        builder.Property(x => x.SenderDomain).HasColumnName("sender_domain").HasMaxLength(256);
+         builder.Property(x => x.ReceivedUtc).HasColumnName("received_at");
+         builder.Property(x => x.FolderId).HasColumnName("folder_id").HasMaxLength(256);
+         builder.Property(x => x.FolderDisplayName).HasColumnName("folder_display_name").HasMaxLength(256);
+@@ -153,6 +161,12 @@ internal sealed class EmailMessageSnapshotEntityConfiguration : IEntityTypeConfi
+             .HasMaxLength(32)
+             .IsRequired();
++        builder.Property(x => x.CandidateDecision)
++            .HasColumnName("candidate_decision")
++            .HasConversion(decision => decision.ToStorageValue(), value => EmailCandidateDecisionValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(EmailCandidateDecision.Candidate)
++            .IsRequired();
+         builder.Property(x => x.MatchedRules)
+             .HasColumnName("matched_rules_json")
+             .HasJsonConversion<List<BillDetectionRuleMatch>>()
+@@ -166,6 +180,7 @@ internal sealed class EmailMessageSnapshotEntityConfiguration : IEntityTypeConfi
+         builder.HasIndex(x => new { x.CompanyId, x.MailboxConnectionId, x.ExternalMessageId }).IsUnique();
+         builder.HasIndex(x => new { x.CompanyId, x.EmailIngestionRunId });
+         builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.SenderDomain });
+ 
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasOne(x => x.MailboxConnection)
+@@ -201,6 +216,8 @@ internal sealed class EmailAttachmentSnapshotEntityConfiguration : IEntityTypeCo
+             .HasMaxLength(32)
+             .IsRequired();
+         builder.Property(x => x.UntrustedExtractedText).HasColumnName("untrusted_extracted_text");
++        builder.Property(x => x.IsDuplicateByHash).HasColumnName("is_duplicate_by_hash").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.CanonicalAttachmentSnapshotId).HasColumnName("canonical_attachment_snapshot_id");
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+ 
+         builder.HasIndex(x => x.CompanyId);
+@@ -208,6 +225,7 @@ internal sealed class EmailAttachmentSnapshotEntityConfiguration : IEntityTypeCo
+         builder.HasIndex(x => new { x.CompanyId, x.EmailMessageSnapshotId, x.ExternalAttachmentId }).IsUnique();
+         builder.HasIndex(x => new { x.CompanyId, x.ContentHash });
++        builder.HasIndex(x => new { x.CompanyId, x.ContentHash, x.IsDuplicateByHash });
+ 
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasOne(x => x.EmailMessageSnapshot)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426111500_AddEmailSnapshotDeduplicationMetadata.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426111500_AddEmailSnapshotDeduplicationMetadata.cs
+new file mode 100644
+index 0000000..837b95d
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426111500_AddEmailSnapshotDeduplicationMetadata.cs
+@@ -0,0 +1,99 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddEmailSnapshotDeduplicationMetadata : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<int>(
++                name: "candidate_attachment_snapshot_count",
++                table: "email_ingestion_runs",
++                type: "int",
++                nullable: false,
++                defaultValue: 0);
++
++            migrationBuilder.AddColumn<int>(
++                name: "deduplicated_attachment_count",
++                table: "email_ingestion_runs",
++                type: "int",
++                nullable: false,
++                defaultValue: 0);
++
++            migrationBuilder.AddColumn<int>(
++                name: "non_candidate_message_count",
++                table: "email_ingestion_runs",
++                type: "int",
++                nullable: false,
++                defaultValue: 0);
++
++            migrationBuilder.AddColumn<string>(
++                name: "candidate_decision",
++                table: "email_message_snapshots",
++                type: "nvarchar(32)",
++                maxLength: 32,
++                nullable: false,
++                defaultValue: "candidate");
++
++            migrationBuilder.AddColumn<string>(
++                name: "sender_domain",
++                table: "email_message_snapshots",
++                type: "nvarchar(256)",
++                maxLength: 256,
++                nullable: true);
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "canonical_attachment_snapshot_id",
++                table: "email_attachment_snapshots",
++                type: "uniqueidentifier",
++                nullable: true);
++
++            migrationBuilder.AddColumn<bool>(
++                name: "is_duplicate_by_hash",
++                table: "email_attachment_snapshots",
++                type: "bit",
++                nullable: false,
++                defaultValue: false);
++
++            migrationBuilder.AddCheckConstraint("CK_email_ingestion_runs_candidate_attachment_snapshot_count_nonnegative", "email_ingestion_runs", "candidate_attachment_snapshot_count >= 0");
++            migrationBuilder.AddCheckConstraint("CK_email_ingestion_runs_deduplicated_attachment_count_nonnegative", "email_ingestion_runs", "deduplicated_attachment_count >= 0");
++            migrationBuilder.AddCheckConstraint("CK_email_ingestion_runs_non_candidate_message_count_nonnegative", "email_ingestion_runs", "non_candidate_message_count >= 0");
++            migrationBuilder.AddCheckConstraint("CK_email_message_snapshots_candidate_decision", "email_message_snapshots", "candidate_decision IN ('candidate', 'not_candidate')");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_email_message_snapshots_company_id_sender_domain",
++                table: "email_message_snapshots",
++                columns: new[] { "company_id", "sender_domain" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_email_attachment_snapshots_company_id_content_hash_is_duplicate_by_hash",
++                table: "email_attachment_snapshots",
++                columns: new[] { "company_id", "content_hash", "is_duplicate_by_hash" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropIndex(name: "IX_email_message_snapshots_company_id_sender_domain", table: "email_message_snapshots");
++            migrationBuilder.DropIndex(name: "IX_email_attachment_snapshots_company_id_content_hash_is_duplicate_by_hash", table: "email_attachment_snapshots");
++
++            migrationBuilder.DropCheckConstraint("CK_email_ingestion_runs_candidate_attachment_snapshot_count_nonnegative", "email_ingestion_runs");
++            migrationBuilder.DropCheckConstraint("CK_email_ingestion_runs_deduplicated_attachment_count_nonnegative", "email_ingestion_runs");
++            migrationBuilder.DropCheckConstraint("CK_email_ingestion_runs_non_candidate_message_count_nonnegative", "email_ingestion_runs");
++            migrationBuilder.DropCheckConstraint("CK_email_message_snapshots_candidate_decision", "email_message_snapshots");
++
++            migrationBuilder.DropColumn(name: "candidate_attachment_snapshot_count", table: "email_ingestion_runs");
++            migrationBuilder.DropColumn(name: "deduplicated_attachment_count", table: "email_ingestion_runs");
++            migrationBuilder.DropColumn(name: "non_candidate_message_count", table: "email_ingestion_runs");
++            migrationBuilder.DropColumn(name: "candidate_decision", table: "email_message_snapshots");
++            migrationBuilder.DropColumn(name: "sender_domain", table: "email_message_snapshots");
++            migrationBuilder.DropColumn(name: "canonical_attachment_snapshot_id", table: "email_attachment_snapshots");
++            migrationBuilder.DropColumn(name: "is_duplicate_by_hash", table: "email_attachment_snapshots");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
+index 8c154c3..d8db7d0 100644
+--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
+@@ -105,6 +105,9 @@ public sealed class MailboxConnectionFlowTests
+         Assert.Equal(result.ScanToUtc, provider.LastQuery.ToUtc);
+         Assert.Single(provider.LastQuery.Folders);
+         Assert.Equal("INBOX", provider.LastQuery.Folders.Single().ProviderFolderId);
++        Assert.Equal(2, result.NonCandidateMessageCount);
++        Assert.Equal(1, result.CandidateAttachmentSnapshotCount);
++        Assert.Equal(0, result.DeduplicatedAttachmentCount);
+ 
+         await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
+         Assert.Single(await dbContext.EmailIngestionRuns.ToListAsync());
+@@ -164,11 +167,54 @@ public sealed class MailboxConnectionFlowTests
+ 
+         Assert.Equal(1, result.ScannedMessageCount);
+         Assert.Equal(0, result.DetectedCandidateCount);
++        Assert.Equal(1, result.NonCandidateMessageCount);
+         await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
+         Assert.Equal(0, await dbContext.EmailMessageSnapshots.CountAsync());
+         Assert.Equal(0, await dbContext.EmailAttachmentSnapshots.CountAsync());
+     }
+ 
++    [Fact]
++    public async Task Manual_scan_marks_duplicate_candidate_attachments_by_company_hash()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var provider = new FakeProvider(MailboxProvider.Gmail)
++        {
++            Messages =
++            [
++                new MailboxMessageSummary(
++                    "1",
++                    "Invoice one",
++                    null,
++                    null,
++                    ["invoice-1.pdf"],
++                    "billing@supplier.example",
++                    Attachments: [new MailboxAttachmentSummary("a1", "invoice-1.pdf", "application/pdf", 1000, ContentHash: "same-sha256", UntrustedExtractedText: "Invoice amount due")]),
++                new MailboxMessageSummary(
++                    "2",
++                    "Invoice two",
++                    null,
++                    null,
++                    ["invoice-2.pdf"],
++                    "billing@supplier.example",
++                    Attachments: [new MailboxAttachmentSummary("a2", "invoice-2.pdf", "application/pdf", 1000, ContentHash: "same-sha256", UntrustedExtractedText: "Invoice amount due")])
++            ]
++        };
++        var service = CreateService(connection, companyId, userId, provider);
++        await SeedConnectedMailboxAsync(connection, companyId, userId, MailboxProvider.Gmail);
++
++        var result = await service.TriggerManualScanAsync(new TriggerManualMailboxScanCommand(companyId, userId), CancellationToken.None);
++
++        Assert.Equal(2, result.ScannedMessageCount);
++        Assert.Equal(2, result.DetectedCandidateCount);
++        Assert.Equal(2, result.CandidateAttachmentSnapshotCount);
++        Assert.Equal(1, result.DeduplicatedAttachmentCount);
++
++        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
++        var attachments = await dbContext.EmailAttachmentSnapshots.OrderBy(x => x.CreatedUtc).ToListAsync();
++        Assert.Equal(2, attachments.Count);
++        Assert.Contains(attachments, x => !x.IsDuplicateByHash && x.CanonicalAttachmentSnapshotId is null);
++        Assert.Contains(attachments, x => x.IsDuplicateByHash && x.CanonicalAttachmentSnapshotId == attachments.First(a => !a.IsDuplicateByHash).Id);
++    }
++
+     [Fact]
+     public async Task Status_query_returns_current_users_connection_and_latest_audit_summary()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionPersistenceTests.cs
+index 6470051..caa2b38 100644
+--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionPersistenceTests.cs
+@@ -31,6 +31,9 @@ public sealed class MailboxConnectionPersistenceTests
+         Assert.Contains("completed_at", runColumns);
+         Assert.Contains("scanned_message_count", runColumns);
+         Assert.Contains("detected_candidate_count", runColumns);
++        Assert.Contains("non_candidate_message_count", runColumns);
++        Assert.Contains("candidate_attachment_snapshot_count", runColumns);
++        Assert.Contains("deduplicated_attachment_count", runColumns);
+         Assert.Contains("failure_details", runColumns);
+ 
+         var messageSnapshotColumns = await ReadColumnsAsync(connection, "email_message_snapshots");
+@@ -38,12 +41,16 @@ public sealed class MailboxConnectionPersistenceTests
+         Assert.Contains("source_type", messageSnapshotColumns);
+         Assert.Contains("untrusted_body_text", messageSnapshotColumns);
+         Assert.Contains("matched_rules_json", messageSnapshotColumns);
++        Assert.Contains("candidate_decision", messageSnapshotColumns);
++        Assert.Contains("sender_domain", messageSnapshotColumns);
+ 
+         var attachmentSnapshotColumns = await ReadColumnsAsync(connection, "email_attachment_snapshots");
+         Assert.Contains("external_attachment_id", attachmentSnapshotColumns);
+         Assert.Contains("content_hash", attachmentSnapshotColumns);
+         Assert.Contains("mime_type", attachmentSnapshotColumns);
+         Assert.Contains("untrusted_extracted_text", attachmentSnapshotColumns);
++        Assert.Contains("is_duplicate_by_hash", attachmentSnapshotColumns);
++        Assert.Contains("canonical_attachment_snapshot_id", attachmentSnapshotColumns);
+ 
+         var mailboxIndexes = await ReadIndexesAsync(connection, "mailbox_connections");
+         Assert.Contains("IX_mailbox_connections_company_id_user_id", mailboxIndexes);
+@@ -63,6 +70,7 @@ public sealed class MailboxConnectionPersistenceTests
+ 
+         var attachmentSnapshotIndexes = await ReadIndexesAsync(connection, "email_attachment_snapshots");
+         Assert.Contains("IX_email_attachment_snapshots_company_id_email_message_snapshot_id_external_attachment_id", attachmentSnapshotIndexes);
++        Assert.Contains("IX_email_attachment_snapshots_company_id_content_hash_is_duplicate_by_hash", attachmentSnapshotIndexes);
+     }
+ 
+     [Fact]
+@@ -158,7 +166,7 @@ public sealed class MailboxConnectionPersistenceTests
+                 MailboxProvider.Microsoft365,
+                 new DateTime(2026, 4, 26, 8, 0, 0, DateTimeKind.Utc),
+                 new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc),
+                 new DateTime(2026, 4, 26, 0, 0, 0, DateTimeKind.Utc));
+-            run.Fail(new DateTime(2026, 4, 26, 8, 1, 0, DateTimeKind.Utc), 12, 3, "Provider throttled.");
++            run.Complete(new DateTime(2026, 4, 26, 8, 1, 0, DateTimeKind.Utc), 12, 3, 9, 2, 1);
+             dbContext.EmailIngestionRuns.Add(run);
+ 
+             await dbContext.SaveChangesAsync();
+@@ -173,8 +181,11 @@ public sealed class MailboxConnectionPersistenceTests
+         Assert.Equal(MailboxProvider.Microsoft365, loaded.Provider);
+         Assert.Equal(12, loaded.ScannedMessageCount);
+         Assert.Equal(3, loaded.DetectedCandidateCount);
+-        Assert.Equal("Provider throttled.", loaded.FailureDetails);
++        Assert.Equal(9, loaded.NonCandidateMessageCount);
++        Assert.Equal(2, loaded.CandidateAttachmentSnapshotCount);
++        Assert.Equal(1, loaded.DeduplicatedAttachmentCount);
++        Assert.Null(loaded.FailureDetails);
+         Assert.Equal(0, await readContext.Payments.CountAsync());
+         Assert.Equal(0, await readContext.ApprovalRequests.CountAsync());
+     }
+@@ -200,9 +211,10 @@ public sealed class MailboxConnectionPersistenceTests
+                 null,
+                 BillSourceType.PdfAttachment,
++                EmailCandidateDecision.Candidate,
+                 [BillDetectionRuleMatch.SenderMatch, BillDetectionRuleMatch.AttachmentPresent],
+                 "Matched deterministic bill detection rules: sender, supported_attachment.");
+-            message.Attachments.Add(new EmailAttachmentSnapshot(Guid.NewGuid(), companyId, message.Id, "att-1", "invoice.pdf", "application/pdf", 1000, "hash", "provider-ref", BillSourceType.PdfAttachment, "Invoice text"));
++            message.Attachments.Add(new EmailAttachmentSnapshot(Guid.NewGuid(), companyId, message.Id, "att-1", "invoice.pdf", "application/pdf", 1000, "hash", "provider-ref", BillSourceType.PdfAttachment, "Invoice text", true, Guid.NewGuid()));
+             dbContext.EmailMessageSnapshots.Add(message);
+             await dbContext.SaveChangesAsync();
+         }
+@@ -212,7 +224,11 @@ public sealed class MailboxConnectionPersistenceTests
+         Assert.Equal("external-message-1", loaded.ExternalMessageId);
+         Assert.Equal(BillSourceType.PdfAttachment, loaded.SourceType);
++        Assert.Equal(EmailCandidateDecision.Candidate, loaded.CandidateDecision);
++        Assert.Equal("supplier.example", loaded.SenderDomain);
+         Assert.Null(loaded.UntrustedBodyText);
+-        Assert.Equal("Invoice text", loaded.Attachments.Single().UntrustedExtractedText);
++        var attachment = loaded.Attachments.Single();
++        Assert.Equal("Invoice text", attachment.UntrustedExtractedText);
++        Assert.True(attachment.IsDuplicateByHash);
++        Assert.NotNull(attachment.CanonicalAttachmentSnapshotId);
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs b/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs
+index db68867..0aa2e0d 100644
+--- a/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BillDetectionServiceTests.cs
+@@ -78,6 +78,19 @@ public sealed class BillDetectionServiceTests
+         Assert.Empty(result.DetectedSourceTypes);
+     }
+ 
++    [Fact]
++    public void Rejects_keyword_only_without_sender_folder_or_supported_attachment_signal()
++    {
++        var result = _service.Detect(new MailboxMessageSummary(
++            "msg-4b",
++            "Invoice",
++            null,
++            "Please mention invoice in the meeting notes.",
++            [],
++            "person@example.com"));
++
++        Assert.False(result.IsCandidate);
++    }
++
+     [Fact]
+     public void Rejects_image_only_pdf_as_supported_source()
+     {
+END_OF_PATCH

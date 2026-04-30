@@ -1,0 +1,303 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceBillInboxContracts.cs b/src/VirtualCompany.Application/Finance/FinanceBillInboxContracts.cs
+index 6f7b7a1..3b5dc1d 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceBillInboxContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceBillInboxContracts.cs
+@@ -82,7 +82,11 @@ public sealed record FinanceBillWarningDto(
+     bool IsResolved);
+ 
+ public sealed record FinanceBillProposalSummaryDto(
++    string Headline,
+     string Summary,
++    IReadOnlyList<string> RiskFlags,
++    string ApprovalAsk,
++    string RecommendedAction,
+     bool ExplicitlyRequestsApproval,
+     bool InitiatesPayment);
+ 
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceBillInboxReviewEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceBillInboxReviewEntities.cs
+index 5cbcf5a..bd0f0c8 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceBillInboxReviewEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceBillInboxReviewEntities.cs
+@@ -200,6 +200,11 @@ public sealed class BillApprovalProposal : ICompanyOwnedEntity
+ 
+     public BillApprovalProposal(Guid id, Guid companyId, Guid detectedBillId, Guid reviewStateId, string summary, Guid? approvedByUserId, DateTime approvedUtc)
+     {
++        if (SuggestsPaymentExecution(summary))
++        {
++            throw new InvalidOperationException("Bill approval proposals cannot request or imply payment execution.");
++        }
++
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
+         DetectedBillId = detectedBillId == Guid.Empty ? throw new ArgumentException("DetectedBillId is required.", nameof(detectedBillId)) : detectedBillId;
+@@ -221,4 +226,20 @@ public sealed class BillApprovalProposal : ICompanyOwnedEntity
+     public bool PaymentExecutionRequested { get; private set; }
+     public DetectedBill DetectedBill { get; private set; } = null!;
+     public FinanceBillReviewState ReviewState { get; private set; } = null!;
++
++    private static bool SuggestsPaymentExecution(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var normalized = value.Trim().ToLowerInvariant();
++        return normalized.Contains("payment was initiated", StringComparison.Ordinal) ||
++               normalized.Contains("payment has been initiated", StringComparison.Ordinal) ||
++               normalized.Contains("payment will be initiated", StringComparison.Ordinal) ||
++               normalized.Contains("payment will be sent", StringComparison.Ordinal) ||
++               normalized.Contains("automatically pay", StringComparison.Ordinal) ||
++               normalized.Contains("auto-pay", StringComparison.Ordinal) ||
++               normalized.Contains("exported for payment", StringComparison.Ordinal);
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBillInboxService.cs b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBillInboxService.cs
+index 319c5e0..2c2e4e7 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBillInboxService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/CompanyFinanceBillInboxService.cs
+@@ -49,8 +49,8 @@ public sealed class CompanyFinanceBillInboxService : IFinanceBillInboxService
+                 return new FinanceBillInboxRowDto(
+                     x.Bill.Id,
+                     x.Bill.SupplierName ?? "Unknown supplier",
+                     x.Bill.InvoiceNumber ?? x.Bill.SourceAttachmentId ?? x.Bill.Id.ToString("D"),
+                     x.Bill.TotalAmount,
+                     x.Bill.Currency,
+                     x.Bill.CreatedUtc,
+-                    FormatStatus(status),
++                    FormatBillStatus(status),
+                     FormatStatus(x.Bill.ConfidenceLevel),
+                     CountValidationWarnings(x.Bill),
+                     x.Bill.DuplicateCheck?.IsDuplicate == true ? 1 : 0);
+@@ -91,7 +91,7 @@ public sealed class CompanyFinanceBillInboxService : IFinanceBillInboxService
+         var validationWarnings = ParseValidationWarnings(bill);
+         var duplicateWarnings = BuildDuplicateWarnings(bill);
+         var hasUnresolvedValidationFailures = HasUnresolvedValidationFailures(bill, validationWarnings);
+         var status = ResolveInboxStatus(bill, state);
+-        var proposalSummary = BuildProposalSummary(bill, state?.ProposalSummary);
++        var proposalSummary = BuildProposalSummary(bill, validationWarnings, duplicateWarnings, state?.ProposalSummary);
+ 
+         return new FinanceBillInboxDetailDto(
+             bill.Id,
+@@ -104,7 +104,7 @@ public sealed class CompanyFinanceBillInboxService : IFinanceBillInboxService
+             bill.TotalAmount,
+             bill.VatAmount,
+             bill.Currency,
+-            FormatStatus(status),
++            FormatBillStatus(status),
+             bill.Confidence,
+             FormatStatus(bill.ConfidenceLevel),
+             bill.Fields.OrderBy(x => x.FieldName).Select(MapField).ToList(),
+@@ -131,7 +131,7 @@ public sealed class CompanyFinanceBillInboxService : IFinanceBillInboxService
+             command.CompanyId,
+             bill.Id,
+             state.Id,
+-            BuildProposalSummary(bill, state.ProposalSummary).Summary,
++            BuildProposalSummary(bill, validationWarnings, BuildDuplicateWarnings(bill), state.ProposalSummary).Summary,
+             command.ActorUserId,
+             occurredUtc));
+ 
+@@ -193,7 +193,7 @@ public sealed class CompanyFinanceBillInboxService : IFinanceBillInboxService
+             bill.CompanyId,
+             bill.Id,
+             ResolveInboxStatus(bill, null),
+-            BuildProposalSummary(bill, null).Summary,
++            BuildProposalSummary(bill, ParseValidationWarnings(bill), BuildDuplicateWarnings(bill), null).Summary,
+             _timeProvider.GetUtcNow().UtcDateTime);
+         _dbContext.FinanceBillReviewStates.Add(state);
+         return state;
+@@ -213,8 +213,8 @@ public sealed class CompanyFinanceBillInboxService : IFinanceBillInboxService
+                 action.Rationale,
+                 Metadata: new Dictionary<string, string?>
+                 {
+-                    ["priorStatus"] = FormatStatus(action.PriorStatus),
+-                    ["newStatus"] = FormatStatus(action.NewStatus),
++                    ["priorStatus"] = FormatBillStatus(action.PriorStatus),
++                    ["newStatus"] = FormatBillStatus(action.NewStatus),
+                     ["reviewActionId"] = action.Id.ToString("D")
+                 },
+                 OccurredUtc: action.OccurredUtc),
+@@ -252,21 +252,63 @@ public sealed class CompanyFinanceBillInboxService : IFinanceBillInboxService
+         return bill.Fields.Count > 0 ? FinanceBillInboxStatuses.Extracted : FinanceBillInboxStatuses.Detected;
+     }
+ 
+-    private static FinanceBillProposalSummaryDto BuildProposalSummary(DetectedBill bill, string? storedSummary)
++    private static FinanceBillProposalSummaryDto BuildProposalSummary(
++        DetectedBill bill,
++        IReadOnlyList<FinanceBillWarningDto> validationWarnings,
++        IReadOnlyList<FinanceBillWarningDto> duplicateWarnings,
++        string? storedSummary)
+     {
+         var reference = bill.InvoiceNumber ?? bill.SourceAttachmentId ?? bill.Id.ToString("D");
+         var amount = bill.TotalAmount.HasValue && !string.IsNullOrWhiteSpace(bill.Currency)
+             ? $"{bill.TotalAmount.Value:0.##} {bill.Currency}"
+             : "the extracted amount";
+         var due = bill.DueDateUtc.HasValue ? $" due {bill.DueDateUtc.Value:yyyy-MM-dd}" : string.Empty;
+-        var summary = string.IsNullOrWhiteSpace(storedSummary)
+-            ? $"Finance agent proposal: approve bill {reference} from {bill.SupplierName ?? "the supplier"} for {amount}{due}. Please approve or reject this proposal. Approval records the decision only and does not initiate payment."
+-            : storedSummary.Trim();
++        var supplier = bill.SupplierName ?? "the supplier";
++        var unresolvedWarnings = validationWarnings.Concat(duplicateWarnings)
++            .Where(x => !x.IsResolved)
++            .Select(x => $"{x.Severity}: {x.Message}")
++            .Take(5)
++            .ToList();
++        var riskFlags = unresolvedWarnings.Count == 0
++            ? ["No unresolved validation or duplicate warnings were found."]
++            : unresolvedWarnings;
++        var recommendedAction = unresolvedWarnings.Count == 0
++            ? "Approve the bill proposal if the extracted details match your source records."
++            : "Request clarification or reject the proposal until the unresolved warnings are addressed.";
++        var approvalAsk = "Please approve, reject, or request clarification for this bill proposal. Approval records the decision only and does not initiate payment or export.";
++        var generatedSummary = $"FinanceAgent proposal: bill {reference} from {supplier} is for {amount}{due}. " +
++            $"Confidence is {FormatStatus(bill.ConfidenceLevel)}. {string.Join(" ", riskFlags)} {recommendedAction} {approvalAsk}";
++        var summary = NormalizeProposalSummary(storedSummary, generatedSummary, approvalAsk);
+ 
+-        return new FinanceBillProposalSummaryDto(summary, true, false);
++        return new FinanceBillProposalSummaryDto(
++            $"Proposal for {reference}",
++            summary,
++            riskFlags,
++            approvalAsk,
++            recommendedAction,
++            true,
++            false);
+     }
+ 
++    private static string NormalizeProposalSummary(string? storedSummary, string generatedSummary, string approvalAsk)
++    {
++        if (string.IsNullOrWhiteSpace(storedSummary) || ContainsAutoPaymentLanguage(storedSummary))
++        {
++            return generatedSummary;
++        }
++
++        var summary = storedSummary.Trim();
++        return summary.Contains("approve", StringComparison.OrdinalIgnoreCase) &&
++               summary.Contains("does not initiate payment", StringComparison.OrdinalIgnoreCase)
++            ? summary
++            : $"{summary} {approvalAsk}";
++    }
++
++    private static bool ContainsAutoPaymentLanguage(string value)
++    {
++        var normalized = value.ToLowerInvariant();
++        return normalized.Contains("payment was initiated", StringComparison.Ordinal) ||
++               normalized.Contains("payment has been initiated", StringComparison.Ordinal) ||
++               normalized.Contains("payment will be initiated", StringComparison.Ordinal) ||
++               normalized.Contains("automatically pay", StringComparison.Ordinal) ||
++               normalized.Contains("exported for payment", StringComparison.Ordinal);
++    }
++
+     private static FinanceBillExtractedFieldDto MapField(DetectedBillField field) =>
+         new(
+             field.FieldName,
+@@ -294,8 +336,8 @@ public sealed class CompanyFinanceBillInboxService : IFinanceBillInboxService
+         new(
+             action.Id,
+             FormatStatus(action.Action),
+             action.ActorDisplayName,
+             action.ActorUserId,
+             action.OccurredUtc,
+-            FormatStatus(action.PriorStatus),
+-            FormatStatus(action.NewStatus),
++            FormatBillStatus(action.PriorStatus),
++            FormatBillStatus(action.NewStatus),
+             action.Rationale);
+@@ -358,8 +400,20 @@ public sealed class CompanyFinanceBillInboxService : IFinanceBillInboxService
+             ? "Unknown"
+             : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(x => char.ToUpperInvariant(x[0]) + x[1..]));
+ 
++    private static string FormatBillStatus(string value) =>
++        FinanceBillInboxStatuses.Normalize(value) switch
++        {
++            FinanceBillInboxStatuses.Detected => "Detected",
++            FinanceBillInboxStatuses.Extracted => "Extracted",
++            FinanceBillInboxStatuses.NeedsReview => "Needs review",
++            FinanceBillInboxStatuses.ProposedForApproval => "Proposed for approval",
++            FinanceBillInboxStatuses.Approved => "Approved",
++            FinanceBillInboxStatuses.Rejected => "Rejected",
++            FinanceBillInboxStatuses.SentToPaymentExported => "Sent to payment/exported",
++            _ => FormatStatus(value)
++        };
++
+     private static bool IsAllowedDisplayStatus(string value) =>
+-        new[] { "Detected", "Extracted", "Needs Review", "Proposed For Approval", "Approved", "Rejected", "Sent To Payment Exported" }
++        new[] { "Detected", "Extracted", "Needs review", "Proposed for approval", "Approved", "Rejected", "Sent to payment/exported" }
+             .Contains(value, StringComparer.OrdinalIgnoreCase);
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Finance/BillInboxDetailPage.razor b/src/VirtualCompany.Web/Pages/Finance/BillInboxDetailPage.razor
+index 5e50b0b..60ef78c 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/BillInboxDetailPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/BillInboxDetailPage.razor
+@@ -130,9 +130,24 @@
+                 <div class="col-lg-4">
+                     <div class="wizard-card wizard-card--compact mb-4">
+                         <h2 class="h5">Proposal</h2>
++                        <h3 class="h6">@Detail.ProposalSummary.Headline</h3>
+                         <p>@Detail.ProposalSummary.Summary</p>
+-                        <div class="small text-body-secondary">Payment execution: @(Detail.ProposalSummary.InitiatesPayment ? "requested" : "not requested")</div>
++                        <div class="mb-3">
++                            <div class="small fw-semibold">Risk flags</div>
++                            <ul class="small mb-0">
++                                @foreach (var riskFlag in Detail.ProposalSummary.RiskFlags)
++                                {
++                                    <li>@riskFlag</li>
++                                }
++                            </ul>
++                        </div>
++                        <div class="small"><strong>Recommended action:</strong> @Detail.ProposalSummary.RecommendedAction</div>
++                        <div class="small"><strong>Approval ask:</strong> @Detail.ProposalSummary.ApprovalAsk</div>
++                        <div class="small text-body-secondary mt-2">Payment/export execution: @(Detail.ProposalSummary.InitiatesPayment ? "requested" : "not requested")</div>
+                     </div>
+ 
+                     <div class="wizard-card wizard-card--compact mb-4">
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 69de39e..b3c7396 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -1214,7 +1214,11 @@ public sealed class FinanceBillWarningResponse
+ 
+ public sealed class FinanceBillProposalSummaryResponse
+ {
++    public string Headline { get; set; } = string.Empty;
+     public string Summary { get; set; } = string.Empty;
++    public List<string> RiskFlags { get; set; } = [];
++    public string ApprovalAsk { get; set; } = string.Empty;
++    public string RecommendedAction { get; set; } = string.Empty;
+     public bool ExplicitlyRequestsApproval { get; set; }
+     public bool InitiatesPayment { get; set; }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceBillInboxReviewStateTests.cs b/tests/VirtualCompany.Api.Tests/FinanceBillInboxReviewStateTests.cs
+index 2bce90b..f81efbb 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceBillInboxReviewStateTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceBillInboxReviewStateTests.cs
+@@ -115,6 +115,27 @@ public sealed class FinanceBillInboxReviewStateTests
+         Assert.Empty(state.Actions);
+     }
+ 
++    [Fact]
++    public void BillApprovalProposal_never_requests_payment_execution()
++    {
++        var proposal = new BillApprovalProposal(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "Please approve this bill proposal. Approval records the decision only and does not initiate payment.",
++            Guid.NewGuid(),
++            DateTime.UtcNow);
++
++        Assert.False(proposal.PaymentExecutionRequested);
++    }
++
++    [Fact]
++    public void BillApprovalProposal_rejects_auto_payment_language()
++    {
++        Assert.Throws<InvalidOperationException>(() => new BillApprovalProposal(
++            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "Payment has been initiated for this bill.", Guid.NewGuid(), DateTime.UtcNow));
++    }
++
+     private static FinanceBillReviewState CreateState(Guid companyId, Guid billId, string status) =>
+         new(Guid.NewGuid(), companyId, billId, status, "Approval records the decision only and does not initiate payment.", DateTime.UtcNow);
+ }
+END_OF_PATCH

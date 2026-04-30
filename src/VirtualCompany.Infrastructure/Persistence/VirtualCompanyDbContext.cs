@@ -111,6 +111,17 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<FinancialStatementMapping> FinancialStatementMappings => Set<FinancialStatementMapping>();
     public DbSet<CompanySimulationState> CompanySimulationStates => Set<CompanySimulationState>();
     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
+    public DbSet<MailboxConnection> MailboxConnections => Set<MailboxConnection>();
+    public DbSet<EmailIngestionRun> EmailIngestionRuns => Set<EmailIngestionRun>();
+    public DbSet<EmailMessageSnapshot> EmailMessageSnapshots => Set<EmailMessageSnapshot>();
+    public DbSet<EmailAttachmentSnapshot> EmailAttachmentSnapshots => Set<EmailAttachmentSnapshot>();
+    public DbSet<BillDuplicateCheck> BillDuplicateChecks => Set<BillDuplicateCheck>();
+    public DbSet<NormalizedBillExtraction> NormalizedBillExtractions => Set<NormalizedBillExtraction>();
+    public DbSet<DetectedBill> DetectedBills => Set<DetectedBill>();
+    public DbSet<DetectedBillField> DetectedBillFields => Set<DetectedBillField>();
+    public DbSet<FinanceBillReviewState> FinanceBillReviewStates => Set<FinanceBillReviewState>();
+    public DbSet<FinanceBillReviewAction> FinanceBillReviewActions => Set<FinanceBillReviewAction>();
+    public DbSet<BillApprovalProposal> BillApprovalProposals => Set<BillApprovalProposal>();
     public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
     public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
     public DbSet<SimulationCashDeltaRecord> SimulationCashDeltaRecords => Set<SimulationCashDeltaRecord>();
@@ -238,6 +249,17 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is TrialBalanceSnapshot ||
                 entry.Entity is FinancialStatementSnapshot ||
                 entry.Entity is FinancialStatementSnapshotLine ||
+                entry.Entity is MailboxConnection ||
+                entry.Entity is EmailIngestionRun ||
+                entry.Entity is EmailMessageSnapshot ||
+                entry.Entity is BillDuplicateCheck ||
+                entry.Entity is NormalizedBillExtraction ||
+                entry.Entity is DetectedBill ||
+                entry.Entity is DetectedBillField ||
+                entry.Entity is FinanceBillReviewState ||
+                entry.Entity is FinanceBillReviewAction ||
+                entry.Entity is BillApprovalProposal ||
+                entry.Entity is EmailAttachmentSnapshot ||
                 entry.Entity is SimulationCashDeltaRecord ||
                 entry.Entity is SimulationEventRecord)
             .Select(entry =>
@@ -482,9 +504,39 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinancialStatementSnapshotLine>()
             .HasQueryFilter(line =>
                 CurrentCompanyId.HasValue && line.CompanyId == CurrentCompanyId.Value);
-        modelBuilder.Entity<CompanySimulationState>()
+        modelBuilder.Entity<MailboxConnection>()
+            .HasQueryFilter(connection =>
+                CurrentCompanyId.HasValue && connection.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<EmailIngestionRun>()
+            .HasQueryFilter(run =>
+                CurrentCompanyId.HasValue && run.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<EmailMessageSnapshot>()
+            .HasQueryFilter(snapshot =>
+                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<EmailAttachmentSnapshot>()
+            .HasQueryFilter(snapshot =>
+                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<BillDuplicateCheck>()
+            .HasQueryFilter(check =>
+                CurrentCompanyId.HasValue && check.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<NormalizedBillExtraction>()
+            .HasQueryFilter(extraction =>
+                CurrentCompanyId.HasValue && extraction.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<DetectedBill>()
+            .HasQueryFilter(bill =>
+                CurrentCompanyId.HasValue && bill.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<DetectedBillField>()
+            .HasQueryFilter(field =>
+                CurrentCompanyId.HasValue && field.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceBillReviewState>()
             .HasQueryFilter(state =>
                 CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceBillReviewAction>()
+            .HasQueryFilter(action =>
+                CurrentCompanyId.HasValue && action.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<BillApprovalProposal>()
+            .HasQueryFilter(proposal =>
+                CurrentCompanyId.HasValue && proposal.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<CompanySimulationRunHistory>()
             .HasQueryFilter(history =>
                 CurrentCompanyId.HasValue && history.CompanyId == CurrentCompanyId.Value);

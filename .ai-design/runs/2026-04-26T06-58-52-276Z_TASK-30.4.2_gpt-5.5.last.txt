@@ -1,0 +1,286 @@
+diff --git a/src/VirtualCompany.Api/Controllers/FinanceBillInboxController.cs b/src/VirtualCompany.Api/Controllers/FinanceBillInboxController.cs
+index 1f9a8b2..6c4b7f1 100644
+--- a/src/VirtualCompany.Api/Controllers/FinanceBillInboxController.cs
++++ b/src/VirtualCompany.Api/Controllers/FinanceBillInboxController.cs
+@@ -45,42 +45,49 @@ public sealed class FinanceBillInboxController : ControllerBase
+         [FromBody] FinanceBillReviewActionRequest request,
+         CancellationToken cancellationToken)
+     {
+-        try
+-        {
+-            return Ok(await _service.ApproveAsync(
++        return await ExecuteReviewActionAsync(
++            request,
++            () => _service.ApproveAsync(
+                 new ApproveFinanceBillCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName(), request.Rationale),
+-                cancellationToken));
+-        }
+-        catch (InvalidOperationException ex)
+-        {
+-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
+-            {
+-                [nameof(request.Rationale)] = [ex.Message]
+-            })
+-            {
+-                Title = "Finance bill approval blocked",
+-                Detail = ex.Message,
+-                Status = StatusCodes.Status400BadRequest,
+-                Instance = HttpContext.Request.Path
+-            });
+-        }
++                cancellationToken),
++            "Finance bill approval blocked");
+     }
+ 
+     [HttpPost("{billId:guid}/reject")]
+     [Authorize(Policy = CompanyPolicies.FinanceManage)]
+-    public async Task<ActionResult<FinanceBillReviewActionResultDto>> RejectAsync(
++    public Task<ActionResult<FinanceBillReviewActionResultDto>> RejectAsync(
+         Guid companyId,
+         Guid billId,
+         [FromBody] FinanceBillReviewActionRequest request,
+         CancellationToken cancellationToken) =>
+-        Ok(await _service.RejectAsync(
+-            new RejectFinanceBillCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName(), request.Rationale),
+-            cancellationToken));
++        ExecuteReviewActionAsync(
++            request,
++            () => _service.RejectAsync(
++                new RejectFinanceBillCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName(), request.Rationale),
++                cancellationToken),
++            "Finance bill rejection blocked");
+ 
+     [HttpPost("{billId:guid}/request-clarification")]
+     [Authorize(Policy = CompanyPolicies.FinanceManage)]
+-    public async Task<ActionResult<FinanceBillReviewActionResultDto>> RequestClarificationAsync(
++    public Task<ActionResult<FinanceBillReviewActionResultDto>> RequestClarificationAsync(
+         Guid companyId,
+         Guid billId,
+         [FromBody] FinanceBillReviewActionRequest request,
+-        CancellationToken cancellationToken) =>
+-        Ok(await _service.RequestClarificationAsync(
+-            new RequestFinanceBillClarificationCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName(), request.Rationale),
+-            cancellationToken));
++        CancellationToken cancellationToken) =>
++        ExecuteReviewActionAsync(
++            request,
++            () => _service.RequestClarificationAsync(
++                new RequestFinanceBillClarificationCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName(), request.Rationale),
++                cancellationToken),
++            "Finance bill clarification request blocked");
++
++    private async Task<ActionResult<FinanceBillReviewActionResultDto>> ExecuteReviewActionAsync(
++        FinanceBillReviewActionRequest request,
++        Func<Task<FinanceBillReviewActionResultDto>> action,
++        string title)
++    {
++        try
++        {
++            return Ok(await action());
++        }
++        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
++            {
++                [nameof(request.Rationale)] = [ex.Message]
++            })
++            {
++                Title = title,
++                Detail = ex.Message,
++                Status = StatusCodes.Status400BadRequest,
++                Instance = HttpContext.Request.Path
++            });
++        }
++    }
+ 
+     private Guid? ResolveActorId()
+     {
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceBillInboxReviewEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceBillInboxReviewEntities.cs
+index 6a4c03d..913f4da 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceBillInboxReviewEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceBillInboxReviewEntities.cs
+@@ -38,6 +38,11 @@ public static class FinanceBillInboxStatuses
+ 
+ public sealed class FinanceBillReviewState : ICompanyOwnedEntity
+ {
++    private static readonly IReadOnlySet<string> ActiveReviewStatuses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
++    {
++        FinanceBillInboxStatuses.Detected, FinanceBillInboxStatuses.Extracted, FinanceBillInboxStatuses.NeedsReview, FinanceBillInboxStatuses.ProposedForApproval
++    };
++
+     private readonly List<FinanceBillReviewAction> _actions = [];
+ 
+     private FinanceBillReviewState()
+@@ -88,17 +93,22 @@ public sealed class FinanceBillReviewState : ICompanyOwnedEntity
+             throw new InvalidOperationException("Finance bill approval is blocked while validation failures are unresolved.");
+         }
+ 
++        EnsureActiveReviewStatus("approve");
+         return Transition("approve", FinanceBillInboxStatuses.Approved, actorUserId, actorDisplayName, rationale, occurredUtc);
+     }
+ 
+-    public FinanceBillReviewAction Reject(Guid? actorUserId, string actorDisplayName, string rationale, DateTime occurredUtc) =>
+-        Transition("reject", FinanceBillInboxStatuses.Rejected, actorUserId, actorDisplayName, rationale, occurredUtc);
++    public FinanceBillReviewAction Reject(Guid? actorUserId, string actorDisplayName, string rationale, DateTime occurredUtc)
++    {
++        EnsureActiveReviewStatus("reject");
++        return Transition("reject", FinanceBillInboxStatuses.Rejected, actorUserId, actorDisplayName, rationale, occurredUtc);
++    }
+ 
+-    public FinanceBillReviewAction RequestClarification(Guid? actorUserId, string actorDisplayName, string rationale, DateTime occurredUtc) =>
+-        Transition("request_clarification", FinanceBillInboxStatuses.NeedsReview, actorUserId, actorDisplayName, rationale, occurredUtc);
++    public FinanceBillReviewAction RequestClarification(Guid? actorUserId, string actorDisplayName, string rationale, DateTime occurredUtc)
++    {
++        EnsureActiveReviewStatus("request clarification for");
++        return Transition("clarification_requested", FinanceBillInboxStatuses.NeedsReview, actorUserId, actorDisplayName, rationale, occurredUtc);
++    }
+ 
+     private FinanceBillReviewAction Transition(string action, string newStatus, Guid? actorUserId, string actorDisplayName, string rationale, DateTime occurredUtc)
+     {
+-        var priorStatus = Status;
++        var priorStatus = FinanceBillInboxStatuses.Normalize(Status);
+         Status = FinanceBillInboxStatuses.Normalize(newStatus);
+         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(occurredUtc, nameof(occurredUtc));
+         var history = new FinanceBillReviewAction(Guid.NewGuid(), CompanyId, Id, DetectedBillId, action, actorUserId, actorDisplayName, priorStatus, Status, rationale, UpdatedUtc);
+@@ -106,6 +116,14 @@ public sealed class FinanceBillReviewState : ICompanyOwnedEntity
+         return history;
+     }
+ 
++    private void EnsureActiveReviewStatus(string action)
++    {
++        if (!ActiveReviewStatuses.Contains(Status))
++        {
++            throw new InvalidOperationException($"Cannot {action} a finance bill from status '{Status}'.");
++        }
++    }
++
+     private static string NormalizeProposalSummary(string value) =>
+         string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceBillInboxReviewStateTests.cs b/tests/VirtualCompany.Api.Tests/FinanceBillInboxReviewStateTests.cs
+new file mode 100644
+index 0000000..eb37ca2
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceBillInboxReviewStateTests.cs
+@@ -0,0 +1,113 @@
++using VirtualCompany.Domain.Entities;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceBillInboxReviewStateTests
++{
++    [Fact]
++    public void Approve_records_auditable_transition_metadata()
++    {
++        var companyId = Guid.NewGuid();
++        var billId = Guid.NewGuid();
++        var actorId = Guid.NewGuid();
++        var occurredUtc = new DateTime(2026, 4, 26, 12, 0, 0, DateTimeKind.Utc);
++        var state = CreateState(companyId, billId, FinanceBillInboxStatuses.ProposedForApproval);
++
++        var action = state.Approve(actorId, "Finance Approver", "Matches purchase order.", occurredUtc, hasUnresolvedValidationFailures: false);
++
++        Assert.Equal(FinanceBillInboxStatuses.Approved, state.Status);
++        Assert.Equal("approve", action.Action);
++        Assert.Equal(companyId, action.CompanyId);
++        Assert.Equal(billId, action.DetectedBillId);
++        Assert.Equal(actorId, action.ActorUserId);
++        Assert.Equal("Finance Approver", action.ActorDisplayName);
++        Assert.Equal(occurredUtc, action.OccurredUtc);
++        Assert.Equal(FinanceBillInboxStatuses.ProposedForApproval, action.PriorStatus);
++        Assert.Equal(FinanceBillInboxStatuses.Approved, action.NewStatus);
++        Assert.Equal("Matches purchase order.", action.Rationale);
++        Assert.Same(action, Assert.Single(state.Actions));
++    }
++
++    [Fact]
++    public void Approve_blocks_unresolved_validation_failures()
++    {
++        var state = CreateState(Guid.NewGuid(), Guid.NewGuid(), FinanceBillInboxStatuses.ProposedForApproval);
++
++        var ex = Assert.Throws<InvalidOperationException>(() =>
++            state.Approve(Guid.NewGuid(), "Finance Approver", "Looks fine.", DateTime.UtcNow, hasUnresolvedValidationFailures: true));
++
++        Assert.Equal("Finance bill approval is blocked while validation failures are unresolved.", ex.Message);
++        Assert.Equal(FinanceBillInboxStatuses.ProposedForApproval, state.Status);
++        Assert.Empty(state.Actions);
++    }
++
++    [Theory]
++    [InlineData(FinanceBillInboxStatuses.Detected)]
++    [InlineData(FinanceBillInboxStatuses.Extracted)]
++    [InlineData(FinanceBillInboxStatuses.NeedsReview)]
++    [InlineData(FinanceBillInboxStatuses.ProposedForApproval)]
++    public void Approve_allows_active_inbox_statuses(string status)
++    {
++        var state = CreateState(Guid.NewGuid(), Guid.NewGuid(), status);
++
++        var action = state.Approve(Guid.NewGuid(), "Finance Approver", "Approved after review.", DateTime.UtcNow, hasUnresolvedValidationFailures: false);
++
++        Assert.Equal(status, action.PriorStatus);
++        Assert.Equal(FinanceBillInboxStatuses.Approved, action.NewStatus);
++    }
++
++    [Theory]
++    [InlineData(FinanceBillInboxStatuses.Approved)]
++    [InlineData(FinanceBillInboxStatuses.Rejected)]
++    [InlineData(FinanceBillInboxStatuses.SentToPaymentExported)]
++    public void Approve_rejects_terminal_statuses(string status)
++    {
++        var state = CreateState(Guid.NewGuid(), Guid.NewGuid(), status);
++
++        Assert.Throws<InvalidOperationException>(() =>
++            state.Approve(Guid.NewGuid(), "Finance Approver", "Trying again.", DateTime.UtcNow, hasUnresolvedValidationFailures: false));
++
++        Assert.Equal(status, state.Status);
++        Assert.Empty(state.Actions);
++    }
++
++    [Fact]
++    public void Reject_records_history_and_terminal_status()
++    {
++        var occurredUtc = new DateTime(2026, 4, 26, 13, 0, 0, DateTimeKind.Utc);
++        var state = CreateState(Guid.NewGuid(), Guid.NewGuid(), FinanceBillInboxStatuses.NeedsReview);
++
++        var action = state.Reject(Guid.NewGuid(), "Finance Reviewer", "Supplier confirmed it is void.", occurredUtc);
++
++        Assert.Equal("reject", action.Action);
++        Assert.Equal(FinanceBillInboxStatuses.NeedsReview, action.PriorStatus);
++        Assert.Equal(FinanceBillInboxStatuses.Rejected, action.NewStatus);
++        Assert.Equal(FinanceBillInboxStatuses.Rejected, state.Status);
++        Assert.Equal(occurredUtc, action.OccurredUtc);
++    }
++
++    [Fact]
++    public void RequestClarification_records_history_without_leaving_inbox_lifecycle()
++    {
++        var state = CreateState(Guid.NewGuid(), Guid.NewGuid(), FinanceBillInboxStatuses.ProposedForApproval);
++
++        var action = state.RequestClarification(Guid.NewGuid(), "Finance Reviewer", "Need corrected VAT evidence.", DateTime.UtcNow);
++
++        Assert.Equal("clarification_requested", action.Action);
++        Assert.Equal(FinanceBillInboxStatuses.ProposedForApproval, action.PriorStatus);
++        Assert.Equal(FinanceBillInboxStatuses.NeedsReview, action.NewStatus);
++        Assert.Equal(FinanceBillInboxStatuses.NeedsReview, state.Status);
++    }
++
++    [Theory]
++    [InlineData(FinanceBillInboxStatuses.Approved)]
++    [InlineData(FinanceBillInboxStatuses.Rejected)]
++    [InlineData(FinanceBillInboxStatuses.SentToPaymentExported)]
++    public void RequestClarification_rejects_terminal_statuses(string status)
++    {
++        var state = CreateState(Guid.NewGuid(), Guid.NewGuid(), status);
++
++        Assert.Throws<InvalidOperationException>(() =>
++            state.RequestClarification(Guid.NewGuid(), "Finance Reviewer", "Need more detail.", DateTime.UtcNow));
++
++        Assert.Equal(status, state.Status);
++        Assert.Empty(state.Actions);
++    }
++
++    private static FinanceBillReviewState CreateState(Guid companyId, Guid billId, string status) =>
++        new(Guid.NewGuid(), companyId, billId, status, "Approval records the decision only and does not initiate payment.", DateTime.UtcNow);
++}
+END_OF_PATCH

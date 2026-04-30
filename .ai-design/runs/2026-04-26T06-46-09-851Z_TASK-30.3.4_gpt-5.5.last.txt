@@ -1,0 +1,855 @@
+diff --git a/src/VirtualCompany.Domain/Entities/BillDuplicateCheck.cs b/src/VirtualCompany.Domain/Entities/BillDuplicateCheck.cs
+index 6a5f1f2..2c2e7bb 100644
+--- a/src/VirtualCompany.Domain/Entities/BillDuplicateCheck.cs
++++ b/src/VirtualCompany.Domain/Entities/BillDuplicateCheck.cs
+@@ -24,7 +24,8 @@ public sealed class BillDuplicateCheck : ICompanyOwnedEntity
+         string criteriaSummary,
+         string? sourceEmailId = null,
+         string? sourceAttachmentId = null,
+-        DateTime? checkedUtc = null)
++        DateTime? checkedUtc = null,
++        string? resultStatus = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -41,6 +42,7 @@ public sealed class BillDuplicateCheck : ICompanyOwnedEntity
+         TotalAmount = totalAmount;
+         Currency = NormalizeOptional(currency, nameof(currency), 3)?.ToUpperInvariant();
+         IsDuplicate = isDuplicate;
++        ResultStatus = NormalizeResultStatus(resultStatus ?? (isDuplicate ? "duplicate" : "not_duplicate"));
+         MatchedBillIdsJson = JsonSerializer.Serialize((matchedBillIds ?? []).Where(x => x != Guid.Empty).Distinct().ToArray());
+         CriteriaSummary = NormalizeRequired(criteriaSummary, nameof(criteriaSummary), 1000);
+         SourceEmailId = NormalizeOptional(sourceEmailId, nameof(sourceEmailId), 512);
+@@ -58,6 +60,7 @@ public sealed class BillDuplicateCheck : ICompanyOwnedEntity
+     public decimal? TotalAmount { get; private set; }
+     public string? Currency { get; private set; }
+     public bool IsDuplicate { get; private set; }
++    public string ResultStatus { get; private set; } = "not_duplicate";
+     public string MatchedBillIdsJson { get; private set; } = "[]";
+     public string CriteriaSummary { get; private set; } = null!;
+     public string? SourceEmailId { get; private set; }
+@@ -76,6 +79,14 @@ public sealed class BillDuplicateCheck : ICompanyOwnedEntity
+         }
+     }
+ 
++    private static string NormalizeResultStatus(string value)
++    {
++        var normalized = NormalizeRequired(value, nameof(value), 32).ToLowerInvariant();
++        return normalized is "pending" or "not_duplicate" or "duplicate" or "inconclusive"
++            ? normalized
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported bill duplicate check status.");
++    }
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Domain/Entities/DetectedBill.cs b/src/VirtualCompany.Domain/Entities/DetectedBill.cs
+new file mode 100644
+index 0000000..1bb255c
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/DetectedBill.cs
+@@ -0,0 +1,169 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class DetectedBill : ICompanyOwnedEntity
++{
++    private readonly List<DetectedBillField> _fields = [];
++
++    private DetectedBill()
++    {
++    }
++
++    public DetectedBill(
++        Guid id,
++        Guid companyId,
++        string? supplierName,
++        string? supplierOrgNumber,
++        string? invoiceNumber,
++        DateTime? invoiceDateUtc,
++        DateTime? dueDateUtc,
++        string? currency,
++        decimal? totalAmount,
++        decimal? vatAmount,
++        string? paymentReference,
++        string? bankgiro,
++        string? plusgiro,
++        string? iban,
++        string? bic,
++        decimal? confidence,
++        string confidenceLevel,
++        string validationStatus,
++        string reviewStatus,
++        bool requiresReview,
++        bool isEligibleForApprovalProposal,
++        bool validationStatusPersisted,
++        string validationIssuesJson,
++        string? sourceEmailId,
++        string? sourceAttachmentId,
++        Guid? duplicateCheckId = null,
++        DateTime? validationStatusPersistedAtUtc = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        SupplierName = NormalizeOptional(supplierName, nameof(supplierName), 200);
++        SupplierOrgNumber = NormalizeOptional(supplierOrgNumber, nameof(supplierOrgNumber), 64);
++        InvoiceNumber = NormalizeOptional(invoiceNumber, nameof(invoiceNumber), 64);
++        InvoiceDateUtc = NormalizeOptionalUtc(invoiceDateUtc, nameof(invoiceDateUtc));
++        DueDateUtc = NormalizeOptionalUtc(dueDateUtc, nameof(dueDateUtc));
++        Currency = NormalizeOptional(currency, nameof(currency), 3)?.ToUpperInvariant();
++        TotalAmount = totalAmount;
++        VatAmount = vatAmount;
++        PaymentReference = NormalizeOptional(paymentReference, nameof(paymentReference), 128);
++        Bankgiro = NormalizeOptional(bankgiro, nameof(bankgiro), 32);
++        Plusgiro = NormalizeOptional(plusgiro, nameof(plusgiro), 32);
++        Iban = NormalizeOptional(iban, nameof(iban), 34)?.ToUpperInvariant();
++        Bic = NormalizeOptional(bic, nameof(bic), 11)?.ToUpperInvariant();
++        Confidence = NormalizeScore(confidence, nameof(confidence));
++        ConfidenceLevel = NormalizeConfidenceLevel(confidenceLevel);
++        ValidationStatus = NormalizeValidationStatus(validationStatus);
++        ReviewStatus = NormalizeReviewStatus(reviewStatus);
++        RequiresReview = requiresReview;
++        ValidationStatusPersisted = validationStatusPersisted;
++        ValidationStatusPersistedAtUtc = validationStatusPersistedAtUtc.HasValue
++            ? EntityTimestampNormalizer.NormalizeUtc(validationStatusPersistedAtUtc.Value, nameof(validationStatusPersistedAtUtc))
++            : null;
++        IsEligibleForApprovalProposal = validationStatusPersisted && ValidationStatusPersistedAtUtc.HasValue && isEligibleForApprovalProposal;
++        ValidationIssuesJson = NormalizeJsonArray(validationIssuesJson, nameof(validationIssuesJson));
++        SourceEmailId = NormalizeOptional(sourceEmailId, nameof(sourceEmailId), 512);
++        SourceAttachmentId = NormalizeOptional(sourceAttachmentId, nameof(sourceAttachmentId), 512);
++        DuplicateCheckId = duplicateCheckId == Guid.Empty ? null : duplicateCheckId;
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string? SupplierName { get; private set; }
++    public string? SupplierOrgNumber { get; private set; }
++    public string? InvoiceNumber { get; private set; }
++    public DateTime? InvoiceDateUtc { get; private set; }
++    public DateTime? DueDateUtc { get; private set; }
++    public string? Currency { get; private set; }
++    public decimal? TotalAmount { get; private set; }
++    public decimal? VatAmount { get; private set; }
++    public string? PaymentReference { get; private set; }
++    public string? Bankgiro { get; private set; }
++    public string? Plusgiro { get; private set; }
++    public string? Iban { get; private set; }
++    public string? Bic { get; private set; }
++    public decimal? Confidence { get; private set; }
++    public string ConfidenceLevel { get; private set; } = "low";
++    public string ValidationStatus { get; private set; } = "pending";
++    public string ReviewStatus { get; private set; } = "required";
++    public bool RequiresReview { get; private set; }
++    public bool IsEligibleForApprovalProposal { get; private set; }
++    public bool ValidationStatusPersisted { get; private set; }
++    public DateTime? ValidationStatusPersistedAtUtc { get; private set; }
++    public string ValidationIssuesJson { get; private set; } = "[]";
++    public string? SourceEmailId { get; private set; }
++    public string? SourceAttachmentId { get; private set; }
++    public Guid? DuplicateCheckId { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public BillDuplicateCheck? DuplicateCheck { get; private set; }
++    public IReadOnlyCollection<DetectedBillField> Fields => _fields;
++
++    public void AddField(DetectedBillField field)
++    {
++        ArgumentNullException.ThrowIfNull(field);
++
++        if (field.CompanyId != CompanyId)
++        {
++            throw new InvalidOperationException("Detected bill fields must belong to the same company as the bill.");
++        }
++
++        if (field.DetectedBillId != Id)
++        {
++            throw new InvalidOperationException("Detected bill field is linked to a different bill.");
++        }
++
++        if (_fields.Any(existing => string.Equals(existing.FieldName, field.FieldName, StringComparison.OrdinalIgnoreCase)))
++        {
++            throw new InvalidOperationException($"A detected bill field already exists for '{field.FieldName}'.");
++        }
++
++        _fields.Add(field);
++    }
++
++    private static DateTime? NormalizeOptionalUtc(DateTime? value, string name) =>
++        value.HasValue ? EntityTimestampNormalizer.NormalizeUtc(value.Value, name) : null;
++
++    private static decimal? NormalizeScore(decimal? value, string name)
++    {
++        if (value is < 0m or > 1m)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be between 0 and 1.");
++        }
++
++        return value;
++    }
++
++    private static string NormalizeConfidenceLevel(string value)
++    {
++        var normalized = NormalizeRequired(value, nameof(value), 16).ToLowerInvariant();
++        return normalized is "high" or "medium" or "low"
++            ? normalized
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported detected bill confidence level.");
++    }
++
++    private static string NormalizeValidationStatus(string value)
++    {
++        var normalized = NormalizeRequired(value, nameof(value), 32).ToLowerInvariant();
++        return normalized is "pending" or "valid" or "flagged" or "rejected"
++            ? normalized
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported detected bill validation status.");
++    }
++
++    private static string NormalizeReviewStatus(string value)
++    {
++        var normalized = NormalizeRequired(value, nameof(value), 32).ToLowerInvariant();
++        return normalized is "not_required" or "required" or "completed"
++            ? normalized
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported detected bill review status.");
++    }
++
++    private static string NormalizeJsonArray(string value, string name) =>
++        string.IsNullOrWhiteSpace(value) ? "[]" : value.Trim();
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/DetectedBillField.cs b/src/VirtualCompany.Domain/Entities/DetectedBillField.cs
+new file mode 100644
+index 0000000..5ed7569
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/DetectedBillField.cs
+@@ -0,0 +1,108 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class DetectedBillField : ICompanyOwnedEntity
++{
++    private DetectedBillField()
++    {
++    }
++
++    public DetectedBillField(
++        Guid id,
++        Guid companyId,
++        Guid detectedBillId,
++        string fieldName,
++        string? rawValue,
++        string? normalizedValue,
++        string sourceDocument,
++        string? sourceDocumentType,
++        string? pageReference,
++        string? sectionReference,
++        string? textSpan,
++        string? locator,
++        string extractionMethod,
++        decimal? fieldConfidence,
++        string? snippet = null,
++        DateTime? createdUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (detectedBillId == Guid.Empty)
++        {
++            throw new ArgumentException("DetectedBillId is required.", nameof(detectedBillId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        DetectedBillId = detectedBillId;
++        FieldName = NormalizeFieldName(fieldName);
++        RawValue = NormalizeOptional(rawValue, nameof(rawValue), 2000);
++        NormalizedValue = NormalizeOptional(normalizedValue, nameof(normalizedValue), 2000);
++        SourceDocument = NormalizeRequired(sourceDocument, nameof(sourceDocument), 512);
++        SourceDocumentType = NormalizeOptional(sourceDocumentType, nameof(sourceDocumentType), 64);
++        PageReference = NormalizeOptional(pageReference, nameof(pageReference), 128);
++        SectionReference = NormalizeOptional(sectionReference, nameof(sectionReference), 128);
++        TextSpan = NormalizeOptional(textSpan, nameof(textSpan), 128);
++        Locator = NormalizeOptional(locator, nameof(locator), 512);
++        ExtractionMethod = NormalizeRequired(extractionMethod, nameof(extractionMethod), 64);
++        FieldConfidence = NormalizeScore(fieldConfidence, nameof(fieldConfidence));
++        Snippet = NormalizeOptional(snippet, nameof(snippet), 2000);
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid DetectedBillId { get; private set; }
++    public string FieldName { get; private set; } = null!;
++    public string? RawValue { get; private set; }
++    public string? NormalizedValue { get; private set; }
++    public string SourceDocument { get; private set; } = null!;
++    public string? SourceDocumentType { get; private set; }
++    public string? PageReference { get; private set; }
++    public string? SectionReference { get; private set; }
++    public string? TextSpan { get; private set; }
++    public string? Locator { get; private set; }
++    public string ExtractionMethod { get; private set; } = null!;
++    public decimal? FieldConfidence { get; private set; }
++    public string? Snippet { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public DetectedBill DetectedBill { get; private set; } = null!;
++
++    private static string NormalizeFieldName(string value)
++    {
++        var normalized = NormalizeRequired(value, nameof(value), 64);
++        return normalized.Length == 0 ? throw new ArgumentException("FieldName is required.", nameof(value)) : normalized;
++    }
++
++    private static decimal? NormalizeScore(decimal? value, string name)
++    {
++        if (value is < 0m or > 1m)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be between 0 and 1.");
++        }
++
++        return value;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/BillDuplicateCheckEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/BillDuplicateCheckEntityConfiguration.cs
+index 1b7c3b7..39d8409 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/BillDuplicateCheckEntityConfiguration.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/BillDuplicateCheckEntityConfiguration.cs
+@@ -22,6 +22,7 @@ internal sealed class BillDuplicateCheckEntityConfiguration : IEntityTypeConfigur
+         builder.Property(x => x.TotalAmount).HasColumnName("total_amount").HasColumnType("decimal(18,2)");
+         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3);
+         builder.Property(x => x.IsDuplicate).HasColumnName("is_duplicate").IsRequired();
++        builder.Property(x => x.ResultStatus).HasColumnName("result_status").HasMaxLength(32).IsRequired();
+         builder.Property(x => x.MatchedBillIdsJson).HasColumnName("matched_bill_ids_json").HasColumnType("nvarchar(max)").IsRequired();
+         builder.Property(x => x.CriteriaSummary).HasColumnName("criteria_summary").HasMaxLength(1000).IsRequired();
+         builder.Property(x => x.SourceEmailId).HasColumnName("source_email_id").HasMaxLength(512);
+@@ -29,6 +30,11 @@ internal sealed class BillDuplicateCheckEntityConfiguration : IEntityTypeConfigur
+         builder.Property(x => x.CheckedUtc).HasColumnName("checked_at").IsRequired();
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.InvoiceNumber, x.TotalAmount });
++        builder.HasIndex(x => new { x.CompanyId, x.ResultStatus, x.CheckedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.SupplierName, x.InvoiceNumber, x.TotalAmount });
+         builder.HasIndex(x => new { x.CompanyId, x.CheckedUtc });
++        builder.ToTable(t =>
++            t.HasCheckConstraint("CK_bill_duplicate_checks_result_status", "result_status IN ('pending', 'not_duplicate', 'duplicate', 'inconclusive')"));
++
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/DetectedBillEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/DetectedBillEntityConfiguration.cs
+new file mode 100644
+index 0000000..a59bf9d
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/DetectedBillEntityConfiguration.cs
+@@ -0,0 +1,102 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class DetectedBillEntityConfiguration : IEntityTypeConfiguration<DetectedBill>
++{
++    public void Configure(EntityTypeBuilder<DetectedBill> builder)
++    {
++        builder.ToTable("detected_bills");
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SupplierName).HasColumnName("supplier_name").HasMaxLength(200);
++        builder.Property(x => x.SupplierOrgNumber).HasColumnName("supplier_org_number").HasMaxLength(64);
++        builder.Property(x => x.InvoiceNumber).HasColumnName("invoice_number").HasMaxLength(64);
++        builder.Property(x => x.InvoiceDateUtc).HasColumnName("invoice_date");
++        builder.Property(x => x.DueDateUtc).HasColumnName("due_date");
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3);
++        builder.Property(x => x.TotalAmount).HasColumnName("total_amount").HasColumnType("decimal(18,2)");
++        builder.Property(x => x.VatAmount).HasColumnName("vat_amount").HasColumnType("decimal(18,2)");
++        builder.Property(x => x.PaymentReference).HasColumnName("payment_reference").HasMaxLength(128);
++        builder.Property(x => x.Bankgiro).HasColumnName("bankgiro").HasMaxLength(32);
++        builder.Property(x => x.Plusgiro).HasColumnName("plusgiro").HasMaxLength(32);
++        builder.Property(x => x.Iban).HasColumnName("iban").HasMaxLength(34);
++        builder.Property(x => x.Bic).HasColumnName("bic").HasMaxLength(11);
++        builder.Property(x => x.Confidence).HasColumnName("confidence").HasColumnType("decimal(5,4)");
++        builder.Property(x => x.ConfidenceLevel).HasColumnName("confidence_level").HasMaxLength(16).IsRequired();
++        builder.Property(x => x.ValidationStatus).HasColumnName("validation_status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.ReviewStatus).HasColumnName("review_status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.RequiresReview).HasColumnName("requires_review").IsRequired();
++        builder.Property(x => x.IsEligibleForApprovalProposal).HasColumnName("is_eligible_for_approval_proposal").IsRequired();
++        builder.Property(x => x.ValidationStatusPersisted).HasColumnName("validation_status_persisted").IsRequired();
++        builder.Property(x => x.ValidationStatusPersistedAtUtc).HasColumnName("validation_status_persisted_at");
++        builder.Property(x => x.ValidationIssuesJson).HasColumnName("validation_issues_json").HasColumnType("nvarchar(max)").IsRequired();
++        builder.Property(x => x.SourceEmailId).HasColumnName("source_email_id").HasMaxLength(512);
++        builder.Property(x => x.SourceAttachmentId).HasColumnName("source_attachment_id").HasMaxLength(512);
++        builder.Property(x => x.DuplicateCheckId).HasColumnName("duplicate_check_id");
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.Navigation(x => x.Fields).UsePropertyAccessMode(PropertyAccessMode.Field);
++
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_detected_bills_confidence", "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)");
++            t.HasCheckConstraint("CK_detected_bills_confidence_level", "confidence_level IN ('high', 'medium', 'low')");
++            t.HasCheckConstraint("CK_detected_bills_validation_status", "validation_status IN ('pending', 'valid', 'flagged', 'rejected')");
++            t.HasCheckConstraint("CK_detected_bills_review_status", "review_status IN ('not_required', 'required', 'completed')");
++        });
++
++        builder.HasIndex(x => new { x.CompanyId, x.SourceEmailId });
++        builder.HasIndex(x => new { x.CompanyId, x.SourceAttachmentId });
++        builder.HasIndex(x => new { x.CompanyId, x.SupplierName, x.InvoiceNumber, x.TotalAmount });
++        builder.HasIndex(x => new { x.CompanyId, x.SupplierOrgNumber, x.InvoiceNumber, x.TotalAmount });
++        builder.HasIndex(x => new { x.CompanyId, x.ConfidenceLevel, x.RequiresReview, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.ValidationStatus, x.CreatedUtc });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++
++        builder.HasOne(x => x.DuplicateCheck)
++            .WithMany()
++            .HasForeignKey(x => x.DuplicateCheckId)
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class DetectedBillFieldEntityConfiguration : IEntityTypeConfiguration<DetectedBillField>
++{
++    public void Configure(EntityTypeBuilder<DetectedBillField> builder)
++    {
++        builder.ToTable("detected_bill_fields");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.DetectedBillId).HasColumnName("detected_bill_id").IsRequired();
++        builder.Property(x => x.FieldName).HasColumnName("field_name").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.RawValue).HasColumnName("raw_value").HasMaxLength(2000);
++        builder.Property(x => x.NormalizedValue).HasColumnName("normalized_value").HasMaxLength(2000);
++        builder.Property(x => x.SourceDocument).HasColumnName("source_document").HasMaxLength(512).IsRequired();
++        builder.Property(x => x.SourceDocumentType).HasColumnName("source_document_type").HasMaxLength(64);
++        builder.Property(x => x.PageReference).HasColumnName("page_reference").HasMaxLength(128);
++        builder.Property(x => x.SectionReference).HasColumnName("section_reference").HasMaxLength(128);
++        builder.Property(x => x.TextSpan).HasColumnName("text_span").HasMaxLength(128);
++        builder.Property(x => x.Locator).HasColumnName("locator").HasMaxLength(512);
++        builder.Property(x => x.ExtractionMethod).HasColumnName("extraction_method").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.FieldConfidence).HasColumnName("field_confidence").HasColumnType("decimal(5,4)");
++        builder.Property(x => x.Snippet).HasColumnName("snippet").HasMaxLength(2000);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.ToTable(t =>
++            t.HasCheckConstraint("CK_detected_bill_fields_field_confidence", "field_confidence IS NULL OR (field_confidence >= 0 AND field_confidence <= 1)"));
++
++        builder.HasIndex(x => new { x.CompanyId, x.DetectedBillId, x.FieldName }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.FieldName });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.DetectedBill).WithMany(x => x.Fields).HasForeignKey(x => x.DetectedBillId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 2d2d8c2..081fe56 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -132,6 +132,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<EmailAttachmentSnapshot> EmailAttachmentSnapshots => Set<EmailAttachmentSnapshot>();
+     public DbSet<BillDuplicateCheck> BillDuplicateChecks => Set<BillDuplicateCheck>();
+     public DbSet<NormalizedBillExtraction> NormalizedBillExtractions => Set<NormalizedBillExtraction>();
++    public DbSet<DetectedBill> DetectedBills => Set<DetectedBill>();
++    public DbSet<DetectedBillField> DetectedBillFields => Set<DetectedBillField>();
+     public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
+     public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
+     public DbSet<SimulationCashDeltaRecord> SimulationCashDeltaRecords => Set<SimulationCashDeltaRecord>();
+@@ -232,6 +234,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is EmailMessageSnapshot ||
+                 entry.Entity is BillDuplicateCheck ||
+                 entry.Entity is NormalizedBillExtraction ||
++                entry.Entity is DetectedBill ||
++                entry.Entity is DetectedBillField ||
+                 entry.Entity is EmailAttachmentSnapshot ||
+                 entry.Entity is SimulationCashDeltaRecord ||
+                 entry.Entity is SimulationEventRecord)
+@@ -433,6 +437,12 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<NormalizedBillExtraction>()
+             .HasQueryFilter(extraction =>
+                 CurrentCompanyId.HasValue && extraction.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<DetectedBill>()
++            .HasQueryFilter(bill =>
++                CurrentCompanyId.HasValue && bill.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<DetectedBillField>()
++            .HasQueryFilter(field =>
++                CurrentCompanyId.HasValue && field.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanySimulationState>()
+             .HasQueryFilter(state =>
+                 CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426183000_AddDetectedBillSchemas.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426183000_AddDetectedBillSchemas.cs
+new file mode 100644
+index 0000000..4e802c8
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426183000_AddDetectedBillSchemas.cs
+@@ -0,0 +1,199 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddDetectedBillSchemas : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var provider = migrationBuilder.ActiveProvider ?? string.Empty;
++            var isPostgres = provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase);
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var decimalType = isPostgres ? "numeric(18,2)" : "decimal(18,2)";
++            var scoreType = isPostgres ? "numeric(5,4)" : "decimal(5,4)";
++            var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++
++            migrationBuilder.AddColumn<string>(
++                name: "result_status",
++                table: "bill_duplicate_checks",
++                type: "nvarchar(32)",
++                maxLength: 32,
++                nullable: false,
++                defaultValue: "not_duplicate");
++
++            migrationBuilder.CreateTable(
++                name: "detected_bills",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    supplier_name = table.Column<string>(maxLength: 200, nullable: true),
++                    supplier_org_number = table.Column<string>(maxLength: 64, nullable: true),
++                    invoice_number = table.Column<string>(maxLength: 64, nullable: true),
++                    invoice_date = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                    due_date = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                    currency = table.Column<string>(maxLength: 3, nullable: true),
++                    total_amount = table.Column<decimal>(type: decimalType, nullable: true),
++                    vat_amount = table.Column<decimal>(type: decimalType, nullable: true),
++                    payment_reference = table.Column<string>(maxLength: 128, nullable: true),
++                    bankgiro = table.Column<string>(maxLength: 32, nullable: true),
++                    plusgiro = table.Column<string>(maxLength: 32, nullable: true),
++                    iban = table.Column<string>(maxLength: 34, nullable: true),
++                    bic = table.Column<string>(maxLength: 11, nullable: true),
++                    confidence = table.Column<decimal>(type: scoreType, nullable: true),
++                    confidence_level = table.Column<string>(maxLength: 16, nullable: false),
++                    validation_status = table.Column<string>(maxLength: 32, nullable: false),
++                    review_status = table.Column<string>(maxLength: 32, nullable: false),
++                    requires_review = table.Column<bool>(nullable: false),
++                    is_eligible_for_approval_proposal = table.Column<bool>(nullable: false),
++                    validation_status_persisted = table.Column<bool>(nullable: false),
++                    validation_status_persisted_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                    validation_issues_json = table.Column<string>(type: jsonType, nullable: false),
++                    source_email_id = table.Column<string>(maxLength: 512, nullable: true),
++                    source_attachment_id = table.Column<string>(maxLength: 512, nullable: true),
++                    duplicate_check_id = table.Column<Guid>(type: guidType, nullable: true),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_detected_bills", x => x.id);
++                    table.UniqueConstraint("AK_detected_bills_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(
++                        name: "FK_detected_bills_bill_duplicate_checks_duplicate_check_id",
++                        column: x => x.duplicate_check_id,
++                        principalTable: "bill_duplicate_checks",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(
++                        name: "FK_detected_bills_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.CheckConstraint("CK_detected_bills_confidence", "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)");
++                    table.CheckConstraint("CK_detected_bills_confidence_level", "confidence_level IN ('high', 'medium', 'low')");
++                    table.CheckConstraint("CK_detected_bills_review_status", "review_status IN ('not_required', 'required', 'completed')");
++                    table.CheckConstraint("CK_detected_bills_validation_status", "validation_status IN ('pending', 'valid', 'flagged', 'rejected')");
++                });
++
++            migrationBuilder.CreateTable(
++                name: "detected_bill_fields",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    detected_bill_id = table.Column<Guid>(type: guidType, nullable: false),
++                    field_name = table.Column<string>(maxLength: 64, nullable: false),
++                    raw_value = table.Column<string>(maxLength: 2000, nullable: true),
++                    normalized_value = table.Column<string>(maxLength: 2000, nullable: true),
++                    source_document = table.Column<string>(maxLength: 512, nullable: false),
++                    source_document_type = table.Column<string>(maxLength: 64, nullable: true),
++                    page_reference = table.Column<string>(maxLength: 128, nullable: true),
++                    section_reference = table.Column<string>(maxLength: 128, nullable: true),
++                    text_span = table.Column<string>(maxLength: 128, nullable: true),
++                    locator = table.Column<string>(maxLength: 512, nullable: true),
++                    extraction_method = table.Column<string>(maxLength: 64, nullable: false),
++                    field_confidence = table.Column<decimal>(type: scoreType, nullable: true),
++                    snippet = table.Column<string>(maxLength: 2000, nullable: true),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_detected_bill_fields", x => x.id);
++                    table.ForeignKey(
++                        name: "FK_detected_bill_fields_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_detected_bill_fields_detected_bills_detected_bill_id",
++                        column: x => x.detected_bill_id,
++                        principalTable: "detected_bills",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.CheckConstraint("CK_detected_bill_fields_field_confidence", "field_confidence IS NULL OR (field_confidence >= 0 AND field_confidence <= 1)");
++                });
++
++            migrationBuilder.AddCheckConstraint(
++                name: "CK_bill_duplicate_checks_result_status",
++                table: "bill_duplicate_checks",
++                sql: "result_status IN ('pending', 'not_duplicate', 'duplicate', 'inconclusive')");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_bill_duplicate_checks_company_id_result_status_checked_at",
++                table: "bill_duplicate_checks",
++                columns: new[] { "company_id", "result_status", "checked_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_detected_bill_fields_company_id_detected_bill_id_field_name",
++                table: "detected_bill_fields",
++                columns: new[] { "company_id", "detected_bill_id", "field_name" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_detected_bill_fields_company_id_field_name",
++                table: "detected_bill_fields",
++                columns: new[] { "company_id", "field_name" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_detected_bill_fields_detected_bill_id",
++                table: "detected_bill_fields",
++                column: "detected_bill_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_detected_bills_company_id_confidence_level_requires_review_created_at",
++                table: "detected_bills",
++                columns: new[] { "company_id", "confidence_level", "requires_review", "created_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_detected_bills_company_id_source_attachment_id",
++                table: "detected_bills",
++                columns: new[] { "company_id", "source_attachment_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_detected_bills_company_id_source_email_id",
++                table: "detected_bills",
++                columns: new[] { "company_id", "source_email_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_detected_bills_company_id_supplier_name_invoice_number_total_amount",
++                table: "detected_bills",
++                columns: new[] { "company_id", "supplier_name", "invoice_number", "total_amount" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_detected_bills_company_id_supplier_org_number_invoice_number_total_amount",
++                table: "detected_bills",
++                columns: new[] { "company_id", "supplier_org_number", "invoice_number", "total_amount" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_detected_bills_company_id_validation_status_created_at",
++                table: "detected_bills",
++                columns: new[] { "company_id", "validation_status", "created_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_detected_bills_duplicate_check_id",
++                table: "detected_bills",
++                column: "duplicate_check_id");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(name: "detected_bill_fields");
++            migrationBuilder.DropTable(name: "detected_bills");
++            migrationBuilder.DropIndex(
++                name: "IX_bill_duplicate_checks_company_id_result_status_checked_at",
++                table: "bill_duplicate_checks");
++            migrationBuilder.DropCheckConstraint(
++                name: "CK_bill_duplicate_checks_result_status",
++                table: "bill_duplicate_checks");
++            migrationBuilder.DropColumn(
++                name: "result_status",
++                table: "bill_duplicate_checks");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/DetectedBillModelTests.cs b/tests/VirtualCompany.Api.Tests/DetectedBillModelTests.cs
+new file mode 100644
+index 0000000..979a123
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/DetectedBillModelTests.cs
+@@ -0,0 +1,83 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class DetectedBillModelTests
++{
++    [Fact]
++    public void DetectedBillModel_MapsNormalizedFieldsAndWorkflowState()
++    {
++        using var dbContext = CreateContext();
++        var entity = dbContext.Model.FindEntityType(typeof(DetectedBill));
++
++        Assert.NotNull(entity);
++        Assert.Equal("detected_bills", entity!.GetTableName());
++        Assert.Equal("decimal(18,2)", entity.FindProperty(nameof(DetectedBill.TotalAmount))!.GetColumnType());
++        Assert.Equal("decimal(18,2)", entity.FindProperty(nameof(DetectedBill.VatAmount))!.GetColumnType());
++        Assert.Equal("decimal(5,4)", entity.FindProperty(nameof(DetectedBill.Confidence))!.GetColumnType());
++        Assert.Equal(3, entity.FindProperty(nameof(DetectedBill.Currency))!.GetMaxLength());
++        Assert.Equal(34, entity.FindProperty(nameof(DetectedBill.Iban))!.GetMaxLength());
++        Assert.Equal(11, entity.FindProperty(nameof(DetectedBill.Bic))!.GetMaxLength());
++
++        Assert.NotNull(entity.FindProperty(nameof(DetectedBill.ValidationStatus)));
++        Assert.NotNull(entity.FindProperty(nameof(DetectedBill.ReviewStatus)));
++        Assert.NotNull(entity.FindProperty(nameof(DetectedBill.RequiresReview)));
++        Assert.NotNull(entity.FindProperty(nameof(DetectedBill.IsEligibleForApprovalProposal)));
++        Assert.NotNull(entity.FindProperty(nameof(DetectedBill.ValidationStatusPersisted)));
++        Assert.NotNull(entity.FindProperty(nameof(DetectedBill.ValidationIssuesJson)));
++        Assert.NotNull(entity.FindProperty(nameof(DetectedBill.DuplicateCheckId)));
++
++        Assert.Contains(entity.GetIndexes(), index =>
++            HasProperties(index, nameof(DetectedBill.CompanyId), nameof(DetectedBill.SourceEmailId)));
++        Assert.Contains(entity.GetIndexes(), index =>
++            HasProperties(index, nameof(DetectedBill.CompanyId), nameof(DetectedBill.SourceAttachmentId)));
++        Assert.Contains(entity.GetIndexes(), index =>
++            HasProperties(index, nameof(DetectedBill.CompanyId), nameof(DetectedBill.SupplierName), nameof(DetectedBill.InvoiceNumber), nameof(DetectedBill.TotalAmount)));
++    }
++
++    [Fact]
++    public void DetectedBillFieldModel_MapsEvidenceReferencesAndUniqueFieldRows()
++    {
++        using var dbContext = CreateContext();
++        var entity = dbContext.Model.FindEntityType(typeof(DetectedBillField));
++
++        Assert.NotNull(entity);
++        Assert.Equal("detected_bill_fields", entity!.GetTableName());
++        Assert.Equal("decimal(5,4)", entity.FindProperty(nameof(DetectedBillField.FieldConfidence))!.GetColumnType());
++        Assert.Equal(512, entity.FindProperty(nameof(DetectedBillField.SourceDocument))!.GetMaxLength());
++        Assert.Equal(128, entity.FindProperty(nameof(DetectedBillField.PageReference))!.GetMaxLength());
++        Assert.Equal(128, entity.FindProperty(nameof(DetectedBillField.SectionReference))!.GetMaxLength());
++        Assert.Equal(128, entity.FindProperty(nameof(DetectedBillField.TextSpan))!.GetMaxLength());
++        Assert.Equal(512, entity.FindProperty(nameof(DetectedBillField.Locator))!.GetMaxLength());
++        Assert.Equal(64, entity.FindProperty(nameof(DetectedBillField.ExtractionMethod))!.GetMaxLength());
++
++        Assert.Contains(entity.GetIndexes(), index =>
++            index.IsUnique &&
++            HasProperties(index, nameof(DetectedBillField.CompanyId), nameof(DetectedBillField.DetectedBillId), nameof(DetectedBillField.FieldName)));
++    }
++
++    [Fact]
++    public void BillDuplicateCheckModel_StoresResultStatusForDetectedBillDuplicatePersistence()
++    {
++        using var dbContext = CreateContext();
++        var entity = dbContext.Model.FindEntityType(typeof(BillDuplicateCheck));
++
++        Assert.NotNull(entity);
++        Assert.Equal(32, entity!.FindProperty(nameof(BillDuplicateCheck.ResultStatus))!.GetMaxLength());
++        Assert.Contains(entity.GetIndexes(), index =>
++            HasProperties(index, nameof(BillDuplicateCheck.CompanyId), nameof(BillDuplicateCheck.ResultStatus), nameof(BillDuplicateCheck.CheckedUtc)));
++    }
++
++    private static VirtualCompanyDbContext CreateContext() =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseInMemoryDatabase(Guid.NewGuid().ToString("N"))
++            .Options);
++
++    private static bool HasProperties(Microsoft.EntityFrameworkCore.Metadata.IReadOnlyIndex index, params string[] propertyNames)
++    {
++        var actual = index.Properties.Select(property => property.Name).ToArray();
++        return actual.SequenceEqual(propertyNames, StringComparer.Ordinal);
++    }
++}
+END_OF_PATCH

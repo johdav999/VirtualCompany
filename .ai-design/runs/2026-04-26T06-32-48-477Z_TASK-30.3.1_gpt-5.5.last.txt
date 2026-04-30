@@ -1,0 +1,1439 @@
+diff --git a/src/VirtualCompany.Application/Finance/DocumentExtractionContracts.cs b/src/VirtualCompany.Application/Finance/DocumentExtractionContracts.cs
+new file mode 100644
+index 0000000..d5b4d2c
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/DocumentExtractionContracts.cs
+@@ -0,0 +1,189 @@
++namespace VirtualCompany.Application.Finance;
++
++public enum BillDocumentInputType
++{
++    Pdf,
++    Docx,
++    EmailBodyText,
++    EmailBodyHtml
++}
++
++public enum BillExtractionConfidence
++{
++    Low,
++    Medium,
++    High
++}
++
++public enum BillFieldConfidence
++{
++    Low,
++    Medium,
++    High
++}
++
++public enum BillValidationSeverity
++{
++    Warning,
++    Rejection
++}
++
++public enum BillDuplicateCheckStatus
++{
++    NotDuplicate,
++    Duplicate
++}
++
++public sealed record ExtractBillDocumentCommand(
++    Guid CompanyId,
++    BillDocumentInputType InputType,
++    Stream Content,
++    string SourceDocumentName,
++    string? SourceEmailId = null,
++    string? SourceAttachmentId = null,
++    string? SourceDocumentId = null);
++
++public sealed record DocumentExtractionResult(
++    Guid CompanyId,
++    IReadOnlyList<NormalizedBillCandidateDto> Candidates);
++
++public sealed record NormalizedBillCandidateDto(
++    string? SupplierName,
++    string? SupplierOrgNumber,
++    string? InvoiceNumber,
++    DateOnly? InvoiceDate,
++    DateOnly? DueDate,
++    string? Currency,
++    decimal? TotalAmount,
++    decimal? VatAmount,
++    string? PaymentReference,
++    string? Bankgiro,
++    string? Plusgiro,
++    string? Iban,
++    string? Bic,
++    BillExtractionConfidence Confidence,
++    string? SourceEmailId,
++    string? SourceAttachmentId,
++    IReadOnlyList<BillFieldEvidenceDto> Evidence,
++    IReadOnlyList<BillValidationFindingDto> ValidationFindings,
++    BillDuplicateCheckDto DuplicateCheck,
++    bool RequiresReview,
++    bool IsEligibleForApprovalProposal,
++    bool ValidationStatusPersisted);
++
++public sealed record BillFieldEvidenceDto(
++    string FieldName,
++    string ExtractedValue,
++    string SourceDocument,
++    string SourceDocumentType,
++    string PageOrSectionReference,
++    string TextSpanOrLocator,
++    string ExtractionMethod,
++    BillFieldConfidence Confidence,
++    string Snippet);
++
++public sealed record BillValidationFindingDto(
++    string Code,
++    string Message,
++    BillValidationSeverity Severity,
++    string? FieldName = null);
++
++public sealed record BillDuplicateCheckDto(
++    Guid Id,
++    BillDuplicateCheckStatus Status,
++    IReadOnlyList<Guid> MatchedBillIds,
++    string CriteriaSummary,
++    DateTime CheckedUtc);
++
++public sealed record ExtractedDocumentText(
++    string SourceDocumentType,
++    IReadOnlyList<ExtractedDocumentSection> Sections)
++{
++    public string FullText => string.Join("\n", Sections.Select(x => x.Text));
++}
++
++public sealed record ExtractedDocumentSection(
++    string Reference,
++    string Text,
++    int StartOffset);
++
++public sealed record BillDuplicateCheckRequest(
++    Guid CompanyId,
++    string? SupplierName,
++    string? SupplierOrgNumber,
++    string? InvoiceNumber,
++    decimal? TotalAmount,
++    string? Currency,
++    string? SourceEmailId,
++    string? SourceAttachmentId);
++
++public sealed record BillDuplicateCheckResult(
++    Guid Id,
++    bool IsDuplicate,
++    IReadOnlyList<Guid> MatchedBillIds,
++    string CriteriaSummary,
++    DateTime CheckedUtc);
++
++public interface IDocumentExtractionService
++{
++    Task<DocumentExtractionResult> ExtractAsync(ExtractBillDocumentCommand command, CancellationToken cancellationToken);
++}
++
++public interface IDocumentTextExtractor
++{
++    bool Supports(BillDocumentInputType inputType);
++    Task<ExtractedDocumentText> ExtractAsync(
++        Stream content,
++        string sourceDocumentName,
++        BillDocumentInputType inputType,
++        CancellationToken cancellationToken);
++}
++
++public interface IBillDuplicateCheckRepository
++{
++    Task<BillDuplicateCheckResult> CheckAndPersistAsync(
++        BillDuplicateCheckRequest request,
++        CancellationToken cancellationToken);
++}
++
++public sealed class UnsupportedBillDocumentException : Exception
++{
++    public UnsupportedBillDocumentException(string message)
++        : base(message)
++    {
++    }
++}
+diff --git a/src/VirtualCompany.Application/Finance/DocumentExtractionService.cs b/src/VirtualCompany.Application/Finance/DocumentExtractionService.cs
+new file mode 100644
+index 0000000..c388c1a
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/DocumentExtractionService.cs
+@@ -0,0 +1,503 @@
++using System.Globalization;
++using System.Text.RegularExpressions;
++
++namespace VirtualCompany.Application.Finance;
++
++public sealed class DocumentExtractionService : IDocumentExtractionService
++{
++    private static readonly RegexOptions MatchOptions = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
++
++    private static readonly FieldPattern[] FieldPatterns =
++    [
++        new("supplierName", @"(?:supplier|vendor|from|leverant(?:o|ö)r)\s*[:\-]\s*(?<value>[^\r\n]{2,120})", BillFieldConfidence.High),
++        new("supplierOrgNumber", @"(?:org(?:anisation)?(?:\.| number| no)?|organisationsnummer|vat no|tax id)\s*[:\-]?\s*(?<value>(?:SE)?\d{6}[- ]?\d{4}|\d{10,12})", BillFieldConfidence.High),
++        new("invoiceNumber", @"(?:invoice\s*(?:number|no|#)?|inv\s*#|faktura(?:nummer|nr)?|bill\s*(?:number|no)?)\s*[:#\-]?\s*(?<value>[A-Z0-9][A-Z0-9\-\/]{2,63})", BillFieldConfidence.High),
++        new("invoiceDate", @"(?:invoice\s*date|issued|fakturadatum|datum)\s*[:\-]?\s*(?<value>\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4})", BillFieldConfidence.High),
++        new("dueDate", @"(?:due\s*date|payment\s*due|pay\s*by|förfallodatum|forfallodatum|senast\s*betala)\s*[:\-]?\s*(?<value>\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4})", BillFieldConfidence.High),
++        new("currency", @"\b(?<value>SEK|EUR|USD|GBP|NOK|DKK)\b|(?<value>kr)\b", BillFieldConfidence.Medium),
++        new("totalAmount", @"(?:total\s*(?:amount)?|amount\s*(?:to\s*)?pay|amount\s*due|att\s*betala|summa(?:\s*att\s*betala)?|totalt)\s*[:\-]?\s*(?<value>(?:SEK|EUR|USD|GBP|NOK|DKK|kr)?\s*-?\d[\d\s.,']*)", BillFieldConfidence.High),
++        new("vatAmount", @"(?:vat|moms)\s*[:\-]?\s*(?<value>-?\d[\d\s.,']*)", BillFieldConfidence.High),
++        new("paymentReference", @"(?:ocr|payment\s*reference|reference|referens|meddelande)\s*[:#\-]?\s*(?<value>[A-Z0-9][A-Z0-9\- ]{2,64})", BillFieldConfidence.High),
++        new("bankgiro", @"(?:bankgiro|bg)\s*[:\-]?\s*(?<value>\d{3,4}[- ]?\d{4})", BillFieldConfidence.High),
++        new("plusgiro", @"(?:plusgiro|pg)\s*[:\-]?\s*(?<value>\d{2,8}[- ]?\d{1,4})", BillFieldConfidence.High),
++        new("iban", @"(?:iban)\s*[:\-]?\s*(?<value>[A-Z]{2}\d{2}[A-Z0-9 ]{8,30})", BillFieldConfidence.High),
++        new("bic", @"(?:bic|swift)\s*[:\-]?\s*(?<value>[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)", BillFieldConfidence.High)
++    ];
++
++    private readonly IReadOnlyList<IDocumentTextExtractor> _textExtractors;
++    private readonly IBillDuplicateCheckRepository _duplicateChecks;
++    private readonly TimeProvider _timeProvider;
++
++    public DocumentExtractionService(
++        IEnumerable<IDocumentTextExtractor> textExtractors,
++        IBillDuplicateCheckRepository duplicateChecks,
++        TimeProvider timeProvider)
++    {
++        _textExtractors = textExtractors.ToArray();
++        _duplicateChecks = duplicateChecks;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<DocumentExtractionResult> ExtractAsync(
++        ExtractBillDocumentCommand command,
++        CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(command);
++        if (command.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(command));
++        }
++
++        var extractor = _textExtractors.FirstOrDefault(x => x.Supports(command.InputType))
++            ?? throw new UnsupportedBillDocumentException($"No text extractor supports '{command.InputType}'.");
++
++        var document = await extractor.ExtractAsync(
++            command.Content,
++            command.SourceDocumentName,
++            command.InputType,
++            cancellationToken);
++
++        if (string.IsNullOrWhiteSpace(document.FullText))
++        {
++            return new DocumentExtractionResult(command.CompanyId, []);
++        }
++
++        var rawCandidate = ExtractCandidate(document, command);
++        var findings = Validate(rawCandidate);
++        var duplicateCheck = await _duplicateChecks.CheckAndPersistAsync(
++            new BillDuplicateCheckRequest(
++                command.CompanyId,
++                rawCandidate.SupplierName,
++                rawCandidate.SupplierOrgNumber,
++                rawCandidate.InvoiceNumber,
++                rawCandidate.TotalAmount,
++                rawCandidate.Currency,
++                command.SourceEmailId,
++                command.SourceAttachmentId),
++            cancellationToken);
++
++        if (duplicateCheck.IsDuplicate)
++        {
++            findings.Add(new BillValidationFindingDto(
++                "duplicate_invoice_number",
++                "A bill with the same tenant, supplier, invoice number, and amount already exists.",
++                BillValidationSeverity.Rejection,
++                "invoiceNumber"));
++        }
++
++        var confidence = Score(rawCandidate, findings, duplicateCheck);
++        var requiresReview = confidence is BillExtractionConfidence.Low or BillExtractionConfidence.Medium;
++        var validationStatusPersisted = duplicateCheck.Id != Guid.Empty;
++
++        var candidate = new NormalizedBillCandidateDto(
++            rawCandidate.SupplierName,
++            rawCandidate.SupplierOrgNumber,
++            rawCandidate.InvoiceNumber,
++            rawCandidate.InvoiceDate,
++            rawCandidate.DueDate,
++            rawCandidate.Currency,
++            rawCandidate.TotalAmount,
++            rawCandidate.VatAmount,
++            rawCandidate.PaymentReference,
++            rawCandidate.Bankgiro,
++            rawCandidate.Plusgiro,
++            rawCandidate.Iban,
++            rawCandidate.Bic,
++            confidence,
++            command.SourceEmailId,
++            command.SourceAttachmentId,
++            rawCandidate.Evidence,
++            findings,
++            new BillDuplicateCheckDto(
++                duplicateCheck.Id,
++                duplicateCheck.IsDuplicate ? BillDuplicateCheckStatus.Duplicate : BillDuplicateCheckStatus.NotDuplicate,
++                duplicateCheck.MatchedBillIds,
++                duplicateCheck.CriteriaSummary,
++                duplicateCheck.CheckedUtc),
++            requiresReview,
++            validationStatusPersisted && !requiresReview && findings.All(x => x.Severity != BillValidationSeverity.Rejection),
++            validationStatusPersisted);
++
++        return new DocumentExtractionResult(command.CompanyId, [candidate]);
++    }
++
++    private static RawBillCandidate ExtractCandidate(
++        ExtractedDocumentText document,
++        ExtractBillDocumentCommand command)
++    {
++        var evidence = new List<BillFieldEvidenceDto>();
++        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
++
++        foreach (var pattern in FieldPatterns)
++        {
++            var match = Regex.Match(document.FullText, pattern.Pattern, MatchOptions);
++            if (!match.Success)
++            {
++                continue;
++            }
++
++            var value = NormalizeValue(match.Groups["value"].Value);
++            if (string.IsNullOrWhiteSpace(value))
++            {
++                continue;
++            }
++
++            values.TryAdd(pattern.FieldName, value);
++            var section = FindSection(document, match.Index);
++            evidence.Add(new BillFieldEvidenceDto(
++                pattern.FieldName,
++                value,
++                command.SourceDocumentId ?? command.SourceDocumentName,
++                document.SourceDocumentType,
++                section.Reference,
++                $"{match.Index}:{match.Length}",
++                "regex_label_match",
++                pattern.Confidence,
++                BuildSnippet(document.FullText, match.Index, match.Length)));
++        }
++
++        if (!values.ContainsKey("supplierName"))
++        {
++            var inferredSupplier = InferSupplierName(document.FullText);
++            if (!string.IsNullOrWhiteSpace(inferredSupplier))
++            {
++                values["supplierName"] = inferredSupplier;
++                evidence.Add(new BillFieldEvidenceDto(
++                    "supplierName",
++                    inferredSupplier,
++                    command.SourceDocumentId ?? command.SourceDocumentName,
++                    document.SourceDocumentType,
++                    document.Sections.FirstOrDefault()?.Reference ?? "document",
++                    "line:1",
++                    "header_inference",
++                    BillFieldConfidence.Medium,
++                    inferredSupplier));
++            }
++        }
++
++        if (!values.ContainsKey("currency"))
++        {
++            values["currency"] = InferCurrency(document.FullText) ?? "SEK";
++        }
++
++        return new RawBillCandidate(
++            Get(values, "supplierName"),
++            NormalizeOrgNumber(Get(values, "supplierOrgNumber")),
++            Get(values, "invoiceNumber"),
++            ParseDate(Get(values, "invoiceDate")),
++            ParseDate(Get(values, "dueDate")),
++            NormalizeCurrency(Get(values, "currency")),
++            ParseAmount(Get(values, "totalAmount")),
++            ParseAmount(Get(values, "vatAmount")),
++            Get(values, "paymentReference"),
++            NormalizeDigits(Get(values, "bankgiro"), keepHyphen: true),
++            NormalizeDigits(Get(values, "plusgiro"), keepHyphen: true),
++            NormalizeIban(Get(values, "iban")),
++            NormalizeBic(Get(values, "bic")),
++            evidence);
++    }
++
++    private List<BillValidationFindingDto> Validate(RawBillCandidate candidate)
++    {
++        var findings = new List<BillValidationFindingDto>();
++        var today = DateOnly.FromDateTime(_timeProvider.GetUtcNow().UtcDateTime);
++
++        if (candidate.TotalAmount is null)
++        {
++            findings.Add(new BillValidationFindingDto(
++                "missing_amount",
++                "Total amount is missing.",
++                BillValidationSeverity.Rejection,
++                "totalAmount"));
++        }
++
++        if (candidate.DueDate is null || candidate.DueDate.Value < today.AddYears(-2) || candidate.DueDate.Value > today.AddYears(5))
++        {
++            findings.Add(new BillValidationFindingDto(
++                "invalid_due_date",
++                "Due date is missing or outside the accepted range.",
++                BillValidationSeverity.Rejection,
++                "dueDate"));
++        }
++
++        if (!string.IsNullOrWhiteSpace(candidate.Bankgiro) && !IsValidBankgiro(candidate.Bankgiro))
++        {
++            findings.Add(new BillValidationFindingDto(
++                "invalid_bankgiro",
++                "Bankgiro format is invalid.",
++                BillValidationSeverity.Rejection,
++                "bankgiro"));
++        }
++
++        if (!string.IsNullOrWhiteSpace(candidate.Iban) && !IsValidIban(candidate.Iban))
++        {
++            findings.Add(new BillValidationFindingDto(
++                "invalid_iban",
++                "IBAN checksum or format is invalid.",
++                BillValidationSeverity.Rejection,
++                "iban"));
++        }
++
++        if (candidate.VatAmount is < 0)
++        {
++            findings.Add(new BillValidationFindingDto(
++                "implausible_vat",
++                "VAT amount cannot be negative for extracted bills.",
++                BillValidationSeverity.Warning,
++                "vatAmount"));
++        }
++
++        if (candidate.TotalAmount is not null && candidate.VatAmount is not null)
++        {
++            if (candidate.VatAmount > candidate.TotalAmount)
++            {
++                findings.Add(new BillValidationFindingDto(
++                    "implausible_vat",
++                    "VAT amount cannot exceed total amount.",
++                    BillValidationSeverity.Rejection,
++                    "vatAmount"));
++            }
++            else if (candidate.TotalAmount > 0 && candidate.VatAmount / candidate.TotalAmount > 0.35m)
++            {
++                findings.Add(new BillValidationFindingDto(
++                    "implausible_vat_ratio",
++                    "VAT amount is high relative to total amount.",
++                    BillValidationSeverity.Warning,
++                    "vatAmount"));
++            }
++        }
++
++        if (string.IsNullOrWhiteSpace(candidate.InvoiceNumber))
++        {
++            findings.Add(new BillValidationFindingDto(
++                "missing_invoice_number",
++                "Invoice number is missing.",
++                BillValidationSeverity.Warning,
++                "invoiceNumber"));
++        }
++
++        return findings;
++    }
++
++    private static BillExtractionConfidence Score(
++        RawBillCandidate candidate,
++        IReadOnlyList<BillValidationFindingDto> findings,
++        BillDuplicateCheckResult duplicateCheck)
++    {
++        if (findings.Any(x => x.Severity == BillValidationSeverity.Rejection) || duplicateCheck.IsDuplicate)
++        {
++            return BillExtractionConfidence.Low;
++        }
++
++        var keyFields = new[]
++        {
++            candidate.SupplierName,
++            candidate.InvoiceNumber,
++            candidate.Currency,
++            candidate.DueDate?.ToString("O", CultureInfo.InvariantCulture),
++            candidate.TotalAmount?.ToString(CultureInfo.InvariantCulture)
++        };
++
++        var strongSupplierSignal = !string.IsNullOrWhiteSpace(candidate.SupplierOrgNumber) ||
++            candidate.Evidence.Any(x => x.FieldName == "supplierName" && x.ExtractionMethod == "regex_label_match");
++
++        if (keyFields.All(x => !string.IsNullOrWhiteSpace(x)) &&
++            strongSupplierSignal &&
++            findings.Count == 0)
++        {
++            return BillExtractionConfidence.High;
++        }
++
++        return BillExtractionConfidence.Medium;
++    }
++
++    private static ExtractedDocumentSection FindSection(ExtractedDocumentText document, int absoluteOffset) =>
++        document.Sections.LastOrDefault(x => x.StartOffset <= absoluteOffset)
++        ?? document.Sections.FirstOrDefault()
++        ?? new ExtractedDocumentSection("document", document.FullText, 0);
++
++    private static string? InferSupplierName(string text)
++    {
++        foreach (var line in text.Split('\n').Select(x => x.Trim()))
++        {
++            if (line.Length is >= 2 and <= 120 &&
++                !line.Contains("invoice", StringComparison.OrdinalIgnoreCase) &&
++                !line.Contains("faktura", StringComparison.OrdinalIgnoreCase))
++            {
++                return line;
++            }
++        }
++
++        return null;
++    }
++
++    private static string? InferCurrency(string text)
++    {
++        var match = Regex.Match(text, @"\b(SEK|EUR|USD|GBP|NOK|DKK)\b", MatchOptions);
++        return match.Success ? NormalizeCurrency(match.Value) : null;
++    }
++
++    private static string? Get(IReadOnlyDictionary<string, string> values, string key) =>
++        values.TryGetValue(key, out var value) ? value : null;
++
++    private static DateOnly? ParseDate(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var formats = new[]
++        {
++            "yyyy-MM-dd",
++            "yyyy/MM/dd",
++            "yyyy.MM.dd",
++            "dd-MM-yyyy",
++            "dd/MM/yyyy",
++            "dd.MM.yyyy",
++            "dd-MM-yy",
++            "dd/MM/yy",
++            "dd.MM.yy"
++        };
++
++        return DateOnly.TryParseExact(value.Trim(), formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed) ||
++               DateOnly.TryParse(value.Trim(), CultureInfo.InvariantCulture, DateTimeStyles.None, out parsed)
++            ? parsed
++            : null;
++    }
++
++    private static decimal? ParseAmount(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var normalized = Regex.Replace(value, @"[^\d,.\-]", string.Empty);
++        if (string.IsNullOrWhiteSpace(normalized))
++        {
++            return null;
++        }
++
++        if (normalized.Contains(',') && normalized.Contains('.'))
++        {
++            normalized = normalized.LastIndexOf(',', StringComparison.Ordinal) > normalized.LastIndexOf('.', StringComparison.Ordinal)
++                ? normalized.Replace(".", string.Empty, StringComparison.Ordinal).Replace(',', '.')
++                : normalized.Replace(",", string.Empty, StringComparison.Ordinal);
++        }
++        else if (normalized.Contains(','))
++        {
++            normalized = normalized.Replace(',', '.');
++        }
++
++        return decimal.TryParse(normalized, NumberStyles.Number | NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var parsed)
++            ? parsed
++            : null;
++    }
++
++    private static string NormalizeValue(string value) =>
++        Regex.Replace(value.Trim(), @"\s+", " ");
++
++    private static string? NormalizeOrgNumber(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? null
++            : value.Trim().Replace(" ", string.Empty, StringComparison.Ordinal).ToUpperInvariant();
++
++    private static string? NormalizeCurrency(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var normalized = value.Trim().ToUpperInvariant();
++        return normalized == "KR" ? "SEK" : normalized;
++    }
++
++    private static string? NormalizeDigits(string? value, bool keepHyphen)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var allowed = keepHyphen ? @"[^\d\-]" : @"\D";
++        return Regex.Replace(value, allowed, string.Empty);
++    }
++
++    private static string? NormalizeIban(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? null
++            : Regex.Replace(value, @"\s+", string.Empty).ToUpperInvariant();
++
++    private static string? NormalizeBic(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? null
++            : value.Trim().ToUpperInvariant();
++
++    private static bool IsValidBankgiro(string value)
++    {
++        var digits = Regex.Replace(value, @"\D", string.Empty);
++        return digits.Length is 7 or 8;
++    }
++
++    private static bool IsValidIban(string value)
++    {
++        var iban = NormalizeIban(value);
++        if (iban is null || iban.Length < 15 || iban.Length > 34 || !Regex.IsMatch(iban, @"^[A-Z]{2}\d{2}[A-Z0-9]+$"))
++        {
++            return false;
++        }
++
++        var rearranged = iban[4..] + iban[..4];
++        var checksum = 0;
++        foreach (var ch in rearranged)
++        {
++            var token = char.IsLetter(ch)
++                ? (char.ToUpperInvariant(ch) - 'A' + 10).ToString(CultureInfo.InvariantCulture)
++                : ch.ToString();
++
++            foreach (var digit in token)
++            {
++                checksum = (checksum * 10 + (digit - '0')) % 97;
++            }
++        }
++
++        return checksum == 1;
++    }
++
++    private static string BuildSnippet(string text, int index, int length)
++    {
++        var start = Math.Max(0, index - 40);
++        var end = Math.Min(text.Length, index + length + 40);
++        return Regex.Replace(text[start..end], @"\s+", " ").Trim();
++    }
++
++    private sealed record FieldPattern(
++        string FieldName,
++        string Pattern,
++        BillFieldConfidence Confidence);
++
++    private sealed record RawBillCandidate(
++        string? SupplierName,
++        string? SupplierOrgNumber,
++        string? InvoiceNumber,
++        DateOnly? InvoiceDate,
++        DateOnly? DueDate,
++        string? Currency,
++        decimal? TotalAmount,
++        decimal? VatAmount,
++        string? PaymentReference,
++        string? Bankgiro,
++        string? Plusgiro,
++        string? Iban,
++        string? Bic,
++        IReadOnlyList<BillFieldEvidenceDto> Evidence);
++}
+diff --git a/src/VirtualCompany.Domain/Entities/BillDuplicateCheck.cs b/src/VirtualCompany.Domain/Entities/BillDuplicateCheck.cs
+new file mode 100644
+index 0000000..b13262e
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/BillDuplicateCheck.cs
+@@ -0,0 +1,113 @@
++using System.Text.Json;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class BillDuplicateCheck : ICompanyOwnedEntity
++{
++    private BillDuplicateCheck()
++    {
++    }
++
++    public BillDuplicateCheck(
++        Guid id,
++        Guid companyId,
++        string? supplierName,
++        string? supplierOrgNumber,
++        string? invoiceNumber,
++        decimal? totalAmount,
++        string? currency,
++        bool isDuplicate,
++        IReadOnlyCollection<Guid> matchedBillIds,
++        string criteriaSummary,
++        string? sourceEmailId = null,
++        string? sourceAttachmentId = null,
++        DateTime? checkedUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        SupplierName = NormalizeOptional(supplierName, nameof(supplierName), 200);
++        SupplierOrgNumber = NormalizeOptional(supplierOrgNumber, nameof(supplierOrgNumber), 64);
++        InvoiceNumber = NormalizeOptional(invoiceNumber, nameof(invoiceNumber), 64);
++        TotalAmount = totalAmount;
++        Currency = NormalizeOptional(currency, nameof(currency), 3)?.ToUpperInvariant();
++        IsDuplicate = isDuplicate;
++        MatchedBillIdsJson = JsonSerializer.Serialize((matchedBillIds ?? []).Where(x => x != Guid.Empty).Distinct().ToArray());
++        CriteriaSummary = NormalizeRequired(criteriaSummary, nameof(criteriaSummary), 1000);
++        SourceEmailId = NormalizeOptional(sourceEmailId, nameof(sourceEmailId), 512);
++        SourceAttachmentId = NormalizeOptional(sourceAttachmentId, nameof(sourceAttachmentId), 512);
++        CheckedUtc = EntityTimestampNormalizer.NormalizeUtc(checkedUtc ?? DateTime.UtcNow, nameof(checkedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string? SupplierName { get; private set; }
++    public string? SupplierOrgNumber { get; private set; }
++    public string? InvoiceNumber { get; private set; }
++    public decimal? TotalAmount { get; private set; }
++    public string? Currency { get; private set; }
++    public bool IsDuplicate { get; private set; }
++    public string MatchedBillIdsJson { get; private set; } = "[]";
++    public string CriteriaSummary { get; private set; } = null!;
++    public string? SourceEmailId { get; private set; }
++    public string? SourceAttachmentId { get; private set; }
++    public DateTime CheckedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    public IReadOnlyList<Guid> GetMatchedBillIds()
++    {
++        try
++        {
++            return JsonSerializer.Deserialize<Guid[]>(MatchedBillIdsJson) ?? [];
++        }
++        catch (JsonException)
++        {
++            return [];
++        }
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length > maxLength ? trimmed[..maxLength] : trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/BillDuplicateCheckRepository.cs b/src/VirtualCompany.Infrastructure/Finance/BillDuplicateCheckRepository.cs
+new file mode 100644
+index 0000000..3d0618a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/BillDuplicateCheckRepository.cs
+@@ -0,0 +1,100 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class BillDuplicateCheckRepository : IBillDuplicateCheckRepository
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly TimeProvider _timeProvider;
++
++    public BillDuplicateCheckRepository(VirtualCompanyDbContext dbContext, TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<BillDuplicateCheckResult> CheckAndPersistAsync(
++        BillDuplicateCheckRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (request.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(request));
++        }
++
++        var matchedBillIds = Array.Empty<Guid>();
++        if (!string.IsNullOrWhiteSpace(request.InvoiceNumber) && request.TotalAmount.HasValue)
++        {
++            var supplierName = Normalize(request.SupplierName);
++            var supplierOrgNumber = Normalize(request.SupplierOrgNumber);
++            var amount = decimal.Round(request.TotalAmount.Value, 2);
++
++            matchedBillIds = await _dbContext.FinanceBills
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => x.CompanyId == request.CompanyId)
++                .Where(x => x.BillNumber == request.InvoiceNumber)
++                .Where(x => decimal.Round(x.Amount, 2) == amount)
++                .Where(x =>
++                    string.IsNullOrWhiteSpace(supplierName) && string.IsNullOrWhiteSpace(supplierOrgNumber) ||
++                    x.Counterparty.Name.ToLower() == supplierName ||
++                    x.Counterparty.TaxId != null && x.Counterparty.TaxId.ToLower() == supplierOrgNumber)
++                .Select(x => x.Id)
++                .ToArrayAsync(cancellationToken);
++        }
++
++        var checkedUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var check = new BillDuplicateCheck(
++            Guid.NewGuid(),
++            request.CompanyId,
++            request.SupplierName,
++            request.SupplierOrgNumber,
++            request.InvoiceNumber,
++            request.TotalAmount,
++            request.Currency,
++            matchedBillIds.Length > 0,
++            matchedBillIds,
++            BuildCriteriaSummary(request),
++            request.SourceEmailId,
++            request.SourceAttachmentId,
++            checkedUtc);
++
++        _dbContext.BillDuplicateChecks.Add(check);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new BillDuplicateCheckResult(
++            check.Id,
++            check.IsDuplicate,
++            check.GetMatchedBillIds(),
++            check.CriteriaSummary,
++            check.CheckedUtc);
++    }
++
++    private static string BuildCriteriaSummary(BillDuplicateCheckRequest request)
++    {
++        var supplier = request.SupplierOrgNumber ?? request.SupplierName ?? "unknown supplier";
++        var amount = request.TotalAmount?.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) ?? "missing amount";
++        return $"tenant={request.CompanyId:D}; supplier={supplier}; invoice={request.InvoiceNumber ?? "missing"}; amount={amount}; currency={request.Currency ?? "unknown"}";
++    }
++
++    private static string? Normalize(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/DocumentTextExtractors.cs b/src/VirtualCompany.Infrastructure/Finance/DocumentTextExtractors.cs
+new file mode 100644
+index 0000000..801e36f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/DocumentTextExtractors.cs
+@@ -0,0 +1,169 @@
++using System.IO.Compression;
++using System.Text;
++using System.Text.RegularExpressions;
++using System.Xml.Linq;
++using VirtualCompany.Application.Finance;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class PdfDocumentTextExtractor : IDocumentTextExtractor
++{
++    public bool Supports(BillDocumentInputType inputType) => inputType == BillDocumentInputType.Pdf;
++
++    public async Task<ExtractedDocumentText> ExtractAsync(
++        Stream content,
++        string sourceDocumentName,
++        BillDocumentInputType inputType,
++        CancellationToken cancellationToken)
++    {
++        using var memory = new MemoryStream();
++        await content.CopyToAsync(memory, cancellationToken);
++        var bytes = memory.ToArray();
++
++        // This intentionally supports only text-based PDFs. If no readable text is present,
++        // downstream extraction receives an empty result instead of silently attempting OCR.
++        var raw = Encoding.Latin1.GetString(bytes);
++        var text = ExtractPdfTextOperators(raw);
++        if (string.IsNullOrWhiteSpace(text))
++        {
++            text = ExtractReadableText(raw);
++        }
++
++        return new ExtractedDocumentText(
++            "pdf",
++            string.IsNullOrWhiteSpace(text)
++                ? []
++                : [new ExtractedDocumentSection("page:1", Normalize(text), 0)]);
++    }
++
++    private static string ExtractPdfTextOperators(string raw)
++    {
++        var builder = new StringBuilder();
++        foreach (Match match in Regex.Matches(raw, @"\((?<text>(?:\\.|[^\\)])*)\)\s*Tj", RegexOptions.CultureInvariant))
++        {
++            builder.AppendLine(UnescapePdfText(match.Groups["text"].Value));
++        }
++
++        foreach (Match arrayMatch in Regex.Matches(raw, @"\[(?<items>.*?)\]\s*TJ", RegexOptions.Singleline | RegexOptions.CultureInvariant))
++        {
++            foreach (Match item in Regex.Matches(arrayMatch.Groups["items"].Value, @"\((?<text>(?:\\.|[^\\)])*)\)", RegexOptions.CultureInvariant))
++            {
++                builder.Append(UnescapePdfText(item.Groups["text"].Value));
++            }
++
++            builder.AppendLine();
++        }
++
++        return builder.ToString();
++    }
++
++    private static string ExtractReadableText(string raw)
++    {
++        var text = Regex.Replace(raw, @"[^\u0020-\u007E\r\n\t]", " ");
++        var lines = text
++            .Split('\n')
++            .Select(x => Regex.Replace(x, @"\s+", " ").Trim())
++            .Where(x => x.Length >= 3 && !x.StartsWith('%') && !x.Contains(" obj", StringComparison.OrdinalIgnoreCase))
++            .ToArray();
++        return string.Join('\n', lines);
++    }
++
++    private static string UnescapePdfText(string value) =>
++        value
++            .Replace("\\(", "(", StringComparison.Ordinal)
++            .Replace("\\)", ")", StringComparison.Ordinal)
++            .Replace("\\\\", "\\", StringComparison.Ordinal)
++            .Replace("\\n", "\n", StringComparison.Ordinal)
++            .Replace("\\r", "\r", StringComparison.Ordinal)
++            .Replace("\\t", "\t", StringComparison.Ordinal);
++
++    private static string Normalize(string value) =>
++        Regex.Replace(value.Replace("\r\n", "\n", StringComparison.Ordinal), @"[ \t]+", " ").Trim();
++}
++
++public sealed class DocxDocumentTextExtractor : IDocumentTextExtractor
++{
++    public bool Supports(BillDocumentInputType inputType) => inputType == BillDocumentInputType.Docx;
++
++    public async Task<ExtractedDocumentText> ExtractAsync(
++        Stream content,
++        string sourceDocumentName,
++        BillDocumentInputType inputType,
++        CancellationToken cancellationToken)
++    {
++        using var memory = new MemoryStream();
++        await content.CopyToAsync(memory, cancellationToken);
++        memory.Position = 0;
++
++        using var archive = new ZipArchive(memory, ZipArchiveMode.Read, leaveOpen: true);
++        var documentEntry = archive.GetEntry("word/document.xml");
++        if (documentEntry is null)
++        {
++            return new ExtractedDocumentText("docx", []);
++        }
++
++        await using var entryStream = documentEntry.Open();
++        var xml = await XDocument.LoadAsync(entryStream, LoadOptions.None, cancellationToken);
++        XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
++
++        var paragraphs = xml
++            .Descendants(w + "p")
++            .Select(p => string.Concat(p.Descendants(w + "t").Select(t => t.Value)).Trim())
++            .Where(x => !string.IsNullOrWhiteSpace(x))
++            .ToArray();
++
++        var sections = new List<ExtractedDocumentSection>();
++        var offset = 0;
++        for (var index = 0; index < paragraphs.Length; index++)
++        {
++            sections.Add(new ExtractedDocumentSection($"paragraph:{index + 1}", paragraphs[index], offset));
++            offset += paragraphs[index].Length + 1;
++        }
++
++        return new ExtractedDocumentText("docx", sections);
++    }
++}
++
++public sealed class EmailBodyTextExtractor : IDocumentTextExtractor
++{
++    public bool Supports(BillDocumentInputType inputType) =>
++        inputType is BillDocumentInputType.EmailBodyText or BillDocumentInputType.EmailBodyHtml;
++
++    public async Task<ExtractedDocumentText> ExtractAsync(
++        Stream content,
++        string sourceDocumentName,
++        BillDocumentInputType inputType,
++        CancellationToken cancellationToken)
++    {
++        using var reader = new StreamReader(content, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: false);
++        var text = await reader.ReadToEndAsync(cancellationToken);
++        if (inputType == BillDocumentInputType.EmailBodyHtml)
++        {
++            text = HtmlToText(text);
++        }
++
++        text = Regex.Replace(text.Replace("\r\n", "\n", StringComparison.Ordinal), @"[ \t]+", " ").Trim();
++        return new ExtractedDocumentText(
++            inputType == BillDocumentInputType.EmailBodyHtml ? "email_html" : "email_text",
++            string.IsNullOrWhiteSpace(text) ? [] : [new ExtractedDocumentSection("body", text, 0)]);
++    }
++
++    private static string HtmlToText(string html)
++    {
++        var text = Regex.Replace(html, @"<(br|p|div|tr|li)\b[^>]*>", "\n", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
++        text = Regex.Replace(text, "<[^>]+>", " ", RegexOptions.CultureInvariant);
++        return System.Net.WebUtility.HtmlDecode(text);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/BillDuplicateCheckEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/BillDuplicateCheckEntityConfiguration.cs
+new file mode 100644
+index 0000000..670088f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/BillDuplicateCheckEntityConfiguration.cs
+@@ -0,0 +1,37 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class BillDuplicateCheckEntityConfiguration : IEntityTypeConfiguration<BillDuplicateCheck>
++{
++    public void Configure(EntityTypeBuilder<BillDuplicateCheck> builder)
++    {
++        builder.ToTable("bill_duplicate_checks");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SupplierName).HasColumnName("supplier_name").HasMaxLength(200);
++        builder.Property(x => x.SupplierOrgNumber).HasColumnName("supplier_org_number").HasMaxLength(64);
++        builder.Property(x => x.InvoiceNumber).HasColumnName("invoice_number").HasMaxLength(64);
++        builder.Property(x => x.TotalAmount).HasColumnName("total_amount").HasColumnType("decimal(18,2)");
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3);
++        builder.Property(x => x.IsDuplicate).HasColumnName("is_duplicate").IsRequired();
++        builder.Property(x => x.MatchedBillIdsJson).HasColumnName("matched_bill_ids_json").HasColumnType("nvarchar(max)").IsRequired();
++        builder.Property(x => x.CriteriaSummary).HasColumnName("criteria_summary").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.SourceEmailId).HasColumnName("source_email_id").HasMaxLength(512);
++        builder.Property(x => x.SourceAttachmentId).HasColumnName("source_attachment_id").HasMaxLength(512);
++        builder.Property(x => x.CheckedUtc).HasColumnName("checked_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.InvoiceNumber, x.TotalAmount });
++        builder.HasIndex(x => new { x.CompanyId, x.SupplierName, x.InvoiceNumber, x.TotalAmount });
++        builder.HasIndex(x => new { x.CompanyId, x.CheckedUtc });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 6db5b23..3eb2a0e 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -115,6 +115,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<EmailIngestionRun> EmailIngestionRuns => Set<EmailIngestionRun>();
+     public DbSet<EmailMessageSnapshot> EmailMessageSnapshots => Set<EmailMessageSnapshot>();
+     public DbSet<EmailAttachmentSnapshot> EmailAttachmentSnapshots => Set<EmailAttachmentSnapshot>();
++    public DbSet<BillDuplicateCheck> BillDuplicateChecks => Set<BillDuplicateCheck>();
+     public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
+     public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
+     public DbSet<SimulationCashDeltaRecord> SimulationCashDeltaRecords => Set<SimulationCashDeltaRecord>();
+@@ -247,6 +248,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is MailboxConnection ||
+                 entry.Entity is EmailIngestionRun ||
+                 entry.Entity is EmailMessageSnapshot ||
++                entry.Entity is BillDuplicateCheck ||
+                 entry.Entity is EmailAttachmentSnapshot ||
+                 entry.Entity is SimulationCashDeltaRecord ||
+                 entry.Entity is SimulationEventRecord)
+@@ -487,6 +489,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<EmailAttachmentSnapshot>()
+             .HasQueryFilter(snapshot =>
+                 CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<BillDuplicateCheck>()
++            .HasQueryFilter(check =>
++                CurrentCompanyId.HasValue && check.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanySimulationState>()
+             .HasQueryFilter(state =>
+                 CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 65c8b51..c82b10e 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -348,6 +348,11 @@ public static class DependencyInjection
+         services.AddScoped<IMailboxConnectionService, CompanyMailboxConnectionService>();
+         services.AddScoped<IBillDetectionService, BillDetectionService>();
+         services.AddScoped<IManualInboxBillScanOrchestrator, CompanyManualInboxBillScanOrchestrator>();
++        services.AddScoped<IDocumentExtractionService, DocumentExtractionService>();
++        services.AddScoped<IBillDuplicateCheckRepository, BillDuplicateCheckRepository>();
++        services.AddScoped<IDocumentTextExtractor, PdfDocumentTextExtractor>();
++        services.AddScoped<IDocumentTextExtractor, DocxDocumentTextExtractor>();
++        services.AddScoped<IDocumentTextExtractor, EmailBodyTextExtractor>();
+         services.AddScoped<IManualInboxBillScanJobScheduler, InlineManualInboxBillScanJobScheduler>();
+         services.AddScoped<IEmbeddingGenerator, OpenAiCompatibleEmbeddingGenerator>();
+         services.AddScoped<IKnowledgeAccessPolicyEvaluator, KnowledgeAccessPolicyEvaluator>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426143000_AddBillDuplicateChecks.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426143000_AddBillDuplicateChecks.cs
+new file mode 100644
+index 0000000..6252c45
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426143000_AddBillDuplicateChecks.cs
+@@ -0,0 +1,85 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddBillDuplicateChecks : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "bill_duplicate_checks",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    supplier_name = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
++                    supplier_org_number = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
++                    invoice_number = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
++                    total_amount = table.Column<decimal>(type: "decimal(18,2)", nullable: true),
++                    currency = table.Column<string>(type: "nvarchar(3)", maxLength: 3, nullable: true),
++                    is_duplicate = table.Column<bool>(type: "bit", nullable: false),
++                    matched_bill_ids_json = table.Column<string>(type: "nvarchar(max)", nullable: false),
++                    criteria_summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
++                    source_email_id = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: true),
++                    source_attachment_id = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: true),
++                    checked_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_bill_duplicate_checks", x => x.id);
++                    table.ForeignKey(
++                        name: "FK_bill_duplicate_checks_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_bill_duplicate_checks_company_id_checked_at",
++                table: "bill_duplicate_checks",
++                columns: new[] { "company_id", "checked_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_bill_duplicate_checks_company_id_invoice_number_total_amount",
++                table: "bill_duplicate_checks",
++                columns: new[] { "company_id", "invoice_number", "total_amount" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_bill_duplicate_checks_company_id_supplier_name_invoice_number_total_amount",
++                table: "bill_duplicate_checks",
++                columns: new[] { "company_id", "supplier_name", "invoice_number", "total_amount" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(name: "bill_duplicate_checks");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/DocumentExtractionServiceTests.cs b/tests/VirtualCompany.Api.Tests/DocumentExtractionServiceTests.cs
+new file mode 100644
+index 0000000..9f7c83e
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/DocumentExtractionServiceTests.cs
+@@ -0,0 +1,242 @@
++using System.IO.Compression;
++using System.Text;
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class DocumentExtractionServiceTests
++{
++    [Fact]
++    public async Task Extracts_normalized_bill_from_email_body_with_evidence()
++    {
++        var service = CreateService(new FakeDuplicateRepository(false));
++        await using var content = TextStream(SampleInvoiceText());
++
++        var result = await service.ExtractAsync(
++            new ExtractBillDocumentCommand(Guid.NewGuid(), BillDocumentInputType.EmailBodyText, content, "email-body", "email-1", null),
++            CancellationToken.None);
++
++        var candidate = Assert.Single(result.Candidates);
++        Assert.Equal("Acme Supplies AB", candidate.SupplierName);
++        Assert.Equal("556677-8899", candidate.SupplierOrgNumber);
++        Assert.Equal("INV-1001", candidate.InvoiceNumber);
++        Assert.Equal(new DateOnly(2026, 4, 10), candidate.InvoiceDate);
++        Assert.Equal(new DateOnly(2026, 5, 10), candidate.DueDate);
++        Assert.Equal("SEK", candidate.Currency);
++        Assert.Equal(1250m, candidate.TotalAmount);
++        Assert.Equal(250m, candidate.VatAmount);
++        Assert.Equal("1234567890", candidate.PaymentReference);
++        Assert.Equal("123-4567", candidate.Bankgiro);
++        Assert.Equal("DE89370400440532013000", candidate.Iban);
++        Assert.Equal("DEUTDEFF", candidate.Bic);
++        Assert.Equal(BillExtractionConfidence.High, candidate.Confidence);
++        Assert.False(candidate.RequiresReview);
++        Assert.True(candidate.IsEligibleForApprovalProposal);
++        Assert.Contains(candidate.Evidence, x => x.FieldName == "totalAmount" && x.PageOrSectionReference == "body");
++    }
++
++    [Fact]
++    public async Task Extracts_from_docx_text_sections()
++    {
++        var service = CreateService(new FakeDuplicateRepository(false));
++        await using var docx = CreateDocx(SampleInvoiceText());
++
++        var result = await service.ExtractAsync(
++            new ExtractBillDocumentCommand(Guid.NewGuid(), BillDocumentInputType.Docx, docx, "invoice.docx"),
++            CancellationToken.None);
++
++        var candidate = Assert.Single(result.Candidates);
++        Assert.Equal("INV-1001", candidate.InvoiceNumber);
++        Assert.Contains(candidate.Evidence, x => x.PageOrSectionReference.StartsWith("paragraph:", StringComparison.Ordinal));
++    }
++
++    [Fact]
++    public async Task Extracts_from_text_based_pdf()
++    {
++        var service = CreateService(new FakeDuplicateRepository(false));
++        await using var pdf = TextStream($"%PDF-1.4\n({SampleInvoiceText().Replace("\n", ") Tj\n(", StringComparison.Ordinal)}) Tj\n%%EOF");
++
++        var result = await service.ExtractAsync(
++            new ExtractBillDocumentCommand(Guid.NewGuid(), BillDocumentInputType.Pdf, pdf, "invoice.pdf"),
++            CancellationToken.None);
++
++        var candidate = Assert.Single(result.Candidates);
++        Assert.Equal("INV-1001", candidate.InvoiceNumber);
++        Assert.Contains(candidate.Evidence, x => x.SourceDocumentType == "pdf");
++    }
++
++    [Fact]
++    public async Task Missing_amount_is_rejected_and_low_confidence()
++    {
++        var service = CreateService(new FakeDuplicateRepository(false));
++        await using var content = TextStream(SampleInvoiceText().Replace("Total: 1250 SEK", string.Empty, StringComparison.Ordinal));
++
++        var result = await service.ExtractAsync(
++            new ExtractBillDocumentCommand(Guid.NewGuid(), BillDocumentInputType.EmailBodyText, content, "email-body"),
++            CancellationToken.None);
++
++        var candidate = Assert.Single(result.Candidates);
++        Assert.Equal(BillExtractionConfidence.Low, candidate.Confidence);
++        Assert.True(candidate.RequiresReview);
++        Assert.False(candidate.IsEligibleForApprovalProposal);
++        Assert.Contains(candidate.ValidationFindings, x => x.Code == "missing_amount" && x.Severity == BillValidationSeverity.Rejection);
++    }
++
++    [Fact]
++    public async Task Invalid_due_date_is_rejected()
++    {
++        var service = CreateService(new FakeDuplicateRepository(false));
++        await using var content = TextStream(SampleInvoiceText().Replace("Due date: 2026-05-10", "Due date: 2099-01-01", StringComparison.Ordinal));
++
++        var result = await service.ExtractAsync(
++            new ExtractBillDocumentCommand(Guid.NewGuid(), BillDocumentInputType.EmailBodyText, content, "email-body"),
++            CancellationToken.None);
++
++        Assert.Contains(Assert.Single(result.Candidates).ValidationFindings, x => x.Code == "invalid_due_date");
++    }
++
++    [Fact]
++    public async Task Invalid_bankgiro_and_iban_are_rejected()
++    {
++        var service = CreateService(new FakeDuplicateRepository(false));
++        var text = SampleInvoiceText()
++            .Replace("Bankgiro: 123-4567", "Bankgiro: 12-34", StringComparison.Ordinal)
++            .Replace("IBAN: DE89370400440532013000", "IBAN: DE89370400440532013001", StringComparison.Ordinal);
++        await using var content = TextStream(text);
++
++        var result = await service.ExtractAsync(
++            new ExtractBillDocumentCommand(Guid.NewGuid(), BillDocumentInputType.EmailBodyText, content, "email-body"),
++            CancellationToken.None);
++
++        var findings = Assert.Single(result.Candidates).ValidationFindings;
++        Assert.Contains(findings, x => x.Code == "invalid_bankgiro");
++        Assert.Contains(findings, x => x.Code == "invalid_iban");
++    }
++
++    [Fact]
++    public async Task Implausible_vat_requires_review()
++    {
++        var service = CreateService(new FakeDuplicateRepository(false));
++        await using var content = TextStream(SampleInvoiceText().Replace("VAT: 250", "VAT: 1000", StringComparison.Ordinal));
++
++        var result = await service.ExtractAsync(
++            new ExtractBillDocumentCommand(Guid.NewGuid(), BillDocumentInputType.EmailBodyText, content, "email-body"),
++            CancellationToken.None);
++
++        var candidate = Assert.Single(result.Candidates);
++        Assert.Equal(BillExtractionConfidence.Medium, candidate.Confidence);
++        Assert.True(candidate.RequiresReview);
++        Assert.Contains(candidate.ValidationFindings, x => x.Code == "implausible_vat_ratio");
++    }
++
++    [Fact]
++    public async Task Duplicate_detection_blocks_approval()
++    {
++        var service = CreateService(new FakeDuplicateRepository(true));
++        await using var content = TextStream(SampleInvoiceText());
++
++        var result = await service.ExtractAsync(
++            new ExtractBillDocumentCommand(Guid.NewGuid(), BillDocumentInputType.EmailBodyText, content, "email-body"),
++            CancellationToken.None);
++
++        var candidate = Assert.Single(result.Candidates);
++        Assert.Equal(BillDuplicateCheckStatus.Duplicate, candidate.DuplicateCheck.Status);
++        Assert.Equal(BillExtractionConfidence.Low, candidate.Confidence);
++        Assert.False(candidate.IsEligibleForApprovalProposal);
++        Assert.Contains(candidate.ValidationFindings, x => x.Code == "duplicate_invoice_number");
++    }
++
++    [Fact]
++    public async Task Duplicate_check_repository_persists_tenant_scoped_result()
++    {
++        await using var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++
++        var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options;
++
++        var companyId = Guid.NewGuid();
++        await using (var setup = new VirtualCompanyDbContext(options))
++        {
++            await setup.Database.EnsureCreatedAsync();
++            var supplier = new FinanceCounterparty(Guid.NewGuid(), companyId, "Acme Supplies AB", "supplier", taxId: "556677-8899");
++            setup.Companies.Add(new Company(companyId, "Test Co"));
++            setup.FinanceCounterparties.Add(supplier);
++            setup.FinanceBills.Add(new FinanceBill(
++                Guid.NewGuid(),
++                companyId,
++                supplier.Id,
++                "INV-1001",
++                DateTime.UtcNow,
++                DateTime.UtcNow.AddDays(14),
++                1250m,
++                "SEK",
++                "open"));
++            await setup.SaveChangesAsync();
++        }
++
++        await using (var db = new VirtualCompanyDbContext(options))
++        {
++            var repository = new BillDuplicateCheckRepository(db, TimeProvider.System);
++            var result = await repository.CheckAndPersistAsync(
++                new BillDuplicateCheckRequest(companyId, "Acme Supplies AB", "556677-8899", "INV-1001", 1250m, "SEK", "email-1", "att-1"),
++                CancellationToken.None);
++
++            Assert.True(result.IsDuplicate);
++            Assert.NotEmpty(result.MatchedBillIds);
++            Assert.Equal(1, await db.BillDuplicateChecks.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
++        }
++    }
++
++    private static DocumentExtractionService CreateService(IBillDuplicateCheckRepository duplicateRepository) =>
++        new(
++            [new EmailBodyTextExtractor(), new DocxDocumentTextExtractor(), new PdfDocumentTextExtractor()],
++            duplicateRepository,
++            TimeProvider.System);
++
++    private static MemoryStream TextStream(string text) => new(Encoding.UTF8.GetBytes(text));
++
++    private static string SampleInvoiceText() =>
++        """
++        Supplier: Acme Supplies AB
++        Org number: 556677-8899
++        Invoice number: INV-1001
++        Invoice date: 2026-04-10
++        Due date: 2026-05-10
++        Total: 1250 SEK
++        VAT: 250
++        OCR: 1234567890
++        Bankgiro: 123-4567
++        IBAN: DE89370400440532013000
++        BIC: DEUTDEFF
++        """;
++
++    private static MemoryStream CreateDocx(string text)
++    {
++        var stream = new MemoryStream();
++        using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
++        {
++            var entry = archive.CreateEntry("word/document.xml");
++            using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
++            writer.Write("<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>");
++            foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
++            {
++                writer.Write($"<w:p><w:r><w:t>{System.Security.SecurityElement.Escape(line.Trim())}</w:t></w:r></w:p>");
++            }
++            writer.Write("</w:body></w:document>");
++        }
++
++        stream.Position = 0;
++        return stream;
++    }
++
++    private sealed class FakeDuplicateRepository : IBillDuplicateCheckRepository
++    {
++        private readonly bool _isDuplicate;
++
++        public FakeDuplicateRepository(bool isDuplicate)
++        {
++            _isDuplicate = isDuplicate;
++        }
++
++        public Task<BillDuplicateCheckResult> CheckAndPersistAsync(BillDuplicateCheckRequest request, CancellationToken cancellationToken) =>
++            Task.FromResult(new BillDuplicateCheckResult(
++                Guid.NewGuid(),
++                _isDuplicate,
++                _isDuplicate ? [Guid.NewGuid()] : [],
++                "test criteria",
++                DateTime.UtcNow));
++    }
++}
+END_OF_PATCH

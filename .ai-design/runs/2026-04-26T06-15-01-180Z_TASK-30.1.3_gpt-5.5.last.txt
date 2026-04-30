@@ -1,0 +1,501 @@
+diff --git a/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs b/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs
+index 2b6f7d1..aa2f6a9 100644
+--- a/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs
++++ b/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs
+@@ -14,7 +14,7 @@ public sealed record CompleteMailboxOAuthConnectionCommand(
+ public sealed record TriggerManualMailboxScanCommand(
+     Guid CompanyId,
+     Guid UserId,
+-    Guid MailboxConnectionId);
++    Guid? MailboxConnectionId = null);
+ 
+ public sealed record MailboxOAuthStartResult(
+     MailboxProvider Provider,
+@@ -37,7 +37,8 @@ public sealed record ManualMailboxScanResult(
+     DateTime ScanToUtc,
+     int ScannedMessageCount,
+     int DetectedCandidateCount,
+-    string? FailureDetails);
++    string? FailureDetails,
++    string Status = "completed");
+ 
+ public sealed record MailboxOAuthState(
+     Guid CompanyId,
+@@ -70,6 +71,14 @@ public sealed record MailboxMessageSummary(
+     string? BodyPreview,
+     IReadOnlyCollection<string> AttachmentFileNames);
+ 
++public sealed record ManualInboxBillScanJob(
++    Guid CompanyId,
++    Guid UserId,
++    Guid MailboxConnectionId,
++    Guid EmailIngestionRunId,
++    DateTime ScanFromUtc,
++    DateTime ScanToUtc);
++
+ public interface IMailboxConnectionService
+ {
+     Task<MailboxOAuthStartResult> StartOAuthConnectionAsync(StartMailboxOAuthConnectionCommand command, CancellationToken cancellationToken);
+@@ -77,6 +86,16 @@ public interface IMailboxConnectionService
+     Task<ManualMailboxScanResult> TriggerManualScanAsync(TriggerManualMailboxScanCommand command, CancellationToken cancellationToken);
+ }
+ 
++public interface IManualInboxBillScanJobScheduler
++{
++    Task EnqueueManualScanAsync(ManualInboxBillScanJob job, CancellationToken cancellationToken);
++}
++
++public interface IManualInboxBillScanOrchestrator
++{
++    Task ExecuteManualScanAsync(ManualInboxBillScanJob job, CancellationToken cancellationToken);
++}
++
+ public interface IMailboxOAuthStateProtector
+ {
+     string Protect(MailboxOAuthState state);
+@@ -123,7 +142,7 @@ public static class MailboxBillKeywordFilter
+         "plusgiro"
+     ];
+ 
+-    public static bool IsBillCandidate(MailboxMessageSummary message) =>
++    public static bool IsBillCandidate(MailboxMessageSummary message) =>
+         RequiredKeywords.Any(keyword => Contains(message.Subject, keyword) || Contains(message.Snippet, keyword) ||
+             Contains(message.BodyPreview, keyword) || message.AttachmentFileNames.Any(name => Contains(name, keyword)));
+ 
+diff --git a/src/VirtualCompany.Api/Controllers/MailboxConnectionsController.cs b/src/VirtualCompany.Api/Controllers/MailboxConnectionsController.cs
+index 7b74534..f09020c 100644
+--- a/src/VirtualCompany.Api/Controllers/MailboxConnectionsController.cs
++++ b/src/VirtualCompany.Api/Controllers/MailboxConnectionsController.cs
+@@ -77,13 +77,27 @@ public sealed class MailboxConnectionsController : ControllerBase
+         return Ok(result);
+     }
+ 
++    [HttpPost("scan")]
++    public async Task<ActionResult<ManualMailboxScanResult>> ScanCurrentUserMailboxAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var userId = ResolveUserId();
++        var result = await _mailboxConnectionService.TriggerManualScanAsync(
++            new TriggerManualMailboxScanCommand(companyId, userId),
++            cancellationToken);
++
++        return AcceptedAtAction(nameof(ScanCurrentUserMailboxAsync), new { companyId }, result);
++    }
++
+     [HttpPost("{mailboxConnectionId:guid}/scan")]
+     public async Task<ActionResult<ManualMailboxScanResult>> ScanAsync(
+         Guid companyId,
+         Guid mailboxConnectionId,
+         CancellationToken cancellationToken)
+     {
+         var userId = ResolveUserId();
+-        return Ok(await _mailboxConnectionService.TriggerManualScanAsync(
++        var result = await _mailboxConnectionService.TriggerManualScanAsync(
+             new TriggerManualMailboxScanCommand(companyId, userId, mailboxConnectionId),
+-            cancellationToken));
++            cancellationToken);
++        return AcceptedAtAction(nameof(ScanAsync), new { companyId, mailboxConnectionId }, result);
+     }
+ 
+     private Guid ResolveUserId() =>
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs b/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
+index 1a0a1d1..4b53b6c 100644
+--- a/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
++++ b/src/VirtualCompany.Infrastructure/Mailbox/CompanyMailboxConnectionService.cs
+@@ -13,13 +13,12 @@ namespace VirtualCompany.Infrastructure.Mailbox;
+ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
+ {
+     private static readonly TimeSpan OAuthStateTtl = TimeSpan.FromMinutes(10);
+-    private static readonly TimeSpan ManualScanWindow = TimeSpan.FromDays(30);
++    public static readonly TimeSpan ManualScanWindow = TimeSpan.FromDays(30);
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyContextAccessor _companyContextAccessor;
+     private readonly IMailboxOAuthStateProtector _stateProtector;
+     private readonly IMailboxProviderRegistry _providerRegistry;
+     private readonly IFieldEncryptionService _fieldEncryption;
++    private readonly IManualInboxBillScanJobScheduler _scanJobScheduler;
+     private readonly TimeProvider _timeProvider;
+     private readonly ILogger<CompanyMailboxConnectionService> _logger;
+ 
+@@ -30,6 +29,7 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
+         IMailboxOAuthStateProtector stateProtector,
+         IMailboxProviderRegistry providerRegistry,
+         IFieldEncryptionService fieldEncryption,
++        IManualInboxBillScanJobScheduler scanJobScheduler,
+         TimeProvider timeProvider,
+         ILogger<CompanyMailboxConnectionService> logger)
+     {
+@@ -39,6 +39,7 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
+         _stateProtector = stateProtector;
+         _providerRegistry = providerRegistry;
+         _fieldEncryption = fieldEncryption;
++        _scanJobScheduler = scanJobScheduler;
+         _timeProvider = timeProvider;
+         _logger = logger;
+     }
+@@ -142,12 +143,18 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
+         CancellationToken cancellationToken)
+     {
+         EnsureCurrentTenantUser(command.CompanyId, command.UserId);
+-        var connection = await _dbContext.MailboxConnections
+-            .SingleOrDefaultAsync(
++        var query = _dbContext.MailboxConnections
++            .Where(
+                 x => x.CompanyId == command.CompanyId &&
+-                    x.UserId == command.UserId &&
+-                    x.Id == command.MailboxConnectionId,
+-                cancellationToken);
++                    x.UserId == command.UserId);
++
++        if (command.MailboxConnectionId.HasValue)
++        {
++            query = query.Where(x => x.Id == command.MailboxConnectionId.Value);
++        }
++
++        var connection = await query
++            .OrderByDescending(x => x.UpdatedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
+ 
+         if (connection is null)
+         {
+@@ -177,52 +184,17 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
+         _dbContext.EmailIngestionRuns.Add(run);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+-        var scanned = 0;
+-        var detected = 0;
+-        try
+-        {
+-            var accessToken = _fieldEncryption.Decrypt(
+-                command.CompanyId,
+-                BuildTokenPurpose(connection.Provider, "access_token"),
+-                connection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
+-
+-            var messages = await _providerRegistry.Resolve(connection.Provider).ListMessagesAsync(
+-                accessToken,
+-                new MailboxMessageQuery(scanFromUtc, scanToUtc, NormalizeFolders(connection.ConfiguredFolders, connection.Provider)),
+-                cancellationToken);
+-
+-            scanned = messages.Count;
+-            detected = messages.Count(MailboxBillKeywordFilter.IsBillCandidate);
+-            var completedUtc = UtcNow();
+-            run.Complete(completedUtc, scanned, detected);
+-            connection.MarkScanSucceeded(completedUtc);
+-            await _dbContext.SaveChangesAsync(cancellationToken);
+-
+-            _logger.LogInformation(
+-                "Manual mailbox scan completed. CompanyId: {CompanyId}. Provider: {Provider}. ConnectionId: {ConnectionId}. RunId: {RunId}. Scanned: {Scanned}. Candidates: {Candidates}.",
+-                command.CompanyId,
+-                connection.Provider,
+-                connection.Id,
+-                run.Id,
+-                scanned,
+-                detected);
+-        }
+-        catch (Exception ex)
+-        {
+-            var completedUtc = UtcNow();
+-            var failure = ex.Message.Length > 1000 ? ex.Message[..1000] : ex.Message;
+-            run.Fail(completedUtc, scanned, detected, failure);
+-            connection.SetStatus(MailboxConnectionStatus.Failed, failure);
+-            await _dbContext.SaveChangesAsync(cancellationToken);
+-            _logger.LogWarning(
+-                ex,
+-                "Manual mailbox scan failed. CompanyId: {CompanyId}. Provider: {Provider}. ConnectionId: {ConnectionId}. RunId: {RunId}.",
+-                command.CompanyId,
+-                connection.Provider,
+-                connection.Id,
+-                run.Id);
+-        }
++        await _scanJobScheduler.EnqueueManualScanAsync(
++            new ManualInboxBillScanJob(command.CompanyId, command.UserId, connection.Id, run.Id, scanFromUtc, scanToUtc),
++            cancellationToken);
++
++        var completedRun = await _dbContext.EmailIngestionRuns
++            .AsNoTracking()
++            .SingleAsync(x => x.CompanyId == command.CompanyId && x.Id == run.Id, cancellationToken);
+ 
+         return new ManualMailboxScanResult(
+-            run.Id,
++            completedRun.Id,
+             connection.Id,
+             scanFromUtc,
+             scanToUtc,
+-            run.ScannedMessageCount,
+-            run.DetectedCandidateCount,
+-            run.FailureDetails);
++            completedRun.ScannedMessageCount,
++            completedRun.DetectedCandidateCount,
++            completedRun.FailureDetails,
++            completedRun.CompletedUtc.HasValue ? "completed" : "started");
+     }
+ 
+     private void EnsureCurrentTenantUser(Guid companyId, Guid userId)
+@@ -236,7 +208,7 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
+ 
+     private DateTime UtcNow() => _timeProvider.GetUtcNow().UtcDateTime;
+ 
+-    private static IReadOnlyCollection<MailboxFolderSelection> NormalizeFolders(
++    public static IReadOnlyCollection<MailboxFolderSelection> NormalizeFolders(
+         IReadOnlyCollection<MailboxFolderSelection>? folders,
+         MailboxProvider provider)
+     {
+@@ -249,6 +221,6 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
+         return [new MailboxFolderSelection(provider == MailboxProvider.Gmail ? "INBOX" : "inbox", "Inbox")];
+     }
+ 
+-    private static string BuildTokenPurpose(MailboxProvider provider, string tokenKind) =>
++    public static string BuildTokenPurpose(MailboxProvider provider, string tokenKind) =>
+         $"mailbox:{provider.ToStorageValue()}:{tokenKind}";
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/ManualInboxBillScanOrchestration.cs b/src/VirtualCompany.Infrastructure/Mailbox/ManualInboxBillScanOrchestration.cs
+new file mode 100644
+index 0000000..1d8f366
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Mailbox/ManualInboxBillScanOrchestration.cs
+@@ -0,0 +1,126 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Mailbox;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Security;
++
++namespace VirtualCompany.Infrastructure.Mailbox;
++
++public sealed class InlineManualInboxBillScanJobScheduler : IManualInboxBillScanJobScheduler
++{
++    private readonly IManualInboxBillScanOrchestrator _orchestrator;
++
++    public InlineManualInboxBillScanJobScheduler(IManualInboxBillScanOrchestrator orchestrator)
++    {
++        _orchestrator = orchestrator;
++    }
++
++    public Task EnqueueManualScanAsync(ManualInboxBillScanJob job, CancellationToken cancellationToken) =>
++        _orchestrator.ExecuteManualScanAsync(job, cancellationToken);
++}
++
++public sealed class ScopedManualInboxBillScanJobScheduler : IManualInboxBillScanJobScheduler
++{
++    private readonly IServiceScopeFactory _scopeFactory;
++    private readonly ILogger<ScopedManualInboxBillScanJobScheduler> _logger;
++
++    public ScopedManualInboxBillScanJobScheduler(
++        IServiceScopeFactory scopeFactory,
++        ILogger<ScopedManualInboxBillScanJobScheduler> logger)
++    {
++        _scopeFactory = scopeFactory;
++        _logger = logger;
++    }
++
++    public Task EnqueueManualScanAsync(ManualInboxBillScanJob job, CancellationToken cancellationToken)
++    {
++        _ = Task.Run(async () =>
++        {
++            try
++            {
++                using var scope = _scopeFactory.CreateScope();
++                var orchestrator = scope.ServiceProvider.GetRequiredService<IManualInboxBillScanOrchestrator>();
++                await orchestrator.ExecuteManualScanAsync(job, CancellationToken.None);
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(
++                    ex,
++                    "Manual mailbox scan background job failed before completion. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}. RunId: {RunId}.",
++                    job.CompanyId,
++                    job.MailboxConnectionId,
++                    job.EmailIngestionRunId);
++            }
++        }, cancellationToken);
++
++        return Task.CompletedTask;
++    }
++}
++
++public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillScanOrchestrator
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IMailboxProviderRegistry _providerRegistry;
++    private readonly IFieldEncryptionService _fieldEncryption;
++    private readonly TimeProvider _timeProvider;
++    private readonly ILogger<CompanyManualInboxBillScanOrchestrator> _logger;
++
++    public CompanyManualInboxBillScanOrchestrator(
++        VirtualCompanyDbContext dbContext,
++        IMailboxProviderRegistry providerRegistry,
++        IFieldEncryptionService fieldEncryption,
++        TimeProvider timeProvider,
++        ILogger<CompanyManualInboxBillScanOrchestrator> logger)
++    {
++        _dbContext = dbContext;
++        _providerRegistry = providerRegistry;
++        _fieldEncryption = fieldEncryption;
++        _timeProvider = timeProvider;
++        _logger = logger;
++    }
++
++    public async Task ExecuteManualScanAsync(ManualInboxBillScanJob job, CancellationToken cancellationToken)
++    {
++        var run = await _dbContext.EmailIngestionRuns
++            .SingleAsync(x => x.CompanyId == job.CompanyId && x.Id == job.EmailIngestionRunId, cancellationToken);
++        var connection = await _dbContext.MailboxConnections
++            .SingleAsync(
++                x => x.CompanyId == job.CompanyId &&
++                    x.UserId == job.UserId &&
++                    x.Id == job.MailboxConnectionId,
++                cancellationToken);
++
++        var scanToUtc = job.ScanToUtc;
++        var minimumScanFromUtc = scanToUtc.Subtract(CompanyMailboxConnectionService.ManualScanWindow);
++        var scanFromUtc = job.ScanFromUtc < minimumScanFromUtc ? minimumScanFromUtc : job.ScanFromUtc;
++        var scanned = 0;
++        var detected = 0;
++
++        try
++        {
++            if (connection.Status != MailboxConnectionStatus.Active)
++            {
++                throw new InvalidOperationException("Mailbox connection is not active.");
++            }
++
++            var accessToken = _fieldEncryption.Decrypt(
++                job.CompanyId,
++                CompanyMailboxConnectionService.BuildTokenPurpose(connection.Provider, "access_token"),
++                connection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
++
++            var messages = await _providerRegistry.Resolve(connection.Provider).ListMessagesAsync(
++                accessToken,
++                new MailboxMessageQuery(
++                    scanFromUtc,
++                    scanToUtc,
++                    CompanyMailboxConnectionService.NormalizeFolders(connection.ConfiguredFolders, connection.Provider)),
++                cancellationToken);
++
++            scanned = messages.Count;
++            detected = messages.Count(MailboxBillKeywordFilter.IsBillCandidate);
++            var completedUtc = _timeProvider.GetUtcNow().UtcDateTime;
++            run.Complete(completedUtc, scanned, detected);
++            connection.MarkScanSucceeded(completedUtc);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++
++            _logger.LogInformation(
++                "Manual mailbox bill scan completed. CompanyId: {CompanyId}. Provider: {Provider}. ConnectionId: {ConnectionId}. RunId: {RunId}. Scanned: {Scanned}. Candidates: {Candidates}.",
++                job.CompanyId,
++                connection.Provider,
++                connection.Id,
++                run.Id,
++                scanned,
++                detected);
++        }
++        catch (Exception ex)
++        {
++            var completedUtc = _timeProvider.GetUtcNow().UtcDateTime;
++            var failure = ex.Message.Length > 1000 ? ex.Message[..1000] : ex.Message;
++            run.Fail(completedUtc, scanned, detected, failure);
++            connection.SetStatus(MailboxConnectionStatus.Failed, failure);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++
++            _logger.LogWarning(
++                ex,
++                "Manual mailbox bill scan failed. CompanyId: {CompanyId}. Provider: {Provider}. ConnectionId: {ConnectionId}. RunId: {RunId}.",
++                job.CompanyId,
++                connection.Provider,
++                connection.Id,
++                run.Id);
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 2359851..0e7c604 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -315,6 +315,8 @@ public static class DependencyInjection
+         services.AddScoped<IMailboxProviderClient>(provider => provider.GetRequiredService<Microsoft365MailboxProviderClient>());
+         services.AddScoped<IMailboxProviderRegistry, MailboxProviderRegistry>();
+         services.AddScoped<IMailboxConnectionService, CompanyMailboxConnectionService>();
++        services.AddScoped<IManualInboxBillScanOrchestrator, CompanyManualInboxBillScanOrchestrator>();
++        services.AddScoped<IManualInboxBillScanJobScheduler, InlineManualInboxBillScanJobScheduler>();
+         services.AddScoped<IEmbeddingGenerator, OpenAiCompatibleEmbeddingGenerator>();
+         services.AddScoped<IKnowledgeAccessPolicyEvaluator, KnowledgeAccessPolicyEvaluator>();
+         services.AddScoped<ICompanyKnowledgeIndexingProcessor, CompanyKnowledgeIndexingProcessor>();
+diff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
+index 22194e6..815c932 100644
+--- a/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionFlowTests.cs
+@@ -104,6 +104,42 @@ public sealed class MailboxConnectionFlowTests
+         Assert.Equal(0, await dbContext.ApprovalRequests.CountAsync());
+     }
+ 
++    [Fact]
++    public async Task Manual_scan_can_start_for_current_users_active_connection_without_client_supplied_connection_id()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var provider = new FakeProvider(MailboxProvider.Gmail)
++        {
++            Messages =
++            [
++                new MailboxMessageSummary("1", "Amount due", null, null, [])
++            ]
++        };
++        var service = CreateService(connection, companyId, userId, provider);
++        await SeedConnectedMailboxAsync(connection, companyId, userId, MailboxProvider.Gmail);
++
++        var result = await service.TriggerManualScanAsync(
++            new TriggerManualMailboxScanCommand(companyId, userId),
++            CancellationToken.None);
++
++        Assert.NotEqual(Guid.Empty, result.MailboxConnectionId);
++        Assert.Equal(1, result.ScannedMessageCount);
++        Assert.Equal(1, result.DetectedCandidateCount);
++        Assert.Equal("completed", result.Status);
++    }
++
++    [Fact]
++    public async Task Manual_scan_is_rejected_when_current_user_has_no_connection()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var provider = new FakeProvider(MailboxProvider.Gmail);
++        var service = CreateService(connection, companyId, userId, provider);
++
++        await Assert.ThrowsAsync<KeyNotFoundException>(() => service.TriggerManualScanAsync(
++            new TriggerManualMailboxScanCommand(companyId, userId),
++            CancellationToken.None));
++    }
++
+     [Fact]
+     public async Task Manual_scan_failure_still_persists_ingestion_run()
+     {
+@@ -161,7 +197,14 @@ public sealed class MailboxConnectionFlowTests
+             new TestCompanyContextAccessor(companyId, userId),
+             new DataProtectionMailboxOAuthStateProtector(new EphemeralDataProtectionProvider()),
+             new FakeProviderRegistry(provider),
+-            new DataProtectionFieldEncryptionService(new EphemeralDataProtectionProvider()),
++            CreateEncryption(),
++            new InlineManualInboxBillScanJobScheduler(new CompanyManualInboxBillScanOrchestrator(
++                CreateContext(connection, new TestCompanyContextAccessor(companyId, userId)),
++                new FakeProviderRegistry(provider),
++                CreateEncryption(),
++                new FakeTimeProvider(nowUtc ?? new DateTime(2026, 4, 26, 8, 0, 0, DateTimeKind.Utc)),
++                NullLogger<CompanyManualInboxBillScanOrchestrator>.Instance)),
+             new FakeTimeProvider(nowUtc ?? new DateTime(2026, 4, 26, 8, 0, 0, DateTimeKind.Utc)),
+             NullLogger<CompanyMailboxConnectionService>.Instance);
+ 
+@@ -174,6 +217,9 @@ public sealed class MailboxConnectionFlowTests
+     private static VirtualCompanyDbContext CreateContext(SqliteConnection connection, ICompanyContextAccessor accessor) =>
+         new(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options, accessor);
+ 
++    private static DataProtectionFieldEncryptionService CreateEncryption() =>
++        new(new EphemeralDataProtectionProvider());
++
+     private sealed class FakeProviderRegistry : IMailboxProviderRegistry
+     {
+         private readonly FakeProvider _provider;
+END_OF_PATCH

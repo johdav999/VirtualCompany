@@ -1,0 +1,1142 @@
+diff --git a/src/VirtualCompany.Domain/Entities/MailboxConnectionEntities.cs b/src/VirtualCompany.Domain/Entities/MailboxConnectionEntities.cs
+new file mode 100644
+index 0000000..f4b5a6c
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/MailboxConnectionEntities.cs
+@@ -0,0 +1,270 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class MailboxConnection : ICompanyOwnedEntity
++{
++    private MailboxConnection()
++    {
++    }
++
++    public MailboxConnection(
++        Guid id,
++        Guid companyId,
++        Guid userId,
++        MailboxProvider provider,
++        string emailAddress,
++        string? displayName = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (userId == Guid.Empty)
++        {
++            throw new ArgumentException("UserId is required.", nameof(userId));
++        }
++
++        MailboxProviderValues.EnsureSupported(provider, nameof(provider));
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        UserId = userId;
++        Provider = provider;
++        Status = MailboxConnectionStatus.Pending;
++        EmailAddress = NormalizeEmail(emailAddress);
++        DisplayName = NormalizeOptional(displayName, nameof(displayName), 200);
++        GrantedScopes = [];
++        ConfiguredFolders = [];
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid UserId { get; private set; }
++    public MailboxProvider Provider { get; private set; }
++    public MailboxConnectionStatus Status { get; private set; }
++    public string EmailAddress { get; private set; } = null!;
++    public string? DisplayName { get; private set; }
++    public string? MailboxExternalId { get; private set; }
++    public string? EncryptedAccessToken { get; private set; }
++    public string? EncryptedRefreshToken { get; private set; }
++    public string? EncryptedCredentialEnvelope { get; private set; }
++    public DateTime? AccessTokenExpiresUtc { get; private set; }
++    public List<string> GrantedScopes { get; private set; } = [];
++    public List<MailboxFolderSelection> ConfiguredFolders { get; private set; } = [];
++    public JsonObject ProviderMetadata { get; private set; } = [];
++    public DateTime? LastSuccessfulScanUtc { get; private set; }
++    public string? LastErrorSummary { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User User { get; private set; } = null!;
++    public ICollection<EmailIngestionRun> IngestionRuns { get; } = new List<EmailIngestionRun>();
++
++    public void UpdateMailboxProfile(string emailAddress, string? displayName, string? mailboxExternalId = null)
++    {
++        EmailAddress = NormalizeEmail(emailAddress);
++        DisplayName = NormalizeOptional(displayName, nameof(displayName), 200);
++        MailboxExternalId = NormalizeOptional(mailboxExternalId, nameof(mailboxExternalId), 256);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void StoreEncryptedCredentials(
++        string? encryptedAccessToken,
++        string? encryptedRefreshToken,
++        DateTime? accessTokenExpiresUtc,
++        IReadOnlyCollection<string>? grantedScopes,
++        string? encryptedCredentialEnvelope = null)
++    {
++        EncryptedAccessToken = NormalizeOptional(encryptedAccessToken, nameof(encryptedAccessToken), 4096);
++        EncryptedRefreshToken = NormalizeOptional(encryptedRefreshToken, nameof(encryptedRefreshToken), 4096);
++        EncryptedCredentialEnvelope = NormalizeOptional(encryptedCredentialEnvelope, nameof(encryptedCredentialEnvelope), 8192);
++        AccessTokenExpiresUtc = accessTokenExpiresUtc.HasValue
++            ? EntityTimestampNormalizer.NormalizeUtc(accessTokenExpiresUtc.Value, nameof(accessTokenExpiresUtc))
++            : null;
++        GrantedScopes = NormalizeStringList(grantedScopes, nameof(grantedScopes), 256);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void ConfigureFolders(IReadOnlyCollection<MailboxFolderSelection>? configuredFolders)
++    {
++        ConfiguredFolders = configuredFolders?
++            .Select(folder => folder.Normalize())
++            .Where(folder => !string.IsNullOrWhiteSpace(folder.ProviderFolderId))
++            .GroupBy(folder => folder.ProviderFolderId, StringComparer.OrdinalIgnoreCase)
++            .Select(group => group.First())
++            .ToList() ?? [];
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void SetStatus(MailboxConnectionStatus status, string? errorSummary = null)
++    {
++        MailboxConnectionStatusValues.EnsureSupported(status, nameof(status));
++        Status = status;
++        LastErrorSummary = NormalizeOptional(errorSummary, nameof(errorSummary), 1000);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkScanSucceeded(DateTime completedUtc)
++    {
++        LastSuccessfulScanUtc = EntityTimestampNormalizer.NormalizeUtc(completedUtc, nameof(completedUtc));
++        LastErrorSummary = null;
++        UpdatedUtc = LastSuccessfulScanUtc.Value;
++    }
++
++    private static List<string> NormalizeStringList(IReadOnlyCollection<string>? values, string name, int maxLength) =>
++        values?
++            .Where(value => !string.IsNullOrWhiteSpace(value))
++            .Select(value => NormalizeRequired(value, name, maxLength))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToList() ?? [];
++
++    private static string NormalizeEmail(string value)
++    {
++        var normalized = NormalizeRequired(value, nameof(value), 256).ToLowerInvariant();
++        if (!normalized.Contains('@', StringComparison.Ordinal))
++        {
++            throw new ArgumentException("Mailbox email address must be valid.", nameof(value));
++        }
++
++        return normalized;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
++
++public sealed class EmailIngestionRun : ICompanyOwnedEntity
++{
++    private EmailIngestionRun()
++    {
++    }
++
++    public EmailIngestionRun(
++        Guid id,
++        Guid companyId,
++        Guid mailboxConnectionId,
++        Guid triggeredByUserId,
++        MailboxProvider provider,
++        DateTime startedUtc,
++        DateTime? scanFromUtc = null,
++        DateTime? scanToUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (mailboxConnectionId == Guid.Empty)
++        {
++            throw new ArgumentException("MailboxConnectionId is required.", nameof(mailboxConnectionId));
++        }
++
++        if (triggeredByUserId == Guid.Empty)
++        {
++            throw new ArgumentException("TriggeredByUserId is required.", nameof(triggeredByUserId));
++        }
++
++        MailboxProviderValues.EnsureSupported(provider, nameof(provider));
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        MailboxConnectionId = mailboxConnectionId;
++        TriggeredByUserId = triggeredByUserId;
++        Provider = provider;
++        StartedUtc = EntityTimestampNormalizer.NormalizeUtc(startedUtc, nameof(startedUtc));
++        ScanFromUtc = scanFromUtc.HasValue ? EntityTimestampNormalizer.NormalizeUtc(scanFromUtc.Value, nameof(scanFromUtc)) : null;
++        ScanToUtc = scanToUtc.HasValue ? EntityTimestampNormalizer.NormalizeUtc(scanToUtc.Value, nameof(scanToUtc)) : null;
++        CreatedUtc = StartedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid MailboxConnectionId { get; private set; }
++    public Guid TriggeredByUserId { get; private set; }
++    public MailboxProvider Provider { get; private set; }
++    public DateTime StartedUtc { get; private set; }
++    public DateTime? CompletedUtc { get; private set; }
++    public DateTime? ScanFromUtc { get; private set; }
++    public DateTime? ScanToUtc { get; private set; }
++    public int ScannedMessageCount { get; private set; }
++    public int DetectedCandidateCount { get; private set; }
++    public string? FailureDetails { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public MailboxConnection MailboxConnection { get; private set; } = null!;
++    public User TriggeredByUser { get; private set; } = null!;
++
++    public void Complete(DateTime completedUtc, int scannedMessageCount, int detectedCandidateCount)
++    {
++        if (scannedMessageCount < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(scannedMessageCount), "Scanned message count cannot be negative.");
++        }
++
++        if (detectedCandidateCount < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(detectedCandidateCount), "Detected candidate count cannot be negative.");
++        }
++
++        CompletedUtc = EntityTimestampNormalizer.NormalizeUtc(completedUtc, nameof(completedUtc));
++        ScannedMessageCount = scannedMessageCount;
++        DetectedCandidateCount = detectedCandidateCount;
++        FailureDetails = null;
++    }
++
++    public void Fail(DateTime completedUtc, int scannedMessageCount, int detectedCandidateCount, string failureDetails)
++    {
++        Complete(completedUtc, scannedMessageCount, detectedCandidateCount);
++        FailureDetails = string.IsNullOrWhiteSpace(failureDetails)
++            ? "Manual mailbox scan failed."
++            : failureDetails.Trim();
++    }
++}
++
++public sealed record MailboxFolderSelection(
++    string ProviderFolderId,
++    string? DisplayName = null,
++    MailboxFolderSelectionMode Mode = MailboxFolderSelectionMode.Include)
++{
++    public MailboxFolderSelection Normalize()
++    {
++        MailboxFolderSelectionModeValues.EnsureSupported(Mode, nameof(Mode));
++
++        return this with
++        {
++            ProviderFolderId = string.IsNullOrWhiteSpace(ProviderFolderId) ? string.Empty : ProviderFolderId.Trim(),
++            DisplayName = string.IsNullOrWhiteSpace(DisplayName) ? null : DisplayName.Trim()
++        };
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Enums/MailboxConnectionEnums.cs b/src/VirtualCompany.Domain/Enums/MailboxConnectionEnums.cs
+new file mode 100644
+index 0000000..d95a2a4
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/MailboxConnectionEnums.cs
+@@ -0,0 +1,140 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum MailboxProvider
++{
++    Gmail = 1,
++    Microsoft365 = 2
++}
++
++public enum MailboxConnectionStatus
++{
++    Pending = 1,
++    Active = 2,
++    TokenExpired = 3,
++    Revoked = 4,
++    Failed = 5,
++    Disconnected = 6
++}
++
++public enum MailboxFolderSelectionMode
++{
++    Include = 1,
++    Exclude = 2
++}
++
++public static class MailboxProviderValues
++{
++    public const string Gmail = "gmail";
++    public const string Microsoft365 = "microsoft365";
++
++    private static readonly string[] AllowedStorageValues =
++    [
++        Gmail,
++        Microsoft365
++    ];
++
++    public static IReadOnlyList<string> AllowedValues => AllowedStorageValues;
++
++    public static string ToStorageValue(this MailboxProvider provider) =>
++        provider switch
++        {
++            MailboxProvider.Gmail => Gmail,
++            MailboxProvider.Microsoft365 => Microsoft365,
++            _ => throw new ArgumentOutOfRangeException(nameof(provider), "Unsupported mailbox provider.")
++        };
++
++    public static MailboxProvider Parse(string value) =>
++        Normalize(value) switch
++        {
++            Gmail => MailboxProvider.Gmail,
++            Microsoft365 => MailboxProvider.Microsoft365,
++            _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported mailbox provider.")
++        };
++
++    public static void EnsureSupported(MailboxProvider provider, string parameterName)
++    {
++        if (!Enum.IsDefined(provider))
++        {
++            throw new ArgumentOutOfRangeException(parameterName, "Unsupported mailbox provider.");
++        }
++    }
++
++    public static string BuildCheckConstraintSql(string columnName) => BuildCheckConstraintSql(columnName, AllowedValues);
++
++    private static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace(" ", string.Empty).Replace("-", string.Empty).Replace("_", string.Empty).ToLowerInvariant();
++
++    private static string BuildCheckConstraintSql(string columnName, IReadOnlyList<string> allowedValues)
++    {
++        if (string.IsNullOrWhiteSpace(columnName))
++        {
++            throw new ArgumentException("Column name is required.", nameof(columnName));
++        }
++
++        return $"{columnName} IN ({string.Join(", ", allowedValues.Select(value => $"'{value}'"))})";
++    }
++}
++
++public static class MailboxConnectionStatusValues
++{
++    public const string Pending = "pending";
++    public const string Active = "active";
++    public const string TokenExpired = "token_expired";
++    public const string Revoked = "revoked";
++    public const string Failed = "failed";
++    public const string Disconnected = "disconnected";
++
++    private static readonly string[] AllowedStorageValues =
++    [
++        Pending,
++        Active,
++        TokenExpired,
++        Revoked,
++        Failed,
++        Disconnected
++    ];
++
++    public static IReadOnlyList<string> AllowedValues => AllowedStorageValues;
++
++    public static string ToStorageValue(this MailboxConnectionStatus status) =>
++        status switch
++        {
++            MailboxConnectionStatus.Pending => Pending,
++            MailboxConnectionStatus.Active => Active,
++            MailboxConnectionStatus.TokenExpired => TokenExpired,
++            MailboxConnectionStatus.Revoked => Revoked,
++            MailboxConnectionStatus.Failed => Failed,
++            MailboxConnectionStatus.Disconnected => Disconnected,
++            _ => throw new ArgumentOutOfRangeException(nameof(status), "Unsupported mailbox connection status.")
++        };
++
++    public static MailboxConnectionStatus Parse(string value) =>
++        Normalize(value) switch
++        {
++            Pending => MailboxConnectionStatus.Pending,
++            Active => MailboxConnectionStatus.Active,
++            TokenExpired => MailboxConnectionStatus.TokenExpired,
++            Revoked => MailboxConnectionStatus.Revoked,
++            Failed => MailboxConnectionStatus.Failed,
++            Disconnected => MailboxConnectionStatus.Disconnected,
++            _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported mailbox connection status.")
++        };
++
++    public static void EnsureSupported(MailboxConnectionStatus status, string parameterName)
++    {
++        if (!Enum.IsDefined(status))
++        {
++            throw new ArgumentOutOfRangeException(parameterName, "Unsupported mailbox connection status.");
++        }
++    }
++
++    public static string BuildCheckConstraintSql(string columnName)
++    {
++        if (string.IsNullOrWhiteSpace(columnName))
++        {
++            throw new ArgumentException("Column name is required.", nameof(columnName));
++        }
++
++        return $"{columnName} IN ({string.Join(", ", AllowedValues.Select(value => $"'{value}'"))})";
++    }
++
++    private static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? string.Empty
++            : value.Trim().Replace("-", "_").Replace(" ", "_").ToLowerInvariant();
++}
++
++public static class MailboxFolderSelectionModeValues
++{
++    public static void EnsureSupported(MailboxFolderSelectionMode mode, string parameterName)
++    {
++        if (!Enum.IsDefined(mode))
++        {
++            throw new ArgumentOutOfRangeException(parameterName, "Unsupported mailbox folder selection mode.");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 2d1de3a..d3f1b2c 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -18,6 +18,7 @@ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Mobile;
+ using VirtualCompany.Application.Notifications;
+ using VirtualCompany.Application.ProactiveMessaging;
++using VirtualCompany.Infrastructure.Security;
+ using VirtualCompany.Domain.Events;
+ using VirtualCompany.Infrastructure.Activity;
+ using VirtualCompany.Infrastructure.Auditing;
+@@ -56,6 +57,8 @@ public static class DependencyInjection
+ 
+         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+ 
++        services.AddDataProtection();
++        services.TryAddSingleton<IFieldEncryptionService, DataProtectionFieldEncryptionService>();
+         services.AddDbContext<VirtualCompanyDbContext>(options =>
+             ConfigureDatabase(options, connectionString, configuration["Database:Provider"]));
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/MailboxConnectionEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/MailboxConnectionEntityConfiguration.cs
+new file mode 100644
+index 0000000..5c8adf1
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/MailboxConnectionEntityConfiguration.cs
+@@ -0,0 +1,107 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class MailboxConnectionEntityConfiguration : IEntityTypeConfiguration<MailboxConnection>
++{
++    public void Configure(EntityTypeBuilder<MailboxConnection> builder)
++    {
++        builder.ToTable("mailbox_connections");
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_mailbox_connections_provider", MailboxProviderValues.BuildCheckConstraintSql("provider"));
++            t.HasCheckConstraint("CK_mailbox_connections_status", MailboxConnectionStatusValues.BuildCheckConstraintSql("status"));
++        });
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
++        builder.Property(x => x.Provider)
++            .HasColumnName("provider")
++            .HasConversion(provider => provider.ToStorageValue(), value => MailboxProviderValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(status => status.ToStorageValue(), value => MailboxConnectionStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.EmailAddress).HasColumnName("email_address").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.DisplayName).HasColumnName("display_name").HasMaxLength(200);
++        builder.Property(x => x.MailboxExternalId).HasColumnName("mailbox_external_id").HasMaxLength(256);
++        builder.Property(x => x.EncryptedAccessToken).HasColumnName("encrypted_access_token");
++        builder.Property(x => x.EncryptedRefreshToken).HasColumnName("encrypted_refresh_token");
++        builder.Property(x => x.EncryptedCredentialEnvelope).HasColumnName("encrypted_credential_envelope");
++        builder.Property(x => x.AccessTokenExpiresUtc).HasColumnName("access_token_expires_at");
++        builder.Property(x => x.GrantedScopes)
++            .HasColumnName("granted_scopes_json")
++            .HasJsonConversion<List<string>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonArrayDefault)
++            .IsRequired();
++        builder.Property(x => x.ConfiguredFolders)
++            .HasColumnName("configured_folders_json")
++            .HasJsonConversion<List<MailboxFolderSelection>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonArrayDefault)
++            .IsRequired();
++        builder.Property(x => x.ProviderMetadata)
++            .HasColumnName("provider_metadata_json")
++            .HasJsonConversion()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.LastSuccessfulScanUtc).HasColumnName("last_successful_scan_at");
++        builder.Property(x => x.LastErrorSummary).HasColumnName("last_error_summary").HasMaxLength(1000);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.UserId });
++        builder.HasIndex(x => new { x.CompanyId, x.Provider, x.EmailAddress });
++        builder.HasIndex(x => new { x.CompanyId, x.Status });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.User)
++            .WithMany()
++            .HasForeignKey(x => x.UserId)
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class EmailIngestionRunEntityConfiguration : IEntityTypeConfiguration<EmailIngestionRun>
++{
++    public void Configure(EntityTypeBuilder<EmailIngestionRun> builder)
++    {
++        builder.ToTable("email_ingestion_runs");
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_email_ingestion_runs_provider", MailboxProviderValues.BuildCheckConstraintSql("provider"));
++            t.HasCheckConstraint("CK_email_ingestion_runs_scanned_message_count_nonnegative", "scanned_message_count >= 0");
++            t.HasCheckConstraint("CK_email_ingestion_runs_detected_candidate_count_nonnegative", "detected_candidate_count >= 0");
++        });
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.MailboxConnectionId).HasColumnName("mailbox_connection_id").IsRequired();
++        builder.Property(x => x.TriggeredByUserId).HasColumnName("triggered_by_user_id").IsRequired();
++        builder.Property(x => x.Provider)
++            .HasColumnName("provider")
++            .HasConversion(provider => provider.ToStorageValue(), value => MailboxProviderValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.StartedUtc).HasColumnName("started_at").IsRequired();
++        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
++        builder.Property(x => x.ScanFromUtc).HasColumnName("scan_from_at");
++        builder.Property(x => x.ScanToUtc).HasColumnName("scan_to_at");
++        builder.Property(x => x.ScannedMessageCount).HasColumnName("scanned_message_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.DetectedCandidateCount).HasColumnName("detected_candidate_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.FailureDetails).HasColumnName("failure_details").HasMaxLength(4000);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.MailboxConnectionId, x.StartedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.Provider, x.StartedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.TriggeredByUserId, x.StartedUtc });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.MailboxConnection).WithMany(x => x.IngestionRuns).HasForeignKey(x => x.MailboxConnectionId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.TriggeredByUser).WithMany().HasForeignKey(x => x.TriggeredByUserId).OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 17b6481..a7c3d11 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -110,6 +110,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<FinancialStatementMapping> FinancialStatementMappings => Set<FinancialStatementMapping>();
+     public DbSet<CompanySimulationState> CompanySimulationStates => Set<CompanySimulationState>();
+     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
++    public DbSet<MailboxConnection> MailboxConnections => Set<MailboxConnection>();
++    public DbSet<EmailIngestionRun> EmailIngestionRuns => Set<EmailIngestionRun>();
+     public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
+     public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
+     public DbSet<SimulationCashDeltaRecord> SimulationCashDeltaRecords => Set<SimulationCashDeltaRecord>();
+@@ -222,6 +224,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is TrialBalanceSnapshot ||
+                 entry.Entity is FinancialStatementSnapshot ||
+                 entry.Entity is FinancialStatementSnapshotLine ||
++                entry.Entity is MailboxConnection ||
++                entry.Entity is EmailIngestionRun ||
+                 entry.Entity is SimulationCashDeltaRecord ||
+                 entry.Entity is SimulationEventRecord)
+             .Select(entry =>
+@@ -425,6 +429,12 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FinancialStatementSnapshotLine>()
+             .HasQueryFilter(line =>
+                 CurrentCompanyId.HasValue && line.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<MailboxConnection>()
++            .HasQueryFilter(connection =>
++                CurrentCompanyId.HasValue && connection.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<EmailIngestionRun>()
++            .HasQueryFilter(run =>
++                CurrentCompanyId.HasValue && run.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanySimulationState>()
+             .HasQueryFilter(state =>
+                 CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426090000_AddMailboxConnectionPersistence.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426090000_AddMailboxConnectionPersistence.cs
+new file mode 100644
+index 0000000..d19f3fd
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260426090000_AddMailboxConnectionPersistence.cs
+@@ -0,0 +1,147 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddMailboxConnectionPersistence : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "mailbox_connections",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    provider = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    email_address = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
++                    display_name = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
++                    mailbox_external_id = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                    encrypted_access_token = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                    encrypted_refresh_token = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                    encrypted_credential_envelope = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                    access_token_expires_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    granted_scopes_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'[]'"),
++                    configured_folders_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'[]'"),
++                    provider_metadata_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'"),
++                    last_successful_scan_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    last_error_summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_mailbox_connections", x => x.id);
++                    table.UniqueConstraint("AK_mailbox_connections_company_id_id", x => new { x.company_id, x.id });
++                    table.CheckConstraint("CK_mailbox_connections_provider", "provider IN ('gmail', 'microsoft365')");
++                    table.CheckConstraint("CK_mailbox_connections_status", "status IN ('pending', 'active', 'token_expired', 'revoked', 'failed', 'disconnected')");
++                    table.ForeignKey(
++                        name: "FK_mailbox_connections_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_mailbox_connections_users_user_id",
++                        column: x => x.user_id,
++                        principalTable: "users",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "email_ingestion_runs",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    mailbox_connection_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    triggered_by_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    provider = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    started_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    completed_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    scan_from_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    scan_to_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    scanned_message_count = table.Column<int>(type: "int", nullable: false, defaultValue: 0),
++                    detected_candidate_count = table.Column<int>(type: "int", nullable: false, defaultValue: 0),
++                    failure_details = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_email_ingestion_runs", x => x.id);
++                    table.CheckConstraint("CK_email_ingestion_runs_detected_candidate_count_nonnegative", "detected_candidate_count >= 0");
++                    table.CheckConstraint("CK_email_ingestion_runs_provider", "provider IN ('gmail', 'microsoft365')");
++                    table.CheckConstraint("CK_email_ingestion_runs_scanned_message_count_nonnegative", "scanned_message_count >= 0");
++                    table.ForeignKey(
++                        name: "FK_email_ingestion_runs_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_email_ingestion_runs_mailbox_connections_mailbox_connection_id",
++                        column: x => x.mailbox_connection_id,
++                        principalTable: "mailbox_connections",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_email_ingestion_runs_users_triggered_by_user_id",
++                        column: x => x.triggered_by_user_id,
++                        principalTable: "users",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_email_ingestion_runs_company_id",
++                table: "email_ingestion_runs",
++                column: "company_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_email_ingestion_runs_company_id_mailbox_connection_id_started_at",
++                table: "email_ingestion_runs",
++                columns: new[] { "company_id", "mailbox_connection_id", "started_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_email_ingestion_runs_company_id_provider_started_at",
++                table: "email_ingestion_runs",
++                columns: new[] { "company_id", "provider", "started_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_email_ingestion_runs_company_id_triggered_by_user_id_started_at",
++                table: "email_ingestion_runs",
++                columns: new[] { "company_id", "triggered_by_user_id", "started_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_email_ingestion_runs_mailbox_connection_id",
++                table: "email_ingestion_runs",
++                column: "mailbox_connection_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_email_ingestion_runs_triggered_by_user_id",
++                table: "email_ingestion_runs",
++                column: "triggered_by_user_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_mailbox_connections_company_id",
++                table: "mailbox_connections",
++                column: "company_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_mailbox_connections_company_id_provider_email_address",
++                table: "mailbox_connections",
++                columns: new[] { "company_id", "provider", "email_address" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_mailbox_connections_company_id_status",
++                table: "mailbox_connections",
++                columns: new[] { "company_id", "status" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_mailbox_connections_company_id_user_id",
++                table: "mailbox_connections",
++                columns: new[] { "company_id", "user_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_mailbox_connections_user_id",
++                table: "mailbox_connections",
++                column: "user_id");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(name: "email_ingestion_runs");
++            migrationBuilder.DropTable(name: "mailbox_connections");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Security/FieldEncryptionService.cs b/src/VirtualCompany.Infrastructure/Security/FieldEncryptionService.cs
+new file mode 100644
+index 0000000..279af77
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Security/FieldEncryptionService.cs
+@@ -0,0 +1,55 @@
++using Microsoft.AspNetCore.DataProtection;
++
++namespace VirtualCompany.Infrastructure.Security;
++
++public interface IFieldEncryptionService
++{
++    string Encrypt(Guid companyId, string purpose, string plaintext);
++    string Decrypt(Guid companyId, string purpose, string ciphertext);
++}
++
++public sealed class DataProtectionFieldEncryptionService : IFieldEncryptionService
++{
++    private readonly IDataProtectionProvider _dataProtectionProvider;
++
++    public DataProtectionFieldEncryptionService(IDataProtectionProvider dataProtectionProvider)
++    {
++        _dataProtectionProvider = dataProtectionProvider;
++    }
++
++    public string Encrypt(Guid companyId, string purpose, string plaintext)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (string.IsNullOrWhiteSpace(purpose))
++        {
++            throw new ArgumentException("Encryption purpose is required.", nameof(purpose));
++        }
++
++        if (plaintext is null)
++        {
++            throw new ArgumentNullException(nameof(plaintext));
++        }
++
++        return CreateProtector(companyId, purpose).Protect(plaintext);
++    }
++
++    public string Decrypt(Guid companyId, string purpose, string ciphertext)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (string.IsNullOrWhiteSpace(purpose))
++        {
++            throw new ArgumentException("Encryption purpose is required.", nameof(purpose));
++        }
++
++        if (ciphertext is null)
++        {
++            throw new ArgumentNullException(nameof(ciphertext));
++        }
++
++        return CreateProtector(companyId, purpose).Unprotect(ciphertext);
++    }
++
++    private IDataProtector CreateProtector(Guid companyId, string purpose) =>
++        _dataProtectionProvider.CreateProtector("VirtualCompany.FieldEncryption", companyId.ToString("D"), purpose.Trim());
++}
+diff --git a/tests/VirtualCompany.Api.Tests/MailboxConnectionPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/MailboxConnectionPersistenceTests.cs
+new file mode 100644
+index 0000000..d916f2a
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/MailboxConnectionPersistenceTests.cs
+@@ -0,0 +1,240 @@
++using Microsoft.AspNetCore.DataProtection;
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Security;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class MailboxConnectionPersistenceTests
++{
++    [Fact]
++    public async Task EnsureCreated_maps_mailbox_connection_and_ingestion_run_tables()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var mailboxColumns = await ReadColumnsAsync(connection, "mailbox_connections");
++        Assert.Contains("company_id", mailboxColumns);
++        Assert.Contains("user_id", mailboxColumns);
++        Assert.Contains("provider", mailboxColumns);
++        Assert.Contains("status", mailboxColumns);
++        Assert.Contains("encrypted_access_token", mailboxColumns);
++        Assert.Contains("encrypted_refresh_token", mailboxColumns);
++        Assert.Contains("configured_folders_json", mailboxColumns);
++        Assert.Contains("granted_scopes_json", mailboxColumns);
++
++        var runColumns = await ReadColumnsAsync(connection, "email_ingestion_runs");
++        Assert.Contains("company_id", runColumns);
++        Assert.Contains("mailbox_connection_id", runColumns);
++        Assert.Contains("triggered_by_user_id", runColumns);
++        Assert.Contains("started_at", runColumns);
++        Assert.Contains("completed_at", runColumns);
++        Assert.Contains("scanned_message_count", runColumns);
++        Assert.Contains("detected_candidate_count", runColumns);
++        Assert.Contains("failure_details", runColumns);
++
++        var mailboxIndexes = await ReadIndexesAsync(connection, "mailbox_connections");
++        Assert.Contains("IX_mailbox_connections_company_id_user_id", mailboxIndexes);
++        Assert.Contains("IX_mailbox_connections_company_id_provider_email_address", mailboxIndexes);
++
++        var runIndexes = await ReadIndexesAsync(connection, "email_ingestion_runs");
++        Assert.Contains("IX_email_ingestion_runs_company_id_mailbox_connection_id_started_at", runIndexes);
++        Assert.Contains("IX_email_ingestion_runs_company_id_provider_started_at", runIndexes);
++    }
++
++    [Fact]
++    public async Task Mailbox_connection_round_trips_encrypted_tokens_and_folder_configuration()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var encryption = CreateEncryptionService();
++        var accessToken = "access-token-value";
++        var refreshToken = "refresh-token-value";
++
++        await using (var dbContext = CreateContext(connection))
++        {
++            await dbContext.Database.EnsureCreatedAsync();
++            SeedTenantAndUser(dbContext, companyId, userId);
++
++            var mailboxConnection = new MailboxConnection(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                MailboxProvider.Gmail,
++                "Bills@Example.com",
++                "Bills Inbox",
++                new DateTime(2026, 4, 26, 8, 0, 0, DateTimeKind.Utc));
++            mailboxConnection.StoreEncryptedCredentials(
++                encryption.Encrypt(companyId, "mailbox:gmail:access_token", accessToken),
++                encryption.Encrypt(companyId, "mailbox:gmail:refresh_token", refreshToken),
++                new DateTime(2026, 4, 26, 9, 0, 0, DateTimeKind.Utc),
++                ["gmail.readonly", "gmail.attachments"]);
++            mailboxConnection.ConfigureFolders(
++            [
++                new MailboxFolderSelection("Label_123", "Invoices"),
++                new MailboxFolderSelection("Label_456", "Receipts")
++            ]);
++
++            dbContext.MailboxConnections.Add(mailboxConnection);
++            await dbContext.SaveChangesAsync();
++        }
++
++        var storedAccessToken = await ReadScalarAsync(connection, "SELECT encrypted_access_token FROM mailbox_connections LIMIT 1;");
++        var storedRefreshToken = await ReadScalarAsync(connection, "SELECT encrypted_refresh_token FROM mailbox_connections LIMIT 1;");
++        Assert.NotEqual(accessToken, storedAccessToken);
++        Assert.NotEqual(refreshToken, storedRefreshToken);
++        Assert.Equal(accessToken, encryption.Decrypt(companyId, "mailbox:gmail:access_token", storedAccessToken));
++        Assert.Equal(refreshToken, encryption.Decrypt(companyId, "mailbox:gmail:refresh_token", storedRefreshToken));
++
++        await using var readContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
++        var loaded = await readContext.MailboxConnections.SingleAsync();
++        Assert.Equal("bills@example.com", loaded.EmailAddress);
++        Assert.Equal(MailboxProvider.Gmail, loaded.Provider);
++        Assert.Equal(MailboxConnectionStatus.Pending, loaded.Status);
++        Assert.Equal(2, loaded.GrantedScopes.Count);
++        Assert.Equal(2, loaded.ConfiguredFolders.Count);
++        Assert.Contains(loaded.ConfiguredFolders, folder => folder.ProviderFolderId == "Label_123" && folder.DisplayName == "Invoices");
++    }
++
++    [Fact]
++    public async Task Email_ingestion_run_persists_audit_fields_without_payment_side_effects()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var mailboxConnectionId = Guid.NewGuid();
++
++        await using (var dbContext = CreateContext(connection))
++        {
++            await dbContext.Database.EnsureCreatedAsync();
++            SeedTenantAndUser(dbContext, companyId, userId);
++            dbContext.MailboxConnections.Add(new MailboxConnection(
++                mailboxConnectionId,
++                companyId,
++                userId,
++                MailboxProvider.Microsoft365,
++                "ap@example.com"));
++
++            var run = new EmailIngestionRun(
++                Guid.NewGuid(),
++                companyId,
++                mailboxConnectionId,
++                userId,
++                MailboxProvider.Microsoft365,
++                new DateTime(2026, 4, 26, 8, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc),
++                new DateTime(2026, 4, 26, 0, 0, 0, DateTimeKind.Utc));
++            run.Fail(new DateTime(2026, 4, 26, 8, 1, 0, DateTimeKind.Utc), 12, 3, "Provider throttled.");
++            dbContext.EmailIngestionRuns.Add(run);
++
++            await dbContext.SaveChangesAsync();
++        }
++
++        await using var readContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
++        var loaded = await readContext.EmailIngestionRuns.SingleAsync();
++        Assert.Equal(companyId, loaded.CompanyId);
++        Assert.Equal(mailboxConnectionId, loaded.MailboxConnectionId);
++        Assert.Equal(userId, loaded.TriggeredByUserId);
++        Assert.Equal(MailboxProvider.Microsoft365, loaded.Provider);
++        Assert.Equal(12, loaded.ScannedMessageCount);
++        Assert.Equal(3, loaded.DetectedCandidateCount);
++        Assert.Equal("Provider throttled.", loaded.FailureDetails);
++        Assert.Equal(0, await readContext.Payments.CountAsync());
++        Assert.Equal(0, await readContext.ApprovalRequests.CountAsync());
++    }
++
++    [Fact]
++    public async Task Query_filters_keep_mailbox_records_tenant_scoped()
++    {
++        await using var connection = await OpenConnectionAsync();
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++
++        await using (var dbContext = CreateContext(connection))
++        {
++            await dbContext.Database.EnsureCreatedAsync();
++            SeedTenantAndUser(dbContext, companyAId, userId);
++            dbContext.Companies.Add(new Company(companyBId, "Mailbox Tenant B"));
++            dbContext.MailboxConnections.AddRange(
++                new MailboxConnection(Guid.NewGuid(), companyAId, userId, MailboxProvider.Gmail, "a@example.com"),
++                new MailboxConnection(Guid.NewGuid(), companyBId, userId, MailboxProvider.Gmail, "b@example.com"));
++            await dbContext.SaveChangesAsync();
++        }
++
++        await using var tenantAContext = CreateContext(connection, new TestCompanyContextAccessor(companyAId, userId));
++        await using var tenantBContext = CreateContext(connection, new TestCompanyContextAccessor(companyBId, userId));
++
++        Assert.Equal("a@example.com", (await tenantAContext.MailboxConnections.SingleAsync()).EmailAddress);
++        Assert.Equal("b@example.com", (await tenantBContext.MailboxConnections.SingleAsync()).EmailAddress);
++    }
++
++    [Fact]
++    public void Tenant_scoped_encryption_rejects_cross_tenant_decryption()
++    {
++        var encryption = CreateEncryptionService();
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var ciphertext = encryption.Encrypt(companyAId, "mailbox:gmail:access_token", "tenant-secret");
++
++        Assert.Equal("tenant-secret", encryption.Decrypt(companyAId, "mailbox:gmail:access_token", ciphertext));
++        Assert.ThrowsAny<Exception>(() => encryption.Decrypt(companyBId, "mailbox:gmail:access_token", ciphertext));
++    }
++
++    private static void SeedTenantAndUser(VirtualCompanyDbContext dbContext, Guid companyId, Guid userId)
++    {
++        dbContext.Companies.Add(new Company(companyId, "Mailbox Persistence Company"));
++        dbContext.Users.Add(new User(userId, $"user-{userId:N}@example.com", "Mailbox User", "test", userId.ToString("N")));
++    }
++
++    private static async Task<HashSet<string>> ReadColumnsAsync(SqliteConnection connection, string tableName)
++    {
++        var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        using var command = connection.CreateCommand();
++        command.CommandText = $"PRAGMA table_info('{tableName}');";
++        await using var reader = await command.ExecuteReaderAsync();
++        while (await reader.ReadAsync())
++        {
++            values.Add(reader.GetString(1));
++        }
++
++        return values;
++    }
++
++    private static async Task<HashSet<string>> ReadIndexesAsync(SqliteConnection connection, string tableName)
++    {
++        var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        using var command = connection.CreateCommand();
++        command.CommandText = $"PRAGMA index_list('{tableName}');";
++        await using var reader = await command.ExecuteReaderAsync();
++        while (await reader.ReadAsync())
++        {
++            values.Add(reader.GetString(1));
++        }
++
++        return values;
++    }
++
++    private static async Task<string> ReadScalarAsync(SqliteConnection connection, string sql)
++    {
++        using var command = connection.CreateCommand();
++        command.CommandText = sql;
++        var value = await command.ExecuteScalarAsync();
++        return Assert.IsType<string>(value);
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection, ICompanyContextAccessor? accessor = null) =>
++        new(
++            new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++                .UseSqlite(connection)
++                .Options,
++            accessor);
++
++    private static IFieldEncryptionService CreateEncryptionService() =>
++        new DataProtectionFieldEncryptionService(new EphemeralDataProtectionProvider());
++
++    private sealed class TestCompanyContextAccessor : ICompanyContextAccessor
++    {
++        public TestCompanyContextAccessor(Guid companyId, Guid userId)
++        {
++            CompanyId = companyId;
++            UserId = userId;
++        }
++
++        public Guid? CompanyId { get; private set; }
++        public Guid? UserId { get; private set; }
++        public bool IsResolved => CompanyId.HasValue && UserId.HasValue;
++        public ResolvedCompanyMembershipContext? Membership { get; private set; }
++
++        public void SetCompanyId(Guid? companyId)
++        {
++            CompanyId = companyId;
++        }
++
++        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext)
++        {
++            Membership = companyContext;
++            CompanyId = companyContext?.CompanyId;
++            UserId = companyContext?.UserId;
++        }
++    }
++}
+END_OF_PATCH
