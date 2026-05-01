@@ -1,0 +1,34 @@
+@using VirtualCompany.Web.Services
+
+<article class="wizard-card wizard-card--compact finance-attention-card">
+    <div class="d-flex align-items-start gap-3">
+        @if (!string.IsNullOrWhiteSpace(Item.Icon))
+        {
+            <span class="@IconClass" aria-hidden="true">@Item.Icon</span>
+        }
+        <div class="flex-grow-1">
+            <h3 class="h6 mb-2">@Item.Label</h3>
+            <div class="finance-metric-card__value finance-metric-card__value--compact">@Item.Count</div>
+            @if (!string.IsNullOrWhiteSpace(Item.Amount))
+            {
+                <div class="text-body-secondary small">@Item.Amount</div>
+            }
+            <a class="finance-attention-card__link" href="@Item.Href">@Item.CtaLabel</a>
+        </div>
+    </div>
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public FinanceAttentionItemViewModel Item { get; set; } = default!;
+
+    private string IconClass => $"finance-overview-icon finance-overview-icon--{ToneClass}";
+
+    private string ToneClass => Item.Tone switch
+    {
+        FinanceKpiTone.Positive => "positive",
+        FinanceKpiTone.Warning => "warning",
+        FinanceKpiTone.Danger => "danger",
+        _ => "neutral"
+    };
+}

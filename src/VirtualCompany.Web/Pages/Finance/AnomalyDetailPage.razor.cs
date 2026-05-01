@@ -47,14 +47,14 @@ public partial class AnomalyDetailPage : FinancePageBase
         {
             var query = ReturnState.Normalize().ToQueryString(AccessState.CompanyId);
             return string.IsNullOrWhiteSpace(query)
-                ? FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, AccessState.CompanyId)
-                : $"{FinanceRoutes.Anomalies}?{query}";
+                ? FinanceRoutes.WithCompanyContext(FinanceRoutes.Issues, AccessState.CompanyId)
+                : $"{FinanceRoutes.Issues}?{query}";
         }
     }
 
     private string TransactionHref => Detail?.AffectedRecord is not null
         ? FinanceRoutes.BuildTransactionDetailPath(Detail.AffectedRecord.Id, AccessState.CompanyId)
-        : FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, AccessState.CompanyId);
+        : FinanceRoutes.WithCompanyContext(FinanceRoutes.Issues, AccessState.CompanyId);
     private string? InvoiceHref => Detail?.RelatedInvoiceId is Guid invoiceId ? FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId) : null;
     private string? BillHref => Detail?.RelatedBillId is Guid billId ? FinanceRoutes.BuildBillDetailPath(billId, AccessState.CompanyId) : null;
 

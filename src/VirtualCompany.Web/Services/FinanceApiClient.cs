@@ -22,6 +22,34 @@ public sealed class FinanceApiClient
         _useOfflineMode = useOfflineMode;
     }
 
+    public Task<FortnoxConnectionStatusResponse> GetFortnoxConnectionStatusAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        GetAsync<FortnoxConnectionStatusResponse>(companyId, $"api/companies/{companyId}/finance/integrations/fortnox/status", allowNotFound: false, cancellationToken)!;
+
+    public Task<StartFortnoxConnectionResponse> StartFortnoxConnectionAsync(Guid companyId, string returnUri, bool reconnect, CancellationToken cancellationToken = default)
+    {
+        EnsureOnlineMutation();
+        return SendCompanyScopedAsync<StartFortnoxConnectionRequest, StartFortnoxConnectionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"api/companies/{companyId}/finance/integrations/fortnox/connect",
+            new StartFortnoxConnectionRequest(returnUri, reconnect),
+            cancellationToken);
+    }
+
+    public Task<FortnoxSyncResultResponse> SyncFortnoxNowAsync(Guid companyId, Guid? connectionId, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<SyncFortnoxNowRequest, FortnoxSyncResultResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"api/companies/{companyId}/finance/integrations/fortnox/sync",
+            new SyncFortnoxNowRequest(connectionId),
+            cancellationToken);
+
+    public Task<FortnoxSyncHistoryResponse> GetFortnoxSyncHistoryAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        GetAsync<FortnoxSyncHistoryResponse>(companyId, $"api/companies/{companyId}/finance/integrations/fortnox/sync-history?limit=25", allowNotFound: false, cancellationToken)!;
+
+    public Task<FortnoxConnectionDisconnectResponse> DisconnectFortnoxAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<object, FortnoxConnectionDisconnectResponse>(companyId, HttpMethod.Post, $"api/companies/{companyId}/finance/integrations/fortnox/disconnect", new { }, cancellationToken);
+
     public Task<FinanceTransactionResponse> UpdateTransactionCategoryAsync(
         Guid companyId,
         Guid transactionId,
@@ -1696,4 +1724,80 @@ public sealed class UpsertFinanceCounterpartyRequest
     public decimal? CreditLimit { get; set; }
     public string? PreferredPaymentMethod { get; set; }
     public string? DefaultAccountMapping { get; set; }
+}
+
+public sealed record StartFortnoxConnectionRequest(string ReturnUri, bool Reconnect);
+
+public sealed record SyncFortnoxNowRequest(Guid? ConnectionId);
+
+public sealed class StartFortnoxConnectionResponse
+{
+    public string AuthorizationUrl { get; set; } = string.Empty;
+    public DateTime ExpiresUtc { get; set; }
+}
+
+public sealed class FortnoxConnectionStatusResponse
+{
+    public bool IsConnected { get; set; }
+    public Guid? ConnectionId { get; set; }
+    public string? ConnectionStatus { get; set; }
+    public DateTime? ConnectedAtUtc { get; set; }
+    public DateTime? AccessTokenExpiresUtc { get; set; }
+    public DateTime? LastRefreshAttemptUtc { get; set; }
+    public string? LastErrorSummary { get; set; }
+}
+
+public sealed class FortnoxConnectionDisconnectResponse
+{
+    public Guid CompanyId { get; set; }
+    public Guid? ConnectionId { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public DateTime DisconnectedUtc { get; set; }
+    public string Message { get; set; } = string.Empty;
+}
+
+public sealed class FortnoxSyncResultResponse
+{
+    public Guid CompanyId { get; set; }
+    public Guid ConnectionId { get; set; }
+    public DateTime StartedUtc { get; set; }
+    public DateTime CompletedUtc { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public int Created { get; set; }
+    public int Updated { get; set; }
+    public int Skipped { get; set; }
+    public int Errors { get; set; }
+    public List<FortnoxEntitySyncResultResponse> Entities { get; set; } = [];
+    public string? ErrorSummary { get; set; }
+}
+
+public sealed class FortnoxEntitySyncResultResponse
+{
+    public string EntityType { get; set; } = string.Empty;
+    public int Created { get; set; }
+    public int Updated { get; set; }
+    public int Skipped { get; set; }
+    public int Errors { get; set; }
+    public string? ErrorSummary { get; set; }
+}
+
+public sealed class FortnoxSyncHistoryResponse
+{
+    public Guid CompanyId { get; set; }
+    public List<FortnoxSyncHistoryItemResponse> Items { get; set; } = [];
+}
+
+public sealed class FortnoxSyncHistoryItemResponse
+{
+    public Guid Id { get; set; }
+    public Guid? ConnectionId { get; set; }
+    public DateTime StartedUtc { get; set; }
+    public DateTime? CompletedUtc { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public int Created { get; set; }
+    public int Updated { get; set; }
+    public int Skipped { get; set; }
+    public int Errors { get; set; }
+    public string Summary { get; set; } = string.Empty;
+    public string? ErrorSummary { get; set; }
 }

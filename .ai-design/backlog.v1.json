@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-04-27T05:51:41.560Z",
+  "generatedAt": "2026-04-30T13:46:00.227Z",
   "epics": [
     {
       "id": "EP-1",
@@ -6818,6 +6818,233 @@
             "Automated tests verify stable callback URL generation for Gmail and Microsoft 365 start flows.",
             "Automated tests verify callback success with valid protected state, rejection of invalid or expired state, legacy route compatibility, and prevention of cross-tenant completion.",
             "Developer documentation lists dev and production redirect URIs and states that one redirect URI per provider per environment is required."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-32",
+      "title": "EPIC-32 — Real Fortnox Finance Integration",
+      "stories": [
+        {
+          "id": "US-32.1",
+          "title": "Fortnox configuration, OAuth connect flow, and secure token lifecycle",
+          "tasks": [
+            {
+              "id": "TASK-32.1.1",
+              "title": "Add strongly typed Fortnox configuration, startup validation, and secure secret-provider wiring for user-secrets and Azure Key Vault",
+              "tags": [
+                "backend",
+                "config",
+                "security"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-32.1.2",
+              "title": "Implement FortnoxOAuthService for authorization URL generation, callback validation, code exchange, and reconnect handling",
+              "tags": [
+                "backend",
+                "oauth",
+                "fortnox"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-32.1.3",
+              "title": "Build encrypted FortnoxTokenStore with refresh coordination, redacted logging, and tenant-scoped persistence",
+              "tags": [
+                "backend",
+                "tokens",
+                "encryption"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-32.1.4",
+              "title": "Document Fortnox developer app setup, required scopes, callback configuration, and secret rotation procedures",
+              "tags": [
+                "docs",
+                "ops",
+                "fortnox"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Application startup fails fast for enabled Fortnox integration when FinanceIntegrations:Fortnox:ClientId, ClientSecret, RedirectUri, TokenUrl, and ApiBaseUrl are missing or empty.",
+            "A company admin can start the Fortnox connect flow from /finance/integrations/fortnox/connect and complete the real OAuth callback at /finance/integrations/fortnox/callback using Fortnox authorization and token endpoints.",
+            "Authorization state, nonce, authenticated user, and company scope are validated on callback, and invalid or expired authorization codes return a safe user-facing error without exposing Fortnox payloads.",
+            "Access tokens and refresh tokens are stored encrypted at rest, never rendered in UI, and never written to application logs.",
+            "Expired access tokens are refreshed automatically through /oauth-v1/token before API calls, and invalid refresh tokens transition the connection status to needs reconnect or revoked without crashing background sync jobs.",
+            "Setup and operational documentation for real Fortnox app registration, scopes, callback URL, local user-secrets, and production secret storage exists under /docs/integrations/fortnox.md and /docs/runbooks/fortnox-integration.md."
+          ]
+        },
+        {
+          "id": "US-32.2",
+          "title": "Database migration and provider foundation for real Fortnox data separation",
+          "tasks": [
+            {
+              "id": "TASK-32.2.1",
+              "title": "Create EF Core migration for Fortnox connection, token, sync state, external reference, and audit event tables with required indexes and constraints",
+              "tags": [
+                "backend",
+                "database",
+                "migration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-32.2.2",
+              "title": "Add source separation columns to existing finance entity tables and backfill current records to manual or simulation defaults",
+              "tags": [
+                "backend",
+                "database",
+                "backfill"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-32.2.3",
+              "title": "Introduce or extend IFinanceIntegrationProvider and register FortnoxFinanceIntegrationProvider with dependency injection",
+              "tags": [
+                "backend",
+                "architecture",
+                "di"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "An EF Core migration creates FinanceIntegrationConnections, FinanceIntegrationTokens, FinanceIntegrationSyncStates, FinanceExternalReferences, and FinanceIntegrationAuditEvents with the specified columns, foreign keys, and indexes on SQL Server.",
+            "The migration adds source/provider tracking fields to existing finance tables that currently lack them, using existing repository table names and preserving all existing manual and simulated records.",
+            "FinanceIntegrationConnections enforces a unique CompanyId plus ProviderKey constraint so each company has at most one Fortnox connection record.",
+            "FinanceIntegrationTokens stores encrypted token values separately from connection metadata, and no existing finance data is deleted or overwritten during migration.",
+            "Fortnox-synced records are marked with SourceType=fortnox and linked through provider/external reference fields so simulation regeneration cannot overwrite them.",
+            "A provider implementation behind the finance integration abstraction is registered in dependency injection and can be resolved by provider key fortnox."
+          ]
+        },
+        {
+          "id": "US-32.3",
+          "title": "Real Fortnox API client and incremental read sync for finance master and transaction data",
+          "tasks": [
+            {
+              "id": "TASK-32.3.1",
+              "title": "Implement typed FortnoxApiClient with token-aware HttpClient, retry and rate-limit handling, pagination, and safe error translation",
+              "tags": [
+                "backend",
+                "api",
+                "http"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-32.3.2",
+              "title": "Build FortnoxMappingService and FortnoxSyncService for customers, suppliers, accounts, articles, projects, invoices, supplier invoices, vouchers, and payment-related activity",
+              "tags": [
+                "backend",
+                "sync",
+                "mapping"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-32.3.3",
+              "title": "Persist sync cursors, external references, and sync summaries to support incremental sync and duplicate prevention across reruns",
+              "tags": [
+                "backend",
+                "sync",
+                "persistence"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-32.3.4",
+              "title": "Wire Fortnox-backed read models into finance overview, invoices, supplier bills, payments, and activity queries with source-aware filtering",
+              "tags": [
+                "backend",
+                "finance",
+                "queries"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "FortnoxApiClient uses https://api.fortnox.se/3 as the base API endpoint and can successfully call real Fortnox endpoints for company information, customers, suppliers, invoices, supplier invoices, vouchers, accounts, articles, and projects when scopes allow.",
+            "The client supports authenticated GET, POST, PUT, and DELETE, query parameters including lastmodified, fromdate, todate, sortby, sortorder, page, and limit where supported, and translates Fortnox errors into safe user-facing messages with detailed internal logs.",
+            "Incremental sync persists per-entity cursors in FinanceIntegrationSyncStates and repeated sync runs do not create duplicate local records for the same external entity.",
+            "Customers, suppliers, invoices, supplier invoices, vouchers or payment-related activity, accounts, articles, and projects are mapped into local finance models with FinanceExternalReferences maintained for each synced external record.",
+            "Finance pages for invoices, supplier bills, payments or activity, and overview can display real Fortnox-backed data without reading from simulation-only services for those synced records.",
+            "A manual Sync now action triggers a real sync job and records created, updated, skipped, and error counts in sync history."
+          ]
+        },
+        {
+          "id": "US-32.4",
+          "title": "Fortnox integration UI, approval-gated writes, and production readiness",
+          "tasks": [
+            {
+              "id": "TASK-32.4.1",
+              "title": "Implement Fortnox integration settings UI, sync history views, reconnect and disconnect actions, and source labels for Fortnox-backed records",
+              "tags": [
+                "frontend",
+                "ui",
+                "fortnox"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-32.4.2",
+              "title": "Generate Fortnox settings reference screenshot with OpenAI image.2 and apply SaaS styling aligned to style.md and design.md",
+              "tags": [
+                "frontend",
+                "design",
+                "image2"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-32.4.3",
+              "title": "Build FortnoxWriteCommandService with approval workflow integration, audited execution for allowed write operations, and safe failure handling",
+              "tags": [
+                "backend",
+                "writes",
+                "approval"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-32.4.4",
+              "title": "Add unit, UI, and opt-in real API integration tests plus operational metrics and diagnostics for sync and token refresh flows",
+              "tags": [
+                "testing",
+                "observability",
+                "ops"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Finance Settings → Integrations shows a Fortnox card with states Not connected, Connecting, Connected, Syncing, Needs reconnect, and Error, plus actions Connect Fortnox, Sync now, Reconnect, Disconnect, and View sync history.",
+            "If new or refactored UI is required, a reference screenshot is generated using the OpenAI image.2 API, stored at /docs/design/references/fortnox-integration-settings.png, and the implemented UI follows /docs/style.md and /docs/design.md SaaS styling.",
+            "All Fortnox write operations in MVP create an approval item before any external API call, display target company and payload summary, and only execute after explicit user approval.",
+            "Approved write operations create audit events containing approver, entity type, direction, summary, and payload hash, while excluding tokens and sensitive Fortnox secrets.",
+            "UI clearly indicates records sourced from Fortnox and prevents simulation actions from overwriting Fortnox-linked records.",
+            "Unit tests cover OAuth URL generation, token refresh, encryption, DTO mapping, duplicate prevention, sync cursor updates, and approval creation; opt-in integration tests can call the real Fortnox API only when explicit environment variables are provided."
           ]
         }
       ]

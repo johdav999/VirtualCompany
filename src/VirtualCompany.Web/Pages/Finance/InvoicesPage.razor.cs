@@ -24,6 +24,11 @@ public partial class InvoicesPage : FinancePageBase
     private bool IsSavingStatus { get; set; }
 
     private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Invoices.Count == 0;
+    private IReadOnlyList<InvoiceListItemViewModel> InvoiceItems =>
+        Invoices.Select(invoice => ToListItem(invoice, InvoiceId == invoice.Id)).ToList();
+    private InvoiceDetailViewModel? SelectedInvoiceDisplay =>
+        SelectedInvoice is null ? null : ToDetailViewModel(SelectedInvoice);
+    private string DashboardHref => AccessState.CompanyId is Guid companyId ? $"/dashboard?companyId={companyId:D}" : "/dashboard";
     private bool CanChangeInvoiceApprovalStatus =>
         SelectedInvoice?.Permissions.CanChangeInvoiceApprovalStatus ?? FinanceAccess.CanApproveInvoices(AccessState.MembershipRole);
     private IReadOnlyList<string> EditableStatusOptions =>
@@ -97,7 +102,7 @@ public partial class InvoicesPage : FinancePageBase
             SelectedInvoice = await FinanceApiClient.GetInvoiceDetailAsync(companyId, invoiceId);
             if (SelectedInvoice is null)
             {
-                DetailErrorMessage = "The selected invoice could not be found in the active company context.";
+                DetailErrorMessage = "The selected invoice could not be found for this company.";
                 EditableStatus = string.Empty;
             }
         }
@@ -126,7 +131,7 @@ public partial class InvoicesPage : FinancePageBase
         var normalizedStatus = FinanceInvoiceApprovalStatuses.Normalize(EditableStatus);
         if (!FinanceInvoiceApprovalStatuses.IsSupported(normalizedStatus))
         {
-            StatusValidationMessage = $"Unsupported invoice status '{EditableStatus}'.";
+            StatusValidationMessage = "Choose a supported invoice status.";
             return;
         }
 
@@ -137,7 +142,7 @@ public partial class InvoicesPage : FinancePageBase
             await FinanceApiClient.UpdateInvoiceApprovalStatusAsync(companyId, SelectedInvoice.Id, normalizedStatus);
             await LoadInvoicesAsync(companyId);
             await LoadDetailAsync(companyId, SelectedInvoice.Id);
-            StatusSaveMessage = $"Invoice status saved as {FormatLabel(SelectedInvoice?.Status)}.";
+            StatusSaveMessage = $"Invoice status saved as {FormatStatusLabel(SelectedInvoice?.Status)}.";
         }
         catch (FinanceApiValidationException ex)
         {
@@ -183,16 +188,56 @@ public partial class InvoicesPage : FinancePageBase
             ? $"/audit/{resolvedAuditEventId:D}?companyId={AccessState.CompanyId}"
             : null;
 
-    private string GetInvoiceListItemClass(Guid invoiceId) =>
-        InvoiceId == invoiceId
-            ? "list-group-item list-group-item-action active"
-            : "list-group-item list-group-item-action";
+    private static InvoiceListItemViewModel ToListItem(FinanceInvoiceResponse invoice, bool isSelected)
+    {
+        var status = ResolveStatusPresentation(invoice.Status);
+        return new InvoiceListItemViewModel(
+            invoice.Id,
+            string.IsNullOrWhiteSpace(invoice.InvoiceNumber) ? "Invoice" : invoice.InvoiceNumber,
+            string.IsNullOrWhiteSpace(invoice.CounterpartyName) ? "Customer not available" : invoice.CounterpartyName,
+            FormatCurrency(invoice.Amount, invoice.Currency),
+            FormatFriendlyDate(invoice.IssuedUtc),
+            FormatFriendlyDate(invoice.DueUtc),
+            $"Issued {FormatFriendlyDate(invoice.IssuedUtc)} · Due {FormatFriendlyDate(invoice.DueUtc)}",
+            status.Label,
+            status.Tone,
+            status.Tone,
+            isSelected);
+    }
+
+    private static InvoiceDetailViewModel ToDetailViewModel(FinanceInvoiceDetailResponse invoice)
+    {
+        var status = ResolveStatusPresentation(invoice.Status);
+        var approvalStatus = string.IsNullOrWhiteSpace(invoice.WorkflowContext?.ApprovalStatus)
+            ? "Not required"
+            : FormatStatusLabel(invoice.WorkflowContext.ApprovalStatus);
+
+        return new InvoiceDetailViewModel(
+            string.IsNullOrWhiteSpace(invoice.InvoiceNumber) ? "Invoice" : invoice.InvoiceNumber,
+            string.IsNullOrWhiteSpace(invoice.CounterpartyName) ? "Customer not available" : invoice.CounterpartyName,
+            FormatCurrency(invoice.Amount, invoice.Currency),
+            FormatFriendlyDate(invoice.IssuedUtc),
+            FormatFriendlyDate(invoice.DueUtc),
+            status.Label,
+            status.Tone,
+            approvalStatus,
+            invoice.WorkflowContext?.CanNavigateToApproval == true,
+            invoice.WorkflowContext?.ApprovalRequestId,
+            invoice.WorkflowContext?.CanNavigateToWorkflow == true,
+            invoice.WorkflowContext?.WorkflowInstanceId,
+            string.IsNullOrWhiteSpace(invoice.WorkflowContext?.Rationale)
+                ? "No review notes are available yet."
+                : invoice.WorkflowContext.Rationale);
+    }
 
     private static string FormatCurrency(decimal amount, string currency) =>
         $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
 
     private static string FormatDate(DateTime value) =>
         value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    private static string FormatFriendlyDate(DateTime value) =>
+        value == default ? "Not available" : value.ToString("MMM dd, yyyy", CultureInfo.InvariantCulture);
 
     private static string FormatDateTime(DateTime value) =>
         value == default
@@ -208,8 +253,55 @@ public partial class InvoicesPage : FinancePageBase
     private static string FormatActorOrSource(string? value) =>
         string.IsNullOrWhiteSpace(value) ? "System" : value.Trim();
 
-    private static string FormatLabel(string? value) =>
+    private static string FormatStatusLabel(string? value) =>
         string.IsNullOrWhiteSpace(value)
-            ? "n/a"
-            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            ? "Unknown"
+            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                .ToLowerInvariant() is { } normalized
+                ? CultureInfo.InvariantCulture.TextInfo.ToTitleCase(normalized)
+                : "Unknown";
+
+    private static InvoiceStatusPresentation ResolveStatusPresentation(string? status)
+    {
+        var normalized = status?.Trim().ToLowerInvariant().Replace("-", "_", StringComparison.Ordinal) ?? string.Empty;
+        return normalized switch
+        {
+            "approved" => new("Approved", "success"),
+            "pending_approval" or "pending" or "review" or "needs_review" => new("Pending approval", "warning"),
+            "paid" => new("Paid", "info"),
+            "overdue" or "problem" or "rejected" => new("Overdue", "danger"),
+            "draft" => new("Draft", "neutral"),
+            _ => new(string.IsNullOrWhiteSpace(status) ? "Unknown" : FormatStatusLabel(status), "neutral")
+        };
+    }
+
+    private sealed record InvoiceStatusPresentation(string Label, string Tone);
+
+    private sealed record InvoiceListItemViewModel(
+        Guid Id,
+        string DisplayInvoiceNumber,
+        string DisplayCustomerName,
+        string DisplayAmount,
+        string DisplayIssuedDate,
+        string DisplayDueDate,
+        string DateSummary,
+        string FriendlyStatusLabel,
+        string StatusTone,
+        string IconTone,
+        bool IsSelected);
+
+    private sealed record InvoiceDetailViewModel(
+        string DisplayInvoiceNumber,
+        string DisplayCustomerName,
+        string DisplayAmount,
+        string DisplayIssuedDate,
+        string DisplayDueDate,
+        string FriendlyStatusLabel,
+        string StatusTone,
+        string ApprovalStatus,
+        bool CanOpenApproval,
+        Guid? ApprovalRequestId,
+        bool CanOpenReview,
+        Guid? WorkflowInstanceId,
+        string ReviewSummary);
 }

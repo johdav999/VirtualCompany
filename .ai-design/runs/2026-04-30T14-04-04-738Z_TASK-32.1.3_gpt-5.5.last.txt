@@ -1,0 +1,681 @@
+diff --git a/src/VirtualCompany.Api/Controllers/FortnoxConnectionsController.cs b/src/VirtualCompany.Api/Controllers/FortnoxConnectionsController.cs
+index 1a2b3c4..5d6e7f8 100644
+--- a/src/VirtualCompany.Api/Controllers/FortnoxConnectionsController.cs
++++ b/src/VirtualCompany.Api/Controllers/FortnoxConnectionsController.cs
+@@ -63,7 +63,6 @@ public sealed class FortnoxConnectionsController : ControllerBase
+         return Redirect(result.AuthorizationUrl.ToString());
+     }
+ 
+-    [AllowAnonymous]
+     [HttpGet("/finance/integrations/fortnox/callback")]
+     public async Task<IActionResult> BrowserCallbackAsync(
+         [FromQuery] Guid companyId,
+diff --git a/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs b/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs
+index 2b3c4d5..6e7f809 100644
+--- a/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs
+@@ -61,6 +61,28 @@ public sealed record FortnoxOAuthTokenResult(
+     IReadOnlyCollection<string> GrantedScopes,
+     string? ProviderTenantId = null);
+ 
++public sealed record FortnoxTokenSnapshot(
++    Guid ConnectionId,
++    Guid CompanyId,
++    string Status,
++    string? AccessToken,
++    string? RefreshToken,
++    DateTime? AccessTokenExpiresUtc,
++    IReadOnlyCollection<string> GrantedScopes,
++    string? ProviderTenantId);
++
++public interface IFortnoxOAuthSessionStore
++{
++    Task<string> CreateAsync(FortnoxOAuthState state, TimeSpan ttl, CancellationToken cancellationToken);
++    Task<FortnoxOAuthState> ConsumeAsync(Guid companyId, string stateHandle, CancellationToken cancellationToken);
++}
++
++public interface IFortnoxTokenStore
++{
++    Task<FortnoxTokenSnapshot?> GetAsync(Guid companyId, Guid? connectionId, CancellationToken cancellationToken);
++    Task<FortnoxTokenSnapshot> UpsertConnectedAsync(Guid companyId, Guid userId, FortnoxOAuthTokenResult tokenResult, DateTime nowUtc, CancellationToken cancellationToken);
++    Task<FortnoxTokenSnapshot> StoreRefreshResultAsync(Guid companyId, Guid connectionId, FortnoxOAuthTokenResult tokenResult, DateTime nowUtc, CancellationToken cancellationToken);
++    Task MarkAsync(Guid companyId, Guid connectionId, string status, string safeReason, DateTime nowUtc, CancellationToken cancellationToken);
++}
++
+ public sealed class FortnoxOAuthException : Exception
+ {
+     public FortnoxOAuthException(string safeMessage, bool requiresReconnect = false, bool isTransient = false)
+diff --git a/src/VirtualCompany.Domain/Entities/FortnoxConnection.cs b/src/VirtualCompany.Domain/Entities/FortnoxConnection.cs
+index 3c4d5e6..7f8091a 100644
+--- a/src/VirtualCompany.Domain/Entities/FortnoxConnection.cs
++++ b/src/VirtualCompany.Domain/Entities/FortnoxConnection.cs
+@@ -81,7 +81,7 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
+             encryptedAccessToken,
+             encryptedRefreshToken,
+             accessTokenExpiresUtc,
+-            grantedScopes.Count == 0 ? GrantedScopes : grantedScopes,
++            grantedScopes is null || grantedScopes.Count == 0 ? GrantedScopes : grantedScopes,
+             ProviderTenantId,
+             nowUtc);
+         LastRefreshAttemptUtc = EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 4d5e6f7..8091a2b 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -83,7 +83,9 @@ public static class DependencyInjection
+             .ValidateOnStart();
+         services.AddHttpClient(FortnoxOAuthClient.ClientName);
+         services.AddScoped<IFortnoxOAuthStateProtector, DataProtectionFortnoxOAuthStateProtector>();
++        services.AddScoped<IFortnoxOAuthSessionStore, DistributedCacheFortnoxOAuthSessionStore>();
+         services.AddScoped<IFortnoxOAuthService, FortnoxOAuthService>();
++        services.AddScoped<IFortnoxTokenStore, FortnoxTokenStore>();
+         services.AddScoped<FortnoxOAuthClient>();
+ 
+         services.AddOptions<CompanySimulationOptions>()
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs
+index 5e6f708..91a2b3c 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs
+@@ -1,26 +1,23 @@
+ using System.Security.Cryptography;
+-using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Finance;
+-using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+-using VirtualCompany.Infrastructure.Persistence;
+-using VirtualCompany.Infrastructure.Security;
++using VirtualCompany.Application.Workflows;
+ 
+ namespace VirtualCompany.Infrastructure.Finance;
+ 
+ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+ {
+     private static readonly TimeSpan OAuthStateTtl = TimeSpan.FromMinutes(10);
++    private static readonly TimeSpan RefreshLockTtl = TimeSpan.FromSeconds(30);
++    private static readonly TimeSpan RefreshLockWait = TimeSpan.FromSeconds(3);
++    private static readonly TimeSpan RefreshLockPoll = TimeSpan.FromMilliseconds(250);
+     private static readonly TimeSpan RefreshSkew = TimeSpan.FromMinutes(5);
+-    private const string AccessTokenPurpose = "fortnox:access_token";
+-    private const string RefreshTokenPurpose = "fortnox:refresh_token";
+ 
+-    private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyContextAccessor _companyContextAccessor;
+-    private readonly IFortnoxOAuthStateProtector _stateProtector;
++    private readonly IFortnoxOAuthSessionStore _sessionStore;
++    private readonly IFortnoxTokenStore _tokenStore;
+     private readonly FortnoxOAuthClient _client;
+-    private readonly IFieldEncryptionService _fieldEncryption;
++    private readonly IDistributedLockProvider _lockProvider;
+     private readonly TimeProvider _timeProvider;
+     private readonly ILogger<FortnoxOAuthService> _logger;
+ 
+@@ -28,15 +25,15 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+         VirtualCompanyDbContext dbContext,
+         ICompanyContextAccessor companyContextAccessor,
+         IFortnoxOAuthStateProtector stateProtector,
++        IFortnoxOAuthSessionStore sessionStore,
++        IFortnoxTokenStore tokenStore,
+         FortnoxOAuthClient client,
+-        IFieldEncryptionService fieldEncryption,
++        IDistributedLockProvider lockProvider,
+         TimeProvider timeProvider,
+         ILogger<FortnoxOAuthService> logger)
+     {
+-        _dbContext = dbContext;
+         _companyContextAccessor = companyContextAccessor;
+-        _stateProtector = stateProtector;
++        _sessionStore = sessionStore;
++        _tokenStore = tokenStore;
+         _client = client;
+-        _fieldEncryption = fieldEncryption;
++        _lockProvider = lockProvider;
+         _timeProvider = timeProvider;
+         _logger = logger;
+     }
+@@ -45,7 +42,7 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+     public Task<FortnoxOAuthStartResult> BuildAuthorizationUrlAsync(
+         StartFortnoxOAuthConnectionCommand command,
+         CancellationToken cancellationToken)
+-    {
++    async Task<FortnoxOAuthStartResult> IFortnoxOAuthService.BuildAuthorizationUrlAsync(StartFortnoxOAuthConnectionCommand command, CancellationToken cancellationToken)
++    {
+         EnsureCurrentTenantUser(command.CompanyId, command.UserId);
+         var now = UtcNow();
+         var nonce = CreateNonce();
+-        var protectedState = _stateProtector.Protect(new FortnoxOAuthState(
++        var state = new FortnoxOAuthState(
+             command.CompanyId,
+             command.UserId,
+             nonce,
+             now,
+             now.Add(OAuthStateTtl),
+             command.Reconnect,
+-            command.ReturnUri));
++            command.ReturnUri);
++        var stateHandle = await _sessionStore.CreateAsync(state, OAuthStateTtl, cancellationToken);
+ 
+-        var authorizationUrl = _client.BuildAuthorizationUrl(protectedState, nonce);
++        var authorizationUrl = _client.BuildAuthorizationUrl(stateHandle, nonce);
+         _logger.LogInformation(
+             "Fortnox OAuth authorization URL created. CompanyId: {CompanyId}. UserId: {UserId}. Reconnect: {Reconnect}.",
+             command.CompanyId,
+@@ -53,7 +50,7 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+             command.Reconnect);
+ 
+-        return Task.FromResult(new FortnoxOAuthStartResult(authorizationUrl, now.Add(OAuthStateTtl)));
++        return new FortnoxOAuthStartResult(authorizationUrl, now.Add(OAuthStateTtl));
+     }
+ 
+     public async Task<FortnoxOAuthCompletionResult> HandleCallbackAsync(
+@@ -68,8 +65,8 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+             throw new FortnoxOAuthException("Fortnox did not return an authorization code.");
+         }
+ 
+-        var state = _stateProtector.Unprotect(command.State);
+-        ValidateCallbackState(command, state);
++        var state = await _sessionStore.ConsumeAsync(command.CompanyId, command.State, cancellationToken);
++        ValidateCallbackState(command, state);
+         EnsureCurrentTenantUser(state.CompanyId, state.UserId);
+ 
+         FortnoxOAuthTokenResult tokenResult;
+@@ -88,26 +85,8 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+             throw new FortnoxOAuthException("Fortnox authorization is temporarily unavailable. Try again later.", isTransient: true);
+         }
+ 
+-        var now = UtcNow();
+-        var connection = await _dbContext.FortnoxConnections
+-            .SingleOrDefaultAsync(x => x.CompanyId == state.CompanyId, cancellationToken);
+-
+-        if (connection is null)
+-        {
+-            connection = new FortnoxConnection(Guid.NewGuid(), state.CompanyId, state.UserId, now);
+-            _dbContext.FortnoxConnections.Add(connection);
+-        }
+-
+-        connection.StoreEncryptedTokens(
+-            _fieldEncryption.Encrypt(state.CompanyId, AccessTokenPurpose, tokenResult.AccessToken),
+-            _fieldEncryption.Encrypt(state.CompanyId, RefreshTokenPurpose, tokenResult.RefreshToken),
+-            tokenResult.AccessTokenExpiresUtc,
+-            tokenResult.GrantedScopes,
+-            tokenResult.ProviderTenantId,
+-            now);
+-
+-        await _dbContext.SaveChangesAsync(cancellationToken);
++        var connection = await _tokenStore.UpsertConnectedAsync(state.CompanyId, state.UserId, tokenResult, UtcNow(), cancellationToken);
+ 
+         _logger.LogInformation(
+             "Fortnox OAuth connection completed. CompanyId: {CompanyId}. UserId: {UserId}. ConnectionId: {ConnectionId}.",
+@@ -119,7 +98,7 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+         return new FortnoxOAuthCompletionResult(
+             connection.Id,
+             state.CompanyId,
+-            connection.Status.ToStorageValue(),
++            connection.Status,
+             state.ReturnUri);
+     }
+ 
+@@ -127,29 +106,51 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+         RefreshFortnoxAccessTokenCommand command,
+         CancellationToken cancellationToken)
+     {
+-        var query = _dbContext.FortnoxConnections
+-            .Where(x => x.CompanyId == command.CompanyId);
++        var existing = await _tokenStore.GetAsync(command.CompanyId, command.ConnectionId, cancellationToken);
++        var usable = TryUseExistingToken(existing);
++        if (usable is not null)
++        {
++            return usable;
++        }
+ 
+-        if (command.ConnectionId.HasValue)
++        if (existing is null)
+         {
+-            query = query.Where(x => x.Id == command.ConnectionId.Value);
++            return FortnoxAccessTokenResult.ReconnectRequired("Fortnox is not connected.");
+         }
+ 
+-        var connection = await query.SingleOrDefaultAsync(cancellationToken);
+-        if (connection is null)
++        if (IsReconnectStatus(existing.Status))
+         {
+-            return FortnoxAccessTokenResult.ReconnectRequired("Fortnox is not connected.");
++            return FortnoxAccessTokenResult.ReconnectRequired("Fortnox needs to be reconnected.");
+         }
+ 
+-        if (connection.Status is FortnoxConnectionStatus.NeedsReconnect or FortnoxConnectionStatus.Revoked or FortnoxConnectionStatus.Disconnected)
++        var lockKey = $"fortnox-refresh:{command.CompanyId:N}:{existing.ConnectionId:N}";
++        await using var handle = await _lockProvider.TryAcquireAsync(lockKey, RefreshLockTtl, cancellationToken);
++        if (handle is null)
+         {
+-            return FortnoxAccessTokenResult.ReconnectRequired("Fortnox needs to be reconnected.");
++            return await WaitForConcurrentRefreshAsync(command, cancellationToken);
+         }
+ 
++        var afterLock = await _tokenStore.GetAsync(command.CompanyId, existing.ConnectionId, cancellationToken);
++        usable = TryUseExistingToken(afterLock);
++        if (usable is not null)
++        {
++            return usable;
++        }
++
++        return afterLock is null
++            ? FortnoxAccessTokenResult.ReconnectRequired("Fortnox is not connected.")
++            : await RefreshAsync(afterLock, cancellationToken);
++    }
++
++    private FortnoxAccessTokenResult? TryUseExistingToken(FortnoxTokenSnapshot? connection)
++    {
++        if (connection is null)
++        {
++            return null;
++        }
++
++        if (IsReconnectStatus(connection.Status))
++        {
++            return FortnoxAccessTokenResult.ReconnectRequired("Fortnox needs to be reconnected.");
++        }
++
+         var now = UtcNow();
+-        if (!string.IsNullOrWhiteSpace(connection.EncryptedAccessToken) &&
++        if (!string.IsNullOrWhiteSpace(connection.AccessToken) &&
+             (!connection.AccessTokenExpiresUtc.HasValue || connection.AccessTokenExpiresUtc.Value > now.Add(RefreshSkew)))
+         {
+-            return FortnoxAccessTokenResult.Success(
+-                _fieldEncryption.Decrypt(command.CompanyId, AccessTokenPurpose, connection.EncryptedAccessToken),
+-                connection.AccessTokenExpiresUtc);
++            return FortnoxAccessTokenResult.Success(connection.AccessToken, connection.AccessTokenExpiresUtc);
+         }
+ 
+-        if (string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken))
++        return null;
++    }
++
++    private async Task<FortnoxAccessTokenResult> RefreshAsync(FortnoxTokenSnapshot connection, CancellationToken cancellationToken)
++    {
++        var now = UtcNow();
++        if (string.IsNullOrWhiteSpace(connection.RefreshToken))
+         {
+-            connection.SetStatus(FortnoxConnectionStatus.NeedsReconnect, "Fortnox needs to be reconnected.", now);
+-            await _dbContext.SaveChangesAsync(cancellationToken);
++            await _tokenStore.MarkAsync(connection.CompanyId, connection.ConnectionId, FortnoxConnectionStatusValues.NeedsReconnect, "Fortnox needs to be reconnected.", now, cancellationToken);
+             return FortnoxAccessTokenResult.ReconnectRequired("Fortnox needs to be reconnected.");
+         }
+ 
+-        connection.RecordRefreshAttempt(now);
+-        var refreshToken = _fieldEncryption.Decrypt(command.CompanyId, RefreshTokenPurpose, connection.EncryptedRefreshToken);
+         try
+         {
+-            var tokenResult = await _client.RefreshTokenAsync(refreshToken, cancellationToken);
+-            connection.StoreRefreshedTokens(
+-                _fieldEncryption.Encrypt(command.CompanyId, AccessTokenPurpose, tokenResult.AccessToken),
+-                _fieldEncryption.Encrypt(command.CompanyId, RefreshTokenPurpose, tokenResult.RefreshToken),
+-                tokenResult.AccessTokenExpiresUtc,
+-                tokenResult.GrantedScopes,
+-                now);
+-            await _dbContext.SaveChangesAsync(cancellationToken);
++            var tokenResult = await _client.RefreshTokenAsync(connection.RefreshToken, cancellationToken);
++            await _tokenStore.StoreRefreshResultAsync(connection.CompanyId, connection.ConnectionId, tokenResult, now, cancellationToken);
+ 
+             return FortnoxAccessTokenResult.Success(tokenResult.AccessToken, tokenResult.AccessTokenExpiresUtc);
+         }
+         catch (FortnoxOAuthException ex) when (ex.RequiresReconnect)
+         {
+-            connection.SetStatus(FortnoxConnectionStatus.NeedsReconnect, ex.SafeMessage, now);
+-            await _dbContext.SaveChangesAsync(cancellationToken);
++            await _tokenStore.MarkAsync(connection.CompanyId, connection.ConnectionId, FortnoxConnectionStatusValues.NeedsReconnect, ex.SafeMessage, now, cancellationToken);
+             _logger.LogWarning(
+                 "Fortnox refresh token rejected. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}.",
+-                command.CompanyId,
+-                connection.Id);
++                connection.CompanyId,
++                connection.ConnectionId);
+             return FortnoxAccessTokenResult.ReconnectRequired(ex.SafeMessage);
+         }
+         catch (Exception ex) when (ex is FortnoxOAuthException or HttpRequestException or TaskCanceledException)
+         {
+-            connection.SetStatus(FortnoxConnectionStatus.Error, "Fortnox token refresh failed. The job will retry later.", now);
+-            await _dbContext.SaveChangesAsync(cancellationToken);
++            await _tokenStore.MarkAsync(connection.CompanyId, connection.ConnectionId, FortnoxConnectionStatusValues.Error, "Fortnox token refresh failed. The job will retry later.", now, cancellationToken);
+             _logger.LogWarning(
+                 "Fortnox token refresh failed without exposing token material. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}.",
+-                command.CompanyId,
+-                connection.Id);
++                connection.CompanyId,
++                connection.ConnectionId);
+             return FortnoxAccessTokenResult.TransientFailure("Fortnox token refresh failed. The job will retry later.");
+         }
+     }
++
++    private async Task<FortnoxAccessTokenResult> WaitForConcurrentRefreshAsync(
++        RefreshFortnoxAccessTokenCommand command,
++        CancellationToken cancellationToken)
++    {
++        var deadline = _timeProvider.GetUtcNow().Add(RefreshLockWait);
++        while (_timeProvider.GetUtcNow() < deadline)
++        {
++            await Task.Delay(RefreshLockPoll, cancellationToken);
++            var refreshed = await _tokenStore.GetAsync(command.CompanyId, command.ConnectionId, cancellationToken);
++            var usable = TryUseExistingToken(refreshed);
++            if (usable is not null)
++            {
++                return usable;
++            }
++        }
++
++        _logger.LogWarning(
++            "Fortnox token refresh coordination timed out. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}.",
++            command.CompanyId,
++            command.ConnectionId);
++        return FortnoxAccessTokenResult.TransientFailure("Fortnox token refresh is already in progress. The job will retry later.");
++    }
+ 
+     public async Task<FortnoxConnectionStatusResult> GetStatusAsync(
+         GetFortnoxConnectionStatusQuery query,
+         CancellationToken cancellationToken)
+     {
+         EnsureCurrentTenantUser(query.CompanyId, query.UserId);
+-        var connection = await _dbContext.FortnoxConnections
+-            .AsNoTracking()
+-            .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId, cancellationToken);
++        var connection = await _tokenStore.GetAsync(query.CompanyId, null, cancellationToken);
+ 
+         if (connection is null)
+         {
+@@ -157,13 +158,13 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+         }
+ 
+         return new FortnoxConnectionStatusResult(
+-            connection.Status == FortnoxConnectionStatus.Connected,
+-            connection.Id,
+-            connection.Status.ToStorageValue(),
+-            connection.ConnectedUtc,
++            connection.Status == FortnoxConnectionStatusValues.Connected,
++            connection.ConnectionId,
++            connection.Status,
++            null,
+             connection.AccessTokenExpiresUtc,
+-            connection.LastRefreshAttemptUtc,
+-            connection.LastErrorSummary);
++            null,
++            null);
+     }
+ 
+     public async Task MarkNeedsReconnectAsync(
+@@ -172,16 +173,10 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+         string safeReason,
+         CancellationToken cancellationToken)
+     {
+-        var connection = await _dbContext.FortnoxConnections
+-            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == connectionId, cancellationToken);
+-
+-        if (connection is null)
+-        {
+-            return;
+-        }
+-
+-        connection.SetStatus(FortnoxConnectionStatus.NeedsReconnect, safeReason, UtcNow());
+-        await _dbContext.SaveChangesAsync(cancellationToken);
++        await _tokenStore.MarkAsync(companyId, connectionId, FortnoxConnectionStatusValues.NeedsReconnect, safeReason, UtcNow(), cancellationToken);
+     }
++
++    private static bool IsReconnectStatus(string status) =>
++        status is FortnoxConnectionStatusValues.NeedsReconnect or FortnoxConnectionStatusValues.Revoked or FortnoxConnectionStatusValues.Disconnected;
+ 
+     private void ValidateCallbackState(CompleteFortnoxOAuthConnectionCommand command, FortnoxOAuthState state)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthSessionStore.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthSessionStore.cs
+new file mode 100644
+index 0000000..1a2b3c4
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthSessionStore.cs
+@@ -0,0 +1,72 @@
++using System.Security.Cryptography;
++using Microsoft.Extensions.Caching.Distributed;
++using VirtualCompany.Application.Finance;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class DistributedCacheFortnoxOAuthSessionStore : IFortnoxOAuthSessionStore
++{
++    private const int HandleBytes = 32;
++    private readonly IDistributedCache _cache;
++    private readonly IFortnoxOAuthStateProtector _stateProtector;
++
++    public DistributedCacheFortnoxOAuthSessionStore(
++        IDistributedCache cache,
++        IFortnoxOAuthStateProtector stateProtector)
++    {
++        _cache = cache;
++        _stateProtector = stateProtector;
++    }
++
++    public async Task<string> CreateAsync(FortnoxOAuthState state, TimeSpan ttl, CancellationToken cancellationToken)
++    {
++        if (state.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(state));
++        }
++
++        var handle = CreateHandle();
++        await _cache.SetStringAsync(
++            BuildKey(state.CompanyId, handle),
++            _stateProtector.Protect(state),
++            new DistributedCacheEntryOptions
++            {
++                AbsoluteExpirationRelativeToNow = ttl
++            },
++            cancellationToken);
++
++        return handle;
++    }
++
++    public async Task<FortnoxOAuthState> ConsumeAsync(Guid companyId, string stateHandle, CancellationToken cancellationToken)
++    {
++        if (companyId == Guid.Empty || string.IsNullOrWhiteSpace(stateHandle))
++        {
++            throw new UnauthorizedAccessException("Fortnox OAuth state was invalid.");
++        }
++
++        var key = BuildKey(companyId, stateHandle);
++        var protectedState = await _cache.GetStringAsync(key, cancellationToken);
++        if (string.IsNullOrWhiteSpace(protectedState))
++        {
++            throw new UnauthorizedAccessException("Fortnox OAuth state was invalid or expired.");
++        }
++
++        await _cache.RemoveAsync(key, cancellationToken);
++        var state = _stateProtector.Unprotect(protectedState);
++        if (state.CompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException("Fortnox OAuth state was invalid.");
++        }
++
++        return state;
++    }
++
++    private static string CreateHandle()
++    {
++        Span<byte> bytes = stackalloc byte[HandleBytes];
++        RandomNumberGenerator.Fill(bytes);
++        return Convert.ToBase64String(bytes)
++            .Replace('+', '-')
++            .Replace('/', '_')
++            .TrimEnd('=');
++    }
++
++    private static string BuildKey(Guid companyId, string handle) =>
++        $"fortnox-oauth:company:{companyId:N}:state:{handle.Trim()}";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs
+new file mode 100644
+index 0000000..2b3c4d5
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs
+@@ -0,0 +1,144 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Security;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class FortnoxTokenStore : IFortnoxTokenStore
++{
++    private const string AccessTokenPurpose = "fortnox:access_token";
++    private const string RefreshTokenPurpose = "fortnox:refresh_token";
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IFieldEncryptionService _fieldEncryption;
++
++    public FortnoxTokenStore(
++        VirtualCompanyDbContext dbContext,
++        IFieldEncryptionService fieldEncryption)
++    {
++        _dbContext = dbContext;
++        _fieldEncryption = fieldEncryption;
++    }
++
++    public async Task<FortnoxTokenSnapshot?> GetAsync(Guid companyId, Guid? connectionId, CancellationToken cancellationToken)
++    {
++        var query = _dbContext.FortnoxConnections
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId);
++
++        if (connectionId.HasValue)
++        {
++            query = query.Where(x => x.Id == connectionId.Value);
++        }
++
++        var connection = await query.SingleOrDefaultAsync(cancellationToken);
++        return connection is null ? null : ToSnapshot(connection, includeTokens: true);
++    }
++
++    public async Task<FortnoxTokenSnapshot> UpsertConnectedAsync(
++        Guid companyId,
++        Guid userId,
++        FortnoxOAuthTokenResult tokenResult,
++        DateTime nowUtc,
++        CancellationToken cancellationToken)
++    {
++        var connection = await _dbContext.FortnoxConnections
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
++
++        if (connection is null)
++        {
++            connection = new FortnoxConnection(Guid.NewGuid(), companyId, userId, nowUtc);
++            _dbContext.FortnoxConnections.Add(connection);
++        }
++
++        connection.StoreEncryptedTokens(
++            EncryptAccess(companyId, tokenResult.AccessToken),
++            EncryptRefresh(companyId, tokenResult.RefreshToken),
++            tokenResult.AccessTokenExpiresUtc,
++            tokenResult.GrantedScopes,
++            tokenResult.ProviderTenantId,
++            nowUtc);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return ToSnapshot(connection, includeTokens: false);
++    }
++
++    public async Task<FortnoxTokenSnapshot> StoreRefreshResultAsync(
++        Guid companyId,
++        Guid connectionId,
++        FortnoxOAuthTokenResult tokenResult,
++        DateTime nowUtc,
++        CancellationToken cancellationToken)
++    {
++        var connection = await _dbContext.FortnoxConnections
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == connectionId, cancellationToken)
++            ?? throw new FortnoxOAuthException("Fortnox is not connected.", requiresReconnect: true);
++
++        connection.RecordRefreshAttempt(nowUtc);
++        connection.StoreRefreshedTokens(
++            EncryptAccess(companyId, tokenResult.AccessToken),
++            EncryptRefresh(companyId, tokenResult.RefreshToken),
++            tokenResult.AccessTokenExpiresUtc,
++            tokenResult.GrantedScopes,
++            nowUtc);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return ToSnapshot(connection, includeTokens: false);
++    }
++
++    public async Task MarkAsync(
++        Guid companyId,
++        Guid connectionId,
++        string status,
++        string safeReason,
++        DateTime nowUtc,
++        CancellationToken cancellationToken)
++    {
++        var connection = await _dbContext.FortnoxConnections
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == connectionId, cancellationToken);
++
++        if (connection is null)
++        {
++            return;
++        }
++
++        connection.RecordRefreshAttempt(nowUtc);
++        connection.SetStatus(FortnoxConnectionStatusValues.Parse(status), safeReason, nowUtc);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    private FortnoxTokenSnapshot ToSnapshot(FortnoxConnection connection, bool includeTokens)
++    {
++        var accessToken = includeTokens && !string.IsNullOrWhiteSpace(connection.EncryptedAccessToken)
++            ? DecryptAccess(connection.CompanyId, connection.EncryptedAccessToken)
++            : null;
++        var refreshToken = includeTokens && !string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken)
++            ? DecryptRefresh(connection.CompanyId, connection.EncryptedRefreshToken)
++            : null;
++
++        return new FortnoxTokenSnapshot(
++            connection.Id,
++            connection.CompanyId,
++            connection.Status.ToStorageValue(),
++            accessToken,
++            refreshToken,
++            connection.AccessTokenExpiresUtc,
++            connection.GrantedScopes,
++            connection.ProviderTenantId);
++    }
++
++    private string EncryptAccess(Guid companyId, string plaintext) =>
++        _fieldEncryption.Encrypt(companyId, AccessTokenPurpose, plaintext);
++
++    private string EncryptRefresh(Guid companyId, string plaintext) =>
++        _fieldEncryption.Encrypt(companyId, RefreshTokenPurpose, plaintext);
++
++    private string DecryptAccess(Guid companyId, string ciphertext) =>
++        _fieldEncryption.Decrypt(companyId, AccessTokenPurpose, ciphertext);
++
++    private string DecryptRefresh(Guid companyId, string ciphertext) =>
++        _fieldEncryption.Decrypt(companyId, RefreshTokenPurpose, ciphertext);
++}
+diff --git a/docs/integrations/fortnox.md b/docs/integrations/fortnox.md
+index 3c4d5e6..4d5e6f7 100644
+--- a/docs/integrations/fortnox.md
++++ b/docs/integrations/fortnox.md
+@@ -1,3 +1,5 @@
+ # Fortnox integration
+ 
++OAuth state is stored server-side in the distributed cache and the browser only receives an opaque state handle. Access and refresh tokens are encrypted with the application field-encryption service before they are persisted in `fortnox_connections`, and all reads are scoped by `CompanyId`.
++
+ Configure `FinanceIntegrations:Fortnox` with `Enabled`, `ClientId`, `ClientSecret`, `RedirectUri`, `AuthorizationUrl`, `TokenUrl`, `ApiBaseUrl`, and `Scopes`. When `Enabled=true`, startup validation fails if any required key is missing or URI values are not absolute HTTP or HTTPS URLs.
+diff --git a/docs/runbooks/fortnox-integration.md b/docs/runbooks/fortnox-integration.md
+index 4d5e6f7..5e6f708 100644
+--- a/docs/runbooks/fortnox-integration.md
++++ b/docs/runbooks/fortnox-integration.md
+@@ -1,3 +1,5 @@
+ # Fortnox integration runbook
+ 
++Refreshes are coordinated with the application distributed lock provider using a company and connection scoped lock. If another node is already refreshing the same Fortnox connection, callers wait briefly, re-read the tenant-scoped token row, and then retry through the normal background retry path instead of issuing a second upstream refresh.
++
+ Logs must never include access tokens, refresh tokens, authorization codes, client secrets, or raw Fortnox error payloads. Use company id, user id, connection id, safe status transitions, and HTTP status categories for diagnosis.
+END_OF_PATCH

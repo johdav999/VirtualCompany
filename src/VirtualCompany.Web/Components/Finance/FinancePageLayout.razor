@@ -24,7 +24,10 @@ else
         Description="@Description"
         CompanyId="@AccessState.CompanyId!.Value"
         CompanyName="@(AccessState.CompanyName!)"
-        MembershipRole="@AccessState.MembershipRole">
+        MembershipRole="@AccessState.MembershipRole"
+        Area="@Area"
+        ShowHeader="@ShowShellHeader"
+        ShowNavigation="@ShowShellNavigation">
         @ChildContent
     </FinanceModuleShell>
 }
@@ -41,5 +44,8 @@ else
     [Parameter] public string Description { get; set; } = string.Empty;
     [Parameter] public string LoadingMessage { get; set; } = "Loading finance workspace...";
     [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public string Area { get; set; } = "Finance";
+    [Parameter] public bool ShowShellHeader { get; set; } = true;
+    [Parameter] public bool ShowShellNavigation { get; set; } = true;
     [Parameter] public RenderFragment? ChildContent { get; set; }
 }

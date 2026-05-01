@@ -1,0 +1,264 @@
+diff --git a/docs/integrations/fortnox.md b/docs/integrations/fortnox.md
+index 0000000..0000000 100644
+--- a/docs/integrations/fortnox.md
++++ b/docs/integrations/fortnox.md
+@@ -1,8 +1,8 @@
+-OAuth state is stored server-side in the distributed cache and the browser only receives an opaque state handle. Access and refresh tokens are encrypted with the application field-encryption service before they are persisted in `fortnox_connections`, and all reads are scoped by `CompanyId`.
+-
+ # Fortnox Integration
+ 
+-This page describes the first production slice of the Fortnox finance integration. The current implementation wires safe configuration, startup validation, local user-secrets, Azure Key Vault backed secrets, and typed options that the OAuth connect and callback flow will consume.
++This page describes the Fortnox finance integration used by US-32.1 for configuration, OAuth connection, callback validation, and secure token lifecycle. It is grounded in the current implementation under `src/VirtualCompany.Api`, `src/VirtualCompany.Application/Finance`, and `src/VirtualCompany.Infrastructure/Finance`.
++
++The integration is disabled by default. When enabled, configuration is validated on startup, OAuth state is stored server-side in the distributed cache, tokens are encrypted before persistence in `fortnox_connections`, and all connection reads are scoped by `CompanyId`.
+ 
+ ## Configuration
+ 
+@@ -19,9 +19,9 @@ Required when `Enabled` is `true`:
+ - `FinanceIntegrations:Fortnox:TokenUrl`
+ - `FinanceIntegrations:Fortnox:ApiBaseUrl`
+ 
+-Optional:
++Defaulted and validated when enabled:
+ 
+-- `FinanceIntegrations:Fortnox:AuthorizationUrl`
++- `FinanceIntegrations:Fortnox:AuthorizationUrl`
+ - `FinanceIntegrations:Fortnox:Scopes`
+ 
+ Safe default endpoints:
+@@ -34,6 +34,18 @@ Safe default endpoints:
+ 
+ Do not store `ClientId`, `ClientSecret`, access tokens, or refresh tokens in committed configuration files.
+ 
++Startup validation is registered in `VirtualCompany.Infrastructure.DependencyInjection` with `FortnoxOptionsValidator` and `.ValidateOnStart()`. When `FinanceIntegrations:Fortnox:Enabled` is `true`, missing or blank required values fail startup. URI values must be absolute `http` or `https` URLs. Validation messages name configuration paths and do not echo configured secret values.
++
++The checked-in `appsettings.json` and `appsettings.Development.json` keep Fortnox disabled and use empty placeholders for secrets. Real values belong in user-secrets locally and in a production secret store.
++
++## Routes
++
++The API controller is `FortnoxConnectionsController`.
++
++- Browser connect route: `GET /finance/integrations/fortnox/connect?companyId=<company-id>&reconnect=false&returnUri=<optional-return-uri>`
++- Browser callback route registered in Fortnox: `GET /finance/integrations/fortnox/callback`
++- Company-scoped API status route: `GET /api/companies/{companyId}/finance/integrations/fortnox/status`
++- Company-scoped API connect route: `POST /api/companies/{companyId}/finance/integrations/fortnox/connect`
++
+ ## Fortnox App Registration
+ 
+ Create the application in Fortnox Developer and configure the callback URL to match the API route:
+@@ -44,7 +56,15 @@ For local development the callback URL normally maps to the HTTPS API launch prof
+ 
+ `https://localhost:7136/finance/integrations/fortnox/callback`
+ 
+-Use the least privileged scopes required for the finance features being enabled. The exact scopes should match the Fortnox app capabilities approved for the tenant, such as company information, invoices, vouchers, accounts, and bookkeeping data. Keep scopes in configuration so production and test applications can differ without code changes.
++Register a separate Fortnox developer app for each production-like environment where possible. Use the least privileged Fortnox scopes required for the finance features being enabled. The code does not hard-code scope names; configured `FinanceIntegrations:Fortnox:Scopes` values are trimmed, joined with spaces, and sent as the OAuth `scope` parameter. Document the exact approved scopes in the environment change record when enabling or changing production access.
++
++The authorization request uses:
++
++- authorization endpoint: `FinanceIntegrations:Fortnox:AuthorizationUrl`, default `https://apps.fortnox.se/oauth-v1/auth`
++- token endpoint: `FinanceIntegrations:Fortnox:TokenUrl`, default `https://apps.fortnox.se/oauth-v1/token`
++- response type: `code`
++- callback URL: `FinanceIntegrations:Fortnox:RedirectUri`
++- OAuth parameters: `client_id`, `redirect_uri`, `response_type`, `state`, `nonce`, and optional `scope`
+ 
+ ## Local Development
+ 
+@@ -74,7 +94,48 @@ dotnet user-secrets set "FinanceIntegrations:Fortnox:Scopes:0" "<scope-name>" --
+ 
+ ## Production Secrets
+ 
+-Production should load Fortnox secrets from Azure Key Vault. Configure one of these non-secret values for the API:
++Production secrets must be stored in the environment secret store. The current API supports Azure Key Vault through configuration loaded in `Program.cs`. Configure one of these non-secret values for the API:
+ 
+ - `AzureKeyVault:Uri`
+ - `KeyVault:Uri`
+@@ -93,4 +154,58 @@ Use Key Vault secret names that map to configuration keys by replacing `:` with `
+ - `FinanceIntegrations--Fortnox--AuthorizationUrl`
+ 
+ The startup validator reports missing configuration by key path and never echoes configured values.
++
++Rotate `ClientSecret` through the secret store, not through source control. Keep old and new secrets available only for the shortest practical overlap supported by the Fortnox developer app, deploy the updated secret, verify a new connect flow and a refresh flow, then revoke the old secret.
++
++## Connect Flow
++
++The connect flow starts from the browser route or the company-scoped API route. Both require an authenticated user with the company admin policy and resolved company context.
++
++1. `FortnoxOAuthService.BuildAuthorizationUrlAsync` checks the resolved company and user through `ICompanyContextAccessor`.
++2. A random nonce and `FortnoxOAuthState` are created with a 10 minute TTL.
++3. `DistributedCacheFortnoxOAuthSessionStore` stores protected state in the distributed cache using a company-scoped key. The browser receives only an opaque state handle.
++4. `FortnoxOAuthClient.BuildAuthorizationUrl` builds the Fortnox authorization URL from configured endpoints, client id, redirect URI, state, nonce, and optional scopes.
++5. The browser is redirected to Fortnox.
++
++`returnUri` is optional. When supplied, it must be an absolute `http` or `https` URL on the current host, or `localhost` in development, and its path must start with `/finance/integrations/fortnox`.
++
++## Callback Validation
++
++The callback route safely handles cancelled, invalid, or expired authorization attempts.
++
++Current validation includes:
++
++- state: required in the callback and consumed from the server-side distributed cache
++- nonce: generated at connect time and compared in constant time when Fortnox returns a nonce
++- authenticated user: the callback uses the resolved current user and rejects mismatched users
++- company scope: the callback requires `companyId`, consumes state under that company, and rejects mismatched company/user state
++- state expiry: expired state fails with a safe reconnect message
++- invalid or expired authorization code: token exchange failures from Fortnox are mapped to safe messages and do not expose provider payloads
++
++The callback redirects back to `/finance/integrations/fortnox` or the validated return URI with `fortnoxConnection`, optional `fortnoxMessage`, and `companyId` query parameters. Raw tokens and raw Fortnox token responses are never rendered in the UI.
++
++## Token Storage And Refresh
++
++`FortnoxTokenStore` persists connection state in `fortnox_connections`. Access and refresh tokens are encrypted through `IFieldEncryptionService` before they are stored. Encryption purposes are separated for access tokens and refresh tokens, and encryption is company-scoped.
++
++`FortnoxOAuthClient` exchanges authorization codes and refresh tokens with `POST /oauth-v1/token` using HTTP Basic authentication with the configured client id and client secret. It sends form-encoded bodies:
++
++- authorization code exchange: `grant_type=authorization_code`, `code`, and `redirect_uri`
++- refresh: `grant_type=refresh_token` and `refresh_token`
++
++`FortnoxOAuthService.GetValidAccessTokenAsync` returns a still-valid access token when one exists. If the token is missing or inside the refresh skew window, refresh is coordinated with `IDistributedLockProvider` using a company and connection scoped lock so only one node refreshes a connection at a time.
++
++Invalid refresh tokens or revoked authorization responses from Fortnox mark the connection as `NeedsReconnect` and return a reconnect-required result. Transient failures mark the connection as `Error` with a safe reason and let background retry paths try again later. `Revoked` and `Disconnected` statuses are treated as reconnect-required when read.
++
++## Logging And Secret Handling
++
++- Do not log Fortnox client secrets, authorization codes, access tokens, refresh tokens, encrypted token payloads, or raw provider token responses.
++- Existing Fortnox logs include company, user, connection, reconnect, and coordination metadata only.
++- User-facing callback errors use safe messages from `FortnoxOAuthException` or a generic authorization failure.
++- Support tickets and incident notes must use connection ids, company ids, timestamps, and correlation ids instead of token material.
++
++## Verification Checklist
++
++- Fortnox is disabled by default in committed configuration.
++- Enabling Fortnox without required configuration fails startup.
++- The Fortnox developer app callback URL exactly matches `FinanceIntegrations:Fortnox:RedirectUri`.
++- Local secrets are set with `dotnet user-secrets` for `src/VirtualCompany.Api`.
++- Production secrets are loaded from Key Vault or the approved production secret store.
++- Connect and callback routes require an authenticated company admin and resolved company context.
++- Token rows in `fortnox_connections` contain encrypted token fields only.
++- Logs and UI output do not include token or client secret values.
+diff --git a/docs/runbooks/fortnox-integration.md b/docs/runbooks/fortnox-integration.md
+index 0000000..0000000 100644
+--- a/docs/runbooks/fortnox-integration.md
++++ b/docs/runbooks/fortnox-integration.md
+@@ -1,10 +1,8 @@
+-Refreshes are coordinated with the application distributed lock provider using a company and connection scoped lock. If another node is already refreshing the same Fortnox connection, callers wait briefly, re-read the tenant-scoped token row, and then retry through the normal background retry path instead of issuing a second upstream refresh.
+-
+ # Fortnox Integration Runbook
+ 
+ ## Purpose
+ 
+-This runbook covers operational setup and troubleshooting for the Fortnox configuration and secret lifecycle foundation. Full data sync, encrypted token persistence, automatic refresh, and reconnect handling belong to follow-up Fortnox tasks.
++This runbook covers operational setup, secret handling, rotation, callback troubleshooting, token refresh failures, and reconnect handling for the Fortnox finance integration. The developer setup guide is `../integrations/fortnox.md`.
+ 
+ ## Production Setup
+ 
+@@ -27,6 +25,18 @@ This runbook covers operational setup and troubleshooting for the Fortnox configu
+ 6. Grant the application managed identity permission to read secrets from the vault.
+ 7. Restart the API and verify startup succeeds.
+ 
++## Required Secrets
++
++Production must keep these values in Key Vault or the approved production secret store:
++
++- `FinanceIntegrations--Fortnox--ClientId`
++- `FinanceIntegrations--Fortnox--ClientSecret`
++- `FinanceIntegrations--Fortnox--RedirectUri`
++- `FinanceIntegrations--Fortnox--TokenUrl`
++- `FinanceIntegrations--Fortnox--ApiBaseUrl`
++
++`FinanceIntegrations--Fortnox--AuthorizationUrl` and `FinanceIntegrations--Fortnox--Scopes--<index>` should also be managed in the secret store or environment configuration when they differ from defaults.
++
++Never commit Fortnox client secrets, authorization codes, access tokens, refresh tokens, or encrypted token payloads. Never paste them into logs, tickets, screenshots, or chat.
++
+ ## Startup Validation
+ 
+ When Fortnox is enabled, the API fails fast if any required key is missing or blank:
+@@ -43,6 +53,55 @@ URI values must be absolute HTTP or HTTPS URLs.
+ 
+ Validation errors name the missing or invalid configuration path. They do not print the configured client secret or token values.
+ 
++## Secret Rotation
++
++Use this procedure for planned client secret rotation or emergency exposure response:
++
++1. Create or prepare the new Fortnox client secret in the Fortnox developer app.
++2. Add the new secret to the production secret store as `FinanceIntegrations--Fortnox--ClientSecret`.
++3. Keep the old secret active until the deployed application is confirmed to use the new value, if Fortnox supports overlap.
++4. Deploy or restart the API so configuration is reloaded and startup validation runs.
++5. Verify a new connect flow reaches Fortnox and returns through `/finance/integrations/fortnox/callback`.
++6. Verify an existing connection can refresh through `POST /oauth-v1/token`, or reconnect a test tenant if refresh tokens were invalidated by the rotation.
++7. Revoke the old Fortnox client secret.
++8. Confirm logs and UI output contain no client secret, authorization code, access token, or refresh token values.
++
++If the old secret was exposed, treat all Fortnox refresh tokens as potentially at risk. Coordinate tenant reconnects and inspect logs for accidental token leakage.
++
++## Redirect URI Changes
++
++Changing the callback URL requires both Fortnox developer app configuration and application configuration.
++
++1. Register the new callback URL in Fortnox, for example `https://<api-host>/finance/integrations/fortnox/callback`.
++2. Update `FinanceIntegrations--Fortnox--RedirectUri` in the secret store.
++3. Deploy or restart the API.
++4. Start a connect flow from `/finance/integrations/fortnox/connect`.
++5. Confirm Fortnox redirects to `/finance/integrations/fortnox/callback` and the application redirects back with `fortnoxConnection=connected`.
++6. Remove the old callback URL from Fortnox after verification.
++
++## Token Refresh And Reconnect
++
++Access token retrieval is handled by `FortnoxOAuthService.GetValidAccessTokenAsync`.
++
++- Valid access tokens are reused until they approach expiry.
++- Refreshes use the configured token endpoint, normally `https://apps.fortnox.se/oauth-v1/token`.
++- Refreshes are coordinated with the application distributed lock provider using a company and connection scoped lock.
++- If another node is already refreshing the same connection, callers wait briefly, re-read the tenant-scoped token row, and return a transient retry result if the lock does not clear.
++- Bad request, unauthorized, and forbidden responses from Fortnox are treated as expired or revoked authorization and mark the connection as needing reconnect.
++- Missing refresh tokens, revoked connections, disconnected connections, and needs-reconnect statuses return reconnect-required results.
++- Other transient token failures mark the connection as error with a safe reason so background retry paths can try again later.
++
++Operationally, ask the tenant admin to reconnect Fortnox when the connection status is `NeedsReconnect`, `Revoked`, or `Disconnected`, or when support sees the safe message "Fortnox needs to be reconnected."
++
++## Callback Failures
++
++Use safe metadata only when troubleshooting callback failures:
++
++- company id
++- user id
++- connection id when available
++- callback timestamp
++- correlation id
++- safe callback message
++
++Do not ask users to send authorization codes or full callback URLs if those URLs include `code`, `state`, or `nonce`.
++
+ ## Troubleshooting
+ 
+ If startup fails with a missing Fortnox key:
+@@ -65,6 +124,16 @@ If Key Vault is not loading:
+ 4. Use application logs only for provider and startup status. Do not add temporary logging of secret values.
+ 
+ ## Safe Operations
+ 
+ - Never paste Fortnox client secrets, access tokens, or refresh tokens into logs, tickets, screenshots, or chat.
+ - Rotate the Fortnox client secret if it is exposed.
+ - Keep production and local Fortnox app registrations separate where possible.
+ - Keep scopes minimal and review scope changes before enabling new finance behavior.
+ - Treat callback errors as user-safe status messages. Do not surface raw Fortnox token or error payloads to users.
+ 
+-## Known Follow-ups
++## Production Rollout Checklist
+ 
+-- Implement the real OAuth connect and callback flow using the typed options.
+-- Persist Fortnox tokens encrypted at rest using the platform encryption approach.
+-- Add automatic refresh, revoked-token detection, and tenant-safe reconnect operations.
+-- Add tenant-scoped audit events for connect, disconnect, refresh failure, and reconnect activity.
++- Fortnox app exists for the target environment.
++- Callback URL exactly matches `FinanceIntegrations:Fortnox:RedirectUri`.
++- Required Fortnox configuration is present in the secret store.
++- `FinanceIntegrations:Fortnox:Enabled` is set to `true` only after required values exist.
++- API startup succeeds with options validation enabled.
++- Test tenant can start the connect flow from `/finance/integrations/fortnox/connect`.
++- Callback completes through `/finance/integrations/fortnox/callback`.
++- Token refresh succeeds through `/oauth-v1/token`.
++- Invalid refresh token behavior marks the connection as needing reconnect and does not expose token material.
++- Logs and UI output contain no token, authorization code, or client secret values.
+END_OF_PATCH

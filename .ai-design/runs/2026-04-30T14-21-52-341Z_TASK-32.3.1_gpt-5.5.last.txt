@@ -1,0 +1,1002 @@
+diff --git a/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs b/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs
+new file mode 100644
+index 0000000..3f0f2ab
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs
+@@ -0,0 +1,216 @@
++using System.Net;
++using System.Text.Json;
++using System.Text.Json.Serialization;
++
++namespace VirtualCompany.Application.Finance;
++
++public sealed record FortnoxRequestContext(
++    Guid CompanyId,
++    Guid? ConnectionId = null,
++    string? CorrelationId = null);
++
++public sealed record FortnoxPageOptions(
++    DateTimeOffset? LastModified = null,
++    DateOnly? FromDate = null,
++    DateOnly? ToDate = null,
++    string? SortBy = null,
++    string? SortOrder = null,
++    int? Page = null,
++    int? Limit = null);
++
++public sealed record FortnoxPagedResponse<T>(
++    IReadOnlyList<T> Items,
++    FortnoxPageMetadata Metadata)
++{
++    public bool HasNextPage =>
++        Metadata.CurrentPage.HasValue &&
++        Metadata.TotalPages.HasValue &&
++        Metadata.CurrentPage.Value < Metadata.TotalPages.Value;
++}
++
++public sealed record FortnoxPageMetadata(
++    int? CurrentPage,
++    int? TotalPages,
++    int? TotalResources,
++    int? Limit);
++
++public sealed class FortnoxApiException : Exception
++{
++    public FortnoxApiException(
++        string safeMessage,
++        HttpStatusCode? statusCode,
++        string category,
++        string? fortnoxErrorCode = null,
++        string? fortnoxErrorMessage = null,
++        bool isTransient = false,
++        bool requiresReconnect = false,
++        TimeSpan? retryAfter = null)
++        : base(safeMessage)
++    {
++        SafeMessage = safeMessage;
++        StatusCode = statusCode;
++        Category = category;
++        FortnoxErrorCode = fortnoxErrorCode;
++        FortnoxErrorMessage = fortnoxErrorMessage;
++        IsTransient = isTransient;
++        RequiresReconnect = requiresReconnect;
++        RetryAfter = retryAfter;
++    }
++
++    public string SafeMessage { get; }
++    public HttpStatusCode? StatusCode { get; }
++    public string Category { get; }
++    public string? FortnoxErrorCode { get; }
++    public string? FortnoxErrorMessage { get; }
++    public bool IsTransient { get; }
++    public bool RequiresReconnect { get; }
++    public TimeSpan? RetryAfter { get; }
++}
++
++public interface IFortnoxApiClient
++{
++    Task<FortnoxCompanyInformation> GetCompanyInformationAsync(FortnoxRequestContext context, CancellationToken cancellationToken);
++    Task<FortnoxPagedResponse<FortnoxCustomer>> GetCustomersAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
++    Task<FortnoxPagedResponse<FortnoxSupplier>> GetSuppliersAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
++    Task<FortnoxPagedResponse<FortnoxInvoice>> GetInvoicesAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
++    Task<FortnoxPagedResponse<FortnoxSupplierInvoice>> GetSupplierInvoicesAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
++    Task<FortnoxPagedResponse<FortnoxVoucher>> GetVouchersAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
++    Task<FortnoxPagedResponse<FortnoxAccount>> GetAccountsAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
++    Task<FortnoxPagedResponse<FortnoxArticle>> GetArticlesAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
++    Task<FortnoxPagedResponse<FortnoxProject>> GetProjectsAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
++    Task<TResponse?> GetAsync<TResponse>(FortnoxRequestContext context, string path, FortnoxPageOptions? options, CancellationToken cancellationToken);
++    Task<TResponse?> PostAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken);
++    Task<TResponse?> PutAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken);
++    Task DeleteAsync(FortnoxRequestContext context, string path, CancellationToken cancellationToken);
++}
++
++public sealed class FortnoxCompanyInformation
++{
++    public string? CompanyName { get; set; }
++    public string? OrganizationNumber { get; set; }
++    public string? DatabaseNumber { get; set; }
++    public string? CountryCode { get; set; }
++    public string? Email { get; set; }
++    public string? Phone { get; set; }
++    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
++}
++
++public sealed class FortnoxCustomer
++{
++    public string? CustomerNumber { get; set; }
++    public string? Name { get; set; }
++    public string? OrganisationNumber { get; set; }
++    public string? Email { get; set; }
++    public bool? Active { get; set; }
++    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
++}
++
++public sealed class FortnoxSupplier
++{
++    public string? SupplierNumber { get; set; }
++    public string? Name { get; set; }
++    public string? OrganisationNumber { get; set; }
++    public string? Email { get; set; }
++    public bool? Active { get; set; }
++    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
++}
++
++public sealed class FortnoxInvoice
++{
++    public string? DocumentNumber { get; set; }
++    public string? CustomerNumber { get; set; }
++    public string? CustomerName { get; set; }
++    public string? InvoiceDate { get; set; }
++    public string? DueDate { get; set; }
++    public decimal? Total { get; set; }
++    public string? Currency { get; set; }
++    public bool? Cancelled { get; set; }
++    public bool? Booked { get; set; }
++    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
++}
++
++public sealed class FortnoxSupplierInvoice
++{
++    public string? GivenNumber { get; set; }
++    public string? SupplierNumber { get; set; }
++    public string? SupplierName { get; set; }
++    public string? InvoiceDate { get; set; }
++    public string? DueDate { get; set; }
++    public decimal? Total { get; set; }
++    public string? Currency { get; set; }
++    public bool? Cancelled { get; set; }
++    public bool? Booked { get; set; }
++    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
++}
++
++public sealed class FortnoxVoucher
++{
++    public string? VoucherSeries { get; set; }
++    public int? VoucherNumber { get; set; }
++    public string? VoucherDate { get; set; }
++    public string? Description { get; set; }
++    public string? ReferenceNumber { get; set; }
++    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
++}
++
++public sealed class FortnoxAccount
++{
++    public int? Number { get; set; }
++    public string? Description { get; set; }
++    public bool? Active { get; set; }
++    public string? Type { get; set; }
++    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
++}
++
++public sealed class FortnoxArticle
++{
++    public string? ArticleNumber { get; set; }
++    public string? Description { get; set; }
++    public string? Type { get; set; }
++    public decimal? SalesPrice { get; set; }
++    public bool? Active { get; set; }
++    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
++}
++
++public sealed class FortnoxProject
++{
++    public string? ProjectNumber { get; set; }
++    public string? Description { get; set; }
++    public string? Status { get; set; }
++    public string? StartDate { get; set; }
++    public string? EndDate { get; set; }
++    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
++}
++
++public sealed class FortnoxEnvelope<T>
++{
++    public T? Value { get; set; }
++    public FortnoxMetaInformation? MetaInformation { get; set; }
++}
++
++public sealed class FortnoxMetaInformation
++{
++    [JsonPropertyName("@CurrentPage")]
++    public int? CurrentPage { get; set; }
++
++    [JsonPropertyName("@TotalPages")]
++    public int? TotalPages { get; set; }
++
++    [JsonPropertyName("@TotalResources")]
++    public int? TotalResources { get; set; }
++
++    [JsonPropertyName("@Limit")]
++    public int? Limit { get; set; }
++
++    public FortnoxPageMetadata ToMetadata() =>
++        new(CurrentPage, TotalPages, TotalResources, Limit);
++}
++
++public sealed class FortnoxErrorInformation
++{
++    public string? Error { get; set; }
++    public string? Code { get; set; }
++    public string? Message { get; set; }
++}
++
++public sealed class FortnoxErrorEnvelope
++{
++    public FortnoxErrorInformation? ErrorInformation { get; set; }
++    public FortnoxErrorInformation? Error { get; set; }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 6d4325e..a3e33c2 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -74,6 +74,11 @@ public static class DependencyInjection
+             .ValidateOnStart();
+         services.AddHttpClient(FortnoxOAuthClient.ClientName);
++        services.AddHttpClient<IFortnoxApiClient, FortnoxApiClient>((provider, client) =>
++        {
++            var options = provider.GetRequiredService<IOptionsMonitor<FortnoxOptions>>().CurrentValue;
++            client.BaseAddress = FortnoxApiClient.NormalizeBaseAddress(options.ApiBaseUrl);
++        });
+         services.AddScoped<IFortnoxOAuthStateProtector, DataProtectionFortnoxOAuthStateProtector>();
+         services.AddScoped<IFortnoxOAuthSessionStore, DistributedCacheFortnoxOAuthSessionStore>();
+         services.AddScoped<IFortnoxOAuthService, FortnoxOAuthService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
+new file mode 100644
+index 0000000..d9b89f4
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
+@@ -0,0 +1,371 @@
++using System.Globalization;
++using System.Net;
++using System.Net.Http.Headers;
++using System.Text;
++using System.Text.Json;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Finance;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class FortnoxApiClient : IFortnoxApiClient
++{
++    private const int DefaultMaxRetries = 3;
++    private readonly HttpClient _httpClient;
++    private readonly IFortnoxOAuthService _oauthService;
++    private readonly IOptionsMonitor<FortnoxOptions> _options;
++    private readonly ILogger<FortnoxApiClient> _logger;
++    private readonly TimeProvider _timeProvider;
++
++    public FortnoxApiClient(
++        HttpClient httpClient,
++        IFortnoxOAuthService oauthService,
++        IOptionsMonitor<FortnoxOptions> options,
++        ILogger<FortnoxApiClient> logger,
++        TimeProvider timeProvider)
++    {
++        _httpClient = httpClient;
++        _oauthService = oauthService;
++        _options = options;
++        _logger = logger;
++        _timeProvider = timeProvider;
++
++        _httpClient.BaseAddress ??= NormalizeBaseAddress(_options.CurrentValue.ApiBaseUrl);
++    }
++
++    public static Uri NormalizeBaseAddress(string? configuredBaseUrl)
++    {
++        var value = string.IsNullOrWhiteSpace(configuredBaseUrl)
++            ? "https://api.fortnox.se/3"
++            : configuredBaseUrl.Trim();
++
++        return new Uri(value.TrimEnd('/') + "/", UriKind.Absolute);
++    }
++
++    public Task<FortnoxCompanyInformation> GetCompanyInformationAsync(
++        FortnoxRequestContext context,
++        CancellationToken cancellationToken) =>
++        GetEnvelopeAsync<FortnoxCompanyInformation>(context, "companyinformation", "CompanyInformation", cancellationToken);
++
++    public Task<FortnoxPagedResponse<FortnoxCustomer>> GetCustomersAsync(
++        FortnoxRequestContext context,
++        FortnoxPageOptions? options,
++        CancellationToken cancellationToken) =>
++        GetPageAsync<FortnoxCustomer>(context, "customers", "Customers", options, cancellationToken);
++
++    public Task<FortnoxPagedResponse<FortnoxSupplier>> GetSuppliersAsync(
++        FortnoxRequestContext context,
++        FortnoxPageOptions? options,
++        CancellationToken cancellationToken) =>
++        GetPageAsync<FortnoxSupplier>(context, "suppliers", "Suppliers", options, cancellationToken);
++
++    public Task<FortnoxPagedResponse<FortnoxInvoice>> GetInvoicesAsync(
++        FortnoxRequestContext context,
++        FortnoxPageOptions? options,
++        CancellationToken cancellationToken) =>
++        GetPageAsync<FortnoxInvoice>(context, "invoices", "Invoices", options, cancellationToken);
++
++    public Task<FortnoxPagedResponse<FortnoxSupplierInvoice>> GetSupplierInvoicesAsync(
++        FortnoxRequestContext context,
++        FortnoxPageOptions? options,
++        CancellationToken cancellationToken) =>
++        GetPageAsync<FortnoxSupplierInvoice>(context, "supplierinvoices", "SupplierInvoices", options, cancellationToken);
++
++    public Task<FortnoxPagedResponse<FortnoxVoucher>> GetVouchersAsync(
++        FortnoxRequestContext context,
++        FortnoxPageOptions? options,
++        CancellationToken cancellationToken) =>
++        GetPageAsync<FortnoxVoucher>(context, "vouchers", "Vouchers", options, cancellationToken);
++
++    public Task<FortnoxPagedResponse<FortnoxAccount>> GetAccountsAsync(
++        FortnoxRequestContext context,
++        FortnoxPageOptions? options,
++        CancellationToken cancellationToken) =>
++        GetPageAsync<FortnoxAccount>(context, "accounts", "Accounts", options, cancellationToken);
++
++    public Task<FortnoxPagedResponse<FortnoxArticle>> GetArticlesAsync(
++        FortnoxRequestContext context,
++        FortnoxPageOptions? options,
++        CancellationToken cancellationToken) =>
++        GetPageAsync<FortnoxArticle>(context, "articles", "Articles", options, cancellationToken);
++
++    public Task<FortnoxPagedResponse<FortnoxProject>> GetProjectsAsync(
++        FortnoxRequestContext context,
++        FortnoxPageOptions? options,
++        CancellationToken cancellationToken) =>
++        GetPageAsync<FortnoxProject>(context, "projects", "Projects", options, cancellationToken);
++
++    public async Task<TResponse?> GetAsync<TResponse>(
++        FortnoxRequestContext context,
++        string path,
++        FortnoxPageOptions? options,
++        CancellationToken cancellationToken)
++    {
++        using var response = await SendAsync(context, HttpMethod.Get, path, options, contentFactory: null, cancellationToken);
++        return await DeserializeBodyAsync<TResponse>(response, cancellationToken);
++    }
++
++    public async Task<TResponse?> PostAsync<TRequest, TResponse>(
++        FortnoxRequestContext context,
++        string path,
++        TRequest payload,
++        CancellationToken cancellationToken)
++    {
++        using var response = await SendAsync(context, HttpMethod.Post, path, null, () => CreateJsonContent(payload), cancellationToken);
++        return await DeserializeBodyAsync<TResponse>(response, cancellationToken);
++    }
++
++    public async Task<TResponse?> PutAsync<TRequest, TResponse>(
++        FortnoxRequestContext context,
++        string path,
++        TRequest payload,
++        CancellationToken cancellationToken)
++    {
++        using var response = await SendAsync(context, HttpMethod.Put, path, null, () => CreateJsonContent(payload), cancellationToken);
++        return await DeserializeBodyAsync<TResponse>(response, cancellationToken);
++    }
++
++    public async Task DeleteAsync(
++        FortnoxRequestContext context,
++        string path,
++        CancellationToken cancellationToken)
++    {
++        using var response = await SendAsync(context, HttpMethod.Delete, path, null, contentFactory: null, cancellationToken);
++    }
++
++    private async Task<T> GetEnvelopeAsync<T>(
++        FortnoxRequestContext context,
++        string path,
++        string envelopeProperty,
++        CancellationToken cancellationToken)
++    {
++        using var response = await SendAsync(context, HttpMethod.Get, path, null, contentFactory: null, cancellationToken);
++        var body = await response.Content.ReadAsStringAsync(cancellationToken);
++        using var document = JsonDocument.Parse(body);
++
++        if (!TryGetProperty(document.RootElement, envelopeProperty, out var element))
++        {
++            throw new FortnoxApiException("Fortnox returned an unexpected response.", response.StatusCode, "invalid_response");
++        }
++
++        return element.Deserialize<T>(FortnoxJson.Options)
++            ?? throw new FortnoxApiException("Fortnox returned an unexpected response.", response.StatusCode, "invalid_response");
++    }
++
++    private async Task<FortnoxPagedResponse<T>> GetPageAsync<T>(
++        FortnoxRequestContext context,
++        string path,
++        string collectionProperty,
++        FortnoxPageOptions? options,
++        CancellationToken cancellationToken)
++    {
++        using var response = await SendAsync(context, HttpMethod.Get, path, options, contentFactory: null, cancellationToken);
++        var body = await response.Content.ReadAsStringAsync(cancellationToken);
++        using var document = JsonDocument.Parse(body);
++
++        if (!TryGetProperty(document.RootElement, collectionProperty, out var itemsElement))
++        {
++            throw new FortnoxApiException("Fortnox returned an unexpected response.", response.StatusCode, "invalid_response");
++        }
++
++        var items = itemsElement.Deserialize<IReadOnlyList<T>>(FortnoxJson.Options) ?? [];
++        var metadata = TryGetProperty(document.RootElement, "MetaInformation", out var metaElement)
++            ? metaElement.Deserialize<FortnoxMetaInformation>(FortnoxJson.Options)?.ToMetadata()
++            : null;
++
++        metadata ??= new FortnoxPageMetadata(options?.Page, null, null, options?.Limit);
++        return new FortnoxPagedResponse<T>(items, metadata);
++    }
++
++    private async Task<HttpResponseMessage> SendAsync(
++        FortnoxRequestContext context,
++        HttpMethod method,
++        string path,
++        FortnoxPageOptions? options,
++        Func<HttpContent>? contentFactory,
++        CancellationToken cancellationToken)
++    {
++        using var scope = _logger.BeginScope(new Dictionary<string, object?>
++        {
++            ["CompanyId"] = context.CompanyId,
++            ["FortnoxConnectionId"] = context.ConnectionId,
++            ["CorrelationId"] = context.CorrelationId
++        });
++
++        var accessToken = await ResolveAccessTokenAsync(context, cancellationToken);
++        var requestUri = BuildUri(path, options);
++        var maxRetries = Math.Max(0, _options.CurrentValue.ApiMaxRetries);
++        if (maxRetries == 0)
++        {
++            maxRetries = DefaultMaxRetries;
++        }
++
++        for (var attempt = 1; ; attempt++)
++        {
++            using var request = CreateRequest(method, requestUri, accessToken, context.CorrelationId, contentFactory);
++
++            HttpResponseMessage response;
++            try
++            {
++                response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
++            }
++            catch (HttpRequestException exception) when (attempt <= maxRetries)
++            {
++                await DelayForRetryAsync(attempt, null, requestUri, exception, cancellationToken);
++                continue;
++            }
++
++            if (response.IsSuccessStatusCode)
++            {
++                return response;
++            }
++
++            if (IsRetriable(response.StatusCode) && attempt <= maxRetries)
++            {
++                var retryAfter = GetRetryAfter(response);
++                response.Dispose();
++                await DelayForRetryAsync(attempt, retryAfter, requestUri, null, cancellationToken);
++                continue;
++            }
++
++            await ThrowTranslatedExceptionAsync(context, response, requestUri, cancellationToken);
++        }
++    }
++
++    private async Task<string> ResolveAccessTokenAsync(FortnoxRequestContext context, CancellationToken cancellationToken)
++    {
++        var tokenResult = await _oauthService.GetValidAccessTokenAsync(
++            new RefreshFortnoxAccessTokenCommand(context.CompanyId, context.ConnectionId),
++            cancellationToken);
++
++        if (tokenResult.Succeeded && !string.IsNullOrWhiteSpace(tokenResult.AccessToken))
++        {
++            return tokenResult.AccessToken;
++        }
++
++        throw new FortnoxApiException(
++            tokenResult.SafeFailureMessage ?? "Fortnox connection needs attention.",
++            HttpStatusCode.Unauthorized,
++            "authorization",
++            isTransient: !tokenResult.NeedsReconnect,
++            requiresReconnect: tokenResult.NeedsReconnect);
++    }
++
++    private HttpRequestMessage CreateRequest(
++        HttpMethod method,
++        Uri requestUri,
++        string accessToken,
++        string? correlationId,
++        Func<HttpContent>? contentFactory)
++    {
++        var request = new HttpRequestMessage(method, requestUri);
++        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
++
++        if (!string.IsNullOrWhiteSpace(correlationId))
++        {
++            request.Headers.TryAddWithoutValidation("X-Correlation-ID", correlationId);
++        }
++
++        if (contentFactory is not null)
++        {
++            request.Content = contentFactory();
++        }
++
++        return request;
++    }
++
++    private Uri BuildUri(string path, FortnoxPageOptions? options)
++    {
++        var builder = new UriBuilder(new Uri(_httpClient.BaseAddress!, path.TrimStart('/')));
++        var query = BuildQuery(options);
++        builder.Query = query;
++        return builder.Uri;
++    }
++
++    internal static string BuildQuery(FortnoxPageOptions? options)
++    {
++        if (options is null)
++        {
++            return string.Empty;
++        }
++
++        var values = new List<KeyValuePair<string, string>>();
++        Add(values, "lastmodified", options.LastModified?.UtcDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture));
++        Add(values, "fromdate", options.FromDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
++        Add(values, "todate", options.ToDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
++        Add(values, "sortby", options.SortBy);
++        Add(values, "sortorder", options.SortOrder);
++        Add(values, "page", options.Page?.ToString(CultureInfo.InvariantCulture));
++        Add(values, "limit", options.Limit?.ToString(CultureInfo.InvariantCulture));
++
++        return string.Join("&", values.Select(pair =>
++            $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"));
++    }
++
++    private static void Add(List<KeyValuePair<string, string>> values, string key, string? value)
++    {
++        if (!string.IsNullOrWhiteSpace(value))
++        {
++            values.Add(new KeyValuePair<string, string>(key, value.Trim()));
++        }
++    }
++
++    private async Task DelayForRetryAsync(
++        int attempt,
++        TimeSpan? retryAfter,
++        Uri requestUri,
++        Exception? exception,
++        CancellationToken cancellationToken)
++    {
++        var delay = retryAfter ?? CalculateBackoff(attempt);
++        _logger.LogWarning(
++            exception,
++            "Retrying Fortnox request after transient failure. Attempt {Attempt}; delay {DelayMilliseconds} ms; endpoint {Endpoint}.",
++            attempt,
++            delay.TotalMilliseconds,
++            requestUri.AbsolutePath);
++
++        if (delay > TimeSpan.Zero)
++        {
++            await _timeProvider.Delay(delay, cancellationToken);
++        }
++    }
++
++    private TimeSpan CalculateBackoff(int attempt)
++    {
++        var configuredBaseMilliseconds = _options.CurrentValue.ApiRetryBaseDelayMilliseconds;
++        var baseDelay = TimeSpan.FromMilliseconds(configuredBaseMilliseconds > 0 ? configuredBaseMilliseconds : 200);
++        var jitter = Random.Shared.Next(0, 75);
++        var delay = TimeSpan.FromMilliseconds(baseDelay.TotalMilliseconds * Math.Pow(2, attempt - 1) + jitter);
++        var maxDelay = TimeSpan.FromSeconds(Math.Max(1, _options.CurrentValue.ApiMaxRetryDelaySeconds));
++        return delay <= maxDelay ? delay : maxDelay;
++    }
++
++    private static bool IsRetriable(HttpStatusCode statusCode) =>
++        statusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests ||
++        (int)statusCode >= 500;
++
++    private static TimeSpan? GetRetryAfter(HttpResponseMessage response)
++    {
++        if (response.Headers.RetryAfter?.Delta is { } delta)
++        {
++            return delta < TimeSpan.Zero ? TimeSpan.Zero : delta;
++        }
++
++        if (response.Headers.RetryAfter?.Date is { } date)
++        {
++            var delay = date - DateTimeOffset.UtcNow;
++            return delay < TimeSpan.Zero ? TimeSpan.Zero : delay;
++        }
++
++        return null;
++    }
++
++    private async Task ThrowTranslatedExceptionAsync(
++        FortnoxRequestContext context,
++        HttpResponseMessage response,
++        Uri requestUri,
++        CancellationToken cancellationToken)
++    {
++        var body = response.Content is null
++            ? string.Empty
++            : await response.Content.ReadAsStringAsync(cancellationToken);
++        var error = TryReadError(body);
++        var retryAfter = GetRetryAfter(response);
++        var exception = CreateException(response.StatusCode, error, retryAfter);
++
++        _logger.LogWarning(
++            "Fortnox API request failed. Status {StatusCode}; category {Category}; Fortnox code {FortnoxErrorCode}; Fortnox message {FortnoxErrorMessage}; endpoint {Endpoint}; company {CompanyId}; connection {ConnectionId}.",
++            (int)response.StatusCode,
++            exception.Category,
++            exception.FortnoxErrorCode,
++            exception.FortnoxErrorMessage,
++            requestUri.AbsolutePath,
++            context.CompanyId,
++            context.ConnectionId);
++
++        response.Dispose();
++        throw exception;
++    }
++
++    private static FortnoxApiException CreateException(
++        HttpStatusCode statusCode,
++        FortnoxErrorInformation? error,
++        TimeSpan? retryAfter)
++    {
++        var code = error?.Code ?? error?.Error;
++        var message = error?.Message;
++
++        return statusCode switch
++        {
++            HttpStatusCode.Unauthorized => new FortnoxApiException("Fortnox connection needs attention.", statusCode, "authorization", code, message, requiresReconnect: true),
++            HttpStatusCode.Forbidden => new FortnoxApiException("The connected Fortnox account does not have permission for this data.", statusCode, "permission", code, message),
++            HttpStatusCode.NotFound => new FortnoxApiException("The requested Fortnox data could not be found.", statusCode, "not_found", code, message),
++            HttpStatusCode.UnprocessableEntity or HttpStatusCode.BadRequest => new FortnoxApiException("Fortnox could not process the requested data.", statusCode, "validation", code, message),
++            HttpStatusCode.TooManyRequests => new FortnoxApiException("Fortnox is receiving too many requests. Please try again shortly.", statusCode, "rate_limited", code, message, isTransient: true, retryAfter: retryAfter),
++            _ when (int)statusCode >= 500 => new FortnoxApiException("Fortnox is temporarily unavailable. Please try again shortly.", statusCode, "upstream_unavailable", code, message, isTransient: true),
++            _ => new FortnoxApiException("Fortnox request failed.", statusCode, "upstream_error", code, message)
++        };
++    }
++
++    private static FortnoxErrorInformation? TryReadError(string body)
++    {
++        if (string.IsNullOrWhiteSpace(body))
++        {
++            return null;
++        }
++
++        try
++        {
++            var envelope = JsonSerializer.Deserialize<FortnoxErrorEnvelope>(body, FortnoxJson.Options);
++            return envelope?.ErrorInformation ?? envelope?.Error;
++        }
++        catch (JsonException)
++        {
++            return null;
++        }
++    }
++
++    private static async Task<TResponse?> DeserializeBodyAsync<TResponse>(
++        HttpResponseMessage response,
++        CancellationToken cancellationToken)
++    {
++        if (response.Content is null || response.StatusCode == HttpStatusCode.NoContent)
++        {
++            return default;
++        }
++
++        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
++        return await JsonSerializer.DeserializeAsync<TResponse>(stream, FortnoxJson.Options, cancellationToken);
++    }
++
++    private static HttpContent CreateJsonContent<T>(T payload) =>
++        new StringContent(JsonSerializer.Serialize(payload, FortnoxJson.Options), Encoding.UTF8, "application/json");
++
++    private static bool TryGetProperty(JsonElement element, string propertyName, out JsonElement value)
++    {
++        foreach (var property in element.EnumerateObject())
++        {
++            if (property.NameEquals(propertyName))
++            {
++                value = property.Value;
++                return true;
++            }
++        }
++
++        value = default;
++        return false;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxOptions.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxOptions.cs
+index 9b72bc5..e2c95cd 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxOptions.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxOptions.cs
+@@ -11,6 +11,9 @@ public sealed class FortnoxOptions
+     public string AuthorizationUrl { get; set; } = "https://apps.fortnox.se/oauth-v1/auth";
+     public string TokenUrl { get; set; } = "https://apps.fortnox.se/oauth-v1/token";
+     public string ApiBaseUrl { get; set; } = "https://api.fortnox.se/3/";
++    public int ApiMaxRetries { get; set; } = 3;
++    public int ApiRetryBaseDelayMilliseconds { get; set; } = 200;
++    public int ApiMaxRetryDelaySeconds { get; set; } = 30;
+     public string[] Scopes { get; set; } = [];
+ }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxApiClientTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxApiClientTests.cs
+new file mode 100644
+index 0000000..ecb4631
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FortnoxApiClientTests.cs
+@@ -0,0 +1,248 @@
++using System.Net;
++using System.Text;
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure.Finance;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FortnoxApiClientTests
++{
++    [Fact]
++    public async Task Requests_use_real_base_url_and_bearer_token()
++    {
++        var handler = new CapturingHandler(new HttpResponseMessage(HttpStatusCode.OK)
++        {
++            Content = Json("""{"CompanyInformation":{"CompanyName":"Acme AB"}}""")
++        });
++        var client = CreateClient(handler);
++        var context = new FortnoxRequestContext(Guid.NewGuid(), Guid.NewGuid(), "corr-1");
++
++        await client.GetCompanyInformationAsync(context, CancellationToken.None);
++
++        var request = Assert.Single(handler.Requests);
++        Assert.Equal(new Uri("https://api.fortnox.se/3/companyinformation"), request.RequestUri);
++        Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
++        Assert.Equal("access-token", request.Headers.Authorization?.Parameter);
++        Assert.True(request.Headers.TryGetValues("X-Correlation-ID", out var correlationIds));
++        Assert.Equal("corr-1", Assert.Single(correlationIds));
++    }
++
++    [Fact]
++    public async Task Query_parameters_are_serialized_and_null_values_are_omitted()
++    {
++        var handler = new CapturingHandler(new HttpResponseMessage(HttpStatusCode.OK)
++        {
++            Content = Json("""
++                {
++                  "Customers": [],
++                  "MetaInformation": {
++                    "@CurrentPage": 2,
++                    "@TotalPages": 3,
++                    "@TotalResources": 12,
++                    "@Limit": 5
++                  }
++                }
++                """)
++        });
++        var client = CreateClient(handler);
++        var options = new FortnoxPageOptions(
++            LastModified: new DateTimeOffset(2026, 4, 30, 8, 15, 0, TimeSpan.Zero),
++            FromDate: new DateOnly(2026, 4, 1),
++            ToDate: new DateOnly(2026, 4, 30),
++            SortBy: "name",
++            SortOrder: "ascending",
++            Page: 2,
++            Limit: 5);
++
++        await client.GetCustomersAsync(new FortnoxRequestContext(Guid.NewGuid()), options, CancellationToken.None);
++
++        var query = Assert.Single(handler.Requests).RequestUri!.Query.TrimStart('?');
++        Assert.Equal("lastmodified=2026-04-30%2008%3A15&fromdate=2026-04-01&todate=2026-04-30&sortby=name&sortorder=ascending&page=2&limit=5", query);
++        Assert.DoesNotContain("null", query, StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public async Task Paged_endpoint_parses_items_and_metadata()
++    {
++        var handler = new CapturingHandler(new HttpResponseMessage(HttpStatusCode.OK)
++        {
++            Content = Json("""
++                {
++                  "Invoices": [
++                    { "DocumentNumber": "1001", "CustomerName": "Acme AB", "Total": 1250.50 }
++                  ],
++                  "MetaInformation": {
++                    "@CurrentPage": 1,
++                    "@TotalPages": 2,
++                    "@TotalResources": 3,
++                    "@Limit": 2
++                  }
++                }
++                """)
++        });
++        var client = CreateClient(handler);
++
++        var page = await client.GetInvoicesAsync(new FortnoxRequestContext(Guid.NewGuid()), new FortnoxPageOptions(Page: 1, Limit: 2), CancellationToken.None);
++
++        var invoice = Assert.Single(page.Items);
++        Assert.Equal("1001", invoice.DocumentNumber);
++        Assert.Equal("Acme AB", invoice.CustomerName);
++        Assert.Equal(1, page.Metadata.CurrentPage);
++        Assert.Equal(2, page.Metadata.TotalPages);
++        Assert.Equal(3, page.Metadata.TotalResources);
++        Assert.True(page.HasNextPage);
++    }
++
++    [Fact]
++    public async Task Retries_transient_server_failures()
++    {
++        var handler = new CapturingHandler(
++            new HttpResponseMessage(HttpStatusCode.BadGateway) { Content = Json("""{"ErrorInformation":{"Error":"500","Message":"temporary"}}""") },
++            new HttpResponseMessage(HttpStatusCode.OK) { Content = Json("""{"Accounts":[{"Number":1930,"Description":"Bank"}]}""") });
++        var client = CreateClient(handler);
++
++        var page = await client.GetAccountsAsync(new FortnoxRequestContext(Guid.NewGuid()), null, CancellationToken.None);
++
++        Assert.Equal(2, handler.Requests.Count);
++        Assert.Equal(1930, Assert.Single(page.Items).Number);
++    }
++
++    [Fact]
++    public async Task Rate_limit_response_honors_retry_after_before_retry()
++    {
++        var first = new HttpResponseMessage((HttpStatusCode)429)
++        {
++            Content = Json("""{"ErrorInformation":{"Error":"429","Message":"rate limited"}}""")
++        };
++        first.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.Zero);
++        var handler = new CapturingHandler(
++            first,
++            new HttpResponseMessage(HttpStatusCode.OK) { Content = Json("""{"Projects":[{"ProjectNumber":"P-1","Description":"Launch"}]}""") });
++        var client = CreateClient(handler);
++
++        var page = await client.GetProjectsAsync(new FortnoxRequestContext(Guid.NewGuid()), null, CancellationToken.None);
++
++        Assert.Equal(2, handler.Requests.Count);
++        Assert.Equal("P-1", Assert.Single(page.Items).ProjectNumber);
++    }
++
++    [Theory]
++    [InlineData(HttpStatusCode.Unauthorized, "authorization", "Fortnox connection needs attention.", true)]
++    [InlineData(HttpStatusCode.Forbidden, "permission", "The connected Fortnox account does not have permission for this data.", false)]
++    [InlineData(HttpStatusCode.NotFound, "not_found", "The requested Fortnox data could not be found.", false)]
++    [InlineData(HttpStatusCode.UnprocessableEntity, "validation", "Fortnox could not process the requested data.", false)]
++    [InlineData(HttpStatusCode.InternalServerError, "upstream_unavailable", "Fortnox is temporarily unavailable. Please try again shortly.", false)]
++    public async Task Errors_are_translated_to_safe_messages(
++        HttpStatusCode statusCode,
++        string category,
++        string safeMessage,
++        bool requiresReconnect)
++    {
++        var handler = new CapturingHandler(new HttpResponseMessage(statusCode)
++        {
++            Content = Json("""{"ErrorInformation":{"Error":"200001","Message":"internal upstream detail"}}""")
++        });
++        var client = CreateClient(handler, maxRetries: 0);
++
++        var exception = await Assert.ThrowsAsync<FortnoxApiException>(() =>
++            client.GetSuppliersAsync(new FortnoxRequestContext(Guid.NewGuid()), null, CancellationToken.None));
++
++        Assert.Equal(category, exception.Category);
++        Assert.Equal(safeMessage, exception.SafeMessage);
++        Assert.Equal("200001", exception.FortnoxErrorCode);
++        Assert.Equal("internal upstream detail", exception.FortnoxErrorMessage);
++        Assert.Equal(requiresReconnect, exception.RequiresReconnect);
++        Assert.DoesNotContain("access-token", exception.Message, StringComparison.Ordinal);
++    }
++
++    [Fact]
++    public async Task Supports_authenticated_post_put_and_delete()
++    {
++        var handler = new CapturingHandler(
++            new HttpResponseMessage(HttpStatusCode.OK) { Content = Json("""{"ok":true}""") },
++            new HttpResponseMessage(HttpStatusCode.OK) { Content = Json("""{"ok":true}""") },
++            new HttpResponseMessage(HttpStatusCode.NoContent));
++        var client = CreateClient(handler);
++        var context = new FortnoxRequestContext(Guid.NewGuid());
++
++        await client.PostAsync<object, Dictionary<string, bool>>(context, "customers", new { Customer = new { Name = "Acme AB" } }, CancellationToken.None);
++        await client.PutAsync<object, Dictionary<string, bool>>(context, "customers/1", new { Customer = new { Name = "Acme AB" } }, CancellationToken.None);
++        await client.DeleteAsync(context, "customers/1", CancellationToken.None);
++
++        Assert.Collection(
++            handler.Requests,
++            request =>
++            {
++                Assert.Equal(HttpMethod.Post, request.Method);
++                Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
++            },
++            request =>
++            {
++                Assert.Equal(HttpMethod.Put, request.Method);
++                Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
++            },
++            request =>
++            {
++                Assert.Equal(HttpMethod.Delete, request.Method);
++                Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
++            });
++    }
++
++    private static FortnoxApiClient CreateClient(CapturingHandler handler, int maxRetries = 3)
++    {
++        var httpClient = new HttpClient(handler)
++        {
++            BaseAddress = FortnoxApiClient.NormalizeBaseAddress("https://api.fortnox.se/3")
++        };
++        var options = Options.Create(new FortnoxOptions
++        {
++            Enabled = true,
++            ApiBaseUrl = "https://api.fortnox.se/3",
++            ApiMaxRetries = maxRetries,
++            ApiRetryBaseDelayMilliseconds = 1,
++            ApiMaxRetryDelaySeconds = 1
++        });
++
++        return new FortnoxApiClient(
++            httpClient,
++            new StubFortnoxOAuthService(),
++            new StaticOptionsMonitor<FortnoxOptions>(options.Value),
++            NullLogger<FortnoxApiClient>.Instance,
++            TimeProvider.System);
++    }
++
++    private static StringContent Json(string value) =>
++        new(value, Encoding.UTF8, "application/json");
++
++    private sealed class CapturingHandler : HttpMessageHandler
++    {
++        private readonly Queue<HttpResponseMessage> _responses;
++
++        public CapturingHandler(params HttpResponseMessage[] responses)
++        {
++            _responses = new Queue<HttpResponseMessage>(responses);
++        }
++
++        public List<HttpRequestMessage> Requests { get; } = [];
++
++        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
++        {
++            Requests.Add(CloneRequest(request));
++            return Task.FromResult(_responses.Count > 0 ? _responses.Dequeue() : new HttpResponseMessage(HttpStatusCode.OK));
++        }
++
++        private static HttpRequestMessage CloneRequest(HttpRequestMessage request)
++        {
++            var clone = new HttpRequestMessage(request.Method, request.RequestUri);
++            foreach (var header in request.Headers)
++            {
++                clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
++            }
++
++            return clone;
++        }
++    }
++
++    private sealed class StubFortnoxOAuthService : IFortnoxOAuthService
++    {
++        public Task<FortnoxOAuthStartResult> BuildAuthorizationUrlAsync(StartFortnoxOAuthConnectionCommand command, CancellationToken cancellationToken) =>
++            throw new NotSupportedException();
++
++        public Task<FortnoxOAuthCompletionResult> HandleCallbackAsync(CompleteFortnoxOAuthConnectionCommand command, CancellationToken cancellationToken) =>
++            throw new NotSupportedException();
++
++        public Task<FortnoxAccessTokenResult> GetValidAccessTokenAsync(RefreshFortnoxAccessTokenCommand command, CancellationToken cancellationToken) =>
++            Task.FromResult(FortnoxAccessTokenResult.Success("access-token", DateTime.UtcNow.AddHours(1)));
++
++        public Task<FortnoxConnectionStatusResult> GetStatusAsync(GetFortnoxConnectionStatusQuery query, CancellationToken cancellationToken) =>
++            throw new NotSupportedException();
++
++        public Task MarkNeedsReconnectAsync(Guid companyId, Guid connectionId, string safeReason, CancellationToken cancellationToken) =>
++            Task.CompletedTask;
++    }
++
++    private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
++    {
++        public T CurrentValue => value;
++        public T Get(string? name) => value;
++        public IDisposable? OnChange(Action<T, string?> listener) => null;
++    }
++}
+END_OF_PATCH

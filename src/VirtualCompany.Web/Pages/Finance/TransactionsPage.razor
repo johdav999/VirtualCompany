@@ -1,16 +1,18 @@
 @page "/finance/transactions"
+@page "/finance/activity"
 @page "/finance/transactions/{TransactionId:guid}"
+@page "/finance/activity/{TransactionId:guid}"
 @inherits FinancePageBase
 
-<PageTitle>Transactions</PageTitle>
+<PageTitle>Activity</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Transactions"
-    Description="Inspect transaction activity and categorization work for the selected company."
-    LoadingMessage="Loading transactions workspace...">
+    Title="Activity"
+    Description="Review money movements and finance activity for the company."
+    LoadingMessage="Loading activity...">
     <form method="get" class="agent-filter-bar mb-4">
         <input type="hidden" name="@FinanceRoutes.CompanyIdQueryKey" value="@AccessState.CompanyId" />
         <div>
@@ -50,8 +52,8 @@
             <div class="wizard-card wizard-card--compact">
                 <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
                     <div>
-                        <h2 class="h5 mb-1">Transaction list</h2>
-                        <p class="text-body-secondary mb-0">Date, category, amount, and flagged state stay in sync with the route.</p>
+                        <h2 class="h5 mb-1">Activity list</h2>
+                        <p class="text-body-secondary mb-0">Review dates, categories, amounts, and items that need attention.</p>
                     </div>
                     <span class="badge text-bg-light">@Transactions.Count item@(Transactions.Count == 1 ? string.Empty : "s")</span>
                 </div>
@@ -60,9 +62,9 @@
                     IsLoading="@IsListLoading"
                     IsEmpty="@IsListEmpty"
                     ErrorMessage="@ListErrorMessage"
-                    LoadingTitle="Loading transactions"
-                    LoadingMessage="Fetching tenant-scoped transaction activity."
-                    EmptyTitle="No transactions matched the active filters"
+                    LoadingTitle="Loading activity"
+                    LoadingMessage="Fetching finance activity."
+                    EmptyTitle="No activity matched the active filters"
                     EmptyMessage="Adjust the date range, category, or flagged filter and try again."
                     OnRetry="@ReloadAsync">
                     <div class="list-group">
@@ -97,19 +99,19 @@
             <div class="wizard-card wizard-card--compact">
                 @if (IsDetailLoading)
                 {
-                    <FinanceLoadingState Title="Loading transaction detail" Message="Resolving the selected transaction from the current route." />
+                    <FinanceLoadingState Title="Loading activity detail" Message="Opening the selected activity item." />
                 }
                 else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
                 {
-                    <FinanceErrorState Title="Transaction detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                    <FinanceErrorState Title="Activity detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
                 }
                 else if (SelectedTransaction is null)
                 {
-                    <FinanceEmptyState Title="No transaction selected" Message="Select a transaction to open the route-driven detail panel." />
+                    <FinanceEmptyState Title="No activity selected" Message="Select an activity item to see details." />
                 }
                 else
                 {
-                    <h2 class="h5">Transaction detail</h2>
+                    <h2 class="h5">Activity detail</h2>
                     <p class="text-body-secondary mb-4">@SelectedTransaction.Description</p>
 
                     <h3 class="h6">Category</h3>

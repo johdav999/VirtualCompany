@@ -30,7 +30,10 @@ public sealed partial class CompanyFinanceReadService
                 x.Amount,
                 x.Currency,
                 x.Status,
-                x.DocumentId))
+                x.DocumentId,
+                EF.Property<string>(x, "SourceType"),
+                EF.Property<string?>(x, "ProviderKey"),
+                false))
             .SingleOrDefaultAsync(cancellationToken);
 
         if (row is null)

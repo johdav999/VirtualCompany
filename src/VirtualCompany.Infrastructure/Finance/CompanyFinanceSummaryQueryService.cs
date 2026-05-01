@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
+using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
 
@@ -52,10 +53,12 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             ? effectiveAsOfUtc.AddTicks(1)
             : monthEndExclusiveUtc;
 
-        var accounts = await _dbContext.FinanceAccounts
+        var accountQuery = ApplySourceFilter(_dbContext.FinanceAccounts
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId)
+            .Where(x => x.CompanyId == query.CompanyId), query.CompanyId, query.SourceFilter, "account");
+
+        var accounts = await accountQuery
             .Select(x => new FinanceAccountRow(
                 x.Id,
                 x.Code,
@@ -73,12 +76,14 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             query.CompanyId,
             effectiveAsOfUtc,
             cashAccounts,
+            query.SourceFilter,
             cancellationToken);
 
-        var invoiceRows = await _dbContext.FinanceInvoices
+        var invoiceQuery = ApplySourceFilter(_dbContext.FinanceInvoices
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.IssuedUtc <= effectiveAsOfUtc)
+            .Where(x => x.CompanyId == query.CompanyId && x.IssuedUtc <= effectiveAsOfUtc), query.CompanyId, query.SourceFilter, "invoice");
+        var invoiceRows = await invoiceQuery
             .Select(x => new InvoiceRow(
                 x.Id,
                 x.InvoiceNumber,
@@ -92,10 +97,12 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
                 x.SettlementStatus))
             .ToListAsync(cancellationToken);
 
-        var billRows = await _dbContext.FinanceBills
+        var billQuery = ApplySourceFilter(_dbContext.FinanceBills
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.ReceivedUtc <= effectiveAsOfUtc)
+            .Where(x => x.CompanyId == query.CompanyId && x.ReceivedUtc <= effectiveAsOfUtc), query.CompanyId, query.SourceFilter, "supplier_invoice", "bill");
+
+        var billRows = await billQuery
             .Select(x => new BillRow(
                 x.Id,
                 x.BillNumber,
@@ -294,6 +301,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
         Guid companyId,
         DateTime asOfUtc,
         IReadOnlyList<FinanceAccountRow> cashAccounts,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
         if (cashAccounts.Count == 0)
@@ -305,13 +313,15 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             .Select(x => x.Id)
             .ToArray();
 
-        var balances = await _dbContext.FinanceBalances
+        var balanceQuery = ApplySourceFilter(_dbContext.FinanceBalances
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
                 x.CompanyId == companyId &&
                 cashAccountIds.Contains(x.AccountId) &&
-                x.AsOfUtc <= asOfUtc)
+                x.AsOfUtc <= asOfUtc), companyId, sourceFilter, "balance");
+
+        var balances = await balanceQuery
             .Select(x => new BalanceRow(x.AccountId, x.AsOfUtc, x.Amount))
             .ToListAsync(cancellationToken);
 
@@ -321,13 +331,15 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
                 x => x.Key,
                 x => x.OrderByDescending(balance => balance.AsOfUtc).First());
 
-        var transactions = await _dbContext.FinanceTransactions
+        var transactionQuery = ApplySourceFilter(_dbContext.FinanceTransactions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
                 x.CompanyId == companyId &&
                 cashAccountIds.Contains(x.AccountId) &&
-                x.TransactionUtc <= asOfUtc)
+                x.TransactionUtc <= asOfUtc), companyId, sourceFilter, "voucher", "payment", "transaction");
+
+        var transactions = await transactionQuery
             .Select(x => new TransactionRow(x.AccountId, x.TransactionUtc, x.Amount))
             .ToListAsync(cancellationToken);
 
@@ -447,6 +459,39 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
 
         return simulatedUtc ?? _timeProvider.GetUtcNow().UtcDateTime;
     }
+
+    private IQueryable<TEntity> ApplySourceFilter<TEntity>(
+        IQueryable<TEntity> source,
+        Guid companyId,
+        string? sourceFilter,
+        params string[] externalEntityTypes)
+        where TEntity : class
+    {
+        var normalized = FinanceDataSources.Normalize(sourceFilter);
+        if (normalized == FinanceDataSources.All)
+        {
+            return source;
+        }
+
+        return normalized switch
+        {
+            FinanceDataSources.Fortnox => source.Where(x =>
+                EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Fortnox ||
+                EF.Property<string?>(x, "ProviderKey") == FinanceIntegrationProviderKeys.Fortnox ||
+                externalEntityTypes.Any(entityType => HasFortnoxReference(companyId, entityType, EF.Property<Guid>(x, "Id")))),
+            FinanceDataSources.Simulation => source.Where(x =>
+                EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Simulation &&
+                !externalEntityTypes.Any(entityType => HasFortnoxReference(companyId, entityType, EF.Property<Guid>(x, "Id")))),
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceFilter), sourceFilter, "Source filter must be all, fortnox, or simulation.")
+        };
+    }
+
+    private bool HasFortnoxReference(Guid companyId, string entityType, Guid internalRecordId) =>
+        _dbContext.FinanceExternalReferences.IgnoreQueryFilters().Any(reference =>
+            reference.CompanyId == companyId &&
+            reference.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+            reference.EntityType == entityType &&
+            reference.InternalRecordId == internalRecordId);
 
     private void EnsureTenant(Guid companyId)
     {

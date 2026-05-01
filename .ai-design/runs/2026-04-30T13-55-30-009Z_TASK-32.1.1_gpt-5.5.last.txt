@@ -1,0 +1,494 @@
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -1,3 +1,5 @@
++using Azure.Extensions.AspNetCore.Configuration.Secrets;
++using Azure.Identity;
+ using System.Text.Json;
+ using System.Text.Json.Serialization;
+ using System.Data.Common;
+@@ -17,6 +19,20 @@ using VirtualCompany.Domain.Enums;
+ var builder = WebApplication.CreateBuilder(args);
+ const string DevelopmentCorsPolicy = "DevelopmentWebClient";
+ 
++var keyVaultUriValue =
++    builder.Configuration["AzureKeyVault:Uri"]
++    ?? builder.Configuration["KeyVault:Uri"];
++
++if (!string.IsNullOrWhiteSpace(keyVaultUriValue))
++{
++    if (!Uri.TryCreate(keyVaultUriValue, UriKind.Absolute, out var keyVaultUri))
++    {
++        throw new InvalidOperationException("Azure Key Vault URI configuration value is invalid.");
++    }
++
++    builder.Configuration.AddAzureKeyVault(keyVaultUri, new DefaultAzureCredential());
++}
++
+ builder.Logging.ClearProviders();
+ builder.Logging.AddConsole();
+ builder.Logging.AddDebug();
+diff --git a/src/VirtualCompany.Api/VirtualCompany.Api.csproj b/src/VirtualCompany.Api/VirtualCompany.Api.csproj
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/VirtualCompany.Api.csproj
++++ b/src/VirtualCompany.Api/VirtualCompany.Api.csproj
+@@ -8,6 +8,8 @@
+   </ItemGroup>
+ 
+   <ItemGroup>
++    <PackageReference Include="Azure.Extensions.AspNetCore.Configuration.Secrets" Version="1.4.0" />
++    <PackageReference Include="Azure.Identity" Version="1.13.2" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.14">
+       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+       <PrivateAssets>all</PrivateAssets>
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -59,6 +59,18 @@
+   "FinanceTransactionCreation": {
+     "AllowNonSimulationTransactionCreation": false
+   },
++  "FinanceIntegrations": {
++    "Fortnox": {
++      "Enabled": false,
++      "ClientId": "",
++      "ClientSecret": "",
++      "RedirectUri": "https://localhost:7136/finance/integrations/fortnox/callback",
++      "AuthorizationUrl": "https://apps.fortnox.se/oauth-v1/auth",
++      "TokenUrl": "https://apps.fortnox.se/oauth-v1/token",
++      "ApiBaseUrl": "https://api.fortnox.se/3/",
++      "Scopes": []
++    }
++  },
+   "SimulationFeatures": {
+     "UiVisible": true,
+     "BackendExecutionEnabled": true,
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -82,6 +82,18 @@
+   "FinanceTransactionCreation": {
+     "AllowNonSimulationTransactionCreation": false
+   },
++  "FinanceIntegrations": {
++    "Fortnox": {
++      "Enabled": false,
++      "ClientId": "",
++      "ClientSecret": "",
++      "RedirectUri": "",
++      "AuthorizationUrl": "https://apps.fortnox.se/oauth-v1/auth",
++      "TokenUrl": "https://apps.fortnox.se/oauth-v1/token",
++      "ApiBaseUrl": "https://api.fortnox.se/3/",
++      "Scopes": []
++    }
++  },
+   "WorkflowScheduler": {
+     "Enabled": true,
+     "PollIntervalSeconds": 60,
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -88,6 +88,13 @@ public static class DependencyInjection
+         services.AddOptions<FinanceAnomalyDetectionOptions>()
+             .Bind(configuration.GetSection(FinanceAnomalyDetectionOptions.SectionName));
+ 
++        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<FortnoxOptions>, FortnoxOptionsValidator>());
++        services.AddOptions<FortnoxOptions>()
++            .Bind(configuration.GetSection(FortnoxOptions.SectionName))
++            .ValidateOnStart();
++        services.AddHttpClient(FortnoxOAuthClient.ClientName);
++        services.AddScoped<FortnoxOAuthClient>();
++
+         services.AddOptions<CompanySimulationOptions>()
+             .Bind(configuration.GetSection(CompanySimulationOptions.SectionName))
+             .PostConfigure(options =>
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthClient.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthClient.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthClient.cs
+@@ -0,0 +1,37 @@
++using Microsoft.Extensions.Options;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class FortnoxOAuthClient
++{
++    public const string ClientName = "Fortnox";
++
++    private readonly HttpClient _httpClient;
++    private readonly IOptionsMonitor<FortnoxOptions> _options;
++
++    public FortnoxOAuthClient(
++        IHttpClientFactory httpClientFactory,
++        IOptionsMonitor<FortnoxOptions> options)
++    {
++        _httpClient = httpClientFactory.CreateClient(ClientName);
++        _options = options;
++    }
++
++    public Uri GetTokenEndpoint()
++    {
++        var options = RequireEnabledOptions();
++        return new Uri(options.TokenUrl, UriKind.Absolute);
++    }
++
++    public Uri GetApiBaseAddress()
++    {
++        var options = RequireEnabledOptions();
++        return new Uri(options.ApiBaseUrl, UriKind.Absolute);
++    }
++
++    private FortnoxOptions RequireEnabledOptions()
++    {
++        var options = _options.CurrentValue;
++        return options.Enabled
++            ? options
++            : throw new InvalidOperationException("Fortnox integration is disabled.");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxOptions.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxOptions.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxOptions.cs
+@@ -0,0 +1,68 @@
++using Microsoft.Extensions.Options;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class FortnoxOptions
++{
++    public const string SectionName = "FinanceIntegrations:Fortnox";
++
++    public bool Enabled { get; set; }
++    public string ClientId { get; set; } = string.Empty;
++    public string ClientSecret { get; set; } = string.Empty;
++    public string RedirectUri { get; set; } = string.Empty;
++    public string AuthorizationUrl { get; set; } = "https://apps.fortnox.se/oauth-v1/auth";
++    public string TokenUrl { get; set; } = "https://apps.fortnox.se/oauth-v1/token";
++    public string ApiBaseUrl { get; set; } = "https://api.fortnox.se/3/";
++    public string[] Scopes { get; set; } = [];
++}
++
++public sealed class FortnoxOptionsValidator : IValidateOptions<FortnoxOptions>
++{
++    public ValidateOptionsResult Validate(string? name, FortnoxOptions options)
++    {
++        if (!options.Enabled)
++        {
++            return ValidateOptionsResult.Success;
++        }
++
++        var failures = new List<string>();
++
++        RequireNonEmpty(options.ClientId, $"{FortnoxOptions.SectionName}:ClientId", failures);
++        RequireNonEmpty(options.ClientSecret, $"{FortnoxOptions.SectionName}:ClientSecret", failures);
++        RequireAbsoluteHttpUri(options.RedirectUri, $"{FortnoxOptions.SectionName}:RedirectUri", failures);
++        RequireAbsoluteHttpUri(options.TokenUrl, $"{FortnoxOptions.SectionName}:TokenUrl", failures);
++        RequireAbsoluteHttpUri(options.ApiBaseUrl, $"{FortnoxOptions.SectionName}:ApiBaseUrl", failures);
++
++        if (!string.IsNullOrWhiteSpace(options.AuthorizationUrl))
++        {
++            RequireAbsoluteHttpUri(options.AuthorizationUrl, $"{FortnoxOptions.SectionName}:AuthorizationUrl", failures);
++        }
++
++        return failures.Count == 0
++            ? ValidateOptionsResult.Success
++            : ValidateOptionsResult.Fail(failures);
++    }
++
++    private static void RequireNonEmpty(string? value, string configPath, ICollection<string> failures)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            failures.Add($"{configPath} is required when Fortnox is enabled.");
++        }
++    }
++
++    private static void RequireAbsoluteHttpUri(string? value, string configPath, ICollection<string> failures)
++    {
++        RequireNonEmpty(value, configPath, failures);
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return;
++        }
++
++        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
++            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
++        {
++            failures.Add($"{configPath} must be an absolute HTTP or HTTPS URI when Fortnox is enabled.");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxOptionsValidationTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxOptionsValidationTests.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FortnoxOptionsValidationTests.cs
+@@ -0,0 +1,94 @@
++using Microsoft.Extensions.Options;
++using VirtualCompany.Infrastructure.Finance;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FortnoxOptionsValidationTests
++{
++    [Theory]
++    [InlineData(nameof(FortnoxOptions.ClientId), "FinanceIntegrations:Fortnox:ClientId")]
++    [InlineData(nameof(FortnoxOptions.ClientSecret), "FinanceIntegrations:Fortnox:ClientSecret")]
++    [InlineData(nameof(FortnoxOptions.RedirectUri), "FinanceIntegrations:Fortnox:RedirectUri")]
++    [InlineData(nameof(FortnoxOptions.TokenUrl), "FinanceIntegrations:Fortnox:TokenUrl")]
++    [InlineData(nameof(FortnoxOptions.ApiBaseUrl), "FinanceIntegrations:Fortnox:ApiBaseUrl")]
++    public void Enabled_integration_requires_required_keys(string propertyName, string expectedConfigPath)
++    {
++        var options = ValidOptions();
++        SetStringProperty(options, propertyName, string.Empty);
++
++        var result = Validate(options);
++
++        Assert.True(result.Failed);
++        var failure = Assert.Single(result.Failures);
++        Assert.Contains(expectedConfigPath, failure, StringComparison.Ordinal);
++    }
++
++    [Theory]
++    [InlineData(nameof(FortnoxOptions.RedirectUri), "not-a-uri")]
++    [InlineData(nameof(FortnoxOptions.TokenUrl), "ftp://apps.fortnox.se/oauth-v1/token")]
++    [InlineData(nameof(FortnoxOptions.ApiBaseUrl), "/relative")]
++    public void Enabled_integration_requires_absolute_http_uris(string propertyName, string value)
++    {
++        var options = ValidOptions();
++        SetStringProperty(options, propertyName, value);
++
++        var result = Validate(options);
++
++        Assert.True(result.Failed);
++        Assert.Contains("absolute HTTP or HTTPS URI", string.Join(Environment.NewLine, result.Failures), StringComparison.Ordinal);
++    }
++
++    [Fact]
++    public void Disabled_integration_does_not_require_secret_values()
++    {
++        var options = new FortnoxOptions
++        {
++            Enabled = false,
++            ClientId = string.Empty,
++            ClientSecret = string.Empty,
++            RedirectUri = string.Empty,
++            TokenUrl = string.Empty,
++            ApiBaseUrl = string.Empty
++        };
++
++        var result = Validate(options);
++
++        Assert.False(result.Failed);
++    }
++
++    [Fact]
++    public void Validation_messages_do_not_echo_secret_values()
++    {
++        var options = ValidOptions();
++        options.RedirectUri = "not-a-uri";
++        options.ClientSecret = "super-secret-client-value";
++
++        var result = Validate(options);
++
++        Assert.True(result.Failed);
++        Assert.DoesNotContain(options.ClientSecret, string.Join(Environment.NewLine, result.Failures), StringComparison.Ordinal);
++    }
++
++    private static ValidateOptionsResult Validate(FortnoxOptions options) =>
++        new FortnoxOptionsValidator().Validate(Options.DefaultName, options);
++
++    private static FortnoxOptions ValidOptions() =>
++        new()
++        {
++            Enabled = true,
++            ClientId = "client-id",
++            ClientSecret = "client-secret",
++            RedirectUri = "https://localhost:7136/finance/integrations/fortnox/callback",
++            AuthorizationUrl = "https://apps.fortnox.se/oauth-v1/auth",
++            TokenUrl = "https://apps.fortnox.se/oauth-v1/token",
++            ApiBaseUrl = "https://api.fortnox.se/3/"
++        };
++
++    private static void SetStringProperty(FortnoxOptions options, string propertyName, string value)
++    {
++        var property = typeof(FortnoxOptions).GetProperty(propertyName);
++        Assert.NotNull(property);
++        property.SetValue(options, value);
++    }
++}
+diff --git a/docs/integrations/fortnox.md b/docs/integrations/fortnox.md
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/docs/integrations/fortnox.md
+@@ -0,0 +1,77 @@
++# Fortnox Integration
++
++This page describes the first production slice of the Fortnox finance integration. The current implementation wires safe configuration, startup validation, local user-secrets, Azure Key Vault backed secrets, and typed options that the OAuth connect and callback flow will consume.
++
++## Configuration
++
++The API binds Fortnox settings from `FinanceIntegrations:Fortnox`.
++
++Required when `Enabled` is `true`:
++
++- `FinanceIntegrations:Fortnox:ClientId`
++- `FinanceIntegrations:Fortnox:ClientSecret`
++- `FinanceIntegrations:Fortnox:RedirectUri`
++- `FinanceIntegrations:Fortnox:TokenUrl`
++- `FinanceIntegrations:Fortnox:ApiBaseUrl`
++
++Optional:
++
++- `FinanceIntegrations:Fortnox:AuthorizationUrl`
++- `FinanceIntegrations:Fortnox:Scopes`
++
++Safe default endpoints:
++
++- Authorization URL: `https://apps.fortnox.se/oauth-v1/auth`
++- Token URL: `https://apps.fortnox.se/oauth-v1/token`
++- API base URL: `https://api.fortnox.se/3/`
++
++Do not store `ClientId`, `ClientSecret`, access tokens, or refresh tokens in committed configuration files.
++
++## Fortnox App Registration
++
++Create the application in Fortnox Developer and configure the callback URL to match the API route:
++
++`https://<api-host>/finance/integrations/fortnox/callback`
++
++For local development the callback URL normally maps to the HTTPS API launch profile:
++
++`https://localhost:7136/finance/integrations/fortnox/callback`
++
++Use the least privileged scopes required for the finance features being enabled. The exact scopes should match the Fortnox app capabilities approved for the tenant, such as company information, invoices, vouchers, accounts, and bookkeeping data. Keep scopes in configuration so production and test applications can differ without code changes.
++
++## Local Development
++
++The API project has a `UserSecretsId`, so ASP.NET Core user-secrets are available in development.
++
++Set local values from the repository root:
++
++```powershell
++dotnet user-secrets set "FinanceIntegrations:Fortnox:Enabled" "true" --project src/VirtualCompany.Api
++dotnet user-secrets set "FinanceIntegrations:Fortnox:ClientId" "<client-id>" --project src/VirtualCompany.Api
++dotnet user-secrets set "FinanceIntegrations:Fortnox:ClientSecret" "<client-secret>" --project src/VirtualCompany.Api
++dotnet user-secrets set "FinanceIntegrations:Fortnox:RedirectUri" "https://localhost:7136/finance/integrations/fortnox/callback" --project src/VirtualCompany.Api
++dotnet user-secrets set "FinanceIntegrations:Fortnox:TokenUrl" "https://apps.fortnox.se/oauth-v1/token" --project src/VirtualCompany.Api
++dotnet user-secrets set "FinanceIntegrations:Fortnox:ApiBaseUrl" "https://api.fortnox.se/3/" --project src/VirtualCompany.Api
++```
++
++Set scopes as configuration values using array indexes if needed:
++
++```powershell
++dotnet user-secrets set "FinanceIntegrations:Fortnox:Scopes:0" "<scope-name>" --project src/VirtualCompany.Api
++```
++
++## Production Secrets
++
++Production should load Fortnox secrets from Azure Key Vault. Configure one of these non-secret values for the API:
++
++- `AzureKeyVault:Uri`
++- `KeyVault:Uri`
++
++The application uses `DefaultAzureCredential`, so prefer managed identity in Azure hosting environments.
++
++Use Key Vault secret names that map to configuration keys by replacing `:` with `--`:
++
++- `FinanceIntegrations--Fortnox--ClientId`
++- `FinanceIntegrations--Fortnox--ClientSecret`
++- `FinanceIntegrations--Fortnox--RedirectUri`
++- `FinanceIntegrations--Fortnox--TokenUrl`
++- `FinanceIntegrations--Fortnox--ApiBaseUrl`
++- `FinanceIntegrations--Fortnox--AuthorizationUrl`
++
++The startup validator reports missing configuration by key path and never echoes configured values.
+diff --git a/docs/runbooks/fortnox-integration.md b/docs/runbooks/fortnox-integration.md
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/docs/runbooks/fortnox-integration.md
+@@ -0,0 +1,69 @@
++# Fortnox Integration Runbook
++
++## Purpose
++
++This runbook covers operational setup and troubleshooting for the Fortnox configuration and secret lifecycle foundation. Full data sync, encrypted token persistence, automatic refresh, and reconnect handling belong to follow-up Fortnox tasks.
++
++## Production Setup
++
++1. Create or identify the production Fortnox app registration.
++2. Configure the Fortnox callback URL:
++
++   `https://<api-host>/finance/integrations/fortnox/callback`
++
++3. Create Azure Key Vault secrets using configuration-compatible names:
++
++   - `FinanceIntegrations--Fortnox--Enabled`
++   - `FinanceIntegrations--Fortnox--ClientId`
++   - `FinanceIntegrations--Fortnox--ClientSecret`
++   - `FinanceIntegrations--Fortnox--RedirectUri`
++   - `FinanceIntegrations--Fortnox--TokenUrl`
++   - `FinanceIntegrations--Fortnox--ApiBaseUrl`
++   - `FinanceIntegrations--Fortnox--AuthorizationUrl`
++
++4. Set `FinanceIntegrations--Fortnox--Enabled` to `true` only after the remaining required secrets are present.
++5. Configure the application with `AzureKeyVault:Uri` or `KeyVault:Uri`.
++6. Grant the application managed identity permission to read secrets from the vault.
++7. Restart the API and verify startup succeeds.
++
++## Startup Validation
++
++When Fortnox is enabled, the API fails fast if any required key is missing or blank:
++
++- `FinanceIntegrations:Fortnox:ClientId`
++- `FinanceIntegrations:Fortnox:ClientSecret`
++- `FinanceIntegrations:Fortnox:RedirectUri`
++- `FinanceIntegrations:Fortnox:TokenUrl`
++- `FinanceIntegrations:Fortnox:ApiBaseUrl`
++
++URI values must be absolute HTTP or HTTPS URLs.
++
++Validation errors name the missing or invalid configuration path. They do not print the configured client secret or token values.
++
++## Troubleshooting
++
++If startup fails with a missing Fortnox key:
++
++1. Confirm `FinanceIntegrations:Fortnox:Enabled` is expected to be `true`.
++2. Check the effective configuration source for the named path.
++3. In Azure, confirm the Key Vault secret name uses `--` separators.
++4. Confirm the app has managed identity enabled and secret read permissions.
++5. Restart the API after fixing missing Key Vault values.
++
++If Key Vault is not loading:
++
++1. Confirm `AzureKeyVault:Uri` or `KeyVault:Uri` is set to the vault URI.
++2. Confirm the URI is absolute and points to the intended vault.
++3. Check Azure identity assignment and Key Vault access policy or RBAC role.
++4. Use application logs only for provider and startup status. Do not add temporary logging of secret values.
++
++## Safe Operations
++
++- Never paste Fortnox client secrets, access tokens, or refresh tokens into logs, tickets, screenshots, or chat.
++- Rotate the Fortnox client secret if it is exposed.
++- Keep production and local Fortnox app registrations separate where possible.
++- Keep scopes minimal and review scope changes before enabling new finance behavior.
++- Treat callback errors as user-safe status messages. Do not surface raw Fortnox token or error payloads to users.
++
++## Known Follow-ups
++
++- Implement the real OAuth connect and callback flow using the typed options.
++- Persist Fortnox tokens encrypted at rest using the platform encryption approach.
++- Add automatic refresh, revoked-token detection, and tenant-safe reconnect operations.
++- Add tenant-scoped audit events for connect, disconnect, refresh failure, and reconnect activity.
+END_OF_PATCH

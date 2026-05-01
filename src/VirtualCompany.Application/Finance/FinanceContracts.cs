@@ -151,7 +151,19 @@ public sealed record GetFinanceTransactionsQuery(
     DateTime? EndUtc = null,
     int Limit = 100,
     string? Category = null,
-    string? FlaggedState = null);
+    string? FlaggedState = null,
+    string SourceFilter = FinanceDataSources.All);
+
+public static class FinanceDataSources
+{
+    public const string All = "all";
+    public const string Fortnox = "fortnox";
+    public const string Simulation = "simulation";
+    public const string Manual = "manual";
+
+    public static string Normalize(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? All : value.Trim().ToLowerInvariant();
+}
 
 public sealed record GetFinanceTransactionDetailQuery(
     Guid CompanyId,
@@ -161,7 +173,8 @@ public sealed record GetFinanceInvoicesQuery(
     Guid CompanyId,
     DateTime? StartUtc = null,
     DateTime? EndUtc = null,
-    int Limit = 100);
+    int Limit = 100,
+    string SourceFilter = FinanceDataSources.All);
 
 public sealed record GetFinanceCounterpartiesQuery(
     Guid CompanyId,
@@ -219,7 +232,8 @@ public sealed record GetFinanceBillsQuery(
     Guid CompanyId,
     DateTime? StartUtc = null,
     DateTime? EndUtc = null,
-    int Limit = 100);
+    int Limit = 100,
+    string SourceFilter = FinanceDataSources.All);
 
 public sealed record GetFinanceBillDetailQuery(
     Guid CompanyId,
@@ -233,7 +247,8 @@ public sealed record GetFinanceSummaryQuery(
     Guid CompanyId,
     DateTime? AsOfUtc = null,
     int RecentAssetPurchaseLimit = 5,
-    bool IncludeConsistencyCheck = false);
+    bool IncludeConsistencyCheck = false,
+    string SourceFilter = FinanceDataSources.All);
 
 public sealed record GetFinanceAnalyticsQuery(
     Guid CompanyId,
@@ -1371,7 +1386,8 @@ public sealed record FinanceTransactionDto(
     string ExternalReference,
     FinanceLinkedDocumentDto? LinkedDocument,
     bool IsFlagged = false,
-    string AnomalyState = "clear");
+    string AnomalyState = "clear",
+    string Source = FinanceDataSources.Simulation);
 
 public sealed record FinanceLinkedDocumentDto(
     Guid Id,
@@ -1389,7 +1405,8 @@ public sealed record FinanceInvoiceDto(
     decimal Amount,
     string Currency,
     string Status,
-    FinanceLinkedDocumentDto? LinkedDocument);
+    FinanceLinkedDocumentDto? LinkedDocument,
+    string Source = FinanceDataSources.Simulation);
 
 public sealed record FinanceBillDto(
     Guid Id,
@@ -1401,7 +1418,8 @@ public sealed record FinanceBillDto(
     decimal Amount,
     string Currency,
     string Status,
-    FinanceLinkedDocumentDto? LinkedDocument);
+    FinanceLinkedDocumentDto? LinkedDocument,
+    string Source = FinanceDataSources.Simulation);
 
 public sealed record FinanceBillDetailDto(
     Guid Id,

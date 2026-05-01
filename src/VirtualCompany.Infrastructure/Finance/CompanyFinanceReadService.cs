@@ -522,11 +522,13 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             payments = payments.Where(x => x.PaymentType == normalizedType);
         }
 
-        return await payments
+        payments = ApplySourceFilter(payments, query.CompanyId, query.SourceFilter, "payment");
+
+        var rows = await payments
             .OrderByDescending(x => x.PaymentDate)
             .ThenByDescending(x => x.UpdatedUtc)
             .Take(limit)
-            .Select(x => new FinancePaymentDto(
+            .Select(x => new FinancePaymentSourceRow(
                 x.Id,
                 x.CompanyId,
                 x.PaymentType,
@@ -538,8 +540,33 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.CounterpartyReference,
                 x.CreatedUtc,
                 x.UpdatedUtc,
-                Array.Empty<NormalizedFinanceInsightDto>()))
+                EF.Property<string>(x, "SourceType"),
+                EF.Property<string?>(x, "ProviderKey"),
+                false))
             .ToListAsync(cancellationToken);
+
+        var fortnoxReferenceIds = await LoadFortnoxReferenceIdsAsync(
+            query.CompanyId,
+            ["payment"],
+            rows.Select(x => x.Id),
+            cancellationToken);
+
+        return rows
+            .Select(row => new FinancePaymentDto(
+                row.Id,
+                row.CompanyId,
+                row.PaymentType,
+                row.Amount,
+                row.Currency,
+                row.PaymentDate,
+                row.Method,
+                row.Status,
+                row.CounterpartyReference,
+                row.CreatedUtc,
+                row.UpdatedUtc,
+                Array.Empty<NormalizedFinanceInsightDto>(),
+                ResolveFinanceSource(row.SourceType, row.ProviderKey, fortnoxReferenceIds.Contains(row.Id))))
+            .ToList();
     }
 
     public async Task<FinancePaymentDto?> GetPaymentDetailAsync(
@@ -557,7 +584,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == query.CompanyId && x.Id == query.PaymentId)
-            .Select(x => new FinancePaymentDto(
+            .Select(x => new FinancePaymentSourceRow(
                 x.Id,
                 x.CompanyId,
                 x.PaymentType,
@@ -569,7 +596,9 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.CounterpartyReference,
                 x.CreatedUtc,
                 x.UpdatedUtc,
-                Array.Empty<NormalizedFinanceInsightDto>()))
+                EF.Property<string>(x, "SourceType"),
+                EF.Property<string?>(x, "ProviderKey"),
+                false))
             .SingleOrDefaultAsync(cancellationToken);
 
         if (row is null)
@@ -577,11 +606,22 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             return null;
         }
 
+        var hasFortnoxReference = await HasFortnoxReferenceAsync(query.CompanyId, ["payment"], row.Id, cancellationToken);
         var agentInsights = await LoadEntityAgentInsightsAsync(query.CompanyId, "payment", row.Id, cancellationToken);
-        return row with
-        {
-            AgentInsights = agentInsights
-        };
+        return new FinancePaymentDto(
+            row.Id,
+            row.CompanyId,
+            row.PaymentType,
+            row.Amount,
+            row.Currency,
+            row.PaymentDate,
+            row.Method,
+            row.Status,
+            row.CounterpartyReference,
+            row.CreatedUtc,
+            row.UpdatedUtc,
+            agentInsights,
+            ResolveFinanceSource(row.SourceType, row.ProviderKey, hasFortnoxReference));
     }
 
     public async Task<IReadOnlyList<FinancePaymentAllocationDto>> GetAllocationsByPaymentAsync(
@@ -762,6 +802,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             transactions = transactions.Where(x => x.TransactionUtc < endUtc.Value);
         }
 
+        transactions = ApplySourceFilter(transactions, query.CompanyId, query.SourceFilter, "voucher", "payment", "transaction");
+
         var rows = await transactions
             .OrderByDescending(x => x.TransactionUtc)
             .ThenBy(x => x.ExternalReference)
@@ -780,8 +822,17 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.Amount,
                 x.Currency,
                 x.Description,
-                x.ExternalReference))
+                x.ExternalReference,
+                EF.Property<string>(x, "SourceType"),
+                EF.Property<string?>(x, "ProviderKey"),
+                false))
             .ToListAsync(cancellationToken);
+
+        var fortnoxReferenceIds = await LoadFortnoxReferenceIdsAsync(
+            query.CompanyId,
+            ["voucher", "payment", "transaction"],
+            rows.Select(x => x.Id),
+            cancellationToken);
 
         var anomalyLookup = await LoadTransactionAnomalyLookupAsync(
             query.CompanyId,
@@ -813,7 +864,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.ExternalReference,
                 MapLinkedDocument(x.DocumentId, linkedDocuments),
                 anomalyLookup.ContainsKey(x.Id),
-                ResolveTransactionAnomalyState(anomalyLookup.GetValueOrDefault(x.Id))))
+                ResolveTransactionAnomalyState(anomalyLookup.GetValueOrDefault(x.Id)),
+                ResolveFinanceSource(x.SourceType, x.ProviderKey, fortnoxReferenceIds.Contains(x.Id))))
             .ToList();
     }
 
@@ -846,7 +898,10 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.Amount,
                 x.Currency,
                 x.Description,
-                x.ExternalReference))
+                x.ExternalReference,
+                EF.Property<string>(x, "SourceType"),
+                EF.Property<string?>(x, "ProviderKey"),
+                false))
             .SingleOrDefaultAsync(cancellationToken);
 
         if (row is null)
@@ -873,7 +928,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             row.Currency,
             row.Description,
             row.ExternalReference,
-            anomalies.Count > 0,
+            anomalies.Any(),
             ResolveTransactionAnomalyState(anomalies),
             anomalies.Select(x => NormalizeCategory(x.AnomalyType)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
             BuildActionPermissions(),
@@ -905,7 +960,10 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.Amount,
                 x.Currency,
                 x.Status,
-                x.DocumentId))
+                x.DocumentId,
+                EF.Property<string>(x, "SourceType"),
+                EF.Property<string?>(x, "ProviderKey"),
+                false))
             .SingleOrDefaultAsync(cancellationToken);
 
         if (row is null)
@@ -996,6 +1054,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             invoices = invoices.Where(x => x.IssuedUtc < endUtc.Value);
         }
 
+        invoices = ApplySourceFilter(invoices, query.CompanyId, query.SourceFilter, "invoice");
+
         var rows = await invoices
             .OrderByDescending(x => x.IssuedUtc)
             .ThenBy(x => x.InvoiceNumber)
@@ -1010,8 +1070,17 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.Amount,
                 x.Currency,
                 x.Status,
-                x.DocumentId))
+                x.DocumentId,
+                EF.Property<string>(x, "SourceType"),
+                EF.Property<string?>(x, "ProviderKey"),
+                false))
             .ToListAsync(cancellationToken);
+
+        var fortnoxReferenceIds = await LoadFortnoxReferenceIdsAsync(
+            query.CompanyId,
+            ["invoice"],
+            rows.Select(x => x.Id),
+            cancellationToken);
 
         var linkedDocuments = await LoadLinkedDocumentsAsync(
             query.CompanyId,
@@ -1029,7 +1098,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.Amount,
                 x.Currency,
                 x.Status,
-                MapLinkedDocument(x.DocumentId, linkedDocuments)))
+                MapLinkedDocument(x.DocumentId, linkedDocuments),
+                ResolveFinanceSource(x.SourceType, x.ProviderKey, fortnoxReferenceIds.Contains(x.Id))))
             .ToList();
     }
 
@@ -1317,6 +1387,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             bills = bills.Where(x => x.ReceivedUtc < endUtc.Value);
         }
 
+        bills = ApplySourceFilter(bills, query.CompanyId, query.SourceFilter, "supplier_invoice", "bill");
+
         var rows = await bills
             .OrderByDescending(x => x.ReceivedUtc)
             .ThenBy(x => x.BillNumber)
@@ -1331,8 +1403,17 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.Amount,
                 x.Currency,
                 x.Status,
-                x.DocumentId))
+                x.DocumentId,
+                EF.Property<string>(x, "SourceType"),
+                EF.Property<string?>(x, "ProviderKey"),
+                false))
             .ToListAsync(cancellationToken);
+
+        var fortnoxReferenceIds = await LoadFortnoxReferenceIdsAsync(
+            query.CompanyId,
+            ["supplier_invoice", "bill"],
+            rows.Select(x => x.Id),
+            cancellationToken);
 
         var linkedDocuments = await LoadLinkedDocumentsAsync(
             query.CompanyId,
@@ -1350,7 +1431,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.Amount,
                 x.Currency,
                 x.Status,
-                MapLinkedDocument(x.DocumentId, linkedDocuments)))
+                MapLinkedDocument(x.DocumentId, linkedDocuments),
+                ResolveFinanceSource(x.SourceType, x.ProviderKey, fortnoxReferenceIds.Contains(x.Id))))
             .ToList();
     }
 
@@ -3461,6 +3543,22 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         DateTime TransactionUtc,
         decimal Amount);
 
+    private sealed record FinancePaymentSourceRow(
+        Guid Id,
+        Guid CompanyId,
+        string PaymentType,
+        decimal Amount,
+        string Currency,
+        DateTime PaymentDate,
+        string Method,
+        string Status,
+        string CounterpartyReference,
+        DateTime CreatedUtc,
+        DateTime UpdatedUtc,
+        string SourceType,
+        string? ProviderKey,
+        bool HasFortnoxReference);
+
     private sealed record FinanceTransactionRow(
         Guid Id,
         Guid AccountId,
@@ -3475,7 +3573,10 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         decimal Amount,
         string Currency,
         string Description,
-        string ExternalReference);
+        string ExternalReference,
+        string SourceType,
+        string? ProviderKey,
+        bool HasFortnoxReference);
 
     private sealed record FinanceInvoiceRow(
         Guid Id,
@@ -3487,7 +3588,10 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         decimal Amount,
         string Currency,
         string Status,
-        Guid? DocumentId);
+        Guid? DocumentId,
+        string SourceType,
+        string? ProviderKey,
+        bool HasFortnoxReference);
 
     private sealed record FinanceCounterpartyRow(
         Guid Id,
@@ -3513,7 +3617,10 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         decimal Amount,
         string Currency,
         string Status,
-        Guid? DocumentId);
+        Guid? DocumentId,
+        string SourceType,
+        string? ProviderKey,
+        bool HasFortnoxReference);
 
     private sealed record FinanceLinkedDocumentRow(
         Guid Id,
@@ -3707,6 +3814,102 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
 
     private static FinancePaymentDto MapPayment(Payment payment) =>
         new(payment.Id, payment.CompanyId, payment.PaymentType, payment.Amount, payment.Currency, payment.PaymentDate, payment.Method, payment.Status, payment.CounterpartyReference, payment.CreatedUtc, payment.UpdatedUtc, Array.Empty<NormalizedFinanceInsightDto>());
+
+    private IQueryable<TEntity> ApplySourceFilter<TEntity>(
+        IQueryable<TEntity> source,
+        Guid companyId,
+        string? sourceFilter,
+        params string[] externalEntityTypes)
+        where TEntity : class
+    {
+        var normalized = FinanceDataSources.Normalize(sourceFilter);
+        if (normalized == FinanceDataSources.All)
+        {
+            return source;
+        }
+
+        var fortnoxReferenceIds = _dbContext.FinanceExternalReferences
+            .IgnoreQueryFilters()
+            .Where(reference =>
+                reference.CompanyId == companyId &&
+                reference.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                externalEntityTypes.Contains(reference.EntityType))
+            .Select(reference => reference.InternalRecordId);
+
+        return normalized switch
+        {
+            FinanceDataSources.Fortnox => source.Where(x =>
+                EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Fortnox ||
+                EF.Property<string?>(x, "ProviderKey") == FinanceIntegrationProviderKeys.Fortnox ||
+                fortnoxReferenceIds.Contains(EF.Property<Guid>(x, "Id"))),
+            FinanceDataSources.Simulation => source.Where(x =>
+                EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Simulation &&
+                !fortnoxReferenceIds.Contains(EF.Property<Guid>(x, "Id"))),
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceFilter), sourceFilter, "Source filter must be all, fortnox, or simulation.")
+        };
+    }
+
+    private async Task<HashSet<Guid>> LoadFortnoxReferenceIdsAsync(
+        Guid companyId,
+        IReadOnlyCollection<string> entityTypes,
+        IEnumerable<Guid> internalRecordIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = internalRecordIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToArray();
+
+        if (ids.Length == 0 || entityTypes.Count == 0)
+        {
+            return [];
+        }
+
+        var referenceIds = await _dbContext.FinanceExternalReferences
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(reference =>
+                reference.CompanyId == companyId &&
+                reference.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                entityTypes.Contains(reference.EntityType) &&
+                ids.Contains(reference.InternalRecordId))
+            .Select(reference => reference.InternalRecordId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        return referenceIds.ToHashSet();
+    }
+
+    private async Task<bool> HasFortnoxReferenceAsync(
+        Guid companyId,
+        IReadOnlyCollection<string> entityTypes,
+        Guid internalRecordId,
+        CancellationToken cancellationToken)
+    {
+        if (internalRecordId == Guid.Empty || entityTypes.Count == 0)
+        {
+            return false;
+        }
+
+        return await _dbContext.FinanceExternalReferences
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(reference =>
+                reference.CompanyId == companyId &&
+                reference.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                entityTypes.Contains(reference.EntityType) &&
+                reference.InternalRecordId == internalRecordId,
+                cancellationToken);
+    }
+
+    private static string ResolveFinanceSource(string sourceType, string? providerKey, bool hasFortnoxReference) =>
+        hasFortnoxReference ||
+        string.Equals(providerKey, FinanceIntegrationProviderKeys.Fortnox, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(sourceType, FinanceRecordSourceTypes.Fortnox, StringComparison.OrdinalIgnoreCase)
+            ? FinanceDataSources.Fortnox
+            : string.Equals(sourceType, FinanceRecordSourceTypes.Simulation, StringComparison.OrdinalIgnoreCase)
+                ? FinanceDataSources.Simulation
+                : FinanceDataSources.Manual;
 
     private static string NormalizeCounterpartyType(string value) =>
         FinanceCounterparty.NormalizeCounterpartyKind(value);

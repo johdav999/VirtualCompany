@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-32.4.3",
+  "promptPath": ".ai-design/prompts/TASK-32.4.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-30T14:52:26.584Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-30T14-52-26-584Z_TASK-32.4.3_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-30T14-52-26-584Z_TASK-32.4.3.json",
+  "agentsPromptPath": "AGENTS.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-30T14:58:26.381Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "= \"Acme AB\",\n+                access_token = \"secret-token\",\n+                ClientSecret = \"secret-client\",\n+                Email = \"finance@example.test\"\n+            }\n+        };\n+\n+        var sanitized = FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload);\n+\n+        sanitized.Should().Contain(\"*** redacted ***\");\n+        sanitized.Should().Contain(\"Acme AB\");\n+        sanitized.Should().NotContain(\"secret-token\");\n+        sanitized.Should().NotContain(\"secret-client\");\n+    }\n+\n+    [Fact]\n+    public void Sanitizer_Hash_Is_Stable_For_Same_Sanitized_Payload()\n+    {\n+        var first = new { Customer = new { Name = \"Acme AB\", access_token = \"one\" } };\n+        var second = new { Customer = new { Name = \"Acme AB\", access_token = \"two\" } };\n+\n+        FortnoxWritePayloadSanitizer.CreatePayloadHash(first)\n+            .Should()\n+            .Be(FortnoxWritePayloadSanitizer.CreatePayloadHash(second));\n+    }\n+\n+    [Fact]\n+    public void Write_Request_Carries_Approval_And_Duplicate_Prevention_Context()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var payload = new { Invoice = new { CustomerNumber = \"100\", Total = 1200m } };\n+        var hash = FortnoxWritePayloadSanitizer.CreatePayloadHash(payload);\n+\n+        var request = new FortnoxWriteCommandRequest(\n+            companyId,\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            \"POST\",\n+            \"invoices\",\n+            \"Example company\",\n+            \"invoices\",\n+            FortnoxWritePayloadSanitizer.CreateSummary(payload),\n+            hash,\n+            FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload),\n+            Guid.NewGuid(),\n+            \"correlation-1\");\n+\n+        request.CompanyId.Should().Be(companyId);\n+        request.PayloadHash.Should().Be(hash);\n+        request.SanitizedPayloadJson.Should().NotContain(\"access_token\");\n+        request.HttpMethod.Should().Be(\"POST\");\n+        request.Path.Should().Be(\"invoices\");\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "          }\n+        };\n+\n+        var sanitized = FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload);\n+\n+        sanitized.Should().Contain(\"*** redacted ***\");\n+        sanitized.Should().Contain(\"Acme AB\");\n+        sanitized.Should().NotContain(\"secret-token\");\n+        sanitized.Should().NotContain(\"secret-client\");\n+    }\n+\n+    [Fact]\n+    public void Sanitizer_Hash_Is_Stable_For_Same_Sanitized_Payload()\n+    {\n+        var first = new { Customer = new { Name = \"Acme AB\", access_token = \"one\" } };\n+        var second = new { Customer = new { Name = \"Acme AB\", access_token = \"two\" } };\n+\n+        FortnoxWritePayloadSanitizer.CreatePayloadHash(first)\n+            .Should()\n+            .Be(FortnoxWritePayloadSanitizer.CreatePayloadHash(second));\n+    }\n+\n+    [Fact]\n+    public void Write_Request_Carries_Approval_And_Duplicate_Prevention_Context()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var payload = new { Invoice = new { CustomerNumber = \"100\", Total = 1200m } };\n+        var hash = FortnoxWritePayloadSanitizer.CreatePayloadHash(payload);\n+\n+        var request = new FortnoxWriteCommandRequest(\n+            companyId,\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            \"POST\",\n+            \"invoices\",\n+            \"Example company\",\n+            \"invoices\",\n+            FortnoxWritePayloadSanitizer.CreateSummary(payload),\n+            hash,\n+            FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload),\n+            Guid.NewGuid(),\n+            \"correlation-1\");\n+\n+        request.CompanyId.Should().Be(companyId);\n+        request.PayloadHash.Should().Be(hash);\n+        request.SanitizedPayloadJson.Should().NotContain(\"access_token\");\n+        request.HttpMethod.Should().Be(\"POST\");\n+        request.Path.Should().Be(\"invoices\");\n+    }\n+}\nEND_OF_PATCH\n2026-04-30T14:58:21.806089Z ERROR codex_core::session: failed to record rollout items: thread 019ddee0-91c1-7301-b960-2befb7229289 not found\ntokens used\n168,250\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

@@ -1,21 +1,22 @@
 @page "/finance/anomalies/{AnomalyId:guid}"
+@page "/finance/issues/{AnomalyId:guid}"
 @inherits FinancePageBase
 @using VirtualCompany.Web.Services
 
-<PageTitle>Finance Anomaly Detail</PageTitle>
+<PageTitle>Finance issue detail</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Finance anomaly detail"
-    Description="Inspect anomaly evidence, related records, and follow-up tasks without losing the workbench state."
-    LoadingMessage="Loading finance anomaly detail...">
+    Title="Finance issue detail"
+    Description="Review issue details, related records, and follow-up tasks."
+    LoadingMessage="Loading finance issue detail...">
     @if (IsDetailLoading)
     {
         <section class="wizard-card">
-            <h2 class="h5 mb-2">Loading anomaly</h2>
-            <p class="text-body-secondary mb-0">Fetching the latest anomaly evidence and follow-up references.</p>
+            <h2 class="h5 mb-2">Loading issue</h2>
+            <p class="text-body-secondary mb-0">Fetching the latest issue details and follow-up references.</p>
         </section>
     }
     else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
@@ -28,12 +29,12 @@
     else if (Detail is not null)
     {
         <div class="dashboard-actions mb-4">
-            <a class="btn btn-outline-secondary" href="@BackToListHref">Back to workbench</a>
+            <a class="btn btn-outline-secondary" href="@BackToListHref">Back to issues</a>
         </div>
 
         <section class="finance-detail-grid">
             <article class="wizard-card finance-metric-card finance-metric-card--hero">
-                <span class="dashboard-kicker">Anomaly</span>
+                <span class="dashboard-kicker">Issue</span>
                 <h2 class="mb-3">@FinanceAnomalyPresentation.FormatLabel(Detail.AnomalyType)</h2>
                 <div class="d-flex flex-wrap gap-2 mb-3">
                     <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(Detail.Status)">@FinanceAnomalyPresentation.FormatLabel(Detail.Status)</span>

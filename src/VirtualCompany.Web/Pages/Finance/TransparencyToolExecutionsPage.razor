@@ -1,21 +1,22 @@
-@page "/finance/admin/transparency/tool-executions"
-@page "/finance/admin/transparency/tool-executions/{ExecutionId:guid}"
+@page "/system/admin/tool-executions"
+@page "/system/admin/tool-executions/{ExecutionId:guid}"
 @inherits FinanceTransparencyPageBase
 
-<PageTitle>Finance Tool Executions</PageTitle>
+<PageTitle>Tool executions</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Finance tool execution history"
+    Title="Tool executions"
     Description="Review recent finance tool execution history, lifecycle state, and related approval or originating action links."
-    LoadingMessage="Loading finance tool execution history...">
+    LoadingMessage="Loading tool execution history..."
+    Area="SystemAdmin">
     @if (!HasTransparencyAccess)
     {
         <ForbiddenState
-            Title="Finance transparency access required"
-            Message="Finance transparency pages are limited to company admins and testers."
+            Title="System access required"
+            Message="System administration pages are limited to company admins and testers."
             ReturnHref="@BuildFinanceHomeHref()"
             ReturnText="Back to finance" />
     }
@@ -26,7 +27,7 @@
                 <div class="wizard-card wizard-card--compact">
                     <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
                         <div>
-                            <h2 class="h5 mb-1">Finance tool execution history</h2>
+                            <h2 class="h5 mb-1">Tool execution history</h2>
                             <p class="text-body-secondary mb-0">@(string.IsNullOrWhiteSpace(Summary) ? "Recent finance executions show lifecycle state plus concise request and response summaries." : Summary)</p>
                         </div>
                         <span class="badge text-bg-light">@Items.Count item@(Items.Count == 1 ? string.Empty : "s")</span>

@@ -1,0 +1,171 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs b/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
+index 9b5e2c1..2b7f4a6 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
+@@ -10,8 +10,13 @@ public interface IFinanceIntegrationProvider
+     string ProviderKey { get; }
+ }
+ 
+-public interface IFinanceIntegrationProviderRegistry
++public interface IFinanceIntegrationProviderResolver
+ {
++    IFinanceIntegrationProvider GetRequired(string providerKey);
++}
++
++public interface IFinanceIntegrationProviderRegistry : IFinanceIntegrationProviderResolver
++{
+     IFinanceIntegrationProvider Resolve(string providerKey);
+ }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 76e49bf..a79d65c 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -416,8 +416,10 @@ public static class DependencyInjection
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+         services.AddScoped<ISignalEngine, CompanySignalEngine>();
+         services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
+-        services.AddScoped<IFinanceIntegrationProvider, FortnoxFinanceIntegrationProvider>();
++        services.AddScoped<FortnoxFinanceIntegrationProvider>();
++        services.AddScoped<IFinanceIntegrationProvider>(provider => provider.GetRequiredService<FortnoxFinanceIntegrationProvider>());
+         services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();
++        services.AddScoped<IFinanceIntegrationProviderResolver>(provider => provider.GetRequiredService<IFinanceIntegrationProviderRegistry>());
+         services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
+         services.AddScoped<IFinanceAgentInsightRepository, FinanceAgentInsightRepository>();
+         services.AddScoped<IFinanceInsightPersistenceService, FinanceInsightPersistenceService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceIntegrationProviderRegistry.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceIntegrationProviderRegistry.cs
+index cce36a8..bb1e18c 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceIntegrationProviderRegistry.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceIntegrationProviderRegistry.cs
+@@ -5,21 +5,43 @@ namespace VirtualCompany.Infrastructure.Finance;
+ internal sealed class FinanceIntegrationProviderRegistry(IEnumerable<IFinanceIntegrationProvider> providers)
+     : IFinanceIntegrationProviderRegistry
+ {
+-    private readonly IReadOnlyDictionary<string, IFinanceIntegrationProvider> _providers =
+-        providers.ToDictionary(provider => provider.ProviderKey, StringComparer.OrdinalIgnoreCase);
++    private readonly IReadOnlyDictionary<string, IFinanceIntegrationProvider> _providers = BuildProviderMap(providers);
+ 
+-    public IFinanceIntegrationProvider Resolve(string providerKey)
++    public IFinanceIntegrationProvider Resolve(string providerKey) => GetRequired(providerKey);
++
++    public IFinanceIntegrationProvider GetRequired(string providerKey)
+     {
+-        var normalized = string.IsNullOrWhiteSpace(providerKey)
+-            ? string.Empty
+-            : providerKey.Trim();
++        var normalized = NormalizeProviderKey(providerKey);
+ 
+         return _providers.TryGetValue(normalized, out var provider)
+             ? provider
+             : throw new FinanceIntegrationProviderNotFoundException(providerKey);
+     }
++
++    private static IReadOnlyDictionary<string, IFinanceIntegrationProvider> BuildProviderMap(IEnumerable<IFinanceIntegrationProvider> providers)
++    {
++        var map = new Dictionary<string, IFinanceIntegrationProvider>(StringComparer.OrdinalIgnoreCase);
++
++        foreach (var provider in providers)
++        {
++            var providerKey = NormalizeProviderKey(provider.ProviderKey);
++
++            if (map.ContainsKey(providerKey))
++            {
++                throw new InvalidOperationException(
++                    $"Multiple finance integration providers are registered for provider key '{providerKey}'.");
++            }
++
++            map.Add(providerKey, provider);
++        }
++
++        return map;
++    }
++
++    private static string NormalizeProviderKey(string providerKey) =>
++        string.IsNullOrWhiteSpace(providerKey)
++            ? string.Empty
++            : providerKey.Trim();
+ }
+ 
+-internal sealed class FortnoxFinanceIntegrationProvider : IFinanceIntegrationProvider
++public sealed class FortnoxFinanceIntegrationProvider : IFinanceIntegrationProvider
+ {
+     public string ProviderKey => FinanceIntegrationProviderKeys.Fortnox;
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs
+index 2de8b27..a413f70 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs
+@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Infrastructure;
++using VirtualCompany.Infrastructure.Finance;
+ using VirtualCompany.Infrastructure.Persistence;
+ using Xunit;
+ 
+@@ -77,17 +78,30 @@ public sealed class FinanceIntegrationFoundationTests
+     }
+ 
+     [Fact]
+-    public void Infrastructure_registration_resolves_fortnox_provider_by_key()
++    public void Infrastructure_registration_resolves_fortnox_provider_by_key_and_concrete_type()
+     {
+-        var configuration = new ConfigurationBuilder()
+-            .AddInMemoryCollection(new Dictionary<string, string?>
+-            {
+-                ["Database:Provider"] = "Sqlite",
+-                ["ConnectionStrings:VirtualCompanyDb"] = "Data Source=:memory:"
+-            })
+-            .Build();
+-        var services = new ServiceCollection();
++        using var serviceProvider = BuildInfrastructureServiceProvider();
++        using var scope = serviceProvider.CreateScope();
++        var resolver = scope.ServiceProvider.GetRequiredService<IFinanceIntegrationProviderResolver>();
++        var registry = scope.ServiceProvider.GetRequiredService<IFinanceIntegrationProviderRegistry>();
++
++        var provider = resolver.GetRequired(" FORTNOX ");
++
++        Assert.IsType<FortnoxFinanceIntegrationProvider>(provider);
++        Assert.Same(provider, registry.Resolve(FinanceIntegrationProviderKeys.Fortnox));
++        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, provider.ProviderKey);
++        Assert.IsType<FortnoxFinanceIntegrationProvider>(
++            scope.ServiceProvider.GetRequiredService<FortnoxFinanceIntegrationProvider>());
++    }
++
++    [Fact]
++    public void Infrastructure_registration_rejects_unknown_finance_provider_key()
++    {
++        using var serviceProvider = BuildInfrastructureServiceProvider();
++        using var scope = serviceProvider.CreateScope();
++        var resolver = scope.ServiceProvider.GetRequiredService<IFinanceIntegrationProviderResolver>();
+ 
+-        services.AddVirtualCompanyInfrastructure(configuration);
++        var exception = Assert.Throws<FinanceIntegrationProviderNotFoundException>(
++            () => resolver.GetRequired("unknown"));
+ 
+-        using var serviceProvider = services.BuildServiceProvider();
+-        using var scope = serviceProvider.CreateScope();
+-        var registry = scope.ServiceProvider.GetRequiredService<IFinanceIntegrationProviderRegistry>();
++        Assert.Equal("unknown", exception.ProviderKey);
++    }
+ 
+-        var provider = registry.Resolve(" FORTNOX ");
++    private static ServiceProvider BuildInfrastructureServiceProvider()
++    {
++        var configuration = new ConfigurationBuilder()
++            .AddInMemoryCollection(new Dictionary<string, string?>
++            {
++                ["Database:Provider"] = "Sqlite",
++                ["ConnectionStrings:VirtualCompanyDb"] = "Data Source=:memory:"
++            })
++            .Build();
++        var services = new ServiceCollection();
+ 
+-        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, provider.ProviderKey);
++        services.AddVirtualCompanyInfrastructure(configuration);
++
++        return services.BuildServiceProvider();
+     }
+ 
+     private static readonly string[] SourceTrackedTables =
+END_OF_PATCH

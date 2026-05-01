@@ -11,6 +11,12 @@ public interface IFinanceSandboxAdminService
     Task<FinanceSandboxAnomalyDetailViewModel> InjectAnomalyAsync(FinanceSandboxAnomalyInjectionCommand command, CancellationToken cancellationToken = default);
     Task<FinanceSandboxSimulationControlsViewModel?> GetSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default);
     Task<FinanceSandboxSimulationDiagnosticsViewModel?> GetSimulationDiagnosticsAsync(Guid companyId, CancellationToken cancellationToken = default);
+    Task<FinanceSandboxSimulationDiagnosticsViewModel> StartCompanySimulationAsync(FinanceSandboxCompanySimulationStartCommand command, CancellationToken cancellationToken = default);
+    Task<FinanceSandboxSimulationDiagnosticsViewModel> PauseCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default);
+    Task<FinanceSandboxSimulationDiagnosticsViewModel> ResumeCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default);
+    Task<FinanceSandboxSimulationDiagnosticsViewModel> StepForwardCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default);
+    Task<FinanceSandboxSimulationDiagnosticsViewModel> StopCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default);
+    Task<FinanceSandboxSimulationDiagnosticsViewModel> UpdateCompanySimulationGenerationAsync(Guid companyId, bool generationEnabled, CancellationToken cancellationToken = default);
     Task<FinanceSandboxProgressionRunViewModel> AdvanceSimulationAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default);
     Task<FinanceSandboxProgressionRunViewModel> StartProgressionRunAsync(FinanceSandboxSimulationAdvanceCommand command, CancellationToken cancellationToken = default);
     Task<FinanceTransparencyToolManifestListViewModel?> GetTransparencyToolManifestsAsync(Guid companyId, CancellationToken cancellationToken = default);
@@ -143,22 +149,58 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
     public async Task<FinanceSandboxSimulationDiagnosticsViewModel?> GetSimulationDiagnosticsAsync(Guid companyId, CancellationToken cancellationToken = default)
     {
         var response = await _financeApiClient.GetCompanySimulationStateAsync(companyId, cancellationToken);
-        return response is null ? null : new FinanceSandboxSimulationDiagnosticsViewModel
+        return response is null ? null : MapSimulationDiagnostics(response);
+    }
+
+    public async Task<FinanceSandboxSimulationDiagnosticsViewModel> StartCompanySimulationAsync(
+        FinanceSandboxCompanySimulationStartCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await _financeApiClient.StartCompanySimulationAsync(command.CompanyId, new FinanceCompanySimulationStartRequest
         {
-            CompanyId = response.CompanyId,
-            Status = response.Status,
-            CurrentSimulatedDateTime = response.CurrentSimulatedDateTime,
-            LastProgressionTimestamp = response.LastProgressionTimestamp,
-            GenerationEnabled = response.GenerationEnabled,
-            Seed = response.Seed,
-            ActiveSessionId = response.ActiveSessionId,
-            StartSimulatedDateTime = response.StartSimulatedDateTime,
-            UiVisible = response.UiVisible,
-            BackendExecutionEnabled = response.BackendExecutionEnabled,
-            BackgroundJobsEnabled = response.BackgroundJobsEnabled,
-            DisabledReason = response.DisabledReason,
-            RecentHistory = response.RecentHistory.Select(MapSimulationRunHistory).ToArray()
-        };
+            StartSimulatedDateTime = command.StartSimulatedDateTime,
+            GenerationEnabled = command.GenerationEnabled,
+            Seed = command.Seed
+        }, cancellationToken);
+
+        return MapSimulationDiagnostics(response);
+    }
+
+    public async Task<FinanceSandboxSimulationDiagnosticsViewModel> PauseCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default)
+    {
+        var response = await _financeApiClient.PauseCompanySimulationAsync(companyId, cancellationToken);
+        return MapSimulationDiagnostics(response);
+    }
+
+    public async Task<FinanceSandboxSimulationDiagnosticsViewModel> ResumeCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default)
+    {
+        var response = await _financeApiClient.ResumeCompanySimulationAsync(companyId, cancellationToken);
+        return MapSimulationDiagnostics(response);
+    }
+
+    public async Task<FinanceSandboxSimulationDiagnosticsViewModel> StepForwardCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default)
+    {
+        var response = await _financeApiClient.StepForwardCompanySimulationAsync(companyId, cancellationToken);
+        return MapSimulationDiagnostics(response);
+    }
+
+    public async Task<FinanceSandboxSimulationDiagnosticsViewModel> StopCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default)
+    {
+        var response = await _financeApiClient.StopCompanySimulationAsync(companyId, cancellationToken);
+        return MapSimulationDiagnostics(response);
+    }
+
+    public async Task<FinanceSandboxSimulationDiagnosticsViewModel> UpdateCompanySimulationGenerationAsync(
+        Guid companyId,
+        bool generationEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await _financeApiClient.UpdateCompanySimulationSettingsAsync(companyId, new FinanceCompanySimulationUpdateRequest
+        {
+            GenerationEnabled = generationEnabled
+        }, cancellationToken);
+
+        return MapSimulationDiagnostics(response);
     }
 
     public async Task<FinanceTransparencyToolManifestListViewModel?> GetTransparencyToolManifestsAsync(Guid companyId, CancellationToken cancellationToken = default)
@@ -356,6 +398,30 @@ public sealed class FinanceSandboxAdminService : IFinanceSandboxAdminService
             CreatedUtc = response.CreatedUtc,
             ExpectedDetectionMetadataJson = response.ExpectedDetectionMetadataJson,
             Messages = response.Messages.Select(MapBackendMessage).ToArray()
+        };
+
+    private static FinanceSandboxSimulationDiagnosticsViewModel MapSimulationDiagnostics(FinanceCompanySimulationStateResponse response) =>
+        new()
+        {
+            CompanyId = response.CompanyId,
+            Status = response.Status,
+            CurrentSimulatedDateTime = response.CurrentSimulatedDateTime,
+            LastProgressionTimestamp = response.LastProgressionTimestamp,
+            GenerationEnabled = response.GenerationEnabled,
+            Seed = response.Seed,
+            ActiveSessionId = response.ActiveSessionId,
+            StartSimulatedDateTime = response.StartSimulatedDateTime,
+            CanStart = response.CanStart,
+            CanPause = response.CanPause,
+            CanStop = response.CanStop,
+            CanToggleGeneration = response.CanToggleGeneration,
+            SupportsStepForwardOneDay = response.SupportsStepForwardOneDay,
+            SupportsRefresh = response.SupportsRefresh,
+            UiVisible = response.UiVisible,
+            BackendExecutionEnabled = response.BackendExecutionEnabled,
+            BackgroundJobsEnabled = response.BackgroundJobsEnabled,
+            DisabledReason = response.DisabledReason,
+            RecentHistory = response.RecentHistory.Select(MapSimulationRunHistory).ToArray()
         };
 
     private static FinanceSandboxSimulationRunHistoryViewModel MapSimulationRunHistory(FinanceCompanySimulationRunHistoryResponse response) =>
@@ -579,6 +645,14 @@ public sealed class FinanceSandboxSimulationAdvanceCommand
     public bool Accelerated { get; set; }
 }
 
+public sealed class FinanceSandboxCompanySimulationStartCommand
+{
+    public Guid CompanyId { get; set; }
+    public DateTime StartSimulatedDateTime { get; set; }
+    public bool GenerationEnabled { get; set; } = true;
+    public int Seed { get; set; } = 302;
+}
+
 public sealed class FinanceSandboxSimulationControlsViewModel
 {
     public string ClockMode { get; set; } = string.Empty;
@@ -599,6 +673,12 @@ public sealed class FinanceSandboxSimulationDiagnosticsViewModel
     public int? Seed { get; set; }
     public Guid? ActiveSessionId { get; set; }
     public DateTime? StartSimulatedDateTime { get; set; }
+    public bool CanStart { get; set; }
+    public bool CanPause { get; set; }
+    public bool CanStop { get; set; }
+    public bool CanToggleGeneration { get; set; }
+    public bool SupportsStepForwardOneDay { get; set; }
+    public bool SupportsRefresh { get; set; } = true;
     public bool UiVisible { get; set; } = true;
     public bool BackendExecutionEnabled { get; set; } = true;
     public bool BackgroundJobsEnabled { get; set; } = true;

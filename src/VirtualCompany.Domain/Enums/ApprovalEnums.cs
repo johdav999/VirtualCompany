@@ -4,7 +4,8 @@ public enum ApprovalTargetEntityType
 {
     Task = 1,
     Workflow = 2,
-    Action = 3
+    Action = 3,
+    FortnoxWrite = 4
 }
 
 public static class ApprovalTargetEntityTypeValues
@@ -13,7 +14,8 @@ public static class ApprovalTargetEntityTypeValues
     {
         [ApprovalTargetEntityType.Task] = "task",
         [ApprovalTargetEntityType.Workflow] = "workflow",
-        [ApprovalTargetEntityType.Action] = "action"
+        [ApprovalTargetEntityType.Action] = "action",
+        [ApprovalTargetEntityType.FortnoxWrite] = "fortnox_write"
     };
 
     private static readonly IReadOnlyDictionary<string, ApprovalTargetEntityType> ReverseValues =

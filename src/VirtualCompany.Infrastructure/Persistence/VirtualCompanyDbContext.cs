@@ -112,6 +112,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanySimulationState> CompanySimulationStates => Set<CompanySimulationState>();
     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
     public DbSet<MailboxConnection> MailboxConnections => Set<MailboxConnection>();
+    public DbSet<FortnoxConnection> FortnoxConnections => Set<FortnoxConnection>();
     public DbSet<EmailIngestionRun> EmailIngestionRuns => Set<EmailIngestionRun>();
     public DbSet<EmailMessageSnapshot> EmailMessageSnapshots => Set<EmailMessageSnapshot>();
     public DbSet<EmailAttachmentSnapshot> EmailAttachmentSnapshots => Set<EmailAttachmentSnapshot>();
@@ -126,12 +127,19 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
     public DbSet<SimulationCashDeltaRecord> SimulationCashDeltaRecords => Set<SimulationCashDeltaRecord>();
     public DbSet<SimulationEventRecord> SimulationEventRecords => Set<SimulationEventRecord>();
+    public DbSet<FinanceIntegrationConnection> FinanceIntegrationConnections => Set<FinanceIntegrationConnection>();
+    public DbSet<FinanceIntegrationToken> FinanceIntegrationTokens => Set<FinanceIntegrationToken>();
+    public DbSet<FinanceIntegrationSyncState> FinanceIntegrationSyncStates => Set<FinanceIntegrationSyncState>();
+    public DbSet<FinanceExternalReference> FinanceExternalReferences => Set<FinanceExternalReference>();
+    public DbSet<FinanceIntegrationAuditEvent> FinanceIntegrationAuditEvents => Set<FinanceIntegrationAuditEvent>();
+    public DbSet<FortnoxWriteCommand> FortnoxWriteCommands => Set<FortnoxWriteCommand>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
 
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         ValidateCompanyOwnedMutations();
+        ApplyFinanceSourceTrackingDefaults();
         EnsureBankTransactionPostingStates();
         var companiesToInvalidate = CaptureDashboardInvalidationCompanies();
         var result = await base.SaveChangesAsync(cancellationToken);
@@ -176,6 +184,40 @@ public sealed class VirtualCompanyDbContext : DbContext
                 0,
                 transaction.CreatedUtc,
                 "created_without_payment_match"));
+        }
+    }
+
+    private void ApplyFinanceSourceTrackingDefaults()
+    {
+        foreach (var entry in ChangeTracker.Entries().Where(entry => entry.State == EntityState.Added))
+        {
+            if (entry.Metadata.FindProperty("SourceType") is null)
+            {
+                continue;
+            }
+
+            var sourceProperty = entry.Property("SourceType");
+            var currentSource = sourceProperty.CurrentValue as string;
+            if (!string.IsNullOrWhiteSpace(currentSource) &&
+                !currentSource.Equals(FinanceRecordSourceTypes.Manual, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var simulationEventProperty = entry.Metadata.FindProperty("SourceSimulationEventRecordId");
+            if (simulationEventProperty is not null &&
+                entry.Property("SourceSimulationEventRecordId").CurrentValue is Guid simulationEventId &&
+                simulationEventId != Guid.Empty)
+            {
+                // Simulation-created records must stay distinguishable from manual and Fortnox-synced records.
+                sourceProperty.CurrentValue = FinanceRecordSourceTypes.Simulation;
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(currentSource))
+            {
+                sourceProperty.CurrentValue = FinanceRecordSourceTypes.Manual;
+            }
         }
     }
 
@@ -250,6 +292,7 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is FinancialStatementSnapshot ||
                 entry.Entity is FinancialStatementSnapshotLine ||
                 entry.Entity is MailboxConnection ||
+                entry.Entity is FortnoxConnection ||
                 entry.Entity is EmailIngestionRun ||
                 entry.Entity is EmailMessageSnapshot ||
                 entry.Entity is BillDuplicateCheck ||
@@ -261,7 +304,13 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is BillApprovalProposal ||
                 entry.Entity is EmailAttachmentSnapshot ||
                 entry.Entity is SimulationCashDeltaRecord ||
-                entry.Entity is SimulationEventRecord)
+                entry.Entity is SimulationEventRecord ||
+                entry.Entity is FinanceIntegrationConnection ||
+                entry.Entity is FinanceIntegrationToken ||
+                entry.Entity is FinanceIntegrationSyncState ||
+                entry.Entity is FinanceExternalReference ||
+                entry.Entity is FinanceIntegrationAuditEvent ||
+                entry.Entity is FortnoxWriteCommand)
             .Select(entry =>
             {
                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
@@ -507,6 +556,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<MailboxConnection>()
             .HasQueryFilter(connection =>
                 CurrentCompanyId.HasValue && connection.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FortnoxConnection>()
+            .HasQueryFilter(connection =>
+                CurrentCompanyId.HasValue && connection.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<EmailIngestionRun>()
             .HasQueryFilter(run =>
                 CurrentCompanyId.HasValue && run.CompanyId == CurrentCompanyId.Value);
@@ -552,5 +604,23 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<SimulationEventRecord>()
             .HasQueryFilter(record =>
                 CurrentCompanyId.HasValue && record.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceIntegrationConnection>()
+            .HasQueryFilter(connection =>
+                CurrentCompanyId.HasValue && connection.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceIntegrationToken>()
+            .HasQueryFilter(token =>
+                CurrentCompanyId.HasValue && token.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceIntegrationSyncState>()
+            .HasQueryFilter(state =>
+                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceExternalReference>()
+            .HasQueryFilter(reference =>
+                CurrentCompanyId.HasValue && reference.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FinanceIntegrationAuditEvent>()
+            .HasQueryFilter(auditEvent =>
+                CurrentCompanyId.HasValue && auditEvent.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FortnoxWriteCommand>()
+            .HasQueryFilter(command =>
+                CurrentCompanyId.HasValue && command.CompanyId == CurrentCompanyId.Value);
     }
 }

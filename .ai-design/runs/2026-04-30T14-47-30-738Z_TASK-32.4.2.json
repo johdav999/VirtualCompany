@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-32.4.2",
+  "promptPath": ".ai-design/prompts/TASK-32.4.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-30T14:47:30.738Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-30T14-47-30-738Z_TASK-32.4.2_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-30T14-47-30-738Z_TASK-32.4.2.json",
+  "agentsPromptPath": "AGENTS.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-30T14:52:24.800Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ayload);\n+\n+        Assert.Contains(\"Example AB\", summary);\n+        Assert.DoesNotContain(\"access-token-value\", summary);\n+        Assert.DoesNotContain(\"refresh-token-value\", summary);\n+        Assert.DoesNotContain(\"client-secret-value\", summary);\n+        Assert.DoesNotContain(\"authorization-code-value\", summary);\n+        Assert.Contains(\"*** redacted ***\", summary);\n+    }\n+\n+    [Fact]\n+    public void Payload_hash_is_deterministic_for_same_redacted_payload()\n+    {\n+        var first = new\n+        {\n+            Invoice = new\n+            {\n+                DocumentNumber = \"1001\",\n+                Total = 1250m,\n+                AccessToken = \"first-secret\"\n+            }\n+        };\n+        var second = new\n+        {\n+            Invoice = new\n+            {\n+                DocumentNumber = \"1001\",\n+                Total = 1250m,\n+                AccessToken = \"second-secret\"\n+            }\n+        };\n+\n+        var firstHash = FortnoxWritePayloadSanitizer.CreatePayloadHash(first);\n+        var secondHash = FortnoxWritePayloadSanitizer.CreatePayloadHash(second);\n+\n+        Assert.Equal(firstHash, secondHash);\n+        Assert.Equal(64, firstHash.Length);\n+    }\n+\n+    [Fact]\n+    public void Approval_required_exception_exposes_approval_id_without_payload()\n+    {\n+        var approvalId = Guid.NewGuid();\n+\n+        var exception = new FortnoxApprovalRequiredException(\n+            approvalId,\n+            \"Fortnox writes require approval before data is sent to Fortnox.\");\n+\n+        Assert.Equal(approvalId, exception.ApprovalId);\n+        Assert.DoesNotContain(\"token\", exception.SafeMessage, StringComparison.OrdinalIgnoreCase);\n+    }\n+\n+    [Fact]\n+    public void Real_fortnox_api_tests_are_opt_in_only()\n+    {\n+        var enabled = string.Equals(\n+            Environment.GetEnvironmentVariable(\"VC_FORTNOX_REAL_API_TESTS\"),\n+            \"true\",\n+            StringComparison.OrdinalIgnoreCase);\n+\n+        Assert.False(enabled);\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "h-token-value\", summary);\n+        Assert.DoesNotContain(\"client-secret-value\", summary);\n+        Assert.DoesNotContain(\"authorization-code-value\", summary);\n+        Assert.Contains(\"*** redacted ***\", summary);\n+    }\n+\n+    [Fact]\n+    public void Payload_hash_is_deterministic_for_same_redacted_payload()\n+    {\n+        var first = new\n+        {\n+            Invoice = new\n+            {\n+                DocumentNumber = \"1001\",\n+                Total = 1250m,\n+                AccessToken = \"first-secret\"\n+            }\n+        };\n+        var second = new\n+        {\n+            Invoice = new\n+            {\n+                DocumentNumber = \"1001\",\n+                Total = 1250m,\n+                AccessToken = \"second-secret\"\n+            }\n+        };\n+\n+        var firstHash = FortnoxWritePayloadSanitizer.CreatePayloadHash(first);\n+        var secondHash = FortnoxWritePayloadSanitizer.CreatePayloadHash(second);\n+\n+        Assert.Equal(firstHash, secondHash);\n+        Assert.Equal(64, firstHash.Length);\n+    }\n+\n+    [Fact]\n+    public void Approval_required_exception_exposes_approval_id_without_payload()\n+    {\n+        var approvalId = Guid.NewGuid();\n+\n+        var exception = new FortnoxApprovalRequiredException(\n+            approvalId,\n+            \"Fortnox writes require approval before data is sent to Fortnox.\");\n+\n+        Assert.Equal(approvalId, exception.ApprovalId);\n+        Assert.DoesNotContain(\"token\", exception.SafeMessage, StringComparison.OrdinalIgnoreCase);\n+    }\n+\n+    [Fact]\n+    public void Real_fortnox_api_tests_are_opt_in_only()\n+    {\n+        var enabled = string.Equals(\n+            Environment.GetEnvironmentVariable(\"VC_FORTNOX_REAL_API_TESTS\"),\n+            \"true\",\n+            StringComparison.OrdinalIgnoreCase);\n+\n+        Assert.False(enabled);\n+    }\n+}\nEND_OF_PATCH\n2026-04-30T14:52:20.917516Z ERROR codex_core::session: failed to record rollout items: thread 019ddedc-0ab1-7183-88ce-46d138b562c3 not found\ntokens used\n163,366\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

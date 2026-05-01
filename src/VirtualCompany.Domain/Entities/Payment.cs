@@ -88,6 +88,28 @@ public sealed class Payment : ICompanyOwnedEntity
     public ICollection<PaymentAllocation> Allocations { get; } = new List<PaymentAllocation>();
     public ICollection<PaymentCashLedgerLink> CashLedgerLinks { get; } = new List<PaymentCashLedgerLink>();
 
+    public void ApplySyncedSnapshot(
+        string paymentType,
+        decimal amount,
+        string currency,
+        DateTime paymentDate,
+        string method,
+        string status,
+        string counterpartyReference)
+    {
+        PaymentType = PaymentTypes.Normalize(paymentType);
+        if (!PaymentTypes.IsSupported(PaymentType)) throw new ArgumentOutOfRangeException(nameof(paymentType), paymentType, "Unsupported payment type.");
+        Amount = decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
+        Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
+        PaymentDate = EntityTimestampNormalizer.NormalizeUtc(paymentDate, nameof(paymentDate));
+        Method = PaymentMethods.Normalize(method);
+        if (!PaymentMethods.IsSupported(Method)) throw new ArgumentOutOfRangeException(nameof(method), method, "Unsupported payment method.");
+        Status = PaymentStatuses.Normalize(status);
+        if (!PaymentStatuses.IsSupported(Status)) throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported payment status.");
+        CounterpartyReference = NormalizeRequired(counterpartyReference, nameof(counterpartyReference), 200);
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
     private static string NormalizeRequired(string value, string name, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value))

@@ -8,54 +8,101 @@
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
     Title="Cash position"
-    Description="Track company cash coverage and liquidity without leaving the active tenant context."
-    LoadingMessage="Loading cash position shell...">
+    Description="See how much cash you have and how long it will last."
+    LoadingMessage="Loading cash position..."
+    ShowShellHeader="false"
+    ShowShellNavigation="false">
     <FinanceDataState
         IsLoading="@IsSummaryLoading"
         IsEmpty="@IsSummaryEmpty"
         ErrorMessage="@SummaryErrorMessage"
         LoadingTitle="Loading cash position"
-        LoadingMessage="Fetching the active tenant cash position from finance services."
+        LoadingMessage="Getting your latest cash details."
         EmptyTitle="No cash position yet"
-        EmptyMessage="No cash position summary is available for the active tenant."
+        EmptyMessage="No cash position summary is available yet."
         RetryText="Reload cash position"
         OnRetry="@RetryAsync">
         @if (ViewModel is not null)
         {
-            <section class="finance-summary-stack" aria-labelledby="cash-position-heading">
-                <div class="finance-summary-grid">
-                    <article class="wizard-card finance-metric-card finance-metric-card--hero">
-                        <span class="dashboard-kicker">Available cash</span>
-                        <h2 id="cash-position-heading" class="finance-metric-card__value">@ViewModel.AvailableBalance</h2>
-                        <p class="text-body-secondary mb-0">As of @ViewModel.AsOf</p>
-                    </article>
-                    <article class="wizard-card finance-metric-card">
-                        <span class="dashboard-kicker">Average monthly burn</span>
-                        <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.AverageMonthlyBurn</div>
-                        <p class="text-body-secondary mb-0">Estimated runway: @ViewModel.EstimatedRunway</p>
-                    </article>
-                    <article class="wizard-card finance-metric-card">
-                        <span class="dashboard-kicker">Workflow assessment</span>
-                        <div class="finance-risk-pill finance-risk-pill--@ViewModel.RiskLevelCssClass">@ViewModel.RiskLevel</div>
-                        <p class="mb-1 mt-3">@ViewModel.RecommendedAction</p>
-                        <small class="text-body-secondary">Confidence @ViewModel.Confidence</small>
-                    </article>
+            <section class="cash-position-dashboard" aria-labelledby="cash-position-heading">
+                <div class="finance-overview-header">
+                    <div>
+                        <span class="finance-overview-kicker">Finance module</span>
+                        <h1 id="cash-position-heading" class="finance-overview-title">Cash position</h1>
+                        <p class="finance-overview-subtitle">See how much cash you have and how long it will last.</p>
+                    </div>
+                    <div class="finance-overview-header__actions">
+                        <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">Finance overview</a>
+                        <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">Company dashboard</a>
+                    </div>
                 </div>
-                <div class="finance-detail-grid">
-                    <article class="wizard-card">
-                        <h2 class="h5">Thresholds</h2>
-                        <dl class="cockpit-kpi-list mb-0">
-                            <div><dt>Warning cash</dt><dd>@ViewModel.WarningThreshold</dd></div>
-                            <div><dt>Critical cash</dt><dd>@ViewModel.CriticalThreshold</dd></div>
-                            <div><dt>Warning runway</dt><dd>@ViewModel.WarningRunway</dd></div>
-                            <div><dt>Critical runway</dt><dd>@ViewModel.CriticalRunway</dd></div>
-                        </dl>
+
+                <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
+
+                <div class="cash-position-grid">
+                    <article class="cash-position-card cash-position-card--wide">
+                        <div class="cash-position-card__icon cash-position-card__icon--positive" aria-hidden="true">$</div>
+                        <div class="cash-position-card__body">
+                            <p class="cash-position-card__label">Available cash</p>
+                            <div class="cash-position-card__value">@ViewModel.AvailableBalance</div>
+                            <p class="cash-position-card__muted">As of @FormattedAsOf</p>
+                        </div>
+                        <div class="cash-position-card__icon cash-position-card__icon--positive cash-position-card__icon--end" aria-hidden="true">$</div>
                     </article>
-                    <article class="wizard-card">
-                        <h2 class="h5">Alert state</h2>
-                        <p class="mb-2"><strong>@ViewModel.AlertStatus</strong></p>
-                        <p class="mb-2">@ViewModel.Rationale</p>
-                        <small class="text-body-secondary">Classification: @ViewModel.Classification</small>
+
+                    <article class="cash-position-card">
+                        <div class="cash-position-card__icon cash-position-card__icon--neutral" aria-hidden="true">avg</div>
+                        <div class="cash-position-card__body">
+                            <h2 class="cash-position-card__title">@ViewModel.MonthlySpendingTitle</h2>
+                            <div class="cash-position-card__value cash-position-card__value--medium">@ViewModel.AverageMonthlyBurn</div>
+                            <p class="cash-position-card__muted">@ViewModel.MonthlySpendingDescription</p>
+                            <p class="cash-position-card__strong">@ViewModel.RunwayDescription</p>
+                        </div>
+                    </article>
+
+                    <article class="cash-position-card">
+                        <div class="cash-position-card__icon cash-position-card__icon--@ViewModel.FriendlyHealthTone" aria-hidden="true">ok</div>
+                        <div class="cash-position-card__body">
+                            <h2 class="cash-position-card__title">@ViewModel.CashHealthTitle</h2>
+                            <span class="cash-position-status cash-position-status--@ViewModel.FriendlyHealthTone">@ViewModel.FriendlyHealthLabel</span>
+                            <p class="cash-position-card__muted mt-2">@ViewModel.CashHealthMessage</p>
+                            @if (!string.IsNullOrWhiteSpace(ViewModel.ConfidenceText))
+                            {
+                                <p class="cash-position-card__muted mb-0">@ViewModel.ConfidenceText</p>
+                            }
+                        </div>
+                    </article>
+
+                    <article class="cash-position-card cash-position-card--stacked">
+                        <div class="cash-position-card__header">
+                            <h2 class="cash-position-card__title">@ViewModel.CashGuideTitle</h2>
+                            <div class="cash-position-card__icon cash-position-card__icon--warning cash-position-card__icon--small" aria-hidden="true">!</div>
+                        </div>
+                        <dl class="cash-position-guide-list">
+                            <div><dt>@ViewModel.WarningCashLabel</dt><dd>@ViewModel.WarningThreshold</dd></div>
+                            <div><dt>@ViewModel.CriticalCashLabel</dt><dd>@ViewModel.CriticalThreshold</dd></div>
+                            <div><dt>@ViewModel.WarningRunwayLabel</dt><dd>@ViewModel.WarningRunway</dd></div>
+                            <div><dt>@ViewModel.CriticalRunwayLabel</dt><dd>@ViewModel.CriticalRunway</dd></div>
+                        </dl>
+                        <p class="cash-position-card__muted mb-0">@ViewModel.CashGuideHelperText</p>
+                    </article>
+
+                    <article class="cash-position-card cash-position-card--stacked">
+                        <div class="cash-position-card__header">
+                            <h2 class="cash-position-card__title">@ViewModel.MeaningCardTitle</h2>
+                            <div class="cash-position-card__icon cash-position-card__icon--@ViewModel.FriendlyHealthTone cash-position-card__icon--small" aria-hidden="true">!</div>
+                        </div>
+                        <div class="cash-position-meaning">
+                            <div class="cash-position-meaning__headline">
+                                <span class="cash-position-card__icon cash-position-card__icon--@ViewModel.FriendlyHealthTone cash-position-card__icon--tiny" aria-hidden="true">ok</span>
+                                <strong>@ViewModel.MeaningTitle</strong>
+                            </div>
+                            @foreach (var paragraph in ViewModel.MeaningParagraphs)
+                            {
+                                <p>@paragraph</p>
+                            }
+                            <p class="cash-position-card__muted mb-0">Status: @ViewModel.MeaningStatus</p>
+                        </div>
                     </article>
                 </div>
             </section>

@@ -1,0 +1,13 @@
+@using VirtualCompany.Web.Services
+
+<div class="finance-summary-grid" aria-label="Finance key metrics">
+    @foreach (var kpi in Kpis)
+    {
+        <FinanceKpiCard Kpi="@kpi" />
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<FinanceKpiViewModel> Kpis { get; set; } = [];
+}

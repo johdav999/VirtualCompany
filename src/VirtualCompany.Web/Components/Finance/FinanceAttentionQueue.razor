@@ -1,0 +1,19 @@
+@using VirtualCompany.Web.Services
+
+<section class="finance-attention-section" aria-labelledby="finance-attention-heading">
+    <div class="finance-section-heading">
+        <h2 id="finance-attention-heading" class="h5 mb-0">What needs your attention</h2>
+    </div>
+
+    <div class="finance-attention-grid">
+        @foreach (var item in Items)
+        {
+            <FinanceAttentionCard Item="@item" />
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<FinanceAttentionItemViewModel> Items { get; set; } = [];
+}

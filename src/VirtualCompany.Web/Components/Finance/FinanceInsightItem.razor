@@ -1,0 +1,30 @@
+@using VirtualCompany.Web.Services
+
+<div class="list-group-item px-0 finance-overview-list-item">
+    <div class="d-flex align-items-start gap-3">
+        <span class="@IconClass" aria-hidden="true">@(!string.IsNullOrWhiteSpace(Item.Icon) ? Item.Icon : "*")</span>
+        <div class="flex-grow-1">
+            <div class="fw-semibold">@Item.Title</div>
+            <p class="text-body-secondary small mb-0">@Item.Explanation</p>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(Item.ActionLabel) && !string.IsNullOrWhiteSpace(Item.Href))
+        {
+            <a class="btn btn-sm btn-outline-primary text-nowrap" href="@Item.Href">@Item.ActionLabel</a>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public FinanceInsightItemViewModel Item { get; set; } = default!;
+
+    private string IconClass => $"finance-overview-icon finance-overview-icon--{ToneClass}";
+
+    private string ToneClass => Item.Tone switch
+    {
+        FinanceKpiTone.Positive => "positive",
+        FinanceKpiTone.Warning => "warning",
+        FinanceKpiTone.Danger => "danger",
+        _ => "neutral"
+    };
+}

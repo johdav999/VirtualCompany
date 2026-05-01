@@ -1,0 +1,21 @@
+@using VirtualCompany.Web.Services
+
+<div class="finance-supporting-grid">
+    <CashPositionPanel CashPosition="@CashPosition" />
+    <MonthlySummaryPanel MonthlySummary="@MonthlySummary" />
+    <RecentFinanceActivityPanel Items="@RecentActivity" CompanyId="@CompanyId" />
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public FinanceCashPositionOverviewViewModel CashPosition { get; set; } = new();
+
+    [Parameter, EditorRequired]
+    public FinanceMonthlySummaryOverviewViewModel MonthlySummary { get; set; } = new();
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<RecentFinanceActivityViewModel> RecentActivity { get; set; } = [];
+
+    [Parameter]
+    public Guid? CompanyId { get; set; }
+}

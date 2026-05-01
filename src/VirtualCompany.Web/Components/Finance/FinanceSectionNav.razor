@@ -1,9 +1,11 @@
-<nav class="finance-section-nav" aria-label="Finance pages">
-    @foreach (var route in FinanceRoutes.SectionPages)
+@inject NavigationManager Navigation
+
+<nav class="finance-section-nav" aria-label="@AriaLabel">
+    @foreach (var route in Routes)
     {
-        <NavLink class="@($"finance-section-nav__link {(route.IsVisibleTo(MembershipRole) ? string.Empty : "d-none")}")" ActiveClass="active" Match="NavLinkMatch.Prefix" href="@route.BuildPath(CompanyId)">
+        <a class="@GetLinkClass(route)" href="@route.BuildPath(CompanyId)">
             @route.Title
-        </NavLink>
+        </a>
     }
 </nav>
 
@@ -13,4 +15,57 @@
 
     [Parameter]
     public string? MembershipRole { get; set; }
+
+    [Parameter]
+    public string Area { get; set; } = "Finance";
+
+    private IReadOnlyList<FinanceRouteDefinition> Routes =>
+        Area switch
+        {
+            "SimulationLab" => FinanceRoutes.SimulationLabPages,
+            "SystemAdmin" => FinanceRoutes.SystemAdminPages,
+            _ => FinanceRoutes.SectionPages
+        };
+
+    private string GetLinkClass(FinanceRouteDefinition route)
+    {
+        var classes = new List<string> { "finance-section-nav__link" };
+        if (!route.IsVisibleTo(MembershipRole))
+        {
+            classes.Add("d-none");
+        }
+
+        if (IsActive(route))
+        {
+            classes.Add("active");
+        }
+
+        return string.Join(" ", classes);
+    }
+
+    private bool IsActive(FinanceRouteDefinition route)
+    {
+        var path = "/" + Navigation.ToBaseRelativePath(Navigation.Uri).Split('?', '#')[0].Trim('/');
+        if (path == "/")
+        {
+            path = FinanceRoutes.Home;
+        }
+
+        var prefixes = route.ActivePathPrefixes is { Count: > 0 }
+            ? route.ActivePathPrefixes
+            : new[] { route.Path };
+
+        return prefixes.Any(prefix =>
+            string.Equals(path, prefix, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(prefix, FinanceRoutes.Home, StringComparison.OrdinalIgnoreCase) &&
+            path.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string AriaLabel =>
+        Area switch
+        {
+            "SimulationLab" => "Simulation Lab pages",
+            "SystemAdmin" => "System and admin pages",
+            _ => "Finance pages"
+        };
 }

@@ -82,7 +82,7 @@ public partial class LowCashAlertPage : FinancePageBase
                     break;
                 case "inspect_anomaly" when action.TargetId is Guid transactionId:
                     await FinanceApiClient.EvaluateTransactionAnomalyAsync(companyId, transactionId);
-                    financeActionStatusMessage = "Anomaly inspection submitted.";
+                    financeActionStatusMessage = "Issue review submitted.";
                     break;
                 case "view_cash_position":
                     await FinanceApiClient.EvaluateCashPositionAsync(companyId);

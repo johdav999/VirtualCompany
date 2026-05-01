@@ -1,7 +1,5 @@
+using System.Globalization;
 using Microsoft.AspNetCore.Components;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using VirtualCompany.Shared;
 using VirtualCompany.Web.Services;
 
 namespace VirtualCompany.Web.Pages.Finance;
@@ -9,975 +7,499 @@ namespace VirtualCompany.Web.Pages.Finance;
 public partial class FinancePage : FinancePageBase, IDisposable
 {
     [Inject] protected FinanceApiClient FinanceApiClient { get; set; } = default!;
-    [Inject] protected IOptions<FinanceSimulationControlPanelOptions> SimulationControlPanelOptionsAccessor { get; set; } = default!;
-    [Inject] protected ILogger<FinancePage> Logger { get; set; } = default!;
 
-    private const int PollIntervalMilliseconds = 750;
+    private CancellationTokenSource? _overviewLoadCts;
+    private int _overviewLoadVersion;
 
-    private CancellationTokenSource? _entryStateCts;
-    private int _entryStateVersion;
-    private CancellationTokenSource? _simulationStateCts;
-    private int _simulationStateVersion;
-
-    protected FinanceEntryInitializationResponse? EntryState { get; private set; }
-    protected bool IsEntryStateLoading { get; private set; }
-    protected string? EntryStateErrorMessage { get; private set; }
-    protected string? ManualSeedErrorMessage { get; private set; }
-    protected bool IsManualSeedConfirmationVisible { get; private set; }
-    protected bool IsSubmittingManualSeed { get; private set; }
-    protected bool ShowFinanceReadyBanner { get; private set; }
-    protected FinanceCompanySimulationStateResponse? SimulationState { get; private set; }
-    protected bool IsSimulationStateLoading { get; private set; }
-    protected string? SimulationStateErrorMessage { get; private set; }
-    protected string? SimulationActionMessage { get; private set; }
-    protected bool IsSimulationActionInFlight { get; private set; }
-    protected bool RequestedGenerationEnabled { get; private set; } = true;
-
-    protected bool IsSimulationControlPanelVisible =>
-        SimulationControlPanelOptionsAccessor.Value.UiVisible &&
-        (SimulationState?.UiVisible ?? true) &&
-        IsFinanceReady;
-    protected bool CanManageSimulation => FinanceAccess.CanManageSimulation(AccessState.MembershipRole);
-    protected bool IsSimulationBackendExecutionEnabled => SimulationState?.BackendExecutionEnabled ?? true;
-    protected string? SimulationDisabledReason => SimulationState?.DisabledReason;
-    protected IReadOnlyList<FinanceCompanySimulationRunHistoryResponse> RecentSimulationHistory => SimulationState?.RecentHistory ?? [];
-    protected bool SupportsSimulationRefresh => SimulationState?.SupportsRefresh ?? true;
-    protected bool SupportsSimulationHistory => RecentSimulationHistory.Count > 0;
-    protected bool SupportsStepForwardOneDay => SimulationState?.SupportsStepForwardOneDay ?? false;
-    protected bool IsSimulationBusy => IsSimulationStateLoading || IsSimulationActionInFlight;
-    protected bool CanStartSimulation => CanManageSimulation && !IsSimulationBusy && (SimulationState?.CanStart ?? true);
-    protected bool CanPauseSimulation => CanManageSimulation && !IsSimulationBusy && (SimulationState?.CanPause ?? false);
-    protected bool CanStopSimulation => CanManageSimulation && !IsSimulationBusy && (SimulationState?.CanStop ?? false);
-    protected bool CanStepForwardSimulation => CanManageSimulation && !IsSimulationBusy && SupportsStepForwardOneDay && IsSimulationPaused;
-    protected bool CanEditGenerationEnabled => CanManageSimulation && !IsSimulationBusy && (SimulationState?.CanToggleGeneration ?? true);
-    protected string SimulationStatusLabel => ResolveSimulationStatusLabel(SimulationState?.Status);
-    protected string SimulationStatusBadgeClass => $"badge rounded-pill {ResolveSimulationStatusBadgeClass(SimulationState?.Status)}";
-    protected string SimulationStatusDescription => ResolveSimulationStatusDescription(SimulationState?.Status);
-    protected string CurrentSimulatedDateTimeLabel => FormatSimulationTimestamp(SimulationState?.CurrentSimulatedDateTime, "Not started");
-    protected string LastProgressionTimestampLabel => FormatSimulationTimestamp(SimulationState?.LastProgressionTimestamp, "No progression recorded yet");
-    protected string LastProgressionMetadataLabel => ResolveLastProgressionMetadata(SimulationState);
-    protected string GenerationStateLabel => RequestedGenerationEnabled ? "On" : "Off";
-
-    protected bool IsFinanceRequested =>
-        string.Equals(EntryState?.ProgressState, FinanceEntryProgressStateContractValues.SeedingRequested, StringComparison.OrdinalIgnoreCase);
-
-    protected bool IsFinanceInProgress =>
-        string.Equals(EntryState?.ProgressState, FinanceEntryProgressStateContractValues.InProgress, StringComparison.OrdinalIgnoreCase);
-
-    protected bool IsFinanceInitializing =>
-        IsFinanceRequested ||
-        IsFinanceInProgress ||
-        string.Equals(EntryState?.InitializationStatus, FinanceEntryInitializationContractValues.Initializing, StringComparison.OrdinalIgnoreCase);
-
-    protected bool IsFinanceFailed =>
-        string.Equals(EntryState?.ProgressState, FinanceEntryProgressStateContractValues.Failed, StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(EntryState?.InitializationStatus, FinanceEntryInitializationContractValues.Failed, StringComparison.OrdinalIgnoreCase);
-
-    protected bool IsFinanceReady => IsReady(EntryState);
-
-    protected bool IsFinanceSeeded =>
-        string.Equals(EntryState?.ProgressState, FinanceEntryProgressStateContractValues.Seeded, StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(EntryState?.SeedingState, FinanceSeedingStateContractValues.Seeded, StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(EntryState?.SeedingState, FinanceSeedingStateContractValues.FullySeeded, StringComparison.OrdinalIgnoreCase);
-
-    protected string ManualSeedActionLabel =>
-        string.Equals(ResolveRecommendedAction(), FinanceRecommendedActionContractValues.Regenerate, StringComparison.OrdinalIgnoreCase)
-            ? "Regenerate finance data"
-            : "Generate finance data";
-
-    protected string ManualSeedActionDescription =>
-        string.Equals(ResolveRecommendedAction(), FinanceRecommendedActionContractValues.Regenerate, StringComparison.OrdinalIgnoreCase)
-            ? "Regenerate the tenant-scoped finance seed dataset in replace mode."
-            : "Generate the tenant-scoped finance seed dataset before opening finance workflows.";
-
-    protected string ManualSeedConfirmationMessage =>
-        EntryState?.ConfirmationMessage ??
-        "Regenerating finance data in replace mode overwrites the current seeded dataset for this company.";
-
-    protected string GenerationToggleHelpText =>
-        IsSimulationNotStarted
-            ? "Changes are saved to the company simulation state and applied when the next simulation session starts."
-            : CanEditGenerationEnabled
-                ? "Changes are saved to the active company simulation state."
-                : "Pause or stop the simulation before changing finance generation.";
-
-    protected string FinanceStateMessage =>
-        EntryState?.Message ??
-        "Finance data is being prepared for this company.";
-
-    protected string FinanceProgressTitle => IsFinanceRequested ? "Initializing finance data" : "Finance setup in progress";
+    protected FinanceOverviewViewModel? Overview { get; private set; }
+    protected bool IsOverviewLoading { get; private set; }
+    protected bool IsOverviewEmpty { get; private set; }
+    protected string? OverviewErrorMessage { get; private set; }
 
     protected override async Task OnParametersSetAsync()
     {
         await base.OnParametersSetAsync();
 
-        CancelEntryStateRefresh();
-        CancelSimulationStateRefresh();
+        CancelOverviewLoad();
         if (IsLoading || !AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
         {
-            ResetEntryState();
-            ResetSimulationState();
+            ResetOverview();
             return;
         }
 
-        await LoadEntryStateAsync(companyId);
+        await LoadOverviewAsync(companyId);
     }
 
-    protected Task RefreshEntryStateAsync() =>
+    protected Task ReloadOverviewAsync() =>
         AccessState.CompanyId is Guid companyId
-            ? LoadEntryStateAsync(companyId)
+            ? LoadOverviewAsync(companyId)
             : Task.CompletedTask;
 
-    protected Task RetryFinanceSetupAsync() =>
-        AccessState.CompanyId is Guid companyId
-            ? RequestEntryStateAsync(companyId, retryOnFailure: true)
-            : Task.CompletedTask;
-
-    private async Task LoadEntryStateAsync(Guid companyId)
+    private async Task LoadOverviewAsync(Guid companyId)
     {
-        IsEntryStateLoading = true;
-        ManualSeedErrorMessage = null;
-        EntryStateErrorMessage = null;
-        ShowFinanceReadyBanner = false;
+        IsOverviewLoading = true;
+        ResetOverviewState();
         await InvokeAsync(StateHasChanged);
 
-        var previousState = EntryState;
-        var operation = BeginEntryStateOperation();
+        var loadVersion = Interlocked.Increment(ref _overviewLoadVersion);
+        var cancellationTokenSource = new CancellationTokenSource();
+        var previousCancellation = Interlocked.Exchange(ref _overviewLoadCts, cancellationTokenSource);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
 
         try
         {
-            var entryState = await FinanceApiClient.GetEntryInitializationStateAsync(companyId, operation.CancellationTokenSource.Token);
-            if (!IsCurrentOperation(operation.Version, operation.CancellationTokenSource))
+            var cancellationToken = cancellationTokenSource.Token;
+            var cashTask = FinanceApiClient.GetCashPositionAsync(companyId, cancellationToken: cancellationToken);
+            var monthlyTask = FinanceApiClient.GetMonthlySummaryAsync(companyId, cancellationToken: cancellationToken);
+            var billsTask = FinanceApiClient.GetBillsAsync(companyId, 50, cancellationToken);
+            var billInboxTask = FinanceApiClient.GetBillInboxAsync(companyId, 50, cancellationToken);
+            var invoicesTask = FinanceApiClient.GetInvoicesAsync(companyId, limit: 50, cancellationToken: cancellationToken);
+            var invoiceReviewsTask = FinanceApiClient.GetInvoiceReviewsAsync(companyId, limit: 50, cancellationToken: cancellationToken);
+            var paymentsTask = FinanceApiClient.GetPaymentsAsync(companyId, limit: 50, cancellationToken: cancellationToken);
+            var transactionsTask = FinanceApiClient.GetTransactionsAsync(companyId, limit: 50, cancellationToken: cancellationToken);
+            var anomaliesTask = FinanceApiClient.GetAnomalyWorkbenchAsync(companyId, pageSize: 25, cancellationToken: cancellationToken);
+
+            await Task.WhenAll(cashTask, monthlyTask, billsTask, billInboxTask, invoicesTask, invoiceReviewsTask, paymentsTask, transactionsTask, anomaliesTask);
+
+            if (loadVersion != _overviewLoadVersion || cancellationTokenSource.IsCancellationRequested)
             {
                 return;
             }
 
-            ApplyEntryState(entryState, previousState);
-            await LoadSimulationStateForEntryStateAsync(companyId);
-            if (ShouldPoll(entryState))
-            {
-                IsEntryStateLoading = false;
-                _ = PollUntilReadyAsync(companyId, operation.Version, operation.CancellationTokenSource);
-            }
-        }
-        catch (OperationCanceledException) when (operation.CancellationTokenSource.IsCancellationRequested)
-        {
-        }
-        catch (FinanceApiException ex)
-        {
-            if (!IsCurrentOperation(operation.Version, operation.CancellationTokenSource))
-            {
-                return;
-            }
-
-            EntryStateErrorMessage = ex.Message;
-        }
-        finally
-        {
-            if (IsCurrentOperation(operation.Version, operation.CancellationTokenSource))
-            {
-                IsEntryStateLoading = false;
-                await InvokeAsync(StateHasChanged);
-            }
-        }
-    }
-
-    private async Task RequestEntryStateAsync(Guid companyId, bool retryOnFailure)
-    {
-        EntryStateErrorMessage = null;
-        ManualSeedErrorMessage = null;
-        IsManualSeedConfirmationVisible = false;
-        IsEntryStateLoading = false;
-        var previousState = EntryState;
-        var operation = BeginEntryStateOperation();
-
-        ApplyEntryState(CreateRequestingState(previousState, companyId, retryOnFailure), previousState);
-        await InvokeAsync(StateHasChanged);
-        await RequestEntryStateCoreAsync(companyId, operation.Version, operation.CancellationTokenSource, retryOnFailure);
-    }
-
-    private async Task RequestEntryStateCoreAsync(Guid companyId, int loadVersion, CancellationTokenSource cancellationTokenSource, bool retryOnFailure)
-    {
-        try
-        {
-            var nextState = retryOnFailure
-                ? await FinanceApiClient.RetryEntryInitializationAsync(companyId, cancellationTokenSource.Token)
-                : await FinanceApiClient.RequestEntryInitializationAsync(companyId, cancellationTokenSource.Token);
-
-            if (!IsCurrentOperation(loadVersion, cancellationTokenSource))
-            {
-                return;
-            }
-
-            var previousState = EntryState;
-            ApplyEntryState(nextState, previousState);
-            await LoadSimulationStateForEntryStateAsync(companyId);
-            if (ShouldPoll(nextState))
-            {
-                _ = PollUntilReadyAsync(companyId, loadVersion, cancellationTokenSource);
-            }
+            Overview = BuildOverview(
+                companyId,
+                cashTask.Result,
+                monthlyTask.Result,
+                billsTask.Result,
+                billInboxTask.Result,
+                invoicesTask.Result,
+                invoiceReviewsTask.Result,
+                paymentsTask.Result,
+                transactionsTask.Result,
+                anomaliesTask.Result);
+            IsOverviewEmpty = Overview.HasNoFinanceActivity;
         }
         catch (OperationCanceledException) when (cancellationTokenSource.IsCancellationRequested)
         {
         }
         catch (FinanceApiException ex)
         {
-            if (!IsCurrentOperation(loadVersion, cancellationTokenSource))
+            if (loadVersion != _overviewLoadVersion || cancellationTokenSource.IsCancellationRequested)
             {
                 return;
             }
 
-            EntryStateErrorMessage = ex.Message;
+            OverviewErrorMessage = ex.Message;
         }
         finally
         {
-            if (IsCurrentOperation(loadVersion, cancellationTokenSource))
+            if (loadVersion == _overviewLoadVersion)
             {
+                IsOverviewLoading = false;
                 await InvokeAsync(StateHasChanged);
             }
+
+            if (ReferenceEquals(_overviewLoadCts, cancellationTokenSource))
+            {
+                _overviewLoadCts = null;
+            }
+
+            cancellationTokenSource.Dispose();
         }
     }
 
-    private async Task PollUntilReadyAsync(Guid companyId, int loadVersion, CancellationTokenSource cancellationTokenSource)
+    private FinanceOverviewViewModel BuildOverview(
+        Guid companyId,
+        FinanceCashPositionResponse? cash,
+        FinanceMonthlySummaryResponse? monthly,
+        IReadOnlyList<FinanceBillResponse> bills,
+        IReadOnlyList<FinanceBillInboxRowResponse> billInbox,
+        IReadOnlyList<FinanceInvoiceResponse> invoices,
+        IReadOnlyList<FinanceInvoiceReviewListItemResponse> invoiceReviews,
+        IReadOnlyList<FinancePaymentResponse> payments,
+        IReadOnlyList<FinanceTransactionResponse> transactions,
+        FinanceAnomalyWorkbenchResponse anomalies)
     {
-        while (!cancellationTokenSource.IsCancellationRequested)
+        var currency = ResolveCurrency(cash, monthly, invoices, bills, payments, transactions);
+        var now = DateTime.UtcNow;
+        var overdueInvoices = invoices
+            .Where(invoice => invoice.DueUtc.Date < now.Date && !IsClosedStatus(invoice.Status))
+            .OrderBy(invoice => invoice.DueUtc)
+            .ToArray();
+        var billsAwaitingApproval = billInbox
+            .Where(item => IsActionStatus(item.Status) || item.ValidationWarningCount > 0 || item.DuplicateWarningCount > 0)
+            .OrderByDescending(item => item.ValidationWarningCount + item.DuplicateWarningCount)
+            .ThenBy(item => item.DetectedUtc)
+            .ToArray();
+        var paymentsNeedingAttention = payments
+            .Where(payment => IsPaymentAttentionStatus(payment.Status))
+            .OrderByDescending(payment => payment.UpdatedUtc)
+            .ToArray();
+        var actionableReviews = invoiceReviews
+            .Where(review => IsActionStatus(review.Status) || IsActionStatus(review.RecommendationStatus) || IsRisky(review.RiskLevel))
+            .OrderByDescending(review => IsRisky(review.RiskLevel))
+            .ThenByDescending(review => review.LastUpdatedUtc)
+            .ToArray();
+        var openAnomalies = anomalies.Items
+            .Where(anomaly => !IsClosedStatus(anomaly.Status))
+            .OrderByDescending(anomaly => anomaly.Confidence)
+            .ThenByDescending(anomaly => anomaly.DetectedAtUtc)
+            .ToArray();
+
+        var netResult = monthly?.ProfitAndLoss?.NetResult ?? 0m;
+        var recentActivity = BuildRecentActivity(companyId, transactions, invoices, bills, payments);
+
+        return new FinanceOverviewViewModel
         {
-            try
+            Kpis =
+            [
+                CreateKpi("Cash position", FormatCurrency(cash?.AvailableBalance ?? 0m, cash?.Currency ?? currency), cash is null ? "No cash snapshot yet" : $"{FormatLabel(cash.RiskLevel)} risk", FinanceRoutes.CashPosition, ResolveTone(cash?.RiskLevel), "$", companyId),
+                CreateKpi("Incoming this month", FormatCurrency(monthly?.ProfitAndLoss?.Revenue ?? 0m, monthly?.ProfitAndLoss?.Currency ?? currency), "Recognized revenue", FinanceRoutes.MonthlySummary, FinanceKpiTone.Positive, "in", companyId),
+                CreateKpi("Outgoing this month", FormatCurrency(monthly?.ProfitAndLoss?.Expenses ?? 0m, monthly?.ProfitAndLoss?.Currency ?? currency), "Recorded expenses", FinanceRoutes.MonthlySummary, FinanceKpiTone.Warning, "out", companyId),
+                CreateKpi("Overdue invoices", overdueInvoices.Length.ToString(CultureInfo.InvariantCulture), overdueInvoices.Length == 1 ? "Invoice past due" : "Invoices past due", FinanceRoutes.Invoices, overdueInvoices.Length > 0 ? FinanceKpiTone.Danger : FinanceKpiTone.Positive, "!", companyId),
+                CreateKpi("Supplier bills to approve", billsAwaitingApproval.Length.ToString(CultureInfo.InvariantCulture), "Need review before posting", FinanceRoutes.SupplierBills, billsAwaitingApproval.Length > 0 ? FinanceKpiTone.Warning : FinanceKpiTone.Positive, "✓", companyId),
+                CreateKpi("Open issues", openAnomalies.Length.ToString(CultureInfo.InvariantCulture), "Need investigation", FinanceRoutes.Issues, openAnomalies.Length > 0 ? FinanceKpiTone.Danger : FinanceKpiTone.Positive, "risk", companyId)
+            ],
+            ManagerInsight = new FinanceManagerInsightViewModel
             {
-                await Task.Delay(PollIntervalMilliseconds, cancellationTokenSource.Token);
-                var previousState = EntryState;
-                var nextState = await FinanceApiClient.GetEntryInitializationStateAsync(companyId, cancellationTokenSource.Token);
-                if (!IsCurrentOperation(loadVersion, cancellationTokenSource))
-                {
-                    return;
-                }
-
-                ApplyEntryState(nextState, previousState);
-                await LoadSimulationStateForEntryStateAsync(companyId);
-                await InvokeAsync(StateHasChanged);
-                if (!ShouldPoll(nextState))
-                {
-                    return;
-                }
-            }
-            catch (OperationCanceledException) when (cancellationTokenSource.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (FinanceApiException ex)
-            {
-                if (!IsCurrentOperation(loadVersion, cancellationTokenSource))
-                {
-                    return;
-                }
-
-                EntryStateErrorMessage = ex.Message;
-                await InvokeAsync(StateHasChanged);
-                return;
-            }
-        }
-    }
-
-    protected Task RefreshSimulationStateAsync() =>
-        AccessState.CompanyId is Guid companyId && IsSimulationControlPanelVisible && !IsSimulationActionInFlight
-            ? LoadSimulationStateAsync(companyId)
-            : Task.CompletedTask;
-
-    protected Task HandleStartSimulationAsync() =>
-        ExecuteSimulationMutationAsync(
-            async (companyId, cancellationToken) =>
-            {
-                var startUtc = ResolveSimulationStartUtc();
-                var seed = ResolveSimulationSeed(companyId);
-                Logger.LogInformation(
-                    "Finance UI simulation action requested. CompanyId: {CompanyId}. Action: {Action}. IsPaused: {IsPaused}. StartSimulatedUtc: {StartSimulatedUtc}. GenerationEnabled: {GenerationEnabled}. Seed: {Seed}.",
-                    companyId,
-                    IsSimulationPaused ? "resume" : "start",
-                    IsSimulationPaused,
-                    startUtc,
-                    RequestedGenerationEnabled,
-                    seed);
-
-                return IsSimulationPaused
-                    ? await FinanceApiClient.ResumeCompanySimulationAsync(companyId, cancellationToken)
-                    : await FinanceApiClient.StartCompanySimulationAsync(
-                        companyId,
-                        new FinanceCompanySimulationStartRequest
-                        {
-                            StartSimulatedDateTime = startUtc,
-                            GenerationEnabled = RequestedGenerationEnabled,
-                            Seed = seed
-                        },
-                        cancellationToken);
+                Insights = BuildLauraInsights(companyId, cash, monthly, overdueInvoices, billsAwaitingApproval, actionableReviews, paymentsNeedingAttention, openAnomalies)
             },
-            IsSimulationPaused ? "Simulation resumed." : "Simulation started.");
-
-    protected Task HandleStepForwardSimulationAsync() =>
-        ExecuteSimulationMutationAsync(
-            (companyId, cancellationToken) => FinanceApiClient.StepForwardCompanySimulationAsync(companyId, cancellationToken),
-            "Simulation advanced by 1 day.",
-            (companyId, currentState) => CreateOptimisticStepForwardState(companyId, currentState));
-
-    protected Task HandlePauseSimulationAsync() =>
-        ExecuteSimulationMutationAsync(
-            (companyId, cancellationToken) => FinanceApiClient.PauseCompanySimulationAsync(companyId, cancellationToken),
-            "Simulation paused.",
-            (companyId, currentState) => CreateOptimisticStatusState(companyId, currentState, FinanceCompanySimulationStatusValues.Paused));
-
-    protected Task HandleStopSimulationAsync() =>
-        ExecuteSimulationMutationAsync(
-            (companyId, cancellationToken) => FinanceApiClient.StopCompanySimulationAsync(companyId, cancellationToken),
-            "Simulation stopped.",
-            (companyId, currentState) => CreateOptimisticStatusState(companyId, currentState, FinanceCompanySimulationStatusValues.Stopped));
-
-    protected async Task HandleGenerationEnabledChangedAsync(ChangeEventArgs args)
-    {
-        var nextValue = args.Value switch
-        {
-            bool boolValue => boolValue,
-            string stringValue when bool.TryParse(stringValue, out var parsed) => parsed,
-            _ => RequestedGenerationEnabled
+            AttentionItems =
+            [
+                new FinanceAttentionItemViewModel
+                {
+                    Label = "Supplier bills to approve",
+                    Count = billsAwaitingApproval.Length,
+                    Amount = billsAwaitingApproval.Length == 0 ? null : FormatCurrency(billsAwaitingApproval.Sum(item => item.Amount ?? 0m), currency),
+                    Href = FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBills, companyId),
+                    CtaLabel = "Review supplier bills",
+                    Tone = billsAwaitingApproval.Length > 0 ? FinanceKpiTone.Warning : FinanceKpiTone.Positive,
+                    Icon = "bill"
+                },
+                new FinanceAttentionItemViewModel
+                {
+                    Label = "Invoices needing review",
+                    Count = actionableReviews.Length,
+                    Amount = actionableReviews.Length == 0 ? null : FormatCurrency(actionableReviews.Sum(item => item.Amount), currency),
+                    Href = FinanceRoutes.WithCompanyContext(FinanceRoutes.Reviews, companyId),
+                    CtaLabel = "Review invoices",
+                    Tone = actionableReviews.Length > 0 ? FinanceKpiTone.Warning : FinanceKpiTone.Positive,
+                    Icon = "inv"
+                },
+                new FinanceAttentionItemViewModel
+                {
+                    Label = "Payments needing attention",
+                    Count = paymentsNeedingAttention.Length,
+                    Amount = paymentsNeedingAttention.Length == 0 ? null : FormatCurrency(paymentsNeedingAttention.Sum(item => item.Amount), currency),
+                    Href = FinanceRoutes.WithCompanyContext(FinanceRoutes.Payments, companyId),
+                    CtaLabel = "Review payments",
+                    Tone = paymentsNeedingAttention.Length > 0 ? FinanceKpiTone.Warning : FinanceKpiTone.Positive,
+                    Icon = "pay"
+                },
+                new FinanceAttentionItemViewModel
+                {
+                    Label = "Issues to investigate",
+                    Count = openAnomalies.Length,
+                    Href = FinanceRoutes.WithCompanyContext(FinanceRoutes.Issues, companyId),
+                    CtaLabel = "View issues",
+                    Tone = openAnomalies.Length > 0 ? FinanceKpiTone.Danger : FinanceKpiTone.Positive,
+                    Icon = "risk"
+                }
+            ],
+            CashPosition = new FinanceCashPositionOverviewViewModel
+            {
+                CurrentBalance = FormatCurrency(cash?.AvailableBalance ?? 0m, cash?.Currency ?? currency),
+                ComparisonText = cash?.EstimatedRunwayDays is int runway ? $"{runway} days runway" : "Runway not available",
+                RecommendedAction = string.IsNullOrWhiteSpace(cash?.RecommendedAction) ? "Review cash and upcoming payables." : cash!.RecommendedAction,
+                Href = FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId),
+                Tone = ResolveTone(cash?.RiskLevel)
+            },
+            MonthlySummary = new FinanceMonthlySummaryOverviewViewModel
+            {
+                Period = monthly is null ? "No monthly summary yet" : $"{monthly.StartUtc:yyyy-MM-dd} to {monthly.EndUtc.AddDays(-1):yyyy-MM-dd}",
+                TotalIncome = FormatCurrency(monthly?.ProfitAndLoss?.Revenue ?? 0m, monthly?.ProfitAndLoss?.Currency ?? currency),
+                TotalExpenses = FormatCurrency(monthly?.ProfitAndLoss?.Expenses ?? 0m, monthly?.ProfitAndLoss?.Currency ?? currency),
+                NetResult = FormatCurrency(netResult, monthly?.ProfitAndLoss?.Currency ?? currency),
+                Href = FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId),
+                Tone = netResult >= 0m ? FinanceKpiTone.Positive : FinanceKpiTone.Danger
+            },
+            RecentActivity = recentActivity,
+            HasNoFinanceActivity = !HasAnyFinanceActivity(cash, monthly, bills, billInbox, invoices, invoiceReviews, payments, transactions, anomalies)
         };
-
-        var previousValue = RequestedGenerationEnabled;
-        RequestedGenerationEnabled = nextValue;
-        SimulationActionMessage = null;
-        SimulationStateErrorMessage = null;
-
-        if (!CanManageSimulation)
-        {
-            return;
-        }
-
-        if (AccessState.CompanyId is not Guid companyId || IsSimulationActionInFlight)
-        {
-            return;
-        }
-
-        if (!CanEditGenerationEnabled)
-        {
-            RequestedGenerationEnabled = SimulationState?.GenerationEnabled ?? previousValue;
-            await InvokeAsync(StateHasChanged);
-            return;
-        }
-
-        await ExecuteSimulationMutationAsync(
-            (resolvedCompanyId, cancellationToken) => FinanceApiClient.UpdateCompanySimulationSettingsAsync(
-                resolvedCompanyId,
-                new FinanceCompanySimulationUpdateRequest
-                {
-                    GenerationEnabled = nextValue
-                },
-                cancellationToken),
-            nextValue ? "Generation enabled." : "Generation disabled.",
-            (resolvedCompanyId, currentState) => CreateOptimisticGenerationState(resolvedCompanyId, currentState, nextValue));
-
-        if (!string.IsNullOrWhiteSpace(SimulationStateErrorMessage))
-        {
-            RequestedGenerationEnabled = SimulationState?.GenerationEnabled ?? previousValue;
-        }
     }
 
-    private async Task LoadSimulationStateForEntryStateAsync(Guid companyId)
-    {
-        if (!IsSimulationControlPanelVisible)
-        {
-            ResetSimulationState();
-            return;
-        }
-
-        await LoadSimulationStateAsync(companyId);
-    }
-
-    private async Task LoadSimulationStateAsync(Guid companyId)
-    {
-        var operation = BeginSimulationStateOperation();
-        IsSimulationStateLoading = true;
-        SimulationStateErrorMessage = null;
-        await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            var state = await FinanceApiClient.GetCompanySimulationStateAsync(companyId, operation.CancellationTokenSource.Token);
-            if (!IsCurrentSimulationOperation(operation.Version, operation.CancellationTokenSource))
-            {
-                return;
-            }
-
-            ApplySimulationState(state);
-            if (ShouldPollSimulation(state))
-            {
-                IsSimulationStateLoading = false;
-                _ = PollSimulationStateAsync(companyId, operation.Version, operation.CancellationTokenSource);
-            }
-        }
-        catch (OperationCanceledException) when (operation.CancellationTokenSource.IsCancellationRequested)
-        {
-        }
-        catch (FinanceApiException ex)
-        {
-            if (!IsCurrentSimulationOperation(operation.Version, operation.CancellationTokenSource))
-            {
-                return;
-            }
-
-            SimulationStateErrorMessage = ex.Message;
-            SimulationState = null;
-        }
-        finally
-        {
-            if (IsCurrentSimulationOperation(operation.Version, operation.CancellationTokenSource))
-            {
-                IsSimulationStateLoading = false;
-                await InvokeAsync(StateHasChanged);
-            }
-        }
-    }
-
-    private async Task PollSimulationStateAsync(Guid companyId, int loadVersion, CancellationTokenSource cancellationTokenSource)
-    {
-        while (!cancellationTokenSource.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Delay(GetSimulationPollIntervalMilliseconds(), cancellationTokenSource.Token);
-                var nextState = await FinanceApiClient.GetCompanySimulationStateAsync(companyId, cancellationTokenSource.Token);
-                if (!IsCurrentSimulationOperation(loadVersion, cancellationTokenSource))
-                {
-                    return;
-                }
-
-                ApplySimulationState(nextState);
-                await InvokeAsync(StateHasChanged);
-                if (!ShouldPollSimulation(nextState))
-                {
-                    return;
-                }
-            }
-            catch (OperationCanceledException) when (cancellationTokenSource.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (FinanceApiException ex)
-            {
-                if (!IsCurrentSimulationOperation(loadVersion, cancellationTokenSource))
-                {
-                    return;
-                }
-
-                SimulationStateErrorMessage = ex.Message;
-                await InvokeAsync(StateHasChanged);
-                return;
-            }
-        }
-    }
-
-    protected async Task HandleManualSeedActionAsync()
-    {
-        ManualSeedErrorMessage = null;
-        if (IsFinanceSeeded)
-        {
-            IsManualSeedConfirmationVisible = true;
-            await InvokeAsync(StateHasChanged);
-            return;
-        }
-
-        await SubmitManualSeedAsync();
-    }
-
-    protected void CancelManualSeedConfirmation() =>
-        IsManualSeedConfirmationVisible = false;
-
-    protected Task ConfirmManualSeedAsync() =>
-        SubmitManualSeedAsync();
-
-    private async Task SubmitManualSeedAsync()
-    {
-        if (AccessState.CompanyId is not Guid companyId || IsSubmittingManualSeed)
-        {
-            return;
-        }
-
-        var previousState = EntryState;
-        var operation = BeginEntryStateOperation();
-        IsManualSeedConfirmationVisible = false;
-        IsSubmittingManualSeed = true;
-        EntryStateErrorMessage = null;
-        ManualSeedErrorMessage = null;
-        ApplyEntryState(CreateRequestingState(previousState, companyId, isRetry: false), previousState);
-        await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            var nextState = await FinanceApiClient.RequestManualSeedAsync(
-                companyId,
-                new FinanceManualSeedRequest
-                {
-                    Mode = FinanceManualSeedModes.Replace,
-                    ConfirmReplace = IsFinanceSeeded
-                },
-                operation.CancellationTokenSource.Token);
-
-            if (!IsCurrentOperation(operation.Version, operation.CancellationTokenSource))
-            {
-                return;
-            }
-
-            ApplyEntryState(nextState, previousState);
-            if (ShouldPoll(nextState))
-            {
-                _ = PollUntilReadyAsync(companyId, operation.Version, operation.CancellationTokenSource);
-            }
-        }
-        catch (OperationCanceledException) when (operation.CancellationTokenSource.IsCancellationRequested)
-        {
-        }
-        catch (FinanceApiException ex)
-        {
-            if (!IsCurrentOperation(operation.Version, operation.CancellationTokenSource))
-            {
-                return;
-            }
-
-            ManualSeedErrorMessage = ex.Message;
-        }
-        finally
-        {
-            IsSubmittingManualSeed = false;
-            if (IsCurrentOperation(operation.Version, operation.CancellationTokenSource))
-            {
-                await InvokeAsync(StateHasChanged);
-            }
-        }
-    }
-
-    private static bool ShouldPoll(FinanceEntryInitializationResponse state) =>
-        string.Equals(state.ProgressState, FinanceEntryProgressStateContractValues.SeedingRequested, StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(state.ProgressState, FinanceEntryProgressStateContractValues.InProgress, StringComparison.OrdinalIgnoreCase) ||
-        (string.IsNullOrWhiteSpace(state.ProgressState) &&
-         string.Equals(state.InitializationStatus, FinanceEntryInitializationContractValues.Initializing, StringComparison.OrdinalIgnoreCase));
-
-    private static bool IsReady(FinanceEntryInitializationResponse? state) =>
-        state is not null &&
-        (string.Equals(state.ProgressState, FinanceEntryProgressStateContractValues.Seeded, StringComparison.OrdinalIgnoreCase) ||
-         string.Equals(state.InitializationStatus, FinanceEntryInitializationContractValues.Ready, StringComparison.OrdinalIgnoreCase));
-
-    private static FinanceEntryInitializationResponse CreateRequestingState(
-        FinanceEntryInitializationResponse? currentState,
-        Guid companyId,
-        bool isRetry) =>
+    private static FinanceKpiViewModel CreateKpi(
+        string label,
+        string value,
+        string comparisonText,
+        string route,
+        FinanceKpiTone tone,
+        string icon,
+        Guid companyId) =>
         new()
         {
-            CompanyId = companyId,
-            InitializationStatus = FinanceEntryInitializationContractValues.Initializing,
-            ProgressState = FinanceEntryProgressStateContractValues.SeedingRequested,
-            SeedingState = FinanceSeedingStateContractValues.Seeding,
-            SeedJobEnqueued = true,
-            SeedJobActive = true,
-            CanRetry = false,
-            CanRefresh = true,
-            Message = isRetry
-                ? "Retrying finance data initialization in the background. This page refreshes automatically while setup runs."
-                : "Requesting finance data initialization in the background. This page refreshes automatically while setup runs.",
-            CheckedAtUtc = DateTime.UtcNow,
-            SeededAtUtc = currentState?.SeededAtUtc,
-            LastAttemptedUtc = currentState?.LastAttemptedUtc,
-            LastCompletedUtc = currentState?.LastCompletedUtc,
-            LastErrorCode = null,
-            LastErrorMessage = null,
-            JobStatus = currentState?.JobStatus,
-            CorrelationId = currentState?.CorrelationId
+            Label = label,
+            Value = value,
+            ComparisonText = comparisonText,
+            Href = FinanceRoutes.WithCompanyContext(route, companyId),
+            Tone = tone,
+            Icon = icon
         };
 
-    private void ApplyEntryState(FinanceEntryInitializationResponse nextState, FinanceEntryInitializationResponse? previousState)
-    {
-        EntryState = nextState;
-        if (previousState is not null && !IsReady(previousState) && IsReady(nextState))
+    private static IReadOnlyList<RecentFinanceActivityViewModel> BuildRecentActivity(
+        Guid companyId,
+        IReadOnlyList<FinanceTransactionResponse> transactions,
+        IReadOnlyList<FinanceInvoiceResponse> invoices,
+        IReadOnlyList<FinanceBillResponse> bills,
+        IReadOnlyList<FinancePaymentResponse> payments) =>
+        transactions.Select(transaction => new RecentFinanceActivityViewModel
         {
-            ShowFinanceReadyBanner = true;
-        }
-        else if (!IsReady(nextState))
+            Title = string.IsNullOrWhiteSpace(transaction.Description) ? FormatLabel(transaction.TransactionType) : transaction.Description,
+            Detail = transaction.CounterpartyName ?? transaction.AccountName,
+            Amount = FormatCurrency(transaction.Amount, transaction.Currency),
+            DateText = transaction.TransactionUtc.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            StatusText = FormatLabel(transaction.TransactionType),
+            Href = FinanceRoutes.BuildTransactionDetailPath(transaction.Id, companyId),
+            Tone = transaction.Amount >= 0m ? FinanceKpiTone.Positive : FinanceKpiTone.Danger,
+            Icon = "txn",
+            SortDateUtc = transaction.TransactionUtc
+        })
+        .Concat(invoices.Select(invoice => new RecentFinanceActivityViewModel
         {
-            ShowFinanceReadyBanner = false;
+            Title = $"Invoice {invoice.InvoiceNumber}",
+            Detail = invoice.CounterpartyName,
+            Amount = FormatCurrency(invoice.Amount, invoice.Currency),
+            DateText = invoice.IssuedUtc.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            StatusText = FormatLabel(invoice.Status),
+            Href = FinanceRoutes.BuildInvoiceDetailPath(invoice.Id, companyId),
+            Tone = IsClosedStatus(invoice.Status) ? FinanceKpiTone.Positive : FinanceKpiTone.Warning,
+            Icon = "inv",
+            SortDateUtc = invoice.IssuedUtc
+        }))
+        .Concat(bills.Select(bill => new RecentFinanceActivityViewModel
+        {
+            Title = $"Bill {bill.BillNumber}",
+            Detail = bill.CounterpartyName,
+            Amount = FormatCurrency(bill.Amount, bill.Currency),
+            DateText = bill.ReceivedUtc.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            StatusText = FormatLabel(bill.Status),
+            Href = FinanceRoutes.BuildBillDetailPath(bill.Id, companyId),
+            Tone = IsClosedStatus(bill.Status) ? FinanceKpiTone.Positive : FinanceKpiTone.Warning,
+            Icon = "bill",
+            SortDateUtc = bill.ReceivedUtc
+        }))
+        .Concat(payments.Select(payment => new RecentFinanceActivityViewModel
+        {
+            Title = payment.CounterpartyReference,
+            Detail = FormatLabel(payment.PaymentType),
+            Amount = FormatCurrency(payment.Amount, payment.Currency),
+            DateText = payment.UpdatedUtc.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            StatusText = FormatLabel(payment.Status),
+            Href = FinanceRoutes.BuildPaymentDetailPath(payment.Id, companyId),
+            Tone = IsPaymentAttentionStatus(payment.Status) ? FinanceKpiTone.Warning : FinanceKpiTone.Positive,
+            Icon = "pay",
+            SortDateUtc = payment.UpdatedUtc
+        }))
+        .OrderByDescending(item => item.SortDateUtc)
+        .Take(6)
+        .ToArray();
+
+    private static IReadOnlyList<FinanceInsightItemViewModel> BuildLauraInsights(
+        Guid companyId,
+        FinanceCashPositionResponse? cash,
+        FinanceMonthlySummaryResponse? monthly,
+        IReadOnlyList<FinanceInvoiceResponse> overdueInvoices,
+        IReadOnlyList<FinanceBillInboxRowResponse> billsAwaitingApproval,
+        IReadOnlyList<FinanceInvoiceReviewListItemResponse> invoiceReviews,
+        IReadOnlyList<FinancePaymentResponse> paymentsNeedingAttention,
+        IReadOnlyList<FinanceAnomalyWorkbenchItemResponse> openAnomalies)
+    {
+        var insights = new List<FinanceInsightItemViewModel>();
+
+        if (cash is not null && IsRisky(cash.RiskLevel))
+        {
+            insights.Add(CreateInsight("Cash needs attention", string.IsNullOrWhiteSpace(cash.Rationale) ? "Cash risk is elevated based on current balance and runway." : cash.Rationale, "Review cash plan", FinanceRoutes.CashPosition, FinanceKpiTone.Danger, "!", companyId));
         }
+
+        if (overdueInvoices.Count > 0)
+        {
+            insights.Add(CreateInsight("Collections are slipping", $"{overdueInvoices.Count} invoice(s) are past due. Start with the oldest customer balance.", "Open invoices", FinanceRoutes.Invoices, FinanceKpiTone.Danger, "!", companyId));
+        }
+
+        if (billsAwaitingApproval.Count > 0)
+        {
+            insights.Add(CreateInsight("Supplier bills need decisions", $"{billsAwaitingApproval.Count} bill(s) are waiting for review before they can move forward.", "Review supplier bills", FinanceRoutes.SupplierBills, FinanceKpiTone.Warning, "bill", companyId));
+        }
+
+        if (openAnomalies.Count > 0)
+        {
+            insights.Add(CreateInsight("Issues need investigation", $"{openAnomalies.Count} finance issue(s) are still open. Resolve the highest-confidence items first.", "Investigate", FinanceRoutes.Issues, FinanceKpiTone.Danger, "risk", companyId));
+        }
+
+        if (paymentsNeedingAttention.Count > 0)
+        {
+            insights.Add(CreateInsight("Payments need follow-up", $"{paymentsNeedingAttention.Count} payment(s) are not settled cleanly.", "Open payments", FinanceRoutes.Payments, FinanceKpiTone.Warning, "pay", companyId));
+        }
+
+        if (insights.Count == 0 && monthly?.ProfitAndLoss is { } pnl)
+        {
+            var message = pnl.NetResult >= 0m
+                ? "The month is profitable so far. Keep receivables moving and review upcoming bills before they age."
+                : "The month is running at a loss so far. Review expense categories and upcoming cash needs.";
+            insights.Add(CreateInsight("Month-to-date posture", message, "Open monthly summary", FinanceRoutes.MonthlySummary, pnl.NetResult >= 0m ? FinanceKpiTone.Positive : FinanceKpiTone.Warning, "✓", companyId));
+        }
+
+        if (insights.Count == 0)
+        {
+            insights.Add(CreateInsight("No urgent finance risks detected", "Review recent activity to keep records clean.", "Open activity", FinanceRoutes.Activity, FinanceKpiTone.Positive, "✓", companyId));
+        }
+
+        return insights.Take(4).ToArray();
     }
 
-    private (int Version, CancellationTokenSource CancellationTokenSource) BeginEntryStateOperation()
+    private static FinanceInsightItemViewModel CreateInsight(
+        string title,
+        string explanation,
+        string actionLabel,
+        string route,
+        FinanceKpiTone tone,
+        string icon,
+        Guid companyId) =>
+        new()
+        {
+            Title = title,
+            Explanation = explanation,
+            ActionLabel = actionLabel,
+            Href = FinanceRoutes.WithCompanyContext(route, companyId),
+            Tone = tone,
+            Icon = icon
+        };
+
+    private static bool HasAnyFinanceActivity(
+        FinanceCashPositionResponse? cash,
+        FinanceMonthlySummaryResponse? monthly,
+        IReadOnlyList<FinanceBillResponse> bills,
+        IReadOnlyList<FinanceBillInboxRowResponse> billInbox,
+        IReadOnlyList<FinanceInvoiceResponse> invoices,
+        IReadOnlyList<FinanceInvoiceReviewListItemResponse> invoiceReviews,
+        IReadOnlyList<FinancePaymentResponse> payments,
+        IReadOnlyList<FinanceTransactionResponse> transactions,
+        FinanceAnomalyWorkbenchResponse anomalies) =>
+        cash is not null ||
+        monthly?.ProfitAndLoss is not null ||
+        bills.Count > 0 ||
+        billInbox.Count > 0 ||
+        invoices.Count > 0 ||
+        invoiceReviews.Count > 0 ||
+        payments.Count > 0 ||
+        transactions.Count > 0 ||
+        anomalies.TotalCount > 0;
+
+    private void ResetOverview()
     {
-        var version = Interlocked.Increment(ref _entryStateVersion);
-        var cancellationTokenSource = new CancellationTokenSource();
-        var previousCancellation = Interlocked.Exchange(ref _entryStateCts, cancellationTokenSource);
-        previousCancellation?.Cancel();
-        previousCancellation?.Dispose();
-        return (version, cancellationTokenSource);
+        ResetOverviewState();
+        IsOverviewLoading = false;
     }
 
-    private bool IsCurrentOperation(int loadVersion, CancellationTokenSource cancellationTokenSource) =>
-        loadVersion == _entryStateVersion &&
-        ReferenceEquals(_entryStateCts, cancellationTokenSource) &&
-        !cancellationTokenSource.IsCancellationRequested;
+    private void ResetOverviewState() =>
+        (Overview, IsOverviewEmpty, OverviewErrorMessage) = (null, false, null);
 
-    private void ResetEntryState()
+    private void CancelOverviewLoad()
     {
-        EntryState = null;
-        EntryStateErrorMessage = null;
-        ManualSeedErrorMessage = null;
-        IsEntryStateLoading = false;
-        IsSubmittingManualSeed = false;
-        IsManualSeedConfirmationVisible = false;
-        ShowFinanceReadyBanner = false;
-    }
-
-    private void CancelEntryStateRefresh()
-    {
-        var cancellationTokenSource = Interlocked.Exchange(ref _entryStateCts, null);
+        var cancellationTokenSource = Interlocked.Exchange(ref _overviewLoadCts, null);
         cancellationTokenSource?.Cancel();
         cancellationTokenSource?.Dispose();
     }
 
-    private async Task ExecuteSimulationMutationAsync(
-        Func<Guid, CancellationToken, Task<FinanceCompanySimulationStateResponse>> callback,
-        string successMessage,
-        Func<Guid, FinanceCompanySimulationStateResponse?, FinanceCompanySimulationStateResponse>? optimisticStateFactory = null)
+    public void Dispose() => CancelOverviewLoad();
+
+    private static string ResolveCurrency(
+        FinanceCashPositionResponse? cash,
+        FinanceMonthlySummaryResponse? monthly,
+        IReadOnlyList<FinanceInvoiceResponse> invoices,
+        IReadOnlyList<FinanceBillResponse> bills,
+        IReadOnlyList<FinancePaymentResponse> payments,
+        IReadOnlyList<FinanceTransactionResponse> transactions) =>
+        FirstNonEmpty(
+            cash?.Currency,
+            monthly?.ProfitAndLoss?.Currency,
+            invoices.FirstOrDefault()?.Currency,
+            bills.FirstOrDefault()?.Currency,
+            payments.FirstOrDefault()?.Currency,
+            transactions.FirstOrDefault()?.Currency,
+            "USD");
+
+    private static string FirstNonEmpty(params string?[] values) =>
+        values.First(value => !string.IsNullOrWhiteSpace(value))!;
+
+    private static string FormatCurrency(decimal amount, string currency) =>
+        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+
+    private static string FormatLabel(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "n/a"
+            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+    private static bool IsRisky(string? value)
     {
-        if (!CanManageSimulation || AccessState.CompanyId is not Guid companyId || IsSimulationActionInFlight)
-        {
-            return;
-        }
-
-        var previousState = CloneSimulationState(SimulationState);
-        var previousGenerationEnabled = RequestedGenerationEnabled;
-        IsSimulationActionInFlight = true;
-        SimulationActionMessage = null;
-        SimulationStateErrorMessage = null;
-        if (optimisticStateFactory is not null)
-        {
-            ApplySimulationState(optimisticStateFactory(companyId, previousState));
-        }
-
-        await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            var state = await callback(companyId, CancellationToken.None);
-            Logger.LogInformation(
-                "Finance UI simulation action completed. CompanyId: {CompanyId}. Status: {Status}. SessionId: {SessionId}. CurrentSimulatedDateTime: {CurrentSimulatedDateTime}. LastProgressionTimestamp: {LastProgressionTimestamp}. GenerationEnabled: {GenerationEnabled}.",
-                companyId,
-                state.Status,
-                state.ActiveSessionId,
-                state.CurrentSimulatedDateTime,
-                state.LastProgressionTimestamp,
-                state.GenerationEnabled);
-            ApplySimulationState(state);
-            SimulationActionMessage = successMessage;
-            _ = ReconcileSimulationStateAfterDelayAsync(companyId);
-        }
-        catch (FinanceApiException ex)
-        {
-            Logger.LogWarning(
-                ex,
-                "Finance UI simulation action failed. CompanyId: {CompanyId}.",
-                companyId);
-            SimulationState = previousState;
-            RequestedGenerationEnabled = previousGenerationEnabled;
-            SimulationStateErrorMessage = ex.Message;
-        }
-        finally
-        {
-            IsSimulationActionInFlight = false;
-            await InvokeAsync(StateHasChanged);
-        }
+        var normalized = Normalize(value);
+        return normalized.Contains("high", StringComparison.Ordinal) ||
+            normalized.Contains("critical", StringComparison.Ordinal) ||
+            normalized.Contains("medium", StringComparison.Ordinal) ||
+            normalized.Contains("warning", StringComparison.Ordinal);
     }
 
-    private void ApplySimulationState(FinanceCompanySimulationStateResponse state)
+    private static bool IsClosedStatus(string? value)
     {
-        SimulationState = state;
-        if (state.GenerationEnabled.HasValue)
+        var normalized = Normalize(value);
+        return normalized.Contains("paid", StringComparison.Ordinal) ||
+            normalized.Contains("settled", StringComparison.Ordinal) ||
+            normalized.Contains("closed", StringComparison.Ordinal) ||
+            normalized.Contains("resolved", StringComparison.Ordinal) ||
+            normalized.Contains("approved", StringComparison.Ordinal) ||
+            normalized.Contains("rejected", StringComparison.Ordinal) ||
+            normalized.Contains("cancel", StringComparison.Ordinal);
+    }
+
+    private static bool IsActionStatus(string? value)
+    {
+        var normalized = Normalize(value);
+        return normalized.Contains("pending", StringComparison.Ordinal) ||
+            normalized.Contains("review", StringComparison.Ordinal) ||
+            normalized.Contains("approval", StringComparison.Ordinal) ||
+            normalized.Contains("open", StringComparison.Ordinal) ||
+            normalized.Contains("new", StringComparison.Ordinal) ||
+            normalized.Contains("draft", StringComparison.Ordinal) ||
+            normalized.Contains("needs", StringComparison.Ordinal);
+    }
+
+    private static bool IsPaymentAttentionStatus(string? value)
+    {
+        var normalized = Normalize(value);
+        return !string.IsNullOrWhiteSpace(normalized) &&
+            !normalized.Contains("settled", StringComparison.Ordinal) &&
+            !normalized.Contains("completed", StringComparison.Ordinal) &&
+            !normalized.Contains("paid", StringComparison.Ordinal) &&
+            !normalized.Contains("succeeded", StringComparison.Ordinal);
+    }
+
+    private static FinanceKpiTone ResolveTone(string? value)
+    {
+        var normalized = Normalize(value);
+        if (normalized.Contains("critical", StringComparison.Ordinal) || normalized.Contains("high", StringComparison.Ordinal))
         {
-            RequestedGenerationEnabled = state.GenerationEnabled.Value;
-        }
-    }
-
-    private async Task ReconcileSimulationStateAfterDelayAsync(Guid companyId)
-    {
-        try
-        {
-            await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1500, Math.Max(500, GetSimulationPollIntervalMilliseconds()))));
-            if (AccessState.CompanyId == companyId)
-            {
-                await LoadSimulationStateAsync(companyId);
-            }
-        }
-        catch (Exception) when (!OperatingSystem.IsBrowser()) { }
-    }
-
-    private (int Version, CancellationTokenSource CancellationTokenSource) BeginSimulationStateOperation()
-    {
-        var version = Interlocked.Increment(ref _simulationStateVersion);
-        var cancellationTokenSource = new CancellationTokenSource();
-        var previousCancellation = Interlocked.Exchange(ref _simulationStateCts, cancellationTokenSource);
-        previousCancellation?.Cancel();
-        previousCancellation?.Dispose();
-        return (version, cancellationTokenSource);
-    }
-
-    private bool IsCurrentSimulationOperation(int loadVersion, CancellationTokenSource cancellationTokenSource) =>
-        loadVersion == _simulationStateVersion &&
-        ReferenceEquals(_simulationStateCts, cancellationTokenSource) &&
-        !cancellationTokenSource.IsCancellationRequested;
-
-    private void ResetSimulationState()
-    {
-        SimulationState = null;
-        SimulationStateErrorMessage = null;
-        SimulationActionMessage = null;
-        IsSimulationStateLoading = false;
-        IsSimulationActionInFlight = false;
-        RequestedGenerationEnabled = true;
-    }
-
-    private void CancelSimulationStateRefresh()
-    {
-        var cancellationTokenSource = Interlocked.Exchange(ref _simulationStateCts, null);
-        cancellationTokenSource?.Cancel();
-        cancellationTokenSource?.Dispose();
-    }
-
-    public void Dispose()
-    {
-        CancelEntryStateRefresh();
-        CancelSimulationStateRefresh();
-    }
-
-    private bool IsSimulationRunning => IsSimulationStatus(FinanceCompanySimulationStatusValues.Running);
-    private bool IsSimulationPaused => IsSimulationStatus(FinanceCompanySimulationStatusValues.Paused);
-    private bool IsSimulationStopped => IsSimulationStatus(FinanceCompanySimulationStatusValues.Stopped);
-    private bool IsSimulationNotStarted => IsSimulationStatus(FinanceCompanySimulationStatusValues.NotStarted) || SimulationState is null;
-
-    private bool IsSimulationStatus(string status) =>
-        string.Equals(SimulationState?.Status, status, StringComparison.OrdinalIgnoreCase);
-
-    private static bool ShouldPollSimulation(FinanceCompanySimulationStateResponse state) =>
-        string.Equals(state.Status, FinanceCompanySimulationStatusValues.Running, StringComparison.OrdinalIgnoreCase);
-
-    private int GetSimulationPollIntervalMilliseconds() =>
-        Math.Max(250, SimulationControlPanelOptionsAccessor.Value.PollIntervalMilliseconds);
-
-    private DateTime ResolveSimulationStartUtc()
-    {
-        if (SimulationState?.CurrentSimulatedDateTime is DateTime currentSimulatedDateTime)
-        {
-            return currentSimulatedDateTime;
-        }
-        if (RecentSimulationHistory.FirstOrDefault()?.CurrentSimulatedDateTime is DateTime historyCurrentSimulatedDateTime)
-        {
-            return historyCurrentSimulatedDateTime;
+            return FinanceKpiTone.Danger;
         }
 
-        if (EntryState?.SeededAtUtc is DateTime seededAtUtc)
+        if (normalized.Contains("warning", StringComparison.Ordinal) || normalized.Contains("medium", StringComparison.Ordinal))
         {
-            return DateTime.SpecifyKind(seededAtUtc, DateTimeKind.Utc);
+            return FinanceKpiTone.Warning;
         }
 
-        var utcNow = DateTime.UtcNow;
-        return new DateTime(utcNow.Year, utcNow.Month, utcNow.Day, 0, 0, 0, DateTimeKind.Utc);
+        return FinanceKpiTone.Positive;
     }
 
-    private int ResolveSimulationSeed(Guid companyId) =>
-        SimulationState?.Seed ?? (int)(BitConverter.ToUInt32(companyId.ToByteArray(), 0) & int.MaxValue);
-
-    private FinanceCompanySimulationStateResponse CreateOptimisticStatusState(
-        Guid companyId,
-        FinanceCompanySimulationStateResponse? currentState,
-        string status)
-    {
-        var optimisticState = CreateSimulationStateBaseline(companyId, currentState);
-        optimisticState.Status = status;
-        optimisticState.LastProgressionTimestamp ??= DateTime.UtcNow;
-        optimisticState.CanStart = !string.Equals(status, FinanceCompanySimulationStatusValues.Running, StringComparison.OrdinalIgnoreCase);
-        optimisticState.CanPause = string.Equals(status, FinanceCompanySimulationStatusValues.Running, StringComparison.OrdinalIgnoreCase);
-        optimisticState.CanStop = !string.Equals(status, FinanceCompanySimulationStatusValues.Stopped, StringComparison.OrdinalIgnoreCase);
-        optimisticState.CanToggleGeneration = !string.Equals(status, FinanceCompanySimulationStatusValues.Running, StringComparison.OrdinalIgnoreCase);
-        optimisticState.SupportsStepForwardOneDay = true;
-        if (string.Equals(status, FinanceCompanySimulationStatusValues.Stopped, StringComparison.OrdinalIgnoreCase))
-        {
-            optimisticState.ActiveSessionId = null;
-        }
-
-        return optimisticState;
-    }
-
-    private FinanceCompanySimulationStateResponse CreateOptimisticGenerationState(
-        Guid companyId,
-        FinanceCompanySimulationStateResponse? currentState,
-        bool generationEnabled)
-    {
-        var optimisticState = CreateSimulationStateBaseline(companyId, currentState);
-        optimisticState.GenerationEnabled = generationEnabled;
-        optimisticState.CanToggleGeneration = !string.Equals(optimisticState.Status, FinanceCompanySimulationStatusValues.Running, StringComparison.OrdinalIgnoreCase);
-        optimisticState.SupportsStepForwardOneDay = true;
-        return optimisticState;
-    }
-
-    private FinanceCompanySimulationStateResponse CreateOptimisticStepForwardState(
-        Guid companyId,
-        FinanceCompanySimulationStateResponse? currentState)
-    {
-        var optimisticState = CreateSimulationStateBaseline(companyId, currentState);
-        optimisticState.Status = FinanceCompanySimulationStatusValues.Paused;
-        optimisticState.CurrentSimulatedDateTime = (optimisticState.CurrentSimulatedDateTime ?? ResolveSimulationStartUtc()).AddDays(1);
-        optimisticState.LastProgressionTimestamp = DateTime.UtcNow;
-        optimisticState.CanStart = true;
-        optimisticState.CanPause = false;
-        optimisticState.CanStop = true;
-        optimisticState.CanToggleGeneration = true;
-        optimisticState.SupportsStepForwardOneDay = true;
-        return optimisticState;
-    }
-
-    private FinanceCompanySimulationStateResponse CreateSimulationStateBaseline(
-        Guid companyId,
-        FinanceCompanySimulationStateResponse? currentState)
-    {
-        var simulationState = CloneSimulationState(currentState) ?? FinanceCompanySimulationStateResponse.NotStarted(companyId);
-        simulationState.CompanyId = companyId;
-        simulationState.GenerationEnabled ??= RequestedGenerationEnabled;
-        simulationState.Seed ??= ResolveSimulationSeed(companyId);
-        simulationState.SupportsRefresh = true;
-        simulationState.SupportsStepForwardOneDay = true;
-        return simulationState;
-    }
-
-    private static FinanceCompanySimulationStateResponse? CloneSimulationState(FinanceCompanySimulationStateResponse? state)
-    {
-        if (state is null)
-        {
-            return null;
-        }
-
-        return new FinanceCompanySimulationStateResponse
-        {
-            CompanyId = state.CompanyId,
-            Status = state.Status,
-            CurrentSimulatedDateTime = state.CurrentSimulatedDateTime,
-            LastProgressionTimestamp = state.LastProgressionTimestamp,
-            GenerationEnabled = state.GenerationEnabled,
-            Seed = state.Seed,
-            ActiveSessionId = state.ActiveSessionId,
-            StartSimulatedDateTime = state.StartSimulatedDateTime,
-            CanStart = state.CanStart,
-            CanPause = state.CanPause,
-            CanStop = state.CanStop,
-            CanToggleGeneration = state.CanToggleGeneration,
-            SupportsStepForwardOneDay = state.SupportsStepForwardOneDay,
-            SupportsRefresh = state.SupportsRefresh,
-            DeterministicConfigurationJson = state.DeterministicConfigurationJson
-            ,UiVisible = state.UiVisible,
-            BackendExecutionEnabled = state.BackendExecutionEnabled,
-            BackgroundJobsEnabled = state.BackgroundJobsEnabled,
-            DisabledReason = state.DisabledReason,
-            RecentHistory = state.RecentHistory.Select(CloneRunHistory).ToList()
-        };
-    }
-
-    private static FinanceCompanySimulationRunHistoryResponse CloneRunHistory(FinanceCompanySimulationRunHistoryResponse run) =>
-        new()
-        {
-            SessionId = run.SessionId,
-            Status = run.Status,
-            StartedUtc = run.StartedUtc,
-            CompletedUtc = run.CompletedUtc,
-            LastUpdatedUtc = run.LastUpdatedUtc,
-            GenerationEnabled = run.GenerationEnabled,
-            Seed = run.Seed,
-            StartSimulatedDateTime = run.StartSimulatedDateTime,
-            CurrentSimulatedDateTime = run.CurrentSimulatedDateTime,
-            InjectedAnomalies = run.InjectedAnomalies.ToList(),
-            Warnings = run.Warnings.ToList(),
-            Errors = run.Errors.ToList(),
-            StatusTransitions = run.StatusTransitions.Select(CloneStatusTransition).ToList(),
-            DayLogs = run.DayLogs.Select(CloneDayLog).ToList()
-        };
-
-    private static FinanceCompanySimulationStatusTransitionResponse CloneStatusTransition(FinanceCompanySimulationStatusTransitionResponse transition) =>
-        new()
-        {
-            Status = transition.Status,
-            TransitionedUtc = transition.TransitionedUtc,
-            Message = transition.Message
-        };
-
-    private static FinanceCompanySimulationDayLogResponse CloneDayLog(FinanceCompanySimulationDayLogResponse dayLog) =>
-        new()
-        {
-            SimulatedDateUtc = dayLog.SimulatedDateUtc,
-            TransactionsGenerated = dayLog.TransactionsGenerated,
-            InvoicesGenerated = dayLog.InvoicesGenerated,
-            BillsGenerated = dayLog.BillsGenerated,
-            AssetPurchasesGenerated = dayLog.AssetPurchasesGenerated,
-            RecurringExpenseInstancesGenerated = dayLog.RecurringExpenseInstancesGenerated,
-            AlertsGenerated = dayLog.AlertsGenerated,
-            InjectedAnomalies = dayLog.InjectedAnomalies.ToList(),
-            Warnings = dayLog.Warnings.ToList(),
-            Errors = dayLog.Errors.ToList()
-        };
-
-    private static string FormatSimulationTimestamp(DateTime? value, string emptyValue) =>
-        value.HasValue ? $"{value.Value:yyyy-MM-dd HH:mm:ss} UTC" : emptyValue;
-
-    private static string ResolveSimulationStatusLabel(string? status) =>
-        status?.Trim().ToLowerInvariant() switch
-        {
-            FinanceCompanySimulationStatusValues.Running => "Running",
-            FinanceCompanySimulationStatusValues.Paused => "Paused",
-            FinanceCompanySimulationStatusValues.Stopped => "Stopped",
-            _ => "Not started"
-        };
-
-    private static string ResolveSimulationStatusDescription(string? status) =>
-        status?.Trim().ToLowerInvariant() switch
-        {
-            FinanceCompanySimulationStatusValues.Running => "The simulation is progressing automatically and the panel refreshes while it runs.",
-            FinanceCompanySimulationStatusValues.Paused => "The simulation is paused. You can change generation settings before resuming.",
-            FinanceCompanySimulationStatusValues.Stopped => "The simulation is stopped. Start creates a new run from the selected simulated time.",
-            _ => "The simulation is stopped. Choose the generation setting, refresh the state, or start when you are ready."
-        };
-
-    private static string ResolveSimulationStatusBadgeClass(string? status) =>
-        status?.Trim().ToLowerInvariant() switch
-        {
-            FinanceCompanySimulationStatusValues.Running => "text-bg-success",
-            FinanceCompanySimulationStatusValues.Paused => "text-bg-warning",
-            FinanceCompanySimulationStatusValues.Stopped => "text-bg-secondary",
-            _ => "text-bg-secondary"
-        };
-
-    private static string ResolveLastProgressionMetadata(FinanceCompanySimulationStateResponse? state)
-    {
-        if (state is null)
-        {
-            return "No progression metadata available.";
-        }
-
-        var segments = new List<string>();
-        if (state.ActiveSessionId is Guid activeSessionId)
-        {
-            segments.Add($"Session {activeSessionId.ToString("N")[..8]}");
-        }
-        if (state.Seed.HasValue)
-        {
-            segments.Add($"Seed {state.Seed.Value}");
-        }
-
-        return segments.Count == 0 ? "No additional progression metadata." : string.Join(" | ", segments);
-    }
-
-    private string ResolveRecommendedAction()
-    {
-        if (!string.IsNullOrWhiteSpace(EntryState?.RecommendedAction))
-        {
-            return EntryState!.RecommendedAction;
-        }
-        return IsFinanceSeeded ? FinanceRecommendedActionContractValues.Regenerate : FinanceRecommendedActionContractValues.Generate;
-    }
+    private static string Normalize(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
 }

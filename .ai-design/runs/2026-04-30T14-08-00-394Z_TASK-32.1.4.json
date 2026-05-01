@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-32.1.4",
+  "promptPath": ".ai-design/prompts/TASK-32.1.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-30T14:08:00.394Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-30T14-08-00-394Z_TASK-32.1.4_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-30T14-08-00-394Z_TASK-32.1.4.json",
+  "agentsPromptPath": "AGENTS.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-30T14:11:12.907Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ge\n+\n+Do not ask users to send authorization codes or full callback URLs if those URLs include `code`, `state`, or `nonce`.\n+\n ## Troubleshooting\n \n If startup fails with a missing Fortnox key:\n@@ -65,6 +124,16 @@ If Key Vault is not loading:\n 4. Use application logs only for provider and startup status. Do not add temporary logging of secret values.\n \n ## Safe Operations\n \n - Never paste Fortnox client secrets, access tokens, or refresh tokens into logs, tickets, screenshots, or chat.\n - Rotate the Fortnox client secret if it is exposed.\n - Keep production and local Fortnox app registrations separate where possible.\n - Keep scopes minimal and review scope changes before enabling new finance behavior.\n - Treat callback errors as user-safe status messages. Do not surface raw Fortnox token or error payloads to users.\n \n-## Known Follow-ups\n+## Production Rollout Checklist\n \n-- Implement the real OAuth connect and callback flow using the typed options.\n-- Persist Fortnox tokens encrypted at rest using the platform encryption approach.\n-- Add automatic refresh, revoked-token detection, and tenant-safe reconnect operations.\n-- Add tenant-scoped audit events for connect, disconnect, refresh failure, and reconnect activity.\n+- Fortnox app exists for the target environment.\n+- Callback URL exactly matches `FinanceIntegrations:Fortnox:RedirectUri`.\n+- Required Fortnox configuration is present in the secret store.\n+- `FinanceIntegrations:Fortnox:Enabled` is set to `true` only after required values exist.\n+- API startup succeeds with options validation enabled.\n+- Test tenant can start the connect flow from `/finance/integrations/fortnox/connect`.\n+- Callback completes through `/finance/integrations/fortnox/callback`.\n+- Token refresh succeeds through `/oauth-v1/token`.\n+- Invalid refresh token behavior marks the connection as needing reconnect and does not expose token material.\n+- Logs and UI output contain no token, authorization code, or client secret values.\nEND_OF_PATCH\n",
+  "stderrTail": "fails with a missing Fortnox key:\n@@ -65,6 +124,16 @@ If Key Vault is not loading:\n 4. Use application logs only for provider and startup status. Do not add temporary logging of secret values.\n \n ## Safe Operations\n \n - Never paste Fortnox client secrets, access tokens, or refresh tokens into logs, tickets, screenshots, or chat.\n - Rotate the Fortnox client secret if it is exposed.\n - Keep production and local Fortnox app registrations separate where possible.\n - Keep scopes minimal and review scope changes before enabling new finance behavior.\n - Treat callback errors as user-safe status messages. Do not surface raw Fortnox token or error payloads to users.\n \n-## Known Follow-ups\n+## Production Rollout Checklist\n \n-- Implement the real OAuth connect and callback flow using the typed options.\n-- Persist Fortnox tokens encrypted at rest using the platform encryption approach.\n-- Add automatic refresh, revoked-token detection, and tenant-safe reconnect operations.\n-- Add tenant-scoped audit events for connect, disconnect, refresh failure, and reconnect activity.\n+- Fortnox app exists for the target environment.\n+- Callback URL exactly matches `FinanceIntegrations:Fortnox:RedirectUri`.\n+- Required Fortnox configuration is present in the secret store.\n+- `FinanceIntegrations:Fortnox:Enabled` is set to `true` only after required values exist.\n+- API startup succeeds with options validation enabled.\n+- Test tenant can start the connect flow from `/finance/integrations/fortnox/connect`.\n+- Callback completes through `/finance/integrations/fortnox/callback`.\n+- Token refresh succeeds through `/oauth-v1/token`.\n+- Invalid refresh token behavior marks the connection as needing reconnect and does not expose token material.\n+- Logs and UI output contain no token, authorization code, or client secret values.\nEND_OF_PATCH\n2026-04-30T14:11:11.891043Z ERROR codex_core::session: failed to record rollout items: thread 019ddeb7-d16c-7681-b134-ab8fa275b512 not found\ntokens used\n59,725\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

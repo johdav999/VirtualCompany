@@ -74,7 +74,7 @@ public sealed class LowCashAlertPageTests
                 $"/finance/monthly-summary?companyId={companyId:D}",
                 cut.Find("[data-testid='finance-alert-link-finance-summary']").GetAttribute("href"));
             Assert.Equal(
-                $"/finance/anomalies?companyId={companyId:D}",
+                $"/finance/issues?companyId={companyId:D}",
                 cut.Find("[data-testid='finance-alert-link-anomaly-workbench']").GetAttribute("href"));
             Assert.Equal(
                 $"/finance/cash-position?companyId={companyId:D}",
@@ -173,7 +173,7 @@ public sealed class LowCashAlertPageTests
                 {
                     Key = "anomaly_workbench",
                     Label = "Anomaly workbench",
-                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Anomalies, companyId)
+                    Route = FinanceRoutes.WithCompanyContext(FinanceRoutes.Issues, companyId)
                 },
                 new ExecutiveCockpitDeepLinkViewModel
                 {

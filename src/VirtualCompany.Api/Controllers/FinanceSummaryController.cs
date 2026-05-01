@@ -28,12 +28,13 @@ public sealed class FinanceSummaryController : ControllerBase
         [FromQuery] DateTime? asOfUtc,
         [FromQuery] bool includeConsistencyCheck = false,
         [FromQuery] int recentAssetPurchaseLimit = 5,
+        [FromQuery] string source = FinanceDataSources.All,
         CancellationToken cancellationToken = default)
     {
         try
         {
             var result = await _financeSummaryQueryService.GetAsync(
-                new GetFinanceSummaryQuery(companyId, asOfUtc, recentAssetPurchaseLimit, includeConsistencyCheck),
+                new GetFinanceSummaryQuery(companyId, asOfUtc, recentAssetPurchaseLimit, includeConsistencyCheck, source),
                 cancellationToken);
             return Ok(result);
         }

@@ -1,0 +1,892 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs b/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
+new file mode 100644
+index 0000000..ec20cf1
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
+@@ -0,0 +1,21 @@
++namespace VirtualCompany.Application.Finance;
++
++public static class FinanceIntegrationProviderKeys
++{
++    public const string Fortnox = "fortnox";
++}
++
++public interface IFinanceIntegrationProvider
++{
++    string ProviderKey { get; }
++}
++
++public interface IFinanceIntegrationProviderRegistry
++{
++    IFinanceIntegrationProvider Resolve(string providerKey);
++}
++
++public sealed class FinanceIntegrationProviderNotFoundException(string providerKey)
++    : InvalidOperationException($"Finance integration provider '{providerKey}' is not registered.")
++{
++    public string ProviderKey { get; } = providerKey;
++}
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
+new file mode 100644
+index 0000000..5a10e8d
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
+@@ -0,0 +1,205 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class FinanceIntegrationConnection : ICompanyOwnedEntity
++{
++    private FinanceIntegrationConnection()
++    {
++    }
++
++    public FinanceIntegrationConnection(
++        Guid id,
++        Guid companyId,
++        string providerKey,
++        string status,
++        Guid? connectedByUserId,
++        DateTime createdUtc)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
++        ProviderKey = NormalizeRequired(providerKey, nameof(providerKey), 64).ToLowerInvariant();
++        Status = NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        ConnectedByUserId = connectedByUserId == Guid.Empty ? throw new ArgumentException("ConnectedByUserId cannot be empty.", nameof(connectedByUserId)) : connectedByUserId;
++        ProviderTenantId = null;
++        DisplayName = null;
++        Scopes = [];
++        Metadata = [];
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string ProviderKey { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public Guid? ConnectedByUserId { get; private set; }
++    public string? ProviderTenantId { get; private set; }
++    public string? DisplayName { get; private set; }
++    public List<string> Scopes { get; private set; } = [];
++    public JsonObject Metadata { get; private set; } = [];
++    public DateTime? ConnectedUtc { get; private set; }
++    public DateTime? LastSyncUtc { get; private set; }
++    public DateTime? DisabledUtc { get; private set; }
++    public string? LastErrorSummary { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User? ConnectedByUser { get; private set; }
++    public ICollection<FinanceIntegrationToken> Tokens { get; } = new List<FinanceIntegrationToken>();
++    public ICollection<FinanceIntegrationSyncState> SyncStates { get; } = new List<FinanceIntegrationSyncState>();
++    public ICollection<FinanceExternalReference> ExternalReferences { get; } = new List<FinanceExternalReference>();
++    public ICollection<FinanceIntegrationAuditEvent> AuditEvents { get; } = new List<FinanceIntegrationAuditEvent>();
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
++
++public sealed class FinanceIntegrationToken : ICompanyOwnedEntity
++{
++    private FinanceIntegrationToken()
++    {
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid ConnectionId { get; private set; }
++    public string ProviderKey { get; private set; } = null!;
++    public string TokenType { get; private set; } = null!;
++    public string EncryptedToken { get; private set; } = null!;
++    public DateTime? ExpiresUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FinanceIntegrationConnection Connection { get; private set; } = null!;
++}
++
++public sealed class FinanceIntegrationSyncState : ICompanyOwnedEntity
++{
++    private FinanceIntegrationSyncState()
++    {
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid ConnectionId { get; private set; }
++    public string ProviderKey { get; private set; } = null!;
++    public string EntityType { get; private set; } = null!;
++    public string ScopeKey { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public string? Cursor { get; private set; }
++    public DateTime? LastStartedUtc { get; private set; }
++    public DateTime? LastCompletedUtc { get; private set; }
++    public string? LastErrorSummary { get; private set; }
++    public int ConsecutiveFailureCount { get; private set; }
++    public JsonObject Metadata { get; private set; } = [];
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FinanceIntegrationConnection Connection { get; private set; } = null!;
++}
++
++public sealed class FinanceExternalReference : ICompanyOwnedEntity
++{
++    private FinanceExternalReference()
++    {
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid ConnectionId { get; private set; }
++    public string ProviderKey { get; private set; } = null!;
++    public string EntityType { get; private set; } = null!;
++    public Guid InternalRecordId { get; private set; }
++    public string ExternalId { get; private set; } = null!;
++    public string? ExternalNumber { get; private set; }
++    public DateTime? ExternalUpdatedUtc { get; private set; }
++    public JsonObject Metadata { get; private set; } = [];
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FinanceIntegrationConnection Connection { get; private set; } = null!;
++}
++
++public sealed class FinanceIntegrationAuditEvent : ICompanyOwnedEntity
++{
++    private FinanceIntegrationAuditEvent()
++    {
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? ConnectionId { get; private set; }
++    public string ProviderKey { get; private set; } = null!;
++    public string EventType { get; private set; } = null!;
++    public string Outcome { get; private set; } = null!;
++    public string? EntityType { get; private set; }
++    public Guid? InternalRecordId { get; private set; }
++    public string? ExternalId { get; private set; }
++    public string? CorrelationId { get; private set; }
++    public string? Summary { get; private set; }
++    public JsonObject Metadata { get; private set; } = [];
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FinanceIntegrationConnection? Connection { get; private set; }
++}
++
++public static class FinanceRecordSourceTypes
++{
++    public const string Manual = "manual";
++    public const string Simulation = "simulation";
++    public const string Fortnox = "fortnox";
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ('manual', 'simulation', 'fortnox')";
++}
++
++public static class FinanceIntegrationConnectionStatuses
++{
++    public const string Pending = "pending";
++    public const string Connected = "connected";
++    public const string NeedsReconnect = "needs_reconnect";
++    public const string Disabled = "disabled";
++    public const string Error = "error";
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ('pending', 'connected', 'needs_reconnect', 'disabled', 'error')";
++}
++
++public static class FinanceIntegrationTokenTypes
++{
++    public const string Access = "access";
++    public const string Refresh = "refresh";
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ('access', 'refresh')";
++}
++
++public static class FinanceIntegrationSyncStatuses
++{
++    public const string Pending = "pending";
++    public const string Running = "running";
++    public const string Succeeded = "succeeded";
++    public const string Failed = "failed";
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ('pending', 'running', 'succeeded', 'failed')";
++}
++
++public static class FinanceIntegrationAuditOutcomes
++{
++    public const string Succeeded = "succeeded";
++    public const string Failed = "failed";
++    public const string Skipped = "skipped";
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ('succeeded', 'failed', 'skipped')";
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 6b7d9f2..9c8d244 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -359,6 +359,8 @@ public static class DependencyInjection
+         services.AddScoped<InternalFinanceToolProvider>();
+         services.AddScoped<MockFinanceToolProvider>();
++        services.AddScoped<IFinanceIntegrationProvider, FortnoxFinanceIntegrationProvider>();
++        services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();
+         services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
+         services.AddScoped<IFinanceAgentInsightRepository, FinanceAgentInsightRepository>();
+         services.AddScoped<IFinanceInsightPersistenceService, FinanceInsightPersistenceService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceIntegrationProviderRegistry.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceIntegrationProviderRegistry.cs
+new file mode 100644
+index 0000000..df26f8a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceIntegrationProviderRegistry.cs
+@@ -0,0 +1,29 @@
++using VirtualCompany.Application.Finance;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++internal sealed class FinanceIntegrationProviderRegistry(IEnumerable<IFinanceIntegrationProvider> providers)
++    : IFinanceIntegrationProviderRegistry
++{
++    private readonly IReadOnlyDictionary<string, IFinanceIntegrationProvider> _providers =
++        providers.ToDictionary(provider => provider.ProviderKey, StringComparer.OrdinalIgnoreCase);
++
++    public IFinanceIntegrationProvider Resolve(string providerKey)
++    {
++        var normalized = string.IsNullOrWhiteSpace(providerKey)
++            ? string.Empty
++            : providerKey.Trim();
++
++        return _providers.TryGetValue(normalized, out var provider)
++            ? provider
++            : throw new FinanceIntegrationProviderNotFoundException(providerKey);
++    }
++}
++
++internal sealed class FortnoxFinanceIntegrationProvider : IFinanceIntegrationProvider
++{
++    public string ProviderKey => FinanceIntegrationProviderKeys.Fortnox;
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs
+new file mode 100644
+index 0000000..2dbe7c0
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs
+@@ -0,0 +1,313 @@
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.ChangeTracking;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class FinanceIntegrationConnectionEntityConfiguration : IEntityTypeConfiguration<FinanceIntegrationConnection>
++{
++    public void Configure(EntityTypeBuilder<FinanceIntegrationConnection> builder)
++    {
++        builder.ToTable("finance_integration_connections");
++        builder.ToTable(t => t.HasCheckConstraint("CK_finance_integration_connections_status", FinanceIntegrationConnectionStatuses.BuildCheckConstraintSql("status")));
++
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ProviderKey).HasColumnName("provider_key").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).HasDefaultValue(FinanceIntegrationConnectionStatuses.Pending).IsRequired();
++        builder.Property(x => x.ConnectedByUserId).HasColumnName("connected_by_user_id");
++        builder.Property(x => x.ProviderTenantId).HasColumnName("provider_tenant_id").HasMaxLength(256);
++        builder.Property(x => x.DisplayName).HasColumnName("display_name").HasMaxLength(160);
++        builder.Property(x => x.Scopes)
++            .HasColumnName("scopes_json")
++            .HasJsonConversion<List<string>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonArrayDefault)
++            .IsRequired();
++        HasJsonObjectConversion(builder.Property(x => x.Metadata).HasColumnName("metadata_json"))
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.ConnectedUtc).HasColumnName("connected_at");
++        builder.Property(x => x.LastSyncUtc).HasColumnName("last_sync_at");
++        builder.Property(x => x.DisabledUtc).HasColumnName("disabled_at");
++        builder.Property(x => x.LastErrorSummary).HasColumnName("last_error_summary").HasMaxLength(1000);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.ProviderKey }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.Status });
++        builder.HasIndex(x => new { x.ProviderKey, x.ProviderTenantId });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.ConnectedByUser).WithMany().HasForeignKey(x => x.ConnectedByUserId).OnDelete(DeleteBehavior.SetNull);
++    }
++
++    internal static PropertyBuilder<JsonObject> HasJsonObjectConversion(PropertyBuilder<JsonObject> propertyBuilder)
++    {
++        var converter = new ValueConverter<JsonObject, string>(
++            value => SerializeJsonObject(value),
++            value => DeserializeJsonObject(value));
++
++        var comparer = new ValueComparer<JsonObject>(
++            (left, right) => SerializeJsonObject(left) == SerializeJsonObject(right),
++            value => StringComparer.Ordinal.GetHashCode(SerializeJsonObject(value)),
++            value => DeserializeJsonObject(SerializeJsonObject(value)));
++
++        propertyBuilder.HasColumnType("nvarchar(max)");
++        propertyBuilder.HasConversion(converter);
++        propertyBuilder.Metadata.SetValueComparer(comparer);
++        return propertyBuilder;
++    }
++
++    private static string SerializeJsonObject(JsonObject? value) =>
++        (value ?? new JsonObject()).ToJsonString(null);
++
++    private static JsonObject DeserializeJsonObject(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? new JsonObject()
++            : JsonNode.Parse(value, null, default(JsonDocumentOptions)) as JsonObject ?? new JsonObject();
++}
++
++internal sealed class FinanceIntegrationTokenEntityConfiguration : IEntityTypeConfiguration<FinanceIntegrationToken>
++{
++    public void Configure(EntityTypeBuilder<FinanceIntegrationToken> builder)
++    {
++        builder.ToTable("finance_integration_tokens");
++        builder.ToTable(t => t.HasCheckConstraint("CK_finance_integration_tokens_token_type", FinanceIntegrationTokenTypes.BuildCheckConstraintSql("token_type")));
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ConnectionId).HasColumnName("connection_id").IsRequired();
++        builder.Property(x => x.ProviderKey).HasColumnName("provider_key").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.TokenType).HasColumnName("token_type").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.EncryptedToken).HasColumnName("encrypted_token").HasMaxLength(4096).IsRequired();
++        builder.Property(x => x.ExpiresUtc).HasColumnName("expires_at");
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.ConnectionId });
++        builder.HasIndex(x => new { x.CompanyId, x.ProviderKey, x.TokenType });
++        builder.HasIndex(x => new { x.ConnectionId, x.TokenType }).IsUnique();
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Connection)
++            .WithMany(x => x.Tokens)
++            .HasForeignKey(x => new { x.CompanyId, x.ConnectionId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class FinanceIntegrationSyncStateEntityConfiguration : IEntityTypeConfiguration<FinanceIntegrationSyncState>
++{
++    public void Configure(EntityTypeBuilder<FinanceIntegrationSyncState> builder)
++    {
++        builder.ToTable("finance_integration_sync_states");
++        builder.ToTable(t => t.HasCheckConstraint("CK_finance_integration_sync_states_status", FinanceIntegrationSyncStatuses.BuildCheckConstraintSql("status")));
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ConnectionId).HasColumnName("connection_id").IsRequired();
++        builder.Property(x => x.ProviderKey).HasColumnName("provider_key").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.EntityType).HasColumnName("entity_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.ScopeKey).HasColumnName("scope_key").HasMaxLength(128).HasDefaultValue("default").IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).HasDefaultValue(FinanceIntegrationSyncStatuses.Pending).IsRequired();
++        builder.Property(x => x.Cursor).HasColumnName("cursor").HasMaxLength(1024);
++        builder.Property(x => x.LastStartedUtc).HasColumnName("last_started_at");
++        builder.Property(x => x.LastCompletedUtc).HasColumnName("last_completed_at");
++        builder.Property(x => x.LastErrorSummary).HasColumnName("last_error_summary").HasMaxLength(1000);
++        builder.Property(x => x.ConsecutiveFailureCount).HasColumnName("consecutive_failure_count").HasDefaultValue(0).IsRequired();
++        FinanceIntegrationConnectionEntityConfiguration.HasJsonObjectConversion(builder.Property(x => x.Metadata).HasColumnName("metadata_json"))
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.ConnectionId });
++        builder.HasIndex(x => new { x.CompanyId, x.ProviderKey, x.EntityType, x.ScopeKey }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.LastStartedUtc });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Connection)
++            .WithMany(x => x.SyncStates)
++            .HasForeignKey(x => new { x.CompanyId, x.ConnectionId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class FinanceExternalReferenceEntityConfiguration : IEntityTypeConfiguration<FinanceExternalReference>
++{
++    public void Configure(EntityTypeBuilder<FinanceExternalReference> builder)
++    {
++        builder.ToTable("finance_external_references");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ConnectionId).HasColumnName("connection_id").IsRequired();
++        builder.Property(x => x.ProviderKey).HasColumnName("provider_key").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.EntityType).HasColumnName("entity_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.InternalRecordId).HasColumnName("internal_record_id").IsRequired();
++        builder.Property(x => x.ExternalId).HasColumnName("external_id").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.ExternalNumber).HasColumnName("external_number").HasMaxLength(128);
++        builder.Property(x => x.ExternalUpdatedUtc).HasColumnName("external_updated_at");
++        FinanceIntegrationConnectionEntityConfiguration.HasJsonObjectConversion(builder.Property(x => x.Metadata).HasColumnName("metadata_json"))
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.ConnectionId });
++        builder.HasIndex(x => new { x.CompanyId, x.ProviderKey, x.EntityType, x.ExternalId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.EntityType, x.InternalRecordId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.ProviderKey, x.EntityType, x.ExternalNumber });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Connection)
++            .WithMany(x => x.ExternalReferences)
++            .HasForeignKey(x => new { x.CompanyId, x.ConnectionId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class FinanceIntegrationAuditEventEntityConfiguration : IEntityTypeConfiguration<FinanceIntegrationAuditEvent>
++{
++    public void Configure(EntityTypeBuilder<FinanceIntegrationAuditEvent> builder)
++    {
++        builder.ToTable("finance_integration_audit_events");
++        builder.ToTable(t => t.HasCheckConstraint("CK_finance_integration_audit_events_outcome", FinanceIntegrationAuditOutcomes.BuildCheckConstraintSql("outcome")));
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ConnectionId).HasColumnName("connection_id");
++        builder.Property(x => x.ProviderKey).HasColumnName("provider_key").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.EventType).HasColumnName("event_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Outcome).HasColumnName("outcome").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.EntityType).HasColumnName("entity_type").HasMaxLength(64);
++        builder.Property(x => x.InternalRecordId).HasColumnName("internal_record_id");
++        builder.Property(x => x.ExternalId).HasColumnName("external_id").HasMaxLength(256);
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
++        builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(1000);
++        FinanceIntegrationConnectionEntityConfiguration.HasJsonObjectConversion(builder.Property(x => x.Metadata).HasColumnName("metadata_json"))
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.ProviderKey, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.ConnectionId, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.EntityType, x.InternalRecordId });
++        builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Connection)
++            .WithMany(x => x.AuditEvents)
++            .HasForeignKey(x => new { x.CompanyId, x.ConnectionId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.SetNull);
++    }
++}
++
++internal sealed class FinanceSourceTrackingConfiguration :
++    IEntityTypeConfiguration<FinanceAccount>,
++    IEntityTypeConfiguration<FinanceCounterparty>,
++    IEntityTypeConfiguration<FinanceInvoice>,
++    IEntityTypeConfiguration<FinanceBill>,
++    IEntityTypeConfiguration<FinanceTransaction>,
++    IEntityTypeConfiguration<FinanceBalance>,
++    IEntityTypeConfiguration<Payment>,
++    IEntityTypeConfiguration<CompanyBankAccount>,
++    IEntityTypeConfiguration<BankTransaction>,
++    IEntityTypeConfiguration<FinanceAsset>
++{
++    public void Configure(EntityTypeBuilder<FinanceAccount> builder) => ConfigureSourceTracking(builder);
++    public void Configure(EntityTypeBuilder<FinanceCounterparty> builder) => ConfigureSourceTracking(builder);
++    public void Configure(EntityTypeBuilder<FinanceInvoice> builder) => ConfigureSourceTracking(builder);
++    public void Configure(EntityTypeBuilder<FinanceBill> builder) => ConfigureSourceTracking(builder);
++    public void Configure(EntityTypeBuilder<FinanceTransaction> builder) => ConfigureSourceTracking(builder);
++    public void Configure(EntityTypeBuilder<FinanceBalance> builder) => ConfigureSourceTracking(builder);
++    public void Configure(EntityTypeBuilder<Payment> builder) => ConfigureSourceTracking(builder);
++    public void Configure(EntityTypeBuilder<CompanyBankAccount> builder) => ConfigureSourceTracking(builder);
++    public void Configure(EntityTypeBuilder<BankTransaction> builder) => ConfigureSourceTracking(builder);
++    public void Configure(EntityTypeBuilder<FinanceAsset> builder) => ConfigureSourceTracking(builder);
++
++    private static void ConfigureSourceTracking<TEntity>(EntityTypeBuilder<TEntity> builder)
++        where TEntity : class
++    {
++        builder.Property<string>("SourceType")
++            .HasColumnName("source_type")
++            .HasMaxLength(32)
++            .HasDefaultValue(FinanceRecordSourceTypes.Manual)
++            .IsRequired();
++        builder.Property<string?>("ProviderKey")
++            .HasColumnName("provider_key")
++            .HasMaxLength(64);
++        builder.Property<string?>("ProviderExternalId")
++            .HasColumnName("provider_external_id")
++            .HasMaxLength(256);
++        builder.Property<Guid?>("FinanceExternalReferenceId")
++            .HasColumnName("finance_external_reference_id");
++
++        builder.ToTable(t => t.HasCheckConstraint($"CK_{builder.Metadata.GetTableName()}_source_type", FinanceRecordSourceTypes.BuildCheckConstraintSql("source_type")));
++        builder.HasIndex("CompanyId", "SourceType");
++        builder.HasIndex("CompanyId", "ProviderKey", "ProviderExternalId")
++            .HasFilter("provider_key IS NOT NULL AND provider_external_id IS NOT NULL");
++        builder.HasOne(typeof(FinanceExternalReference))
++            .WithMany()
++            .HasForeignKey("FinanceExternalReferenceId")
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 72b55d1..bfc343c 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -134,6 +134,11 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
+     public DbSet<SimulationCashDeltaRecord> SimulationCashDeltaRecords => Set<SimulationCashDeltaRecord>();
+     public DbSet<SimulationEventRecord> SimulationEventRecords => Set<SimulationEventRecord>();
++    public DbSet<FinanceIntegrationConnection> FinanceIntegrationConnections => Set<FinanceIntegrationConnection>();
++    public DbSet<FinanceIntegrationToken> FinanceIntegrationTokens => Set<FinanceIntegrationToken>();
++    public DbSet<FinanceIntegrationSyncState> FinanceIntegrationSyncStates => Set<FinanceIntegrationSyncState>();
++    public DbSet<FinanceExternalReference> FinanceExternalReferences => Set<FinanceExternalReference>();
++    public DbSet<FinanceIntegrationAuditEvent> FinanceIntegrationAuditEvents => Set<FinanceIntegrationAuditEvent>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+ 
+@@ -268,6 +273,11 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is EmailAttachmentSnapshot ||
+                 entry.Entity is SimulationCashDeltaRecord ||
+-                entry.Entity is SimulationEventRecord)
++                entry.Entity is SimulationEventRecord ||
++                entry.Entity is FinanceIntegrationConnection ||
++                entry.Entity is FinanceIntegrationToken ||
++                entry.Entity is FinanceIntegrationSyncState ||
++                entry.Entity is FinanceExternalReference ||
++                entry.Entity is FinanceIntegrationAuditEvent)
+             .Select(entry =>
+             {
+                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
+@@ -564,5 +574,20 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<SimulationEventRecord>()
+             .HasQueryFilter(record =>
+                 CurrentCompanyId.HasValue && record.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceIntegrationConnection>()
++            .HasQueryFilter(connection =>
++                CurrentCompanyId.HasValue && connection.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceIntegrationToken>()
++            .HasQueryFilter(token =>
++                CurrentCompanyId.HasValue && token.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceIntegrationSyncState>()
++            .HasQueryFilter(state =>
++                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceExternalReference>()
++            .HasQueryFilter(reference =>
++                CurrentCompanyId.HasValue && reference.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FinanceIntegrationAuditEvent>()
++            .HasQueryFilter(auditEvent =>
++                CurrentCompanyId.HasValue && auditEvent.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430170000_AddFortnoxIntegrationFoundation.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430170000_AddFortnoxIntegrationFoundation.cs
+new file mode 100644
+index 0000000..dcf1c70
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430170000_AddFortnoxIntegrationFoundation.cs
+@@ -0,0 +1,427 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    [Migration("20260430170000_AddFortnoxIntegrationFoundation")]
++    [DbContext(typeof(VirtualCompanyDbContext))]
++    public partial class AddFortnoxIntegrationFoundation : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            if (ActiveProvider != "Microsoft.EntityFrameworkCore.SqlServer")
++            {
++                return;
++            }
++
++            migrationBuilder.CreateTable(
++                name: "finance_integration_connections",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    provider_key = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "pending"),
++                    connected_by_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    provider_tenant_id = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                    display_name = table.Column<string>(type: "nvarchar(160)", maxLength: 160, nullable: true),
++                    scopes_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'[]'"),
++                    metadata_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'"),
++                    connected_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    last_sync_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    disabled_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    last_error_summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_integration_connections", x => x.id);
++                    table.UniqueConstraint("AK_finance_integration_connections_company_id_id", x => new { x.company_id, x.id });
++                    table.CheckConstraint("CK_finance_integration_connections_status", "status IN ('pending', 'connected', 'needs_reconnect', 'disabled', 'error')");
++                    table.ForeignKey("FK_finance_integration_connections_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey("FK_finance_integration_connections_users_connected_by_user_id", x => x.connected_by_user_id, "Users", "Id", onDelete: ReferentialAction.SetNull);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "finance_integration_tokens",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    connection_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    provider_key = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    token_type = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    encrypted_token = table.Column<string>(type: "nvarchar(4096)", maxLength: 4096, nullable: false),
++                    expires_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_integration_tokens", x => x.id);
++                    table.CheckConstraint("CK_finance_integration_tokens_token_type", "token_type IN ('access', 'refresh')");
++                    table.ForeignKey("FK_finance_integration_tokens_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        "FK_finance_integration_tokens_finance_integration_connections_company_id_connection_id",
++                        x => new { x.company_id, x.connection_id },
++                        "finance_integration_connections",
++                        new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "finance_integration_sync_states",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    connection_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    provider_key = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    entity_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    scope_key = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, defaultValue: "default"),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "pending"),
++                    cursor = table.Column<string>(type: "nvarchar(1024)", maxLength: 1024, nullable: true),
++                    last_started_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    last_completed_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    last_error_summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                    consecutive_failure_count = table.Column<int>(type: "int", nullable: false, defaultValue: 0),
++                    metadata_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'"),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_integration_sync_states", x => x.id);
++                    table.CheckConstraint("CK_finance_integration_sync_states_status", "status IN ('pending', 'running', 'succeeded', 'failed')");
++                    table.ForeignKey("FK_finance_integration_sync_states_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        "FK_finance_integration_sync_states_finance_integration_connections_company_id_connection_id",
++                        x => new { x.company_id, x.connection_id },
++                        "finance_integration_connections",
++                        new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "finance_external_references",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    connection_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    provider_key = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    entity_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    internal_record_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    external_id = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
++                    external_number = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
++                    external_updated_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    metadata_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'"),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_external_references", x => x.id);
++                    table.ForeignKey("FK_finance_external_references_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        "FK_finance_external_references_finance_integration_connections_company_id_connection_id",
++                        x => new { x.company_id, x.connection_id },
++                        "finance_integration_connections",
++                        new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "finance_integration_audit_events",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    connection_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    provider_key = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    event_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    outcome = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    entity_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
++                    internal_record_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    external_id = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                    correlation_id = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
++                    summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                    metadata_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'"),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_finance_integration_audit_events", x => x.id);
++                    table.CheckConstraint("CK_finance_integration_audit_events_outcome", "outcome IN ('succeeded', 'failed', 'skipped')");
++                    table.ForeignKey("FK_finance_integration_audit_events_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        "FK_finance_integration_audit_events_finance_integration_connections_company_id_connection_id",
++                        x => new { x.company_id, x.connection_id },
++                        "finance_integration_connections",
++                        new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.SetNull);
++                });
++
++            migrationBuilder.CreateIndex("IX_finance_integration_connections_company_id_provider_key", "finance_integration_connections", new[] { "company_id", "provider_key" }, unique: true);
++            migrationBuilder.CreateIndex("IX_finance_integration_connections_company_id_status", "finance_integration_connections", new[] { "company_id", "status" });
++            migrationBuilder.CreateIndex("IX_finance_integration_connections_connected_by_user_id", "finance_integration_connections", "connected_by_user_id");
++            migrationBuilder.CreateIndex("IX_finance_integration_connections_provider_key_provider_tenant_id", "finance_integration_connections", new[] { "provider_key", "provider_tenant_id" });
++            migrationBuilder.CreateIndex("IX_finance_integration_tokens_company_id_connection_id", "finance_integration_tokens", new[] { "company_id", "connection_id" });
++            migrationBuilder.CreateIndex("IX_finance_integration_tokens_company_id_provider_key_token_type", "finance_integration_tokens", new[] { "company_id", "provider_key", "token_type" });
++            migrationBuilder.CreateIndex("IX_finance_integration_tokens_connection_id_token_type", "finance_integration_tokens", new[] { "connection_id", "token_type" }, unique: true);
++            migrationBuilder.CreateIndex("IX_finance_integration_sync_states_company_id_connection_id", "finance_integration_sync_states", new[] { "company_id", "connection_id" });
++            migrationBuilder.CreateIndex("IX_finance_integration_sync_states_company_id_provider_key_entity_type_scope_key", "finance_integration_sync_states", new[] { "company_id", "provider_key", "entity_type", "scope_key" }, unique: true);
++            migrationBuilder.CreateIndex("IX_finance_integration_sync_states_company_id_status_last_started_at", "finance_integration_sync_states", new[] { "company_id", "status", "last_started_at" });
++            migrationBuilder.CreateIndex("IX_finance_external_references_company_id_connection_id", "finance_external_references", new[] { "company_id", "connection_id" });
++            migrationBuilder.CreateIndex("IX_finance_external_references_company_id_entity_type_internal_record_id", "finance_external_references", new[] { "company_id", "entity_type", "internal_record_id" }, unique: true);
++            migrationBuilder.CreateIndex("IX_finance_external_references_company_id_provider_key_entity_type_external_id", "finance_external_references", new[] { "company_id", "provider_key", "entity_type", "external_id" }, unique: true);
++            migrationBuilder.CreateIndex("IX_finance_external_references_company_id_provider_key_entity_type_external_number", "finance_external_references", new[] { "company_id", "provider_key", "entity_type", "external_number" });
++            migrationBuilder.CreateIndex("IX_finance_integration_audit_events_company_id_provider_key_created_at", "finance_integration_audit_events", new[] { "company_id", "provider_key", "created_at" });
++            migrationBuilder.CreateIndex("IX_finance_integration_audit_events_company_id_connection_id_created_at", "finance_integration_audit_events", new[] { "company_id", "connection_id", "created_at" });
++            migrationBuilder.CreateIndex("IX_finance_integration_audit_events_company_id_entity_type_internal_record_id", "finance_integration_audit_events", new[] { "company_id", "entity_type", "internal_record_id" });
++            migrationBuilder.CreateIndex("IX_finance_integration_audit_events_company_id_correlation_id", "finance_integration_audit_events", new[] { "company_id", "correlation_id" });
++
++            foreach (var table in SourceTrackedTables)
++            {
++                migrationBuilder.Sql($"""
++                    ALTER TABLE [{table}] ADD [source_type] nvarchar(32) NOT NULL CONSTRAINT [DF_{table}_source_type] DEFAULT N'manual';
++                    ALTER TABLE [{table}] ADD [provider_key] nvarchar(64) NULL;
++                    ALTER TABLE [{table}] ADD [provider_external_id] nvarchar(256) NULL;
++                    ALTER TABLE [{table}] ADD [finance_external_reference_id] uniqueidentifier NULL;
++                    ALTER TABLE [{table}] ADD CONSTRAINT [CK_{table}_source_type] CHECK ([source_type] IN ('manual', 'simulation', 'fortnox'));
++                    CREATE INDEX [IX_{table}_company_id_source_type] ON [{table}] ([company_id], [source_type]);
++                    CREATE INDEX [IX_{table}_company_id_provider_key_provider_external_id] ON [{table}] ([company_id], [provider_key], [provider_external_id]) WHERE [provider_key] IS NOT NULL AND [provider_external_id] IS NOT NULL;
++                    CREATE INDEX [IX_{table}_finance_external_reference_id] ON [{table}] ([finance_external_reference_id]);
++                    ALTER TABLE [{table}] ADD CONSTRAINT [FK_{table}_finance_external_references_finance_external_reference_id] FOREIGN KEY ([finance_external_reference_id]) REFERENCES [finance_external_references] ([id]) ON DELETE NO ACTION;
++                    """);
++            }
++
++            foreach (var table in SimulationBackfillTables)
++            {
++                migrationBuilder.Sql($"""
++                    UPDATE [{table}]
++                    SET [source_type] = N'simulation'
++                    WHERE [source_simulation_event_record_id] IS NOT NULL;
++                    """);
++            }
++
++            migrationBuilder.Sql("""
++                UPDATE [bank_transactions]
++                SET [source_type] = N'simulation'
++                WHERE [source_simulation_event_record_id] IS NOT NULL;
++                """);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            if (ActiveProvider != "Microsoft.EntityFrameworkCore.SqlServer")
++            {
++                return;
++            }
++
++            foreach (var table in SourceTrackedTables)
++            {
++                migrationBuilder.Sql($"""
++                    ALTER TABLE [{table}] DROP CONSTRAINT [FK_{table}_finance_external_references_finance_external_reference_id];
++                    DROP INDEX [IX_{table}_finance_external_reference_id] ON [{table}];
++                    DROP INDEX [IX_{table}_company_id_provider_key_provider_external_id] ON [{table}];
++                    DROP INDEX [IX_{table}_company_id_source_type] ON [{table}];
++                    ALTER TABLE [{table}] DROP CONSTRAINT [CK_{table}_source_type];
++                    ALTER TABLE [{table}] DROP CONSTRAINT [DF_{table}_source_type];
++                    ALTER TABLE [{table}] DROP COLUMN [finance_external_reference_id];
++                    ALTER TABLE [{table}] DROP COLUMN [provider_external_id];
++                    ALTER TABLE [{table}] DROP COLUMN [provider_key];
++                    ALTER TABLE [{table}] DROP COLUMN [source_type];
++                    """);
++            }
++
++            migrationBuilder.DropTable(name: "finance_integration_audit_events");
++            migrationBuilder.DropTable(name: "finance_external_references");
++            migrationBuilder.DropTable(name: "finance_integration_sync_states");
++            migrationBuilder.DropTable(name: "finance_integration_tokens");
++            migrationBuilder.DropTable(name: "finance_integration_connections");
++        }
++
++        private static readonly string[] SourceTrackedTables =
++        [
++            "finance_accounts",
++            "finance_counterparties",
++            "finance_invoices",
++            "finance_bills",
++            "finance_transactions",
++            "finance_balances",
++            "finance_payments",
++            "company_bank_accounts",
++            "bank_transactions",
++            "finance_assets"
++        ];
++
++        private static readonly string[] SimulationBackfillTables =
++        [
++            "finance_invoices",
++            "finance_bills",
++            "finance_transactions",
++            "finance_balances",
++            "finance_payments",
++            "finance_assets"
++        ];
++    }
++}
+END_OF_PATCH

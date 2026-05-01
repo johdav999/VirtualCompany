@@ -19,6 +19,11 @@ public partial class BillsPage : FinancePageBase
     private string? DetailErrorMessage { get; set; }
 
     private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Bills.Count == 0;
+    private IReadOnlyList<BillListItemViewModel> BillItems =>
+        Bills.Select(bill => ToListItem(bill, BillId == bill.Id)).ToList();
+    private BillDetailViewModel? SelectedBillDisplay =>
+        SelectedBill is null ? null : ToDetailViewModel(SelectedBill);
+    private string DashboardHref => AccessState.CompanyId is Guid companyId ? $"/dashboard?companyId={companyId:D}" : "/dashboard";
 
     protected override async Task OnParametersSetAsync()
     {
@@ -85,7 +90,7 @@ public partial class BillsPage : FinancePageBase
             SelectedBill = await FinanceApiClient.GetBillDetailAsync(companyId, billId);
             if (SelectedBill is null)
             {
-                DetailErrorMessage = "The selected bill could not be found in the active company context.";
+                DetailErrorMessage = "The selected bill could not be found for this company.";
             }
         }
         catch (FinanceApiException ex)
@@ -102,12 +107,99 @@ public partial class BillsPage : FinancePageBase
     private string BuildBillHref(Guid billId) => FinanceRoutes.BuildBillDetailPath(billId, AccessState.CompanyId);
     private string BuildDocumentHref(Guid documentId) => $"/api/companies/{AccessState.CompanyId}/documents/{documentId}";
 
-    private string GetBillListItemClass(Guid billId) =>
-        BillId == billId
-            ? "list-group-item list-group-item-action active"
-            : "list-group-item list-group-item-action";
-
     private static string FormatCurrency(decimal amount, string currency) => $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
-    private static string FormatDate(DateTime value) => value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-    private static string FormatLabel(string? value) => string.IsNullOrWhiteSpace(value) ? "n/a" : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+    private static string FormatFriendlyDate(DateTime value) =>
+        value == default ? "Not available" : value.ToString("MMM dd, yyyy", CultureInfo.InvariantCulture);
+
+    private static string FormatStatusLabel(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "Unknown"
+            : CultureInfo.InvariantCulture.TextInfo.ToTitleCase(
+                string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    .ToLowerInvariant());
+
+    private static BillListItemViewModel ToListItem(FinanceBillResponse bill, bool isSelected)
+    {
+        var status = ResolveStatusPresentation(bill.Status);
+        return new BillListItemViewModel(
+            bill.Id,
+            string.IsNullOrWhiteSpace(bill.BillNumber) ? "Bill" : bill.BillNumber,
+            string.IsNullOrWhiteSpace(bill.CounterpartyName) ? "Supplier not available" : bill.CounterpartyName,
+            FormatCurrency(bill.Amount, bill.Currency),
+            FormatFriendlyDate(bill.ReceivedUtc),
+            FormatFriendlyDate(bill.DueUtc),
+            $"Received {FormatFriendlyDate(bill.ReceivedUtc)} · Due {FormatFriendlyDate(bill.DueUtc)}",
+            status.Label,
+            status.Tone,
+            status.Tone,
+            isSelected);
+    }
+
+    private static BillDetailViewModel ToDetailViewModel(FinanceBillDetailResponse bill)
+    {
+        var status = ResolveStatusPresentation(bill.Status);
+        return new BillDetailViewModel(
+            string.IsNullOrWhiteSpace(bill.BillNumber) ? "Bill" : bill.BillNumber,
+            string.IsNullOrWhiteSpace(bill.CounterpartyName) ? "Supplier not available" : bill.CounterpartyName,
+            FormatCurrency(bill.Amount, bill.Currency),
+            FormatFriendlyDate(bill.ReceivedUtc),
+            FormatFriendlyDate(bill.DueUtc),
+            status.Label,
+            status.Tone,
+            ResolveApprovalStatus(bill.Status),
+            bill.AgentInsights.Count == 0
+                ? "No warnings are linked to this bill."
+                : $"{bill.AgentInsights.Count} finance note{(bill.AgentInsights.Count == 1 ? string.Empty : "s")} linked to this bill.");
+    }
+
+    private static BillStatusPresentation ResolveStatusPresentation(string? status)
+    {
+        var normalized = status?.Trim().ToLowerInvariant().Replace("-", "_", StringComparison.Ordinal) ?? string.Empty;
+        return normalized switch
+        {
+            "paid" => new("Paid", "success"),
+            "open" => new("Open", "warning"),
+            "pending_approval" or "pending" or "approval_pending" => new("Pending approval", "info"),
+            "overdue" or "problem" or "failed" => new("Overdue", "danger"),
+            _ => new(string.IsNullOrWhiteSpace(status) ? "Unknown" : FormatStatusLabel(status), "neutral")
+        };
+    }
+
+    private static string ResolveApprovalStatus(string? status)
+    {
+        var normalized = status?.Trim().ToLowerInvariant().Replace("-", "_", StringComparison.Ordinal) ?? string.Empty;
+        return normalized switch
+        {
+            "pending_approval" or "approval_pending" => "Pending approval",
+            "approved" or "paid" => "Approved",
+            _ => "Not required"
+        };
+    }
+
+    private sealed record BillStatusPresentation(string Label, string Tone);
+
+    private sealed record BillListItemViewModel(
+        Guid Id,
+        string DisplayBillNumber,
+        string DisplaySupplierName,
+        string DisplayAmount,
+        string DisplayReceivedDate,
+        string DisplayDueDate,
+        string DateSummary,
+        string FriendlyStatusLabel,
+        string StatusTone,
+        string IconTone,
+        bool IsSelected);
+
+    private sealed record BillDetailViewModel(
+        string DisplayBillNumber,
+        string DisplaySupplierName,
+        string DisplayAmount,
+        string DisplayReceivedDate,
+        string DisplayDueDate,
+        string FriendlyStatusLabel,
+        string StatusTone,
+        string ApprovalStatus,
+        string WarningSummary);
 }

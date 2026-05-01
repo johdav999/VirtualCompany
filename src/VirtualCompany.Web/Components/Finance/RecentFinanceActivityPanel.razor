@@ -1,0 +1,63 @@
+@using VirtualCompany.Web.Services
+
+<article class="wizard-card wizard-card--compact finance-supporting-card">
+    <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+        <div>
+            <h2 class="h5 mb-0">Recent activity</h2>
+        </div>
+        <a class="btn btn-sm btn-outline-secondary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Activity, CompanyId)">View all</a>
+    </div>
+
+    @if (Items.Count == 0)
+    {
+        <p class="text-body-secondary mb-0">No recent finance activity is available.</p>
+    }
+    else
+    {
+        <div class="list-group list-group-flush finance-overview-list">
+            @foreach (var item in Items)
+            {
+                <a class="list-group-item list-group-item-action px-0 finance-overview-list-item" href="@item.Href">
+                    <div class="finance-activity-row">
+                        <span class="@ResolveIconClass(item.Tone)" aria-hidden="true">@(!string.IsNullOrWhiteSpace(item.Icon) ? item.Icon : "fin")</span>
+                        <div>
+                            <div class="fw-semibold">@item.Title</div>
+                            <div class="small text-body-secondary">@item.Detail</div>
+                            <div class="small text-body-secondary">@item.DateText</div>
+                        </div>
+                        <div class="text-end">
+                            <div class="@ResolveToneClass(item.Tone)">@item.Amount</div>
+                            <div class="small text-body-secondary">@item.StatusText</div>
+                        </div>
+                    </div>
+                </a>
+            }
+        </div>
+    }
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<RecentFinanceActivityViewModel> Items { get; set; } = [];
+
+    [Parameter]
+    public Guid? CompanyId { get; set; }
+
+    private static string ResolveToneClass(FinanceKpiTone tone) =>
+        tone switch
+        {
+            FinanceKpiTone.Positive => "finance-overview-tone--positive",
+            FinanceKpiTone.Warning => "finance-overview-tone--warning",
+            FinanceKpiTone.Danger => "finance-overview-tone--danger",
+            _ => "finance-overview-tone--neutral"
+        };
+
+    private static string ResolveIconClass(FinanceKpiTone tone) =>
+        tone switch
+        {
+            FinanceKpiTone.Positive => "finance-overview-icon finance-overview-icon--positive",
+            FinanceKpiTone.Warning => "finance-overview-icon finance-overview-icon--warning",
+            FinanceKpiTone.Danger => "finance-overview-icon finance-overview-icon--danger",
+            _ => "finance-overview-icon finance-overview-icon--neutral"
+        };
+}

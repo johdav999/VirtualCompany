@@ -88,6 +88,27 @@ public static class DependencyInjection
         services.AddOptions<FinanceAnomalyDetectionOptions>()
             .Bind(configuration.GetSection(FinanceAnomalyDetectionOptions.SectionName));
 
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<FortnoxOptions>, FortnoxOptionsValidator>());
+        services.AddOptions<FortnoxOptions>()
+            .Bind(configuration.GetSection(FortnoxOptions.SectionName))
+            .ValidateOnStart();
+        services.AddHttpClient(FortnoxOAuthClient.ClientName);
+        services.AddHttpClient<IFortnoxApiClient, FortnoxApiClient>((provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptionsMonitor<FortnoxOptions>>().CurrentValue;
+            client.BaseAddress = FortnoxApiClient.NormalizeBaseAddress(options.ApiBaseUrl);
+        });
+        services.AddScoped<IFortnoxOAuthStateProtector, DataProtectionFortnoxOAuthStateProtector>();
+        services.AddScoped<IFortnoxOAuthSessionStore, DistributedCacheFortnoxOAuthSessionStore>();
+        services.AddScoped<IFortnoxOAuthService, FortnoxOAuthService>();
+        services.TryAddSingleton<IFortnoxIntegrationDiagnostics, FortnoxIntegrationDiagnostics>();
+        services.AddScoped<IFortnoxTokenStore, FortnoxTokenStore>();
+        services.AddScoped<FortnoxOAuthClient>();
+        services.AddScoped<IFortnoxMappingService, FortnoxMappingService>();
+        services.AddScoped<IFortnoxWriteApprovalService, FortnoxWriteApprovalService>();
+        services.AddScoped<IFortnoxWriteCommandService>(provider => (FortnoxWriteApprovalService)provider.GetRequiredService<IFortnoxWriteApprovalService>());
+        services.AddScoped<IFortnoxSyncService, FortnoxSyncService>();
+
         services.AddOptions<CompanySimulationOptions>()
             .Bind(configuration.GetSection(CompanySimulationOptions.SectionName))
             .PostConfigure(options =>
@@ -405,6 +426,8 @@ public static class DependencyInjection
         services.AddSingleton<IExecutiveCockpitDashboardCacheInvalidator>(provider => (IExecutiveCockpitDashboardCacheInvalidator)provider.GetRequiredService<IExecutiveCockpitDashboardCache>());
         services.AddScoped<InternalFinanceToolProvider>();
         services.AddScoped<MockFinanceToolProvider>();
+        services.AddScoped<IFinanceIntegrationProvider, FortnoxFinanceIntegrationProvider>();
+        services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();
         services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
         services.AddScoped<IFinanceAgentInsightRepository, FinanceAgentInsightRepository>();
         services.AddScoped<IFinanceInsightPersistenceService, FinanceInsightPersistenceService>();
@@ -418,8 +441,10 @@ public static class DependencyInjection
         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
         services.AddScoped<ISignalEngine, CompanySignalEngine>();
         services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
-        services.AddScoped<IFinanceSeedBootstrapService, CompanyFinanceSeedBootstrapService>();
-        services.AddSingleton<IFinanceSeedTelemetry, FinanceSeedTelemetry>();
+        services.AddScoped<FortnoxFinanceIntegrationProvider>();
+        services.AddScoped<IFinanceIntegrationProvider>(provider => provider.GetRequiredService<FortnoxFinanceIntegrationProvider>());
+        services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();
+        services.AddScoped<IFinanceIntegrationProviderResolver>(provider => provider.GetRequiredService<IFinanceIntegrationProviderRegistry>());
         services.AddScoped<IDashboardFinanceSnapshotService, CompanyDashboardFinanceSnapshotService>();
         services.AddScoped<IFinanceBootstrapRerunService, CompanyFinanceBootstrapRerunService>();
         services.AddScoped<IFinanceSeedingStateService, CompanyFinanceSeedingStateResolver>();
@@ -428,6 +453,8 @@ public static class DependencyInjection
         services.AddScoped<IFinanceSummaryQueryService, CompanyFinanceSummaryQueryService>();
         services.AddScoped<IFinanceSeedBackfillQueryService, FinanceSeedBackfillQueryService>();
         services.AddScoped<IPlanningBaselineService, PlanningBaselineService>();
+        services.AddScoped<IFinanceSeedTelemetry, FinanceSeedTelemetry>();
+        services.AddScoped<IFinanceSeedBootstrapService, CompanyFinanceSeedBootstrapService>();
         services.AddScoped<IFinanceEntryService, CompanyFinanceEntryService>();
         services.AddScoped<IFinanceSeedJobRunner, CompanyFinanceSeedJobRunner>();
         services.AddScoped<IReportingPeriodCloseService, CompanyReportingPeriodCloseService>();

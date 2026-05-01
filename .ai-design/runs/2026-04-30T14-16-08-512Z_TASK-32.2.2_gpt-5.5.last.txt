@@ -1,0 +1,231 @@
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430170000_AddFortnoxIntegrationFoundation.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430170000_AddFortnoxIntegrationFoundation.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430170000_AddFortnoxIntegrationFoundation.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430170000_AddFortnoxIntegrationFoundation.cs
+@@ -42,7 +42,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     table.UniqueConstraint("AK_finance_integration_connections_company_id_id", x => new { x.company_id, x.id });
+                     table.CheckConstraint("CK_finance_integration_connections_status", "status IN ('pending', 'connected', 'needs_reconnect', 'disabled', 'error')");
+                     table.ForeignKey("FK_finance_integration_connections_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
+-                    table.ForeignKey("FK_finance_integration_connections_users_connected_by_user_id", x => x.connected_by_user_id, "Users", "Id", onDelete: ReferentialAction.SetNull);
++                    table.ForeignKey("FK_finance_integration_connections_users_connected_by_user_id", x => x.connected_by_user_id, "users", "Id", onDelete: ReferentialAction.SetNull);
+                 });
+ 
+             migrationBuilder.CreateTable(
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 4056993..a6e89d2 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -137,6 +137,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+     {
+         ValidateCompanyOwnedMutations();
++        ApplyFinanceSourceTrackingDefaults();
+         EnsureBankTransactionPostingStates();
+         var companiesToInvalidate = CaptureDashboardInvalidationCompanies();
+         var result = await base.SaveChangesAsync(cancellationToken);
+@@ -178,6 +179,38 @@ public sealed class VirtualCompanyDbContext : DbContext
+         }
+     }
+ 
++    private void ApplyFinanceSourceTrackingDefaults()
++    {
++        foreach (var entry in ChangeTracker.Entries().Where(entry => entry.State == EntityState.Added))
++        {
++            if (entry.Metadata.FindProperty("SourceType") is null)
++            {
++                continue;
++            }
++
++            var sourceProperty = entry.Property("SourceType");
++            var currentSource = sourceProperty.CurrentValue as string;
++            if (!string.IsNullOrWhiteSpace(currentSource) &&
++                !currentSource.Equals(FinanceRecordSourceTypes.Manual, StringComparison.OrdinalIgnoreCase))
++            {
++                continue;
++            }
++
++            var simulationEventProperty = entry.Metadata.FindProperty("SourceSimulationEventRecordId");
++            if (simulationEventProperty is not null &&
++                entry.Property("SourceSimulationEventRecordId").CurrentValue is Guid simulationEventId &&
++                simulationEventId != Guid.Empty)
++            {
++                // Simulation-created records must stay distinguishable from manual and Fortnox-synced records.
++                sourceProperty.CurrentValue = FinanceRecordSourceTypes.Simulation;
++                continue;
++            }
++
++            if (string.IsNullOrWhiteSpace(currentSource))
++            {
++                sourceProperty.CurrentValue = FinanceRecordSourceTypes.Manual;
++            }
++        }
++    }
++
+     private void EnsureBankTransactionPostingStates()
+     {
+         var trackedStates = ChangeTracker.Entries<BankTransactionPostingStateRecord>()
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs
+new file mode 100644
+index 0000000..b6f8c7a
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs
+@@ -0,0 +1,121 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Configuration;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FinanceIntegrationFoundationTests
++{
++    [Fact]
++    public async Task EnsureCreated_maps_finance_integration_tables_and_source_tracking_columns()
++    {
++        await using var connection = await OpenConnectionAsync();
++        await using var dbContext = CreateContext(connection);
++        await dbContext.Database.EnsureCreatedAsync();
++
++        var connectionColumns = await ReadColumnsAsync(connection, "finance_integration_connections");
++        Assert.Contains("company_id", connectionColumns);
++        Assert.Contains("provider_key", connectionColumns);
++        Assert.Contains("status", connectionColumns);
++        Assert.Contains("provider_tenant_id", connectionColumns);
++        Assert.Contains("scopes_json", connectionColumns);
++        Assert.Contains("metadata_json", connectionColumns);
++        Assert.Contains("last_sync_at", connectionColumns);
++
++        var tokenColumns = await ReadColumnsAsync(connection, "finance_integration_tokens");
++        Assert.Contains("connection_id", tokenColumns);
++        Assert.Contains("provider_key", tokenColumns);
++        Assert.Contains("token_type", tokenColumns);
++        Assert.Contains("encrypted_token", tokenColumns);
++        Assert.DoesNotContain("access_token", tokenColumns);
++        Assert.DoesNotContain("refresh_token", tokenColumns);
++
++        var syncStateColumns = await ReadColumnsAsync(connection, "finance_integration_sync_states");
++        Assert.Contains("connection_id", syncStateColumns);
++        Assert.Contains("entity_type", syncStateColumns);
++        Assert.Contains("scope_key", syncStateColumns);
++        Assert.Contains("cursor", syncStateColumns);
++        Assert.Contains("consecutive_failure_count", syncStateColumns);
++
++        var externalReferenceColumns = await ReadColumnsAsync(connection, "finance_external_references");
++        Assert.Contains("connection_id", externalReferenceColumns);
++        Assert.Contains("provider_key", externalReferenceColumns);
++        Assert.Contains("entity_type", externalReferenceColumns);
++        Assert.Contains("internal_record_id", externalReferenceColumns);
++        Assert.Contains("external_id", externalReferenceColumns);
++        Assert.Contains("external_number", externalReferenceColumns);
++
++        var auditColumns = await ReadColumnsAsync(connection, "finance_integration_audit_events");
++        Assert.Contains("provider_key", auditColumns);
++        Assert.Contains("event_type", auditColumns);
++        Assert.Contains("outcome", auditColumns);
++        Assert.Contains("correlation_id", auditColumns);
++        Assert.Contains("metadata_json", auditColumns);
++
++        foreach (var tableName in SourceTrackedTables)
++        {
++            var columns = await ReadColumnsAsync(connection, tableName);
++            Assert.Contains("source_type", columns);
++            Assert.Contains("provider_key", columns);
++            Assert.Contains("provider_external_id", columns);
++            Assert.Contains("finance_external_reference_id", columns);
++
++            var indexes = await ReadIndexesAsync(connection, tableName);
++            Assert.Contains($"IX_{tableName}_company_id_source_type", indexes);
++            Assert.Contains($"IX_{tableName}_company_id_provider_key_provider_external_id", indexes);
++        }
++
++        var connectionIndexes = await ReadIndexesAsync(connection, "finance_integration_connections");
++        Assert.Contains("IX_finance_integration_connections_company_id_provider_key", connectionIndexes);
++
++        var externalReferenceIndexes = await ReadIndexesAsync(connection, "finance_external_references");
++        Assert.Contains("IX_finance_external_references_company_id_provider_key_entity_type_external_id", externalReferenceIndexes);
++        Assert.Contains("IX_finance_external_references_company_id_entity_type_internal_record_id", externalReferenceIndexes);
++    }
++
++    [Fact]
++    public void Infrastructure_registration_resolves_fortnox_provider_by_key()
++    {
++        var configuration = new ConfigurationBuilder()
++            .AddInMemoryCollection(new Dictionary<string, string?>
++            {
++                ["Database:Provider"] = "Sqlite",
++                ["ConnectionStrings:VirtualCompanyDb"] = "Data Source=:memory:"
++            })
++            .Build();
++        var services = new ServiceCollection();
++
++        services.AddVirtualCompanyInfrastructure(configuration);
++
++        using var serviceProvider = services.BuildServiceProvider();
++        using var scope = serviceProvider.CreateScope();
++        var registry = scope.ServiceProvider.GetRequiredService<IFinanceIntegrationProviderRegistry>();
++
++        var provider = registry.Resolve(" FORTNOX ");
++
++        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, provider.ProviderKey);
++    }
++
++    private static readonly string[] SourceTrackedTables =
++    [
++        "finance_accounts",
++        "finance_counterparties",
++        "finance_invoices",
++        "finance_bills",
++        "finance_transactions",
++        "finance_balances",
++        "finance_payments",
++        "company_bank_accounts",
++        "bank_transactions",
++        "finance_assets"
++    ];
++
++    private static async Task<HashSet<string>> ReadColumnsAsync(SqliteConnection connection, string tableName)
++    {
++        var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        using var command = connection.CreateCommand();
++        command.CommandText = $"PRAGMA table_info('{tableName}');";
++        await using var reader = await command.ExecuteReaderAsync();
++        while (await reader.ReadAsync())
++        {
++            values.Add(reader.GetString(1));
++        }
++
++        return values;
++    }
++
++    private static async Task<HashSet<string>> ReadIndexesAsync(SqliteConnection connection, string tableName)
++    {
++        var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        using var command = connection.CreateCommand();
++        command.CommandText = $"PRAGMA index_list('{tableName}');";
++        await using var reader = await command.ExecuteReaderAsync();
++        while (await reader.ReadAsync())
++        {
++            values.Add(reader.GetString(1));
++        }
++
++        return values;
++    }
++
++    private static async Task<SqliteConnection> OpenConnectionAsync()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        await connection.OpenAsync();
++        return connection;
++    }
++
++    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
++        new(
++            new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++                .UseSqlite(connection)
++                .Options);
++}
+END_OF_PATCH

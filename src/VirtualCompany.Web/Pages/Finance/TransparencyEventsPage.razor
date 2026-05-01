@@ -1,21 +1,22 @@
-@page "/finance/admin/transparency/events"
-@page "/finance/admin/transparency/events/{EventId:guid}"
+@page "/system/admin/transparency-events"
+@page "/system/admin/transparency-events/{EventId:guid}"
 @inherits FinanceTransparencyPageBase
 
-<PageTitle>Finance Event Stream</PageTitle>
+<PageTitle>Transparency events</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Finance event stream"
-    Description="Review tenant-scoped finance domain events, payload summaries, and trigger trace coverage."
-    LoadingMessage="Loading finance transparency event stream...">
+    Title="Transparency events"
+    Description="Review finance events, payload summaries, and trigger trace coverage."
+    LoadingMessage="Loading transparency events..."
+    Area="SystemAdmin">
     @if (!HasTransparencyAccess)
     {
         <ForbiddenState
-            Title="Finance transparency access required"
-            Message="Finance transparency pages are limited to company admins and testers."
+            Title="System access required"
+            Message="System administration pages are limited to company admins and testers."
             ReturnHref="@BuildFinanceHomeHref()"
             ReturnText="Back to finance" />
     }
@@ -26,7 +27,7 @@
                 <div class="wizard-card wizard-card--compact">
                     <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
                         <div>
-                            <h2 class="h5 mb-1">Finance domain event stream</h2>
+                            <h2 class="h5 mb-1">Transparency events</h2>
                             <p class="text-body-secondary mb-0">@(string.IsNullOrWhiteSpace(Summary) ? "Recent finance events are shown with correlation, affected entity references, and concise payload summaries." : Summary)</p>
                         </div>
                         <span class="badge text-bg-light">@Events.Count item@(Events.Count == 1 ? string.Empty : "s")</span>
@@ -37,7 +38,7 @@
                         IsEmpty="@IsListEmpty"
                         ErrorMessage="@ListErrorMessage"
                         LoadingTitle="Loading finance events"
-                        LoadingMessage="Reading tenant-scoped finance audit events."
+                        LoadingMessage="Reading finance audit events."
                         EmptyTitle="No finance events available"
                         EmptyMessage="No finance domain events are recorded for the active company."
                         ErrorTitle="Finance events are unavailable"

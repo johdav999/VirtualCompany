@@ -387,10 +387,11 @@ public sealed partial class InternalFinanceController : ControllerBase
         [FromQuery] string? category,
         [FromQuery] string? flagged,
         [FromQuery] int limit,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.All) =>
         await ExecuteReadAsync(
             () => _financeReadService.GetTransactionsAsync(
-                new GetFinanceTransactionsQuery(companyId, startUtc, endUtc, limit, category, flagged),
+                new GetFinanceTransactionsQuery(companyId, startUtc, endUtc, limit, category, flagged, source),
                 cancellationToken));
 
     [HttpGet("transactions/{transactionId:guid}")]
@@ -409,10 +410,11 @@ public sealed partial class InternalFinanceController : ControllerBase
         Guid companyId,
         [FromQuery(Name = "type")] string? paymentType,
         [FromQuery] int limit,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.All) =>
         await ExecuteReadAsync(
             () => _financePaymentReadService.GetPaymentsAsync(
-                new GetFinancePaymentsQuery(companyId, paymentType, limit),
+                new GetFinancePaymentsQuery(companyId, paymentType, limit, source),
                 cancellationToken));
 
     [HttpGet("payments/{paymentId:guid}")]
@@ -466,10 +468,11 @@ public sealed partial class InternalFinanceController : ControllerBase
         [FromQuery] DateTime? startUtc,
         [FromQuery] DateTime? endUtc,
         [FromQuery] int limit,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.All) =>
         await ExecuteReadAsync(
             () => _financeReadService.GetInvoicesAsync(
-                new GetFinanceInvoicesQuery(companyId, startUtc, endUtc, limit),
+                new GetFinanceInvoicesQuery(companyId, startUtc, endUtc, limit, source),
                 cancellationToken));
 
     [HttpGet("invoices/{invoiceId:guid}/allocations")]
@@ -736,10 +739,11 @@ public sealed partial class InternalFinanceController : ControllerBase
         [FromQuery] DateTime? startUtc,
         [FromQuery] DateTime? endUtc,
         [FromQuery] int limit,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.All) =>
         await ExecuteReadAsync(
             () => _financeReadService.GetBillsAsync(
-                new GetFinanceBillsQuery(companyId, startUtc, endUtc, limit),
+                new GetFinanceBillsQuery(companyId, startUtc, endUtc, limit, source),
                 cancellationToken));
 
     [HttpGet("bills/{billId:guid}")]

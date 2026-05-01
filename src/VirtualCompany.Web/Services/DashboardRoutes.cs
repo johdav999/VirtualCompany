@@ -195,7 +195,7 @@ public static class DashboardRoutes
         {
             action =
                 path.StartsWith(FinanceRoutes.Reviews, StringComparison.OrdinalIgnoreCase) ? "review" :
-                path.StartsWith(FinanceRoutes.Anomalies, StringComparison.OrdinalIgnoreCase) ? "investigate" :
+                (path.StartsWith(FinanceRoutes.Anomalies, StringComparison.OrdinalIgnoreCase) || path.StartsWith(FinanceRoutes.Issues, StringComparison.OrdinalIgnoreCase)) ? "investigate" :
                 path.StartsWith(FinanceRoutes.CashPosition, StringComparison.OrdinalIgnoreCase) ? "view-cash-position" :
                 string.Equals(path, FinanceRoutes.Home, StringComparison.OrdinalIgnoreCase) ? "open-workspace" :
                 "open";

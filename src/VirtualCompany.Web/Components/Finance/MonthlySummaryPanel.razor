@@ -1,0 +1,38 @@
+@using VirtualCompany.Web.Services
+
+<article class="wizard-card wizard-card--compact finance-supporting-card">
+    <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+        <div>
+            <h2 class="h5 mb-1">Monthly summary</h2>
+            <p class="text-body-secondary small mb-0">@MonthlySummary.Period</p>
+        </div>
+        <a class="btn btn-sm btn-outline-secondary" href="@MonthlySummary.Href">View report</a>
+    </div>
+    <dl class="finance-overview-summary-list mb-0">
+        <div>
+            <dt>Total income</dt>
+            <dd class="finance-overview-tone--positive">@MonthlySummary.TotalIncome</dd>
+        </div>
+        <div>
+            <dt>Total expenses</dt>
+            <dd class="finance-overview-tone--danger">@MonthlySummary.TotalExpenses</dd>
+        </div>
+        <div>
+            <dt>Net cash flow</dt>
+            <dd class="@NetClass">@MonthlySummary.NetResult</dd>
+        </div>
+    </dl>
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public FinanceMonthlySummaryOverviewViewModel MonthlySummary { get; set; } = new();
+
+    private string NetClass => MonthlySummary.Tone switch
+    {
+        FinanceKpiTone.Positive => "finance-overview-tone--positive",
+        FinanceKpiTone.Warning => "finance-overview-tone--warning",
+        FinanceKpiTone.Danger => "finance-overview-tone--danger",
+        _ => "finance-overview-tone--neutral"
+    };
+}

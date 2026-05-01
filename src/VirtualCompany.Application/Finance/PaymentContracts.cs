@@ -3,7 +3,8 @@ namespace VirtualCompany.Application.Finance;
 public sealed record GetFinancePaymentsQuery(
     Guid CompanyId,
     string? PaymentType = null,
-    int Limit = 100);
+    int Limit = 100,
+    string SourceFilter = FinanceDataSources.All);
 
 public sealed record GetFinancePaymentDetailQuery(
     Guid CompanyId,
@@ -74,7 +75,8 @@ public sealed record FinancePaymentDto(
     string CounterpartyReference,
     DateTime CreatedUtc,
     DateTime UpdatedUtc,
-    IReadOnlyList<NormalizedFinanceInsightDto> AgentInsights);
+    IReadOnlyList<NormalizedFinanceInsightDto> AgentInsights,
+    string Source = FinanceDataSources.Simulation);
 
 public sealed record FinancePaymentAllocationDto(
     Guid Id,

@@ -1,0 +1,969 @@
+diff --git a/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs b/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs
+@@ -60,6 +60,7 @@ public sealed record FortnoxWriteApprovalCheck(
+     string EntityType,
+     string PayloadSummary,
+     string PayloadHash,
++    string SanitizedPayloadJson,
+     Guid WriteRequestId);
+@@ -90,6 +91,8 @@ public interface IFortnoxWriteApprovalService
+ {
+     Task EnsureApprovedAsync(FortnoxWriteApprovalCheck check, CancellationToken cancellationToken);
++    Task RecordExecutionSucceededAsync(FortnoxWriteApprovalCheck check, object? responsePayload, CancellationToken cancellationToken);
++    Task RecordExecutionFailedAsync(FortnoxWriteApprovalCheck check, Exception exception, CancellationToken cancellationToken);
+ }
+@@ -119,13 +122,21 @@ public static class FortnoxWritePayloadSanitizer
+         "secret"
+     ];
+ 
++    public static string CreateSanitizedJson<T>(T payload)
++    {
++        if (payload is null)
++        {
++            return "{}";
++        }
++
++        return Redact(JsonSerializer.SerializeToNode(payload, FortnoxJson.Options))?.ToJsonString(FortnoxJson.Options) ?? "{}";
++    }
++
+     public static string CreateSummary<T>(T payload)
+     {
+         if (payload is null)
+         {
+             return "No payload body.";
+         }
+ 
+-        var redacted = Redact(JsonSerializer.SerializeToNode(payload, FortnoxJson.Options));
+-        var text = redacted?.ToJsonString(FortnoxJson.Options) ?? "{}";
++        var text = CreateSanitizedJson(payload);
+         return text.Length <= 500 ? text : string.Concat(text.AsSpan(0, 497), "...");
+     }
+@@ -133,9 +144,7 @@ public static class FortnoxWritePayloadSanitizer
+     public static string CreatePayloadHash<T>(T payload)
+     {
+-        var redacted = payload is null
+-            ? "{}"
+-            : Redact(JsonSerializer.SerializeToNode(payload, FortnoxJson.Options))?.ToJsonString(FortnoxJson.Options) ?? "{}";
++        var redacted = CreateSanitizedJson(payload);
+         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(redacted));
+         return Convert.ToHexString(bytes).ToLowerInvariant();
+     }
+diff --git a/src/VirtualCompany.Application/Finance/FortnoxWriteCommandContracts.cs b/src/VirtualCompany.Application/Finance/FortnoxWriteCommandContracts.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Application/Finance/FortnoxWriteCommandContracts.cs
+@@ -0,0 +1,40 @@
++namespace VirtualCompany.Application.Finance;
++
++public sealed record FortnoxWriteCommandRequest(
++    Guid CompanyId,
++    Guid? ConnectionId,
++    Guid? ActorUserId,
++    string HttpMethod,
++    string Path,
++    string TargetCompany,
++    string EntityType,
++    string PayloadSummary,
++    string PayloadHash,
++    string SanitizedPayloadJson,
++    Guid WriteRequestId,
++    string? CorrelationId = null,
++    Guid? ApprovedApprovalId = null);
++
++public sealed record FortnoxWriteCommandResult(
++    Guid WriteRequestId,
++    Guid? ApprovalId,
++    string Status,
++    string Message,
++    bool CanExecute);
++
++public interface IFortnoxWriteCommandService
++{
++    Task<FortnoxWriteCommandResult> RequestApprovalAsync(
++        FortnoxWriteCommandRequest request,
++        CancellationToken cancellationToken);
++
++    Task<FortnoxWriteCommandResult> EnsureApprovedForExecutionAsync(
++        FortnoxWriteCommandRequest request,
++        CancellationToken cancellationToken);
++
++    Task RecordExecutionSucceededAsync(
++        FortnoxWriteCommandRequest request,
++        object? responsePayload,
++        CancellationToken cancellationToken);
++
++    Task RecordExecutionFailedAsync(
++        FortnoxWriteCommandRequest request,
++        Exception exception,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
+@@ -289,6 +289,130 @@ public sealed class FinanceIntegrationAuditEvent : ICompanyOwnedEntity
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
+     }
++}
++
++public sealed class FortnoxWriteCommand : ICompanyOwnedEntity
++{
++    private FortnoxWriteCommand()
++    {
++    }
++
++    public FortnoxWriteCommand(
++        Guid id,
++        Guid companyId,
++        Guid? connectionId,
++        Guid? actorUserId,
++        string httpMethod,
++        string path,
++        string targetCompany,
++        string entityType,
++        string payloadSummary,
++        string payloadHash,
++        string sanitizedPayloadJson,
++        string? correlationId,
++        DateTime createdUtc)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
++        ConnectionId = connectionId == Guid.Empty ? null : connectionId;
++        ActorUserId = actorUserId == Guid.Empty ? null : actorUserId;
++        HttpMethod = NormalizeRequired(httpMethod, nameof(httpMethod), 16).ToUpperInvariant();
++        Path = NormalizeRequired(path, nameof(path), 512);
++        TargetCompany = NormalizeRequired(targetCompany, nameof(targetCompany), 160);
++        EntityType = NormalizeRequired(entityType, nameof(entityType), 64).ToLowerInvariant();
++        PayloadSummary = NormalizeRequired(payloadSummary, nameof(payloadSummary), 1000);
++        PayloadHash = NormalizeRequired(payloadHash, nameof(payloadHash), 128).ToLowerInvariant();
++        SanitizedPayloadJson = NormalizeRequired(sanitizedPayloadJson, nameof(sanitizedPayloadJson), 8000);
++        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
++        Status = FortnoxWriteCommandStatuses.AwaitingApproval;
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? ConnectionId { get; private set; }
++    public Guid? ActorUserId { get; private set; }
++    public Guid? ApprovalId { get; private set; }
++    public Guid? ApprovedByUserId { get; private set; }
++    public string HttpMethod { get; private set; } = null!;
++    public string Path { get; private set; } = null!;
++    public string TargetCompany { get; private set; } = null!;
++    public string EntityType { get; private set; } = null!;
++    public string PayloadSummary { get; private set; } = null!;
++    public string PayloadHash { get; private set; } = null!;
++    public string SanitizedPayloadJson { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public string? FailureCategory { get; private set; }
++    public string? SafeFailureSummary { get; private set; }
++    public string? ExternalId { get; private set; }
++    public string? CorrelationId { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public DateTime? ApprovedUtc { get; private set; }
++    public DateTime? ExecutionStartedUtc { get; private set; }
++    public DateTime? ExecutedUtc { get; private set; }
++    public DateTime? FailedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FinanceIntegrationConnection? Connection { get; private set; }
++
++    public void AttachApproval(Guid approvalId, DateTime updatedUtc)
++    {
++        if (approvalId == Guid.Empty)
++        {
++            throw new ArgumentException("ApprovalId is required.", nameof(approvalId));
++        }
++
++        ApprovalId = approvalId;
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
++    }
++
++    public void MarkApproved(Guid approvalId, Guid? approvedByUserId, DateTime approvedUtc)
++    {
++        if (Status == FortnoxWriteCommandStatuses.Executed)
++        {
++            return;
++        }
++
++        ApprovalId = approvalId == Guid.Empty ? ApprovalId : approvalId;
++        ApprovedByUserId = approvedByUserId == Guid.Empty ? null : approvedByUserId;
++        Status = FortnoxWriteCommandStatuses.Approved;
++        ApprovedUtc = EntityTimestampNormalizer.NormalizeUtc(approvedUtc, nameof(approvedUtc));
++        UpdatedUtc = ApprovedUtc.Value;
++    }
++
++    public void MarkExecutionStarted(DateTime startedUtc)
++    {
++        if (Status == FortnoxWriteCommandStatuses.Executed)
++        {
++            throw new InvalidOperationException("Fortnox write command has already executed.");
++        }
++
++        Status = FortnoxWriteCommandStatuses.Executing;
++        ExecutionStartedUtc = EntityTimestampNormalizer.NormalizeUtc(startedUtc, nameof(startedUtc));
++        UpdatedUtc = ExecutionStartedUtc.Value;
++    }
++
++    public void MarkExecuted(string? externalId, DateTime executedUtc)
++    {
++        Status = FortnoxWriteCommandStatuses.Executed;
++        ExternalId = NormalizeOptional(externalId, nameof(externalId), 256);
++        SafeFailureSummary = null;
++        FailureCategory = null;
++        ExecutedUtc = EntityTimestampNormalizer.NormalizeUtc(executedUtc, nameof(executedUtc));
++        UpdatedUtc = ExecutedUtc.Value;
++    }
++
++    public void MarkFailed(string failureCategory, string safeFailureSummary, DateTime failedUtc)
++    {
++        Status = FortnoxWriteCommandStatuses.Failed;
++        FailureCategory = NormalizeOptional(failureCategory, nameof(failureCategory), 64);
++        SafeFailureSummary = NormalizeOptional(safeFailureSummary, nameof(safeFailureSummary), 1000);
++        FailedUtc = EntityTimestampNormalizer.NormalizeUtc(failedUtc, nameof(failedUtc));
++        UpdatedUtc = FailedUtc.Value;
++    }
+@@ -335,6 +459,12 @@ public static class FinanceIntegrationAuditOutcomes
+         $"{columnName} IN ('succeeded', 'failed', 'skipped')";
+ }
++
++public static class FortnoxWriteCommandStatuses
++{
++    public const string AwaitingApproval = "awaiting_approval";
++    public const string Approved = "approved";
++    public const string Executing = "executing";
++    public const string Executed = "executed";
++    public const string Failed = "failed";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
+@@ -108,8 +108,17 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
+         CancellationToken cancellationToken)
+     {
+-        await EnsureWriteApprovedAsync(context, HttpMethod.Post, path, payload, cancellationToken);
+-        using var response = await SendAsync(context, HttpMethod.Post, path, null, () => CreateJsonContent(payload), cancellationToken);
+-        return await DeserializeBodyAsync<TResponse>(response, cancellationToken);
++        var check = await EnsureWriteApprovedAsync(context, HttpMethod.Post, path, payload, cancellationToken);
++        try
++        {
++            using var response = await SendAsync(context, HttpMethod.Post, path, null, () => CreateJsonContent(payload), cancellationToken);
++            var result = await DeserializeBodyAsync<TResponse>(response, cancellationToken);
++            await _writeApprovalService.RecordExecutionSucceededAsync(check, result, cancellationToken);
++            return result;
++        }
++        catch (Exception exception) when (exception is FortnoxApiException or HttpRequestException or TaskCanceledException)
++        {
++            await _writeApprovalService.RecordExecutionFailedAsync(check, exception, cancellationToken);
++            throw;
++        }
+     }
+@@ -120,8 +129,17 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
+         CancellationToken cancellationToken)
+     {
+-        await EnsureWriteApprovedAsync(context, HttpMethod.Put, path, payload, cancellationToken);
+-        using var response = await SendAsync(context, HttpMethod.Put, path, null, () => CreateJsonContent(payload), cancellationToken);
+-        return await DeserializeBodyAsync<TResponse>(response, cancellationToken);
++        var check = await EnsureWriteApprovedAsync(context, HttpMethod.Put, path, payload, cancellationToken);
++        try
++        {
++            using var response = await SendAsync(context, HttpMethod.Put, path, null, () => CreateJsonContent(payload), cancellationToken);
++            var result = await DeserializeBodyAsync<TResponse>(response, cancellationToken);
++            await _writeApprovalService.RecordExecutionSucceededAsync(check, result, cancellationToken);
++            return result;
++        }
++        catch (Exception exception) when (exception is FortnoxApiException or HttpRequestException or TaskCanceledException)
++        {
++            await _writeApprovalService.RecordExecutionFailedAsync(check, exception, cancellationToken);
++            throw;
++        }
+     }
+@@ -131,16 +149,26 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
+         CancellationToken cancellationToken)
+     {
+-        await EnsureWriteApprovedAsync<object?>(context, HttpMethod.Delete, path, null, cancellationToken);
+-        using var response = await SendAsync(context, HttpMethod.Delete, path, null, contentFactory: null, cancellationToken);
++        var check = await EnsureWriteApprovedAsync<object?>(context, HttpMethod.Delete, path, null, cancellationToken);
++        try
++        {
++            using var response = await SendAsync(context, HttpMethod.Delete, path, null, contentFactory: null, cancellationToken);
++            await _writeApprovalService.RecordExecutionSucceededAsync(check, null, cancellationToken);
++        }
++        catch (Exception exception) when (exception is FortnoxApiException or HttpRequestException or TaskCanceledException)
++        {
++            await _writeApprovalService.RecordExecutionFailedAsync(check, exception, cancellationToken);
++            throw;
++        }
+     }
+ 
+-    private async Task EnsureWriteApprovedAsync<TPayload>(
++    private async Task<FortnoxWriteApprovalCheck> EnsureWriteApprovedAsync<TPayload>(
+         FortnoxRequestContext context,
+         HttpMethod method,
+         string path,
+         TPayload payload,
+         CancellationToken cancellationToken)
+     {
+         var summary = FortnoxWritePayloadSanitizer.CreateSummary(payload);
+-        await _writeApprovalService.EnsureApprovedAsync(
+-            new FortnoxWriteApprovalCheck(
++        var check = new FortnoxWriteApprovalCheck(
+                 context.CompanyId,
+                 context.ConnectionId,
+                 context.ActorUserId,
+@@ -152,8 +180,11 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
+                 ResolveEntityType(path),
+                 summary,
+                 FortnoxWritePayloadSanitizer.CreatePayloadHash(payload),
+-                DeterministicWriteRequestId(context, method, path, summary)),
+-            cancellationToken);
++                FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload),
++                DeterministicWriteRequestId(context, method, path, summary));
++
++        await _writeApprovalService.EnsureApprovedAsync(check, cancellationToken);
++        return check;
+     }
+@@ -388,6 +419,14 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
+ 
+         public Task EnsureApprovedAsync(FortnoxWriteApprovalCheck check, CancellationToken cancellationToken) =>
+             Task.CompletedTask;
++
++        public Task RecordExecutionSucceededAsync(FortnoxWriteApprovalCheck check, object? responsePayload, CancellationToken cancellationToken) =>
++            Task.CompletedTask;
++
++        public Task RecordExecutionFailedAsync(FortnoxWriteApprovalCheck check, Exception exception, CancellationToken cancellationToken) =>
++            Task.CompletedTask;
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxWriteApprovalService.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxWriteApprovalService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxWriteApprovalService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxWriteApprovalService.cs
+@@ -1,22 +1,27 @@
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Finance;
+ 
+-public sealed class FortnoxWriteApprovalService : IFortnoxWriteApprovalService
++public sealed class FortnoxWriteApprovalService : IFortnoxWriteApprovalService, IFortnoxWriteCommandService
+ {
+     private const string ApprovalType = "fortnox_write";
+     private readonly IApprovalRequestService _approvalRequestService;
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly TimeProvider _timeProvider;
+@@ -31,65 +36,100 @@ public sealed class FortnoxWriteApprovalService : IFortnoxWriteApprovalService
+ 
+     public async Task EnsureApprovedAsync(FortnoxWriteApprovalCheck check, CancellationToken cancellationToken)
+     {
+-        if (check.ApprovedApprovalId is not Guid approvalId)
+-        {
+-            var created = await CreateApprovalAsync(check, cancellationToken);
+-            throw new FortnoxApprovalRequiredException(
+-                created.Id,
+-                "Fortnox writes require approval before data is sent to Fortnox.");
+-        }
++        var request = ToRequest(check);
++        var result = check.ApprovedApprovalId.HasValue
++            ? await EnsureApprovedForExecutionAsync(request, cancellationToken)
++            : await RequestApprovalAsync(request, cancellationToken);
+ 
+-        var approval = await _approvalRequestService.GetAsync(check.CompanyId, approvalId, cancellationToken);
+-        if (!string.Equals(approval.Status, "approved", StringComparison.OrdinalIgnoreCase))
++        if (!result.CanExecute)
+         {
+             throw new FortnoxApprovalRequiredException(
+-                approval.Id,
+-                "Fortnox write approval is not approved.");
++                result.ApprovalId ?? check.WriteRequestId,
++                result.Message);
+         }
++    }
+ 
+-        await AddApprovedWriteAuditAsync(check, approval, cancellationToken);
++    public async Task<FortnoxWriteCommandResult> RequestApprovalAsync(
++        FortnoxWriteCommandRequest request,
++        CancellationToken cancellationToken)
++    {
++        var now = _timeProvider.GetUtcNow().UtcDateTime;
++        var existing = await _dbContext.FortnoxWriteCommands
++            .SingleOrDefaultAsync(x => x.CompanyId == request.CompanyId && x.Id == request.WriteRequestId, cancellationToken);
++
++        if (existing?.Status == FortnoxWriteCommandStatuses.Executed)
++        {
++            return new FortnoxWriteCommandResult(existing.Id, existing.ApprovalId, existing.Status, "This Fortnox write has already completed.", false);
++        }
++
++        if (existing?.ApprovalId is Guid existingApprovalId)
++        {
++            return new FortnoxWriteCommandResult(existing.Id, existingApprovalId, existing.Status, "Fortnox writes require approval before data is sent to Fortnox.", false);
++        }
++
++        var command = existing ?? new FortnoxWriteCommand(
++            request.WriteRequestId,
++            request.CompanyId,
++            request.ConnectionId,
++            request.ActorUserId,
++            request.HttpMethod,
++            request.Path,
++            await ResolveTargetCompanyAsync(request.CompanyId, cancellationToken),
++            request.EntityType,
++            request.PayloadSummary,
++            request.PayloadHash,
++            request.SanitizedPayloadJson,
++            request.CorrelationId,
++            now);
++
++        if (existing is null)
++        {
++            _dbContext.FortnoxWriteCommands.Add(command);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++
++        var approval = await CreateApprovalAsync(request, command, cancellationToken);
++        command.AttachApproval(approval.Id, now);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return new FortnoxWriteCommandResult(command.Id, approval.Id, command.Status, "Fortnox writes require approval before data is sent to Fortnox.", false);
+     }
+ 
+-    private async Task<ApprovalRequestDto> CreateApprovalAsync(
+-        FortnoxWriteApprovalCheck check,
++    public async Task<FortnoxWriteCommandResult> EnsureApprovedForExecutionAsync(
++        FortnoxWriteCommandRequest request,
+         CancellationToken cancellationToken)
+     {
+-        var target = await ResolveTargetCompanyAsync(check.CompanyId, cancellationToken);
+-        var context = new Dictionary<string, JsonNode?>
++        var command = await _dbContext.FortnoxWriteCommands
++            .SingleOrDefaultAsync(x => x.CompanyId == request.CompanyId && x.Id == request.WriteRequestId, cancellationToken)
++            ?? throw new FortnoxApprovalRequiredException(request.WriteRequestId, "No pending Fortnox write approval was found.");
++
++        if (command.Status == FortnoxWriteCommandStatuses.Executed)
+         {
+-            ["provider"] = "Fortnox",
+-            ["targetCompany"] = target,
+-            ["direction"] = "outbound",
+-            ["entityType"] = check.EntityType,
+-            ["httpMethod"] = check.HttpMethod,
+-            ["path"] = check.Path,
+-            ["payloadSummary"] = check.PayloadSummary,
+-            ["payloadHash"] = check.PayloadHash
+-        };
++            return new FortnoxWriteCommandResult(command.Id, command.ApprovalId, command.Status, "This Fortnox write has already completed.", false);
++        }
++
++        if (request.ApprovedApprovalId is not Guid approvalId || command.ApprovalId != approvalId)
++        {
++            throw new FortnoxApprovalRequiredException(command.ApprovalId ?? command.Id, "Fortnox write approval is required before execution.");
++        }
++
++        var approval = await _approvalRequestService.GetAsync(request.CompanyId, approvalId, cancellationToken);
++        if (!string.Equals(approval.Status, "approved", StringComparison.OrdinalIgnoreCase))
++        {
++            throw new FortnoxApprovalRequiredException(approval.Id, "Fortnox write approval is not approved.");
++        }
+ 
+-        return await _approvalRequestService.CreateAsync(
+-            check.CompanyId,
+-            new CreateApprovalRequestCommand(
+-                "fortnox_write",
+-                check.WriteRequestId,
+-                "human",
+-                ResolveRequester(check),
+-                ApprovalType,
+-                context,
+-                RequiredRole: "finance_approver"),
+-            cancellationToken);
++        var approver = approval.Steps.FirstOrDefault(x => x.DecidedByUserId.HasValue)?.DecidedByUserId;
++        command.MarkApproved(approval.Id, approver, _timeProvider.GetUtcNow().UtcDateTime);
++        command.MarkExecutionStarted(_timeProvider.GetUtcNow().UtcDateTime);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return new FortnoxWriteCommandResult(command.Id, approval.Id, command.Status, "Fortnox write is approved for execution.", true);
+     }
+ 
+-    private async Task AddApprovedWriteAuditAsync(
+-        FortnoxWriteApprovalCheck check,
+-        ApprovalRequestDto approval,
++    public async Task RecordExecutionSucceededAsync(
++        FortnoxWriteApprovalCheck check,
++        object? responsePayload,
+         CancellationToken cancellationToken)
+     {
++        var command = await _dbContext.FortnoxWriteCommands
++            .SingleOrDefaultAsync(x => x.CompanyId == check.CompanyId && x.Id == check.WriteRequestId, cancellationToken);
++        if (command is null || command.Status == FortnoxWriteCommandStatuses.Executed)
++        {
++            return;
++        }
++
++        var externalId = TryReadExternalId(responsePayload);
++        command.MarkExecuted(externalId, _timeProvider.GetUtcNow().UtcDateTime);
++
+         var alreadyRecorded = await _dbContext.FinanceIntegrationAuditEvents
+             .AsNoTracking()
+             .AnyAsync(x =>
+                 x.CompanyId == check.CompanyId &&
+                 x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                 x.EventType == "approved_write" &&
+-                x.CorrelationId == approval.Id.ToString("N"),
++                x.CorrelationId == command.ApprovalId!.Value.ToString("N"),
+                 cancellationToken);
+ 
+         if (alreadyRecorded)
+@@ -106,19 +146,89 @@ public sealed class FortnoxWriteApprovalService : IFortnoxWriteApprovalService
+             FinanceIntegrationAuditOutcomes.Succeeded,
+             check.EntityType,
+             check.WriteRequestId,
+-            null,
+-            approval.Id.ToString("N"),
++            externalId,
++            command.ApprovalId.Value.ToString("N"),
+             $"{check.HttpMethod} {check.EntityType} sent to Fortnox after approval.",
+             now);
+ 
+-        audit.Metadata["approver"] = approval.CurrentStep?.DecidedByUserId?.ToString("D") ?? "approved";
++        audit.Metadata["approver"] = command.ApprovedByUserId?.ToString("D") ?? "approved";
+         audit.Metadata["direction"] = "outbound";
+         audit.Metadata["payloadHash"] = check.PayloadHash;
+         audit.Metadata["payloadSummary"] = check.PayloadSummary;
+         _dbContext.FinanceIntegrationAuditEvents.Add(audit);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+     }
++
++    public async Task RecordExecutionFailedAsync(
++        FortnoxWriteApprovalCheck check,
++        Exception exception,
++        CancellationToken cancellationToken)
++    {
++        var command = await _dbContext.FortnoxWriteCommands
++            .SingleOrDefaultAsync(x => x.CompanyId == check.CompanyId && x.Id == check.WriteRequestId, cancellationToken);
++        if (command is null || command.Status == FortnoxWriteCommandStatuses.Executed)
++        {
++            return;
++        }
++
++        var safeMessage = exception is FortnoxApiException apiException
++            ? apiException.SafeMessage
++            : "Fortnox write could not be completed safely.";
++        var category = exception is FortnoxApiException fortnoxException
++            ? fortnoxException.Category
++            : exception.GetType().Name;
++
++        command.MarkFailed(category, safeMessage, _timeProvider.GetUtcNow().UtcDateTime);
++        _dbContext.FinanceIntegrationAuditEvents.Add(new FinanceIntegrationAuditEvent(
++            Guid.NewGuid(),
++            check.CompanyId,
++            check.ConnectionId,
++            FinanceIntegrationProviderKeys.Fortnox,
++            "approved_write",
++            FinanceIntegrationAuditOutcomes.Failed,
++            check.EntityType,
++            check.WriteRequestId,
++            null,
++            command.ApprovalId?.ToString("N") ?? check.CorrelationId,
++            safeMessage,
++            _timeProvider.GetUtcNow().UtcDateTime,
++            errorCount: 1));
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    public Task RecordExecutionSucceededAsync(FortnoxWriteCommandRequest request, object? responsePayload, CancellationToken cancellationToken) =>
++        RecordExecutionSucceededAsync(ToCheck(request), responsePayload, cancellationToken);
++
++    public Task RecordExecutionFailedAsync(FortnoxWriteCommandRequest request, Exception exception, CancellationToken cancellationToken) =>
++        RecordExecutionFailedAsync(ToCheck(request), exception, cancellationToken);
++
++    private async Task<ApprovalRequestDto> CreateApprovalAsync(
++        FortnoxWriteCommandRequest request,
++        FortnoxWriteCommand command,
++        CancellationToken cancellationToken)
++    {
++        var context = new Dictionary<string, JsonNode?>
++        {
++            ["provider"] = "Fortnox",
++            ["targetCompany"] = command.TargetCompany,
++            ["direction"] = "outbound",
++            ["entityType"] = request.EntityType,
++            ["httpMethod"] = request.HttpMethod,
++            ["path"] = request.Path,
++            ["payloadSummary"] = request.PayloadSummary,
++            ["payloadHash"] = request.PayloadHash
++        };
++
++        return await _approvalRequestService.CreateAsync(
++            request.CompanyId,
++            new CreateApprovalRequestCommand(
++                "fortnox_write",
++                command.Id,
++                "human",
++                ResolveRequester(request),
++                ApprovalType,
++                context,
++                RequiredRole: "finance_approver"),
++            cancellationToken);
++    }
+@@ -132,8 +242,52 @@ public sealed class FortnoxWriteApprovalService : IFortnoxWriteApprovalService
+             .Select(x => x.Name)
+             .SingleOrDefaultAsync(cancellationToken) ?? "Current company";
+ 
+-    private static Guid ResolveRequester(FortnoxWriteApprovalCheck check) =>
+-        check.ActorUserId is { } actorUserId && actorUserId != Guid.Empty
++    private static Guid ResolveRequester(FortnoxWriteCommandRequest request) =>
++        request.ActorUserId is { } actorUserId && actorUserId != Guid.Empty
+             ? actorUserId
+-            : check.CompanyId;
++            : request.CompanyId;
++
++    private static FortnoxWriteCommandRequest ToRequest(FortnoxWriteApprovalCheck check) =>
++        new(
++            check.CompanyId,
++            check.ConnectionId,
++            check.ActorUserId,
++            check.HttpMethod,
++            check.Path,
++            check.TargetCompany,
++            check.EntityType,
++            check.PayloadSummary,
++            check.PayloadHash,
++            check.SanitizedPayloadJson,
++            check.WriteRequestId,
++            null,
++            check.ApprovedApprovalId);
++
++    private static FortnoxWriteApprovalCheck ToCheck(FortnoxWriteCommandRequest request) =>
++        new(
++            request.CompanyId,
++            request.ConnectionId,
++            request.ActorUserId,
++            request.ApprovedApprovalId,
++            request.HttpMethod,
++            request.Path,
++            request.TargetCompany,
++            request.EntityType,
++            request.PayloadSummary,
++            request.PayloadHash,
++            request.SanitizedPayloadJson,
++            request.WriteRequestId);
++
++    private static string? TryReadExternalId(object? responsePayload)
++    {
++        if (responsePayload is null)
++        {
++            return null;
++        }
++
++        var json = System.Text.Json.JsonSerializer.SerializeToNode(responsePayload, FortnoxJson.Options);
++        if (json is not JsonObject obj)
++        {
++            return null;
++        }
++
++        return obj.SelectMany(x => x.Value is JsonObject nested ? nested : obj)
++            .FirstOrDefault(x => x.Key.Contains("Number", StringComparison.OrdinalIgnoreCase) || x.Key.Equals("id", StringComparison.OrdinalIgnoreCase))
++            .Value?.ToString();
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs
+@@ -224,6 +224,55 @@ internal sealed class FinanceIntegrationAuditEventEntityConfiguration : IEntityT
+     }
+ }
++
++internal sealed class FortnoxWriteCommandEntityConfiguration : IEntityTypeConfiguration<FortnoxWriteCommand>
++{
++    public void Configure(EntityTypeBuilder<FortnoxWriteCommand> builder)
++    {
++        builder.ToTable("fortnox_write_commands");
++        builder.HasKey(x => x.Id);
++
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ConnectionId).HasColumnName("connection_id");
++        builder.Property(x => x.ActorUserId).HasColumnName("actor_user_id");
++        builder.Property(x => x.ApprovalId).HasColumnName("approval_id");
++        builder.Property(x => x.ApprovedByUserId).HasColumnName("approved_by_user_id");
++        builder.Property(x => x.HttpMethod).HasColumnName("http_method").HasMaxLength(16).IsRequired();
++        builder.Property(x => x.Path).HasColumnName("path").HasMaxLength(512).IsRequired();
++        builder.Property(x => x.TargetCompany).HasColumnName("target_company").HasMaxLength(160).IsRequired();
++        builder.Property(x => x.EntityType).HasColumnName("entity_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.PayloadSummary).HasColumnName("payload_summary").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.PayloadHash).HasColumnName("payload_hash").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.SanitizedPayloadJson).HasColumnName("sanitized_payload_json").HasMaxLength(8000).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.FailureCategory).HasColumnName("failure_category").HasMaxLength(64);
++        builder.Property(x => x.SafeFailureSummary).HasColumnName("safe_failure_summary").HasMaxLength(1000);
++        builder.Property(x => x.ExternalId).HasColumnName("external_id").HasMaxLength(256);
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.ApprovedUtc).HasColumnName("approved_at");
++        builder.Property(x => x.ExecutionStartedUtc).HasColumnName("execution_started_at");
++        builder.Property(x => x.ExecutedUtc).HasColumnName("executed_at");
++        builder.Property(x => x.FailedUtc).HasColumnName("failed_at");
++
++        builder.HasIndex(x => new { x.CompanyId, x.PayloadHash, x.HttpMethod, x.Path, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.ApprovalId }).IsUnique().HasFilter("approval_id IS NOT NULL");
++        builder.HasIndex(x => new { x.CompanyId, x.ConnectionId, x.CreatedUtc });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Connection)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.ConnectionId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.SetNull);
++    }
++}
+ 
+ internal sealed class FinanceSourceTrackingConfiguration :
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -133,6 +133,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<FinanceIntegrationSyncState> FinanceIntegrationSyncStates => Set<FinanceIntegrationSyncState>();
+     public DbSet<FinanceExternalReference> FinanceExternalReferences => Set<FinanceExternalReference>();
+     public DbSet<FinanceIntegrationAuditEvent> FinanceIntegrationAuditEvents => Set<FinanceIntegrationAuditEvent>();
++    public DbSet<FortnoxWriteCommand> FortnoxWriteCommands => Set<FortnoxWriteCommand>();
+@@ -309,7 +310,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is FinanceIntegrationToken ||
+                 entry.Entity is FinanceIntegrationSyncState ||
+                 entry.Entity is FinanceExternalReference ||
+-                entry.Entity is FinanceIntegrationAuditEvent)
++                entry.Entity is FinanceIntegrationAuditEvent ||
++                entry.Entity is FortnoxWriteCommand)
+@@ -617,5 +619,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FinanceIntegrationAuditEvent>()
+             .HasQueryFilter(auditEvent =>
+                 CurrentCompanyId.HasValue && auditEvent.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FortnoxWriteCommand>()
++            .HasQueryFilter(command =>
++                CurrentCompanyId.HasValue && command.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -105,6 +105,7 @@ public static class DependencyInjection
+         services.AddScoped<FortnoxOAuthClient>();
+         services.AddScoped<IFortnoxMappingService, FortnoxMappingService>();
+         services.AddScoped<IFortnoxWriteApprovalService, FortnoxWriteApprovalService>();
++        services.AddScoped<IFortnoxWriteCommandService>(provider => (FortnoxWriteApprovalService)provider.GetRequiredService<IFortnoxWriteApprovalService>());
+         services.AddScoped<IFortnoxSyncService, FortnoxSyncService>();
+diff --git a/src/VirtualCompany.Domain/Enums/ApprovalEnums.cs b/src/VirtualCompany.Domain/Enums/ApprovalEnums.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Enums/ApprovalEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/ApprovalEnums.cs
+@@ -4,7 +4,8 @@ public enum ApprovalTargetEntityType
+ {
+     Task = 1,
+     Workflow = 2,
+-    Action = 3
++    Action = 3,
++    FortnoxWrite = 4
+ }
+@@ -15,7 +16,8 @@ public static class ApprovalTargetEntityTypeValues
+     {
+         [ApprovalTargetEntityType.Task] = "task",
+         [ApprovalTargetEntityType.Workflow] = "workflow",
+-        [ApprovalTargetEntityType.Action] = "action"
++        [ApprovalTargetEntityType.Action] = "action",
++        [ApprovalTargetEntityType.FortnoxWrite] = "fortnox_write"
+     };
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -463,6 +463,9 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             ApprovalTargetEntityType.Action => await _dbContext.ToolExecutionAttempts
+                 .AsNoTracking()
+                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
++            ApprovalTargetEntityType.FortnoxWrite => await _dbContext.FortnoxWriteCommands
++                .AsNoTracking()
++                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+             _ => false
+         };
+@@ -1158,6 +1161,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             var value when string.Equals(value, ApprovalTargetEntityType.Task.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Task",
+             var value when string.Equals(value, ApprovalTargetEntityType.Workflow.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Workflow",
+             var value when string.Equals(value, ApprovalTargetEntityType.Action.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Action",
++            var value when string.Equals(value, ApprovalTargetEntityType.FortnoxWrite.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Fortnox write",
+             _ => entityType
+         };
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430185000_AddFortnoxWriteCommands.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430185000_AddFortnoxWriteCommands.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430185000_AddFortnoxWriteCommands.cs
+@@ -0,0 +1,89 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[Migration("20260430185000_AddFortnoxWriteCommands")]
++public partial class AddFortnoxWriteCommands : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "fortnox_write_commands",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                connection_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                actor_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                approval_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                approved_by_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                http_method = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
++                path = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: false),
++                target_company = table.Column<string>(type: "nvarchar(160)", maxLength: 160, nullable: false),
++                entity_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                payload_summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
++                payload_hash = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
++                sanitized_payload_json = table.Column<string>(type: "nvarchar(max)", maxLength: 8000, nullable: false),
++                status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                failure_category = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
++                safe_failure_summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                external_id = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                correlation_id = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                updated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                approved_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                execution_started_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                executed_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                failed_at = table.Column<DateTime>(type: "datetime2", nullable: true)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_fortnox_write_commands", x => x.id);
++                table.ForeignKey(
++                    name: "FK_fortnox_write_commands_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_fortnox_write_commands_finance_integration_connections_company_id_connection_id",
++                    columns: x => new { x.company_id, x.connection_id },
++                    principalTable: "finance_integration_connections",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.SetNull);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_fortnox_write_commands_company_id_approval_id",
++            table: "fortnox_write_commands",
++            columns: new[] { "company_id", "approval_id" },
++            unique: true,
++            filter: "approval_id IS NOT NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_fortnox_write_commands_company_id_connection_id_created_at",
++            table: "fortnox_write_commands",
++            columns: new[] { "company_id", "connection_id", "created_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_fortnox_write_commands_company_id_payload_hash_http_method_path_status",
++            table: "fortnox_write_commands",
++            columns: new[] { "company_id", "payload_hash", "http_method", "path", "status" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "fortnox_write_commands");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxWriteCommandServiceTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxWriteCommandServiceTests.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FortnoxWriteCommandServiceTests.cs
+@@ -0,0 +1,69 @@
++using System.Text.Json.Nodes;
++using FluentAssertions;
++using VirtualCompany.Application.Finance;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FortnoxWriteCommandServiceTests
++{
++    [Fact]
++    public void Sanitizer_Redacts_Tokens_And_Secrets()
++    {
++        var payload = new
++        {
++            Customer = new
++            {
++                Name = "Acme AB",
++                access_token = "secret-token",
++                ClientSecret = "secret-client",
++                Email = "finance@example.test"
++            }
++        };
++
++        var sanitized = FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload);
++
++        sanitized.Should().Contain("*** redacted ***");
++        sanitized.Should().Contain("Acme AB");
++        sanitized.Should().NotContain("secret-token");
++        sanitized.Should().NotContain("secret-client");
++    }
++
++    [Fact]
++    public void Sanitizer_Hash_Is_Stable_For_Same_Sanitized_Payload()
++    {
++        var first = new { Customer = new { Name = "Acme AB", access_token = "one" } };
++        var second = new { Customer = new { Name = "Acme AB", access_token = "two" } };
++
++        FortnoxWritePayloadSanitizer.CreatePayloadHash(first)
++            .Should()
++            .Be(FortnoxWritePayloadSanitizer.CreatePayloadHash(second));
++    }
++
++    [Fact]
++    public void Write_Request_Carries_Approval_And_Duplicate_Prevention_Context()
++    {
++        var companyId = Guid.NewGuid();
++        var payload = new { Invoice = new { CustomerNumber = "100", Total = 1200m } };
++        var hash = FortnoxWritePayloadSanitizer.CreatePayloadHash(payload);
++
++        var request = new FortnoxWriteCommandRequest(
++            companyId,
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "POST",
++            "invoices",
++            "Example company",
++            "invoices",
++            FortnoxWritePayloadSanitizer.CreateSummary(payload),
++            hash,
++            FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload),
++            Guid.NewGuid(),
++            "correlation-1");
++
++        request.CompanyId.Should().Be(companyId);
++        request.PayloadHash.Should().Be(hash);
++        request.SanitizedPayloadJson.Should().NotContain("access_token");
++        request.HttpMethod.Should().Be("POST");
++        request.Path.Should().Be("invoices");
++    }
++}
+END_OF_PATCH

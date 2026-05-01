@@ -1,25 +1,48 @@
 @page "/finance/bills"
+@page "/finance/supplier-bills"
 @page "/finance/bills/{BillId:guid}"
+@page "/finance/supplier-bills/{BillId:guid}"
 @inherits FinancePageBase
 
-<PageTitle>Bills</PageTitle>
+<PageTitle>Supplier bills</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Bills"
-    Description="Inspect supplier bills and their linked agent insights inside the active company."
-    LoadingMessage="Loading bills workspace...">
-    <div class="row g-4 align-items-start">
-        <div class="col-lg-7">
-            <div class="wizard-card wizard-card--compact">
-                <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
+    Title="Supplier bills"
+    Description="Review supplier bills, due dates, payment status, and follow-up actions."
+    LoadingMessage="Loading bills..."
+    ShowShellHeader="false"
+    ShowShellNavigation="false">
+    <section class="bills-dashboard" aria-labelledby="bills-heading">
+        <div class="finance-overview-header">
+            <div>
+                <span class="finance-overview-kicker">Finance module</span>
+                <h1 id="bills-heading" class="finance-overview-title">Supplier bills</h1>
+                <p class="finance-overview-subtitle">Review supplier bills, due dates, payment status, and follow-up actions.</p>
+            </div>
+            <div class="finance-overview-header__actions">
+                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">Finance overview</a>
+                <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">Company dashboard</a>
+            </div>
+        </div>
+
+        <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
+
+        <div class="finance-subtab-nav" aria-label="Supplier bill sections">
+            <a class="finance-subtab-nav__link active" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBills, AccessState.CompanyId)">Bills</a>
+            <a class="finance-subtab-nav__link" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBillsReview, AccessState.CompanyId)">Review</a>
+        </div>
+
+        <div class="bills-layout">
+            <article class="bill-list-card">
+                <div class="bill-list-card__header">
                     <div>
-                        <h2 class="h5 mb-1">Bill list</h2>
-                        <p class="text-body-secondary mb-0">Supplier bills remain tenant-scoped and route-driven.</p>
+                        <h2>Bill list</h2>
+                        <p>Review supplier bills, amounts, due dates, and payment status.</p>
                     </div>
-                    <span class="badge text-bg-light">@Bills.Count item@(Bills.Count == 1 ? string.Empty : "s")</span>
+                    <span>@Bills.Count item@(Bills.Count == 1 ? string.Empty : "s")</span>
                 </div>
 
                 <FinanceDataState
@@ -27,37 +50,35 @@
                     IsEmpty="@IsListEmpty"
                     ErrorMessage="@ListErrorMessage"
                     LoadingTitle="Loading bills"
-                    LoadingMessage="Fetching tenant-scoped bills."
+                    LoadingMessage="Fetching bills."
                     EmptyTitle="No bills available"
-                    EmptyMessage="The active company does not currently have supplier bills to inspect."
+                    EmptyMessage="This company does not have supplier bills to review yet."
                     OnRetry="@ReloadAsync">
-                    <div class="list-group">
-                        @foreach (var bill in Bills)
+                    <div class="bill-list">
+                        @foreach (var bill in BillItems)
                         {
-                            <a class="@GetBillListItemClass(bill.Id)" href="@BuildBillHref(bill.Id)">
-                                <div class="d-flex w-100 justify-content-between gap-3">
-                                    <div>
-                                        <strong>@bill.BillNumber</strong>
-                                        <div class="text-body-secondary small mt-1">Supplier: @bill.CounterpartyName</div>
-                                        <div class="small mt-2">Received @FormatDate(bill.ReceivedUtc) | Due @FormatDate(bill.DueUtc)</div>
-                                    </div>
-                                    <div class="text-end">
-                                        <div class="fw-semibold">@FormatCurrency(bill.Amount, bill.Currency)</div>
-                                        <div class="mt-2"><span class="badge text-bg-light">@FormatLabel(bill.Status)</span></div>
-                                    </div>
-                                </div>
+                            <a class="@($"bill-list-item {(bill.IsSelected ? "is-selected" : string.Empty)}")" href="@BuildBillHref(bill.Id)">
+                                <span class="@($"bill-list-item__icon bill-tone--{bill.IconTone}")" aria-hidden="true">bill</span>
+                                <span class="bill-list-item__main">
+                                    <strong>@bill.DisplayBillNumber</strong>
+                                    <span>@bill.DisplaySupplierName</span>
+                                    <small>@bill.DateSummary</small>
+                                </span>
+                                <span class="bill-list-item__meta">
+                                    <strong>@bill.DisplayAmount</strong>
+                                    <span class="@($"bill-status-badge bill-status-badge--{bill.StatusTone}")">@bill.FriendlyStatusLabel</span>
+                                </span>
+                                <span class="bill-list-item__chevron" aria-hidden="true">›</span>
                             </a>
                         }
                     </div>
                 </FinanceDataState>
-            </div>
-        </div>
+            </article>
 
-        <div class="col-lg-5">
-            <div class="wizard-card wizard-card--compact">
+            <aside class="bill-detail-card">
                 @if (IsDetailLoading)
                 {
-                    <FinanceLoadingState Title="Loading bill detail" Message="Resolving the selected bill from the route." />
+                    <FinanceLoadingState Title="Loading bill detail" Message="Opening the selected bill." />
                 }
                 else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
                 {
@@ -65,26 +86,41 @@
                 }
                 else if (SelectedBill is null)
                 {
-                    <FinanceEmptyState Title="No bill selected" Message="Select a bill to inspect its detail panel." />
+                    <div class="bill-detail-empty">
+                        <div class="bill-detail-empty__icon" aria-hidden="true">doc</div>
+                        <h2>No bill selected</h2>
+                        <p>Select a bill to see details.</p>
+                    </div>
                 }
-                else
+                else if (SelectedBillDisplay is { } detail)
                 {
-                    <h2 class="h5">Bill detail</h2>
-                    <dl class="mb-4">
-                        <dt>Bill</dt>
-                        <dd>@SelectedBill.BillNumber</dd>
-                        <dt>Supplier</dt>
-                        <dd>@SelectedBill.CounterpartyName</dd>
-                        <dt>Status</dt>
-                        <dd><span class="badge text-bg-light">@FormatLabel(SelectedBill.Status)</span></dd>
-                        <dt>Amount</dt>
-                        <dd>@FormatCurrency(SelectedBill.Amount, SelectedBill.Currency)</dd>
-                        <dt>Received</dt>
-                        <dd>@FormatDate(SelectedBill.ReceivedUtc)</dd>
-                        <dt>Due</dt>
-                        <dd>@FormatDate(SelectedBill.DueUtc)</dd>
-                    </dl>
+                    <div class="bill-detail-panel">
+                        <div class="bill-detail-panel__header">
+                            <div>
+                                <h2>@detail.DisplayBillNumber</h2>
+                                <p>@detail.DisplaySupplierName</p>
+                            </div>
+                            <span class="@($"bill-status-badge bill-status-badge--{detail.StatusTone}")">@detail.FriendlyStatusLabel</span>
+                        </div>
 
+                        <div class="bill-detail-panel__amount">@detail.DisplayAmount</div>
+
+                        <dl class="bill-detail-list">
+                            <div><dt>Supplier</dt><dd>@detail.DisplaySupplierName</dd></div>
+                            <div><dt>Received date</dt><dd>@detail.DisplayReceivedDate</dd></div>
+                            <div><dt>Due date</dt><dd>@detail.DisplayDueDate</dd></div>
+                            <div><dt>Payment status</dt><dd>@detail.FriendlyStatusLabel</dd></div>
+                            <div><dt>Approval status</dt><dd>@detail.ApprovalStatus</dd></div>
+                        </dl>
+
+                        <section class="bill-detail-section">
+                            <h3>Follow-up</h3>
+                            <p>@detail.WarningSummary</p>
+                        </section>
+                    </div>
+
+                    <section class="bill-detail-section">
+                        <h3>Linked document</h3>
                     <FinanceLinkedResourceState
                         Availability="@SelectedBill.LinkedDocument.Availability"
                         Message="@SelectedBill.LinkedDocument.Message"
@@ -94,15 +130,16 @@
                         CanNavigate="@SelectedBill.LinkedDocument.CanNavigate"
                         NavigateHref="@(SelectedBill.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedBill.LinkedDocument.Document.Id))"
                         ActionText="Open linked document" />
+                    </section>
 
                     <AgentInsightsPanel
                         Title="Agent insights"
-                        Subtitle="Persisted finance agent insights linked to this bill."
+                        Subtitle="Finance notes linked to this bill."
                         EmptyMessage="No agent insights are linked to this bill."
                         TestId="bill-agent-insights-panel"
                         Items="@SelectedBill.AgentInsights" />
                 }
-            </div>
+            </aside>
         </div>
-    </div>
+    </section>
 </FinancePageLayout>

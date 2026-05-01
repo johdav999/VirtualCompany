@@ -91,11 +91,11 @@ public sealed class TodayFocusApiClient
         new()
         {
             Id = "anomaly-4df1af18bf984d7ea1f074f59b13f7b3",
-            Title = "Investigate spend anomaly",
-            Description = "A recent finance anomaly was flagged and should be investigated.",
+            Title = "Investigate finance issue",
+            Description = "A recent finance issue was flagged and should be investigated.",
             ActionType = "investigate",
             PriorityScore = 67,
-            NavigationTarget = $"/finance/anomalies/4df1af18-bf98-4d7e-a1f0-74f59b13f7b3?companyId={companyId:D}",
+            NavigationTarget = $"/finance/issues/4df1af18-bf98-4d7e-a1f0-74f59b13f7b3?companyId={companyId:D}",
             SourceType = "anomaly"
         }
     ];

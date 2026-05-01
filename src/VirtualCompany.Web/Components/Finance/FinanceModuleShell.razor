@@ -1,31 +1,37 @@
-<section class="py-4 dashboard-hero finance-module-shell">
-    <div class="wizard-card finance-module-shell__hero">
-        <div class="finance-module-shell__hero-main">
-            <span class="dashboard-kicker">Finance module</span>
-            <h1>@Title</h1>
-            <p class="lead mb-2">@Description</p>
-            <p class="text-body-secondary mb-0">
-                Tenant scope: <strong>@CompanyName</strong>
-                @if (!string.IsNullOrWhiteSpace(MembershipRole))
-                {
-                    <span> | Role: @MembershipRole</span>
-                }
-            </p>
-        </div>
+<section class="@ShellClass">
+    @if (ShowHeader)
+    {
+        <div class="wizard-card finance-module-shell__hero">
+            <div class="finance-module-shell__hero-main">
+                <span class="dashboard-kicker">@AreaLabel</span>
+                <h1>@Title</h1>
+                <p class="lead mb-2">@Description</p>
+                <p class="text-body-secondary mb-0">
+                    Company: <strong>@CompanyName</strong>
+                    @if (!string.IsNullOrWhiteSpace(MembershipRole))
+                    {
+                        <span> | Role: @MembershipRole</span>
+                    }
+                </p>
+            </div>
 
-        <div class="finance-module-shell__hero-actions">
-            <div class="dashboard-actions">
-                <NavLink class="btn btn-outline-primary" href="@FinanceHomeHref" Match="NavLinkMatch.Prefix">Finance home</NavLink>
-                <NavLink class="btn btn-outline-secondary" href="@DashboardHref" Match="NavLinkMatch.All">Company dashboard</NavLink>
+            <div class="finance-module-shell__hero-actions">
+                <div class="dashboard-actions">
+                    <NavLink class="btn btn-outline-primary" href="@AreaHomeHref" Match="NavLinkMatch.Prefix">@AreaHomeLabel</NavLink>
+                    <NavLink class="btn btn-outline-secondary" href="@DashboardHref" Match="NavLinkMatch.All">Company dashboard</NavLink>
+                </div>
             </div>
         </div>
-    </div>
+    }
 
-    <div class="wizard-card wizard-card--compact finance-module-shell__nav">
-        <div class="finance-module-shell__nav-header">
-            <FinanceSectionNav CompanyId="@CompanyId" MembershipRole="@MembershipRole" />
+    @if (ShowNavigation)
+    {
+        <div class="wizard-card wizard-card--compact finance-module-shell__nav">
+            <div class="finance-module-shell__nav-header">
+                <FinanceSectionNav CompanyId="@CompanyId" MembershipRole="@MembershipRole" Area="@Area" />
+            </div>
         </div>
-    </div>
+    }
 
     @if (ChildContent is not null)
     {
@@ -41,9 +47,40 @@
     [Parameter] public Guid CompanyId { get; set; }
     [Parameter] public string CompanyName { get; set; } = string.Empty;
     [Parameter] public string? MembershipRole { get; set; }
+    [Parameter] public string Area { get; set; } = "Finance";
+    [Parameter] public bool ShowHeader { get; set; } = true;
+    [Parameter] public bool ShowNavigation { get; set; } = true;
     [Parameter] public RenderFragment? ChildContent { get; set; }
 
-    private string FinanceHomeHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId);
+    private string AreaHomeHref => FinanceRoutes.WithCompanyContext(
+        Area switch
+        {
+            "SimulationLab" => FinanceRoutes.SandboxAdmin,
+            "SystemAdmin" => FinanceRoutes.TransparencyToolRegistry,
+            _ => FinanceRoutes.Home
+        },
+        CompanyId);
+
+    private string AreaLabel =>
+        Area switch
+        {
+            "SimulationLab" => "Simulation Lab",
+            "SystemAdmin" => "System / Admin",
+            _ => "Finance"
+        };
+
+    private string AreaHomeLabel =>
+        Area switch
+        {
+            "SimulationLab" => "Simulation Lab",
+            "SystemAdmin" => "System tools",
+            _ => "Finance overview"
+        };
 
     private string DashboardHref => $"/dashboard?companyId={CompanyId}";
+
+    private string ShellClass =>
+        ShowHeader || ShowNavigation
+            ? "py-4 dashboard-hero finance-module-shell"
+            : "py-4 dashboard-hero finance-module-shell finance-module-shell--bare";
 }

@@ -1,0 +1,368 @@
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
+@@ -272,6 +272,10 @@ public sealed class FinanceIntegrationAuditEvent : ICompanyOwnedEntity
+     public string? CorrelationId { get; private set; }
+     public string? Summary { get; private set; }
+     public JsonObject Metadata { get; private set; } = [];
++    public int CreatedCount { get; private set; }
++    public int UpdatedCount { get; private set; }
++    public int SkippedCount { get; private set; }
++    public int ErrorCount { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public FinanceIntegrationConnection? Connection { get; private set; }
+@@ -289,7 +293,11 @@ public sealed class FinanceIntegrationAuditEvent : ICompanyOwnedEntity
+         string? externalId,
+         string? correlationId,
+         string? summary,
+-        DateTime createdUtc)
++        DateTime createdUtc,
++        int createdCount = 0,
++        int updatedCount = 0,
++        int skippedCount = 0,
++        int errorCount = 0)
+     {
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
+@@ -303,9 +311,19 @@ public sealed class FinanceIntegrationAuditEvent : ICompanyOwnedEntity
+         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+         Summary = NormalizeOptional(summary, nameof(summary), 1000);
+         Metadata = [];
++        CreatedCount = NormalizeCount(createdCount, nameof(createdCount));
++        UpdatedCount = NormalizeCount(updatedCount, nameof(updatedCount));
++        SkippedCount = NormalizeCount(skippedCount, nameof(skippedCount));
++        ErrorCount = NormalizeCount(errorCount, nameof(errorCount));
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
+     }
+ 
++    private static int NormalizeCount(int value, string name)
++    {
++        if (value < 0) throw new ArgumentOutOfRangeException(name, $"{name} cannot be negative.");
++        return value;
++    }
++
+     private static string? NormalizeOptional(string? value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value)) return null;
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxOptions.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxOptions.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxOptions.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxOptions.cs
+@@ -12,7 +12,7 @@ public sealed class FortnoxOptions
+     public string ClientSecret { get; set; } = string.Empty;
+     public string RedirectUri { get; set; } = string.Empty;
+     public string AuthorizationUrl { get; set; } = "https://apps.fortnox.se/oauth-v1/auth";
+     public string TokenUrl { get; set; } = "https://apps.fortnox.se/oauth-v1/token";
+-    public string ApiBaseUrl { get; set; } = "https://api.fortnox.se/3/";
++    public string ApiBaseUrl { get; set; } = "https://api.fortnox.se/3";
+     public int ApiMaxRetries { get; set; } = 3;
+     public int ApiRetryBaseDelayMilliseconds { get; set; } = 200;
+     public int ApiMaxRetryDelaySeconds { get; set; } = 30;
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs
+@@ -36,15 +36,15 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             connection.Id,
+             command.CorrelationId);
+ 
+-        entityResults.Add(await SyncEntityAsync("accounts", state => SyncAccountsAsync(context, state, cancellationToken), cancellationToken));
+-        entityResults.Add(await SyncEntityAsync("customers", state => SyncCustomersAsync(context, state, cancellationToken), cancellationToken));
+-        entityResults.Add(await SyncEntityAsync("suppliers", state => SyncSuppliersAsync(context, state, cancellationToken), cancellationToken));
+-        entityResults.Add(await SyncEntityAsync("articles", state => SyncArticlesAsync(context, state, cancellationToken), cancellationToken));
+-        entityResults.Add(await SyncEntityAsync("projects", state => SyncProjectsAsync(context, state, cancellationToken), cancellationToken));
+-        entityResults.Add(await SyncEntityAsync("invoices", state => SyncInvoicesAsync(context, state, cancellationToken), cancellationToken));
+-        entityResults.Add(await SyncEntityAsync("supplier_invoices", state => SyncSupplierInvoicesAsync(context, state, cancellationToken), cancellationToken));
+-        entityResults.Add(await SyncEntityAsync("vouchers", state => SyncVouchersAsync(context, state, cancellationToken), cancellationToken));
+-        entityResults.Add(await SyncEntityAsync("payments", state => SyncPaymentActivityAsync(context, state, cancellationToken), cancellationToken));
++        entityResults.Add(await SyncEntityAsync(connection, "accounts", state => SyncAccountsAsync(context, state, cancellationToken), cancellationToken));
++        entityResults.Add(await SyncEntityAsync(connection, "customers", state => SyncCustomersAsync(context, state, cancellationToken), cancellationToken));
++        entityResults.Add(await SyncEntityAsync(connection, "suppliers", state => SyncSuppliersAsync(context, state, cancellationToken), cancellationToken));
++        entityResults.Add(await SyncEntityAsync(connection, "articles", state => SyncArticlesAsync(context, state, cancellationToken), cancellationToken));
++        entityResults.Add(await SyncEntityAsync(connection, "projects", state => SyncProjectsAsync(context, state, cancellationToken), cancellationToken));
++        entityResults.Add(await SyncEntityAsync(connection, "invoices", state => SyncInvoicesAsync(context, state, cancellationToken), cancellationToken));
++        entityResults.Add(await SyncEntityAsync(connection, "supplier_invoices", state => SyncSupplierInvoicesAsync(context, state, cancellationToken), cancellationToken));
++        entityResults.Add(await SyncEntityAsync(connection, "vouchers", state => SyncVouchersAsync(context, state, cancellationToken), cancellationToken));
++        entityResults.Add(await SyncEntityAsync(connection, "payments", state => SyncPaymentActivityAsync(context, state, cancellationToken), cancellationToken));
+ 
+         var completedUtc = _timeProvider.GetUtcNow().UtcDateTime;
+         var errors = entityResults.Sum(x => x.Errors);
+@@ -76,7 +76,11 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             command.CorrelationId,
+             BuildHistorySummary(entityResults),
+             completedUtc));
++            entityResults.Sum(x => x.Created),
++            entityResults.Sum(x => x.Updated),
++            entityResults.Sum(x => x.Skipped),
++            errors));
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+@@ -116,12 +120,13 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+     }
+ 
+     private async Task<FortnoxEntitySyncResult> SyncEntityAsync(
++        FinanceIntegrationConnection connection,
+         string entityType,
+         Func<FinanceIntegrationSyncState, Task<EntityCounters>> sync,
+         CancellationToken cancellationToken)
+     {
+         var startedUtc = _timeProvider.GetUtcNow().UtcDateTime;
+-        var state = await GetOrCreateSyncStateAsync(entityType, startedUtc, cancellationToken);
++        var state = await GetOrCreateSyncStateAsync(connection, entityType, startedUtc, cancellationToken);
+         state.MarkStarted(startedUtc);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+@@ -159,7 +164,11 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+                 null,
+                 null,
+                 safeMessage,
+-                completedUtc));
++                completedUtc,
++                createdCount: 0,
++                updatedCount: 0,
++                skippedCount: 0,
++                errorCount: 1));
+ 
+             await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+@@ -286,7 +295,6 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         {
+             counterparty = new FinanceCounterparty(Guid.NewGuid(), companyId, model.Name, model.CounterpartyType, model.Email, taxId: model.TaxId);
+             _dbContext.FinanceCounterparties.Add(counterparty);
+-            AddSource(counterparty, model.CounterpartyType, model.ExternalId);
+             await AddReferenceAsync(companyId, connectionId, model.CounterpartyType, counterparty.Id, model.ExternalId, model.ExternalNumber, model.ExternalUpdatedUtc, cancellationToken);
+             return SyncMutationResult.Created(model.ExternalUpdatedUtc);
+         }
+@@ -294,6 +302,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         counterparty = await _dbContext.FinanceCounterparties.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
+         counterparty.UpdateMasterData(model.Name, model.CounterpartyType, model.Email, taxId: model.TaxId);
+         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
++        AttachSource(counterparty, model.CounterpartyType, model.ExternalId, existing.Id);
+         return SyncMutationResult.Updated(model.ExternalUpdatedUtc);
+     }
+ 
+@@ -307,7 +316,6 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         {
+             account = new FinanceAccount(Guid.NewGuid(), companyId, model.Code, model.Name, model.AccountType, "SEK", 0m, _timeProvider.GetUtcNow().UtcDateTime);
+             _dbContext.FinanceAccounts.Add(account);
+-            AddSource(account, "account", model.ExternalId);
+             await AddReferenceAsync(companyId, connectionId, "account", account.Id, model.ExternalId, model.ExternalNumber, model.ExternalUpdatedUtc, cancellationToken);
+             return SyncMutationResult.Created(model.ExternalUpdatedUtc);
+         }
+@@ -315,6 +323,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         account = await _dbContext.FinanceAccounts.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
+         account.ApplySyncedSnapshot(model.Code, model.Name, model.AccountType, "SEK", account.OpeningBalance, account.OpenedUtc, _timeProvider.GetUtcNow().UtcDateTime);
+         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
++        AttachSource(account, "account", model.ExternalId, existing.Id);
+         return SyncMutationResult.Updated(model.ExternalUpdatedUtc);
+     }
+ 
+@@ -338,7 +347,6 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         {
+             invoice = new FinanceInvoice(Guid.NewGuid(), companyId, counterparty.Id, model.ExternalNumber, model.IssuedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, settlementStatus: model.SettlementStatus);
+             _dbContext.FinanceInvoices.Add(invoice);
+-            AddSource(invoice, "invoice", model.ExternalId);
+             await AddReferenceAsync(companyId, connectionId, "invoice", invoice.Id, model.ExternalId, model.ExternalNumber, model.ExternalUpdatedUtc, cancellationToken);
+             return SyncMutationResult.Created(model.ExternalUpdatedUtc);
+         }
+@@ -346,6 +354,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         invoice = await _dbContext.FinanceInvoices.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
+         invoice.ApplySyncedSnapshot(counterparty.Id, model.IssuedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, model.SettlementStatus);
+         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
++        AttachSource(invoice, "invoice", model.ExternalId, existing.Id);
+         return SyncMutationResult.Updated(model.ExternalUpdatedUtc);
+     }
+ 
+@@ -361,7 +370,6 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         {
+             bill = new FinanceBill(Guid.NewGuid(), companyId, counterparty.Id, model.ExternalNumber, model.ReceivedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, settlementStatus: model.SettlementStatus);
+             _dbContext.FinanceBills.Add(bill);
+-            AddSource(bill, "supplier_invoice", model.ExternalId);
+             await AddReferenceAsync(companyId, connectionId, "supplier_invoice", bill.Id, model.ExternalId, model.ExternalNumber, model.ExternalUpdatedUtc, cancellationToken);
+             return SyncMutationResult.Created(model.ExternalUpdatedUtc);
+         }
+@@ -369,6 +377,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         bill = await _dbContext.FinanceBills.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
+         bill.ApplySyncedSnapshot(counterparty.Id, model.ReceivedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, model.SettlementStatus);
+         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
++        AttachSource(bill, "supplier_invoice", model.ExternalId, existing.Id);
+         return SyncMutationResult.Updated(model.ExternalUpdatedUtc);
+     }
+ 
+@@ -385,7 +394,6 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         {
+             transaction = new FinanceTransaction(Guid.NewGuid(), companyId, account.Id, null, null, null, model.TransactionUtc, "voucher", model.Amount, "SEK", model.Description, model.ExternalNumber);
+             _dbContext.FinanceTransactions.Add(transaction);
+-            AddSource(transaction, "voucher", model.ExternalId);
+             await AddReferenceAsync(companyId, connectionId, "voucher", transaction.Id, model.ExternalId, model.ExternalNumber, model.ExternalUpdatedUtc, cancellationToken);
+             return SyncMutationResult.Created(model.ExternalUpdatedUtc);
+         }
+@@ -393,6 +401,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         transaction = await _dbContext.FinanceTransactions.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
+         transaction.ChangeCategory("voucher");
+         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
++        AttachSource(transaction, "voucher", model.ExternalId, existing.Id);
+         return SyncMutationResult.Updated(model.ExternalUpdatedUtc);
+     }
+ 
+@@ -401,14 +410,13 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         var existing = await FindReferenceAsync(companyId, connectionId, "payment", externalId, cancellationToken);
+         if (existing is null)
+         {
+             _dbContext.Payments.Add(incoming);
+-            AddSource(incoming, "payment", externalId);
+             await AddReferenceAsync(companyId, connectionId, "payment", incoming.Id, externalId, externalNumber, null, cancellationToken);
+             return SyncMutationResult.Created(null);
+         }
+ 
+-        var payment = await _dbContext.Payments.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
+-        payment.ApplySyncedSnapshot(incoming.PaymentType, incoming.Amount, incoming.Currency, incoming.PaymentDate, incoming.Method, incoming.Status, incoming.CounterpartyReference);
+-        existing.Refresh(externalNumber, null, _timeProvider.GetUtcNow().UtcDateTime);
+-        return SyncMutationResult.Updated(null);
++        var payment = await _dbContext.Payments.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        AttachSource(payment, "payment", externalId, existing.Id);
++        return SyncMutationResult.Skipped(null);
+     }
+ 
+     private async Task<SyncMutationResult> UpsertReferenceOnlyAsync(Guid companyId, Guid connectionId, string entityType, string externalId, string externalNumber, DateTime? externalUpdatedUtc, CancellationToken cancellationToken)
+@@ -438,7 +446,6 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+ 
+         var counterparty = new FinanceCounterparty(Guid.NewGuid(), companyId, name, type);
+         _dbContext.FinanceCounterparties.Add(counterparty);
+-        AddSource(counterparty, type, externalNumber);
+         await AddReferenceAsync(companyId, connectionId, type, counterparty.Id, externalNumber, externalNumber, null, cancellationToken);
+         return counterparty;
+     }
+@@ -471,18 +478,16 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+     private async Task AddReferenceAsync(Guid companyId, Guid connectionId, string entityType, Guid internalRecordId, string externalId, string? externalNumber, DateTime? externalUpdatedUtc, CancellationToken cancellationToken)
+     {
+         var reference = new FinanceExternalReference(Guid.NewGuid(), companyId, connectionId, FinanceIntegrationProviderKeys.Fortnox, entityType, internalRecordId, externalId, externalNumber, externalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
+         _dbContext.FinanceExternalReferences.Add(reference);
+-        await _dbContext.SaveChangesAsync(cancellationToken);
++        AttachSource(internalRecordId, entityType, externalId, reference.Id);
++        await Task.CompletedTask;
++    }
+ 
++    private void AttachSource(Guid internalRecordId, string entityType, string externalId, Guid referenceId)
++    {
+         var tracked = _dbContext.ChangeTracker.Entries()
+             .FirstOrDefault(entry => entry.Metadata.FindProperty("FinanceExternalReferenceId") is not null &&
+                                      entry.Properties.Any(property => property.Metadata.Name == "Id" && property.CurrentValue is Guid id && id == internalRecordId));
+-        if (tracked is not null)
+-        {
+-            tracked.Property("FinanceExternalReferenceId").CurrentValue = reference.Id;
+-        }
++        if (tracked is not null) AttachSource(tracked.Entity, entityType, externalId, referenceId);
+     }
+ 
+-    private static void AddSource(object entity, string entityType, string externalId)
++    private void AttachSource(object entity, string entityType, string externalId, Guid referenceId)
+     {
+-        // Shadow source columns keep Fortnox records visible to normal finance read models without leaking provider DTOs.
++        var entry = _dbContext.Entry(entity);
++        if (entry.Metadata.FindProperty("SourceType") is not null) entry.Property("SourceType").CurrentValue = FinanceRecordSourceTypes.Fortnox;
++        if (entry.Metadata.FindProperty("ProviderKey") is not null) entry.Property("ProviderKey").CurrentValue = FinanceIntegrationProviderKeys.Fortnox;
++        if (entry.Metadata.FindProperty("ProviderExternalId") is not null) entry.Property("ProviderExternalId").CurrentValue = externalId;
++        if (entry.Metadata.FindProperty("FinanceExternalReferenceId") is not null) entry.Property("FinanceExternalReferenceId").CurrentValue = referenceId;
+     }
+ 
+-    private async Task<FinanceIntegrationSyncState> GetOrCreateSyncStateAsync(string entityType, DateTime now, CancellationToken cancellationToken)
++    private async Task<FinanceIntegrationSyncState> GetOrCreateSyncStateAsync(FinanceIntegrationConnection connection, string entityType, DateTime now, CancellationToken cancellationToken)
+     {
+-        var connection = await _dbContext.FinanceIntegrationConnections
+-            .SingleAsync(x => x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox, cancellationToken);
+         var state = await _dbContext.FinanceIntegrationSyncStates.SingleOrDefaultAsync(
+             x => x.CompanyId == connection.CompanyId &&
+                  x.ConnectionId == connection.Id &&
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs
+@@ -185,6 +185,10 @@ internal sealed class FinanceIntegrationAuditEventEntityConfiguration : IEntityT
+         builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
+         builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(1000);
++        builder.Property(x => x.CreatedCount).HasColumnName("created_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.UpdatedCount).HasColumnName("updated_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.SkippedCount).HasColumnName("skipped_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.ErrorCount).HasColumnName("error_count").HasDefaultValue(0).IsRequired();
+         FinanceIntegrationConnectionEntityConfiguration.HasJsonObjectConversion(builder.Property(x => x.Metadata).HasColumnName("metadata_json"))
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430170000_AddFortnoxIntegrationFoundation.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430170000_AddFortnoxIntegrationFoundation.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430170000_AddFortnoxIntegrationFoundation.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430170000_AddFortnoxIntegrationFoundation.cs
+@@ -157,6 +157,10 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     external_id = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
+                     correlation_id = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
+                     summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                    created_count = table.Column<int>(type: "int", nullable: false, defaultValue: 0),
++                    updated_count = table.Column<int>(type: "int", nullable: false, defaultValue: 0),
++                    skipped_count = table.Column<int>(type: "int", nullable: false, defaultValue: 0),
++                    error_count = table.Column<int>(type: "int", nullable: false, defaultValue: 0),
+                     metadata_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'"),
+                     created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
+                 },
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430173500_AddFortnoxSyncSummaryCounts.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430173500_AddFortnoxSyncSummaryCounts.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260430173500_AddFortnoxSyncSummaryCounts.cs
+@@ -0,0 +1,48 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    [Migration("20260430173500_AddFortnoxSyncSummaryCounts")]
++    [DbContext(typeof(VirtualCompanyDbContext))]
++    public partial class AddFortnoxSyncSummaryCounts : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            if (ActiveProvider != "Microsoft.EntityFrameworkCore.SqlServer")
++            {
++                return;
++            }
++
++            migrationBuilder.AddColumn<int>("created_count", "finance_integration_audit_events", type: "int", nullable: false, defaultValue: 0);
++            migrationBuilder.AddColumn<int>("updated_count", "finance_integration_audit_events", type: "int", nullable: false, defaultValue: 0);
++            migrationBuilder.AddColumn<int>("skipped_count", "finance_integration_audit_events", type: "int", nullable: false, defaultValue: 0);
++            migrationBuilder.AddColumn<int>("error_count", "finance_integration_audit_events", type: "int", nullable: false, defaultValue: 0);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            if (ActiveProvider != "Microsoft.EntityFrameworkCore.SqlServer")
++            {
++                return;
++            }
++
++            migrationBuilder.DropColumn("created_count", "finance_integration_audit_events");
++            migrationBuilder.DropColumn("updated_count", "finance_integration_audit_events");
++            migrationBuilder.DropColumn("skipped_count", "finance_integration_audit_events");
++            migrationBuilder.DropColumn("error_count", "finance_integration_audit_events");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs
+@@ -40,6 +40,10 @@ public sealed class FinanceIntegrationFoundationTests
+         Assert.Contains("event_type", auditColumns);
+         Assert.Contains("outcome", auditColumns);
+         Assert.Contains("correlation_id", auditColumns);
++        Assert.Contains("created_count", auditColumns);
++        Assert.Contains("updated_count", auditColumns);
++        Assert.Contains("skipped_count", auditColumns);
++        Assert.Contains("error_count", auditColumns);
+         Assert.Contains("metadata_json", auditColumns);
+ 
+         foreach (var tableName in SourceTrackedTables)
+END_OF_PATCH

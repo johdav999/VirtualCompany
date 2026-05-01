@@ -1,0 +1,842 @@
+diff --git a/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs b/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs
+@@ -13,6 +13,10 @@ public sealed record RefreshFortnoxAccessTokenCommand(
+     Guid CompanyId,
+     Guid? ConnectionId = null);
+ 
++public sealed record DisconnectFortnoxConnectionCommand(
++    Guid CompanyId,
++    Guid UserId);
++
+ public sealed record GetFortnoxConnectionStatusQuery(
+     Guid CompanyId,
+     Guid UserId);
+@@ -50,6 +54,14 @@ public sealed record FortnoxTokenSnapshot(
+     IReadOnlyCollection<string> GrantedScopes,
+     string? ProviderTenantId);
+ 
++public sealed record FortnoxConnectionDisconnectResult(
++    Guid CompanyId,
++    Guid? ConnectionId,
++    string Status,
++    DateTime DisconnectedUtc,
++    string Message);
++
+ public interface IFortnoxOAuthSessionStore
+ {
+     Task<string> CreateAsync(FortnoxOAuthState state, TimeSpan ttl, CancellationToken cancellationToken);
+@@ -63,6 +75,7 @@ public interface IFortnoxTokenStore
+     Task<FortnoxTokenSnapshot> UpsertConnectedAsync(Guid companyId, Guid userId, FortnoxOAuthTokenResult tokenResult, DateTime nowUtc, CancellationToken cancellationToken);
+     Task<FortnoxTokenSnapshot> StoreRefreshResultAsync(Guid companyId, Guid connectionId, FortnoxOAuthTokenResult tokenResult, DateTime nowUtc, CancellationToken cancellationToken);
+     Task MarkAsync(Guid companyId, Guid connectionId, string status, string safeReason, DateTime nowUtc, CancellationToken cancellationToken);
++    Task<FortnoxTokenSnapshot?> DisconnectAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken);
+ }
+ 
+ public sealed class FortnoxOAuthException : Exception
+@@ -91,5 +104,6 @@ public interface IFortnoxOAuthService
+     Task<FortnoxAccessTokenResult> GetValidAccessTokenAsync(RefreshFortnoxAccessTokenCommand command, CancellationToken cancellationToken);
+     Task<FortnoxConnectionStatusResult> GetStatusAsync(GetFortnoxConnectionStatusQuery query, CancellationToken cancellationToken);
+     Task MarkNeedsReconnectAsync(Guid companyId, Guid connectionId, string safeReason, CancellationToken cancellationToken);
++    Task<FortnoxConnectionDisconnectResult> DisconnectAsync(DisconnectFortnoxConnectionCommand command, CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Application/Finance/FortnoxSyncContracts.cs b/src/VirtualCompany.Application/Finance/FortnoxSyncContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Finance/FortnoxSyncContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FortnoxSyncContracts.cs
+@@ -4,6 +4,10 @@ public sealed record RunFortnoxSyncCommand(
+     Guid? ConnectionId = null,
+     string? CorrelationId = null);
+ 
++public sealed record GetFortnoxSyncHistoryQuery(
++    Guid CompanyId,
++    int Limit = 25);
++
+ public sealed record FortnoxEntitySyncResult(
+     string EntityType,
+     int Created,
+@@ -29,9 +33,27 @@ public sealed record FortnoxSyncResult(
+     IReadOnlyList<FortnoxEntitySyncResult> Entities,
+     string? ErrorSummary = null);
+ 
++public sealed record FortnoxSyncHistoryItem(
++    Guid Id,
++    Guid? ConnectionId,
++    DateTime StartedUtc,
++    DateTime? CompletedUtc,
++    string Status,
++    int Created,
++    int Updated,
++    int Skipped,
++    int Errors,
++    string Summary,
++    string? ErrorSummary);
++
++public sealed record FortnoxSyncHistoryResult(
++    Guid CompanyId,
++    IReadOnlyList<FortnoxSyncHistoryItem> Items);
++
+ public interface IFortnoxSyncService
+ {
+     Task<FortnoxSyncResult> SyncAsync(RunFortnoxSyncCommand command, CancellationToken cancellationToken);
++    Task<FortnoxSyncHistoryResult> GetHistoryAsync(GetFortnoxSyncHistoryQuery query, CancellationToken cancellationToken);
+ }
+ 
+ public interface IFortnoxMappingService
+diff --git a/src/VirtualCompany.Api/Controllers/FortnoxConnectionsController.cs b/src/VirtualCompany.Api/Controllers/FortnoxConnectionsController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/FortnoxConnectionsController.cs
++++ b/src/VirtualCompany.Api/Controllers/FortnoxConnectionsController.cs
+@@ -62,6 +62,28 @@ public sealed class FortnoxConnectionsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("sync-history")]
++    public async Task<ActionResult<FortnoxSyncHistoryResult>> SyncHistoryAsync(
++        Guid companyId,
++        [FromQuery] int limit,
++        CancellationToken cancellationToken)
++    {
++        var result = await _fortnoxSyncService.GetHistoryAsync(
++            new GetFortnoxSyncHistoryQuery(companyId, limit <= 0 ? 25 : Math.Min(limit, 100)),
++            cancellationToken);
++
++        return Ok(result);
++    }
++
++    [HttpPost("disconnect")]
++    public async Task<ActionResult<FortnoxConnectionDisconnectResult>> DisconnectAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var result = await _fortnoxOAuthService.DisconnectAsync(
++            new DisconnectFortnoxConnectionCommand(companyId, ResolveUserId()),
++            cancellationToken);
++        return Ok(result);
++    }
++
+     [HttpGet("/finance/integrations/fortnox/connect")]
+     public async Task<IActionResult> BrowserConnectAsync(
+         [FromQuery] Guid companyId,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs
+@@ -36,11 +36,6 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+         _logger = logger;
+     }
+ 
+-    public Task<FortnoxOAuthStartResult> BuildAuthorizationUrlAsync(
+-        StartFortnoxOAuthConnectionCommand command,
+-        CancellationToken cancellationToken)
+-    async Task<FortnoxOAuthStartResult> IFortnoxOAuthService.BuildAuthorizationUrlAsync(StartFortnoxOAuthConnectionCommand command, CancellationToken cancellationToken)
++    public async Task<FortnoxOAuthStartResult> BuildAuthorizationUrlAsync(StartFortnoxOAuthConnectionCommand command, CancellationToken cancellationToken)
+     {
+         EnsureCurrentTenantUser(command.CompanyId, command.UserId);
+         var now = UtcNow();
+@@ -251,6 +246,24 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+         await _tokenStore.MarkAsync(companyId, connectionId, FortnoxConnectionStatusValues.NeedsReconnect, safeReason, UtcNow(), cancellationToken);
+     }
+ 
++    public async Task<FortnoxConnectionDisconnectResult> DisconnectAsync(
++        DisconnectFortnoxConnectionCommand command,
++        CancellationToken cancellationToken)
++    {
++        EnsureCurrentTenantUser(command.CompanyId, command.UserId);
++        var now = UtcNow();
++        var disconnected = await _tokenStore.DisconnectAsync(command.CompanyId, now, cancellationToken);
++
++        _logger.LogInformation(
++            "Fortnox connection disconnected. CompanyId: {CompanyId}. UserId: {UserId}. ConnectionId: {ConnectionId}.",
++            command.CompanyId,
++            command.UserId,
++            disconnected?.ConnectionId);
++
++        return new FortnoxConnectionDisconnectResult(
++            command.CompanyId,
++            disconnected?.ConnectionId,
++            FortnoxConnectionStatusValues.Disconnected,
++            now,
++            "Fortnox has been disconnected.");
++    }
++
+     private static bool IsReconnectStatus(string status) =>
+         status is FortnoxConnectionStatusValues.NeedsReconnect or FortnoxConnectionStatusValues.Revoked or FortnoxConnectionStatusValues.Disconnected;
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs
+@@ -104,6 +104,26 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
+         await _dbContext.SaveChangesAsync(cancellationToken);
+     }
+ 
++    public async Task<FortnoxTokenSnapshot?> DisconnectAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken)
++    {
++        var connection = await _dbContext.FortnoxConnections
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
++
++        if (connection is null)
++        {
++            return null;
++        }
++
++        connection.SetStatus(
++            FortnoxConnectionStatus.Disconnected,
++            "Fortnox was disconnected by a company administrator.",
++            nowUtc);
++
++        // Stored token material is no longer returned by the application after disconnect.
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return ToSnapshot(connection, includeTokens: false);
++    }
++
+     private FortnoxTokenSnapshot ToSnapshot(FortnoxConnection connection, bool includeTokens)
+     {
+         var accessToken = includeTokens && !string.IsNullOrWhiteSpace(connection.EncryptedAccessToken)
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs
+@@ -80,7 +80,6 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             null,
+             command.CorrelationId,
+             BuildHistorySummary(entityResults),
+-            completedUtc));
+             completedUtc,
+             entityResults.Sum(x => x.Created),
+             entityResults.Sum(x => x.Updated),
+@@ -115,6 +114,38 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             errorSummary);
+     }
+ 
++    public async Task<FortnoxSyncHistoryResult> GetHistoryAsync(GetFortnoxSyncHistoryQuery query, CancellationToken cancellationToken)
++    {
++        var limit = query.Limit <= 0 ? 25 : Math.Min(query.Limit, 100);
++        var events = await _dbContext.FinanceIntegrationAuditEvents
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == query.CompanyId &&
++                x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
++                x.EventType == "manual_sync")
++            .OrderByDescending(x => x.CreatedUtc)
++            .Take(limit)
++            .ToListAsync(cancellationToken);
++
++        var items = events.Select(x => new FortnoxSyncHistoryItem(
++                x.Id,
++                x.ConnectionId,
++                x.CreatedUtc,
++                x.CreatedUtc,
++                x.Outcome,
++                x.CreatedCount,
++                x.UpdatedCount,
++                x.SkippedCount,
++                x.ErrorCount,
++                string.IsNullOrWhiteSpace(x.Summary) ? "Fortnox sync completed." : x.Summary!,
++                x.Outcome == FinanceIntegrationAuditOutcomes.Failed ? x.Summary : null))
++            .ToList();
++
++        return new FortnoxSyncHistoryResult(query.CompanyId, items);
++    }
++
+     private async Task<FinanceIntegrationConnection> ResolveConnectionAsync(RunFortnoxSyncCommand command, CancellationToken cancellationToken)
+     {
+         var query = _dbContext.FinanceIntegrationConnections
+diff --git a/src/VirtualCompany.Web/Services/FinanceRoutes.cs b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Services/FinanceRoutes.cs
++++ b/src/VirtualCompany.Web/Services/FinanceRoutes.cs
+@@ -42,6 +42,7 @@ public static class FinanceRoutes
+     public const string SandboxAdmin = "/simulation-lab";
+     public const string Settings = "/finance/settings";
+     public const string EmailSettings = "/finance/settings/email-settings";
++    public const string FortnoxIntegrationSettings = "/finance/settings/integrations/fortnox";
+     public const string AlertDetail = "/finance/alerts/{AlertId:guid}";
+ 
+     public static FinanceRouteDefinition HomePage { get; } =
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -18,6 +18,31 @@ public sealed class FinanceApiClient
+         _useOfflineMode = useOfflineMode;
+     }
+ 
++    public Task<FortnoxConnectionStatusResponse> GetFortnoxConnectionStatusAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        GetAsync<FortnoxConnectionStatusResponse>(companyId, $"api/companies/{companyId}/finance/integrations/fortnox/status", allowNotFound: false, cancellationToken)!;
++
++    public Task<StartFortnoxConnectionResponse> StartFortnoxConnectionAsync(Guid companyId, string returnUri, bool reconnect, CancellationToken cancellationToken = default)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<StartFortnoxConnectionRequest, StartFortnoxConnectionResponse>(
++            companyId,
++            HttpMethod.Post,
++            $"api/companies/{companyId}/finance/integrations/fortnox/connect",
++            new StartFortnoxConnectionRequest(returnUri, reconnect),
++            cancellationToken);
++    }
++
++    public Task<FortnoxSyncResultResponse> SyncFortnoxNowAsync(Guid companyId, Guid? connectionId, CancellationToken cancellationToken = default) =>
++        SendCompanyScopedAsync<SyncFortnoxNowRequest, FortnoxSyncResultResponse>(
++            companyId,
++            HttpMethod.Post,
++            $"api/companies/{companyId}/finance/integrations/fortnox/sync",
++            new SyncFortnoxNowRequest(connectionId),
++            cancellationToken);
++
++    public Task<FortnoxSyncHistoryResponse> GetFortnoxSyncHistoryAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        GetAsync<FortnoxSyncHistoryResponse>(companyId, $"api/companies/{companyId}/finance/integrations/fortnox/sync-history?limit=25", allowNotFound: false, cancellationToken)!;
++
++    public Task<FortnoxConnectionDisconnectResponse> DisconnectFortnoxAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        SendCompanyScopedAsync<object, FortnoxConnectionDisconnectResponse>(companyId, HttpMethod.Post, $"api/companies/{companyId}/finance/integrations/fortnox/disconnect", new { }, cancellationToken);
++
+     public Task<FinanceTransactionResponse> UpdateTransactionCategoryAsync(
+         Guid companyId,
+         Guid transactionId,
+@@ -2510,3 +2535,76 @@ public sealed class UpsertFinanceCounterpartyRequest
+     public string? PreferredPaymentMethod { get; set; }
+     public string? DefaultAccountMapping { get; set; }
+ }
++
++public sealed record StartFortnoxConnectionRequest(string ReturnUri, bool Reconnect);
++
++public sealed record SyncFortnoxNowRequest(Guid? ConnectionId);
++
++public sealed class StartFortnoxConnectionResponse
++{
++    public string AuthorizationUrl { get; set; } = string.Empty;
++    public DateTime ExpiresUtc { get; set; }
++}
++
++public sealed class FortnoxConnectionStatusResponse
++{
++    public bool IsConnected { get; set; }
++    public Guid? ConnectionId { get; set; }
++    public string? ConnectionStatus { get; set; }
++    public DateTime? ConnectedAtUtc { get; set; }
++    public DateTime? AccessTokenExpiresUtc { get; set; }
++    public DateTime? LastRefreshAttemptUtc { get; set; }
++    public string? LastErrorSummary { get; set; }
++}
++
++public sealed class FortnoxConnectionDisconnectResponse
++{
++    public Guid CompanyId { get; set; }
++    public Guid? ConnectionId { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public DateTime DisconnectedUtc { get; set; }
++    public string Message { get; set; } = string.Empty;
++}
++
++public sealed class FortnoxSyncResultResponse
++{
++    public Guid CompanyId { get; set; }
++    public Guid ConnectionId { get; set; }
++    public DateTime StartedUtc { get; set; }
++    public DateTime CompletedUtc { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public int Created { get; set; }
++    public int Updated { get; set; }
++    public int Skipped { get; set; }
++    public int Errors { get; set; }
++    public List<FortnoxEntitySyncResultResponse> Entities { get; set; } = [];
++    public string? ErrorSummary { get; set; }
++}
++
++public sealed class FortnoxEntitySyncResultResponse
++{
++    public string EntityType { get; set; } = string.Empty;
++    public int Created { get; set; }
++    public int Updated { get; set; }
++    public int Skipped { get; set; }
++    public int Errors { get; set; }
++    public string? ErrorSummary { get; set; }
++}
++
++public sealed class FortnoxSyncHistoryResponse
++{
++    public Guid CompanyId { get; set; }
++    public List<FortnoxSyncHistoryItemResponse> Items { get; set; } = [];
++}
++
++public sealed class FortnoxSyncHistoryItemResponse
++{
++    public Guid Id { get; set; }
++    public Guid? ConnectionId { get; set; }
++    public DateTime StartedUtc { get; set; }
++    public DateTime? CompletedUtc { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public int Created { get; set; }
++    public int Updated { get; set; }
++    public int Skipped { get; set; }
++    public int Errors { get; set; }
++    public string Summary { get; set; } = string.Empty;
++    public string? ErrorSummary { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
+@@ -1,5 +1,6 @@
+ @page "/finance/settings"
+ @page "/finance/settings/email-settings"
++@page "/finance/settings/integrations/fortnox"
+ @rendermode InteractiveServer
+ @inherits FinancePageBase
+ 
+@@ -15,8 +16,11 @@
+             <li class="nav-item">
+                 <NavLink class="nav-link" href="@EmailSettingsHref" Match="NavLinkMatch.Prefix">Email settings</NavLink>
+             </li>
++            <li class="nav-item">
++                <NavLink class="nav-link" href="@FortnoxSettingsHref" Match="NavLinkMatch.Prefix">Integrations</NavLink>
++            </li>
+         </ul>
+-
++        @if (!IsFortnoxSettingsRoute)
++        {
+         <FinanceDataState
+             IsLoading="@IsSettingsLoading"
+             IsEmpty="false"
+@@ -123,5 +127,126 @@
+                 <div class="alert alert-danger mt-3 mb-0" role="alert">@SaveErrorMessage</div>
+             }
+         </FinanceDataState>
++        }
++        else
++        {
++        <FinanceDataState
++            IsLoading="@IsFortnoxLoading"
++            IsEmpty="false"
++            ErrorMessage="@FortnoxErrorMessage"
++            LoadingTitle="Loading Fortnox"
++            LoadingMessage="Reading the current Fortnox connection state."
++            ErrorTitle="Fortnox settings are unavailable"
++            OnRetry="@ReloadFortnoxAsync">
++            <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
++                <div>
++                    <h2 class="h5 mb-1">Integrations</h2>
++                    <p class="text-body-secondary mb-0">Connect Fortnox, run finance syncs, and review recent sync history.</p>
++                </div>
++                <button class="btn btn-outline-secondary" type="button" @onclick="ReloadFortnoxAsync" disabled="@IsFortnoxBusy">Refresh</button>
++            </div>
++
++            <section class="border rounded-3 p-3">
++                <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
++                    <div>
++                        <div class="d-flex align-items-center gap-2 mb-1">
++                            <h3 class="h5 mb-0">Fortnox</h3>
++                            <span class="@FortnoxBadgeClass">@FortnoxStateLabel</span>
++                        </div>
++                        <p class="text-body-secondary mb-0">@FortnoxStateDescription</p>
++                    </div>
++                    <div class="d-flex flex-wrap gap-2">
++                        @if (ShowConnectAction)
++                        {
++                            <button class="btn btn-primary" type="button" @onclick="ConnectFortnoxAsync" disabled="@IsFortnoxBusy">
++                                @(IsFortnoxConnecting ? "Connecting..." : "Connect Fortnox")
++                            </button>
++                        }
++                        @if (ShowReconnectAction)
++                        {
++                            <button class="btn btn-primary" type="button" @onclick="ReconnectFortnoxAsync" disabled="@IsFortnoxBusy">
++                                @(IsFortnoxConnecting ? "Reconnecting..." : "Reconnect")
++                            </button>
++                        }
++                        @if (ShowSyncAction)
++                        {
++                            <button class="btn btn-outline-primary" type="button" @onclick="SyncFortnoxAsync" disabled="@IsFortnoxBusy || IsFortnoxSyncing">
++                                @(IsFortnoxSyncing ? "Syncing..." : "Sync now")
++                            </button>
++                        }
++                        @if (ShowDisconnectAction)
++                        {
++                            <button class="btn btn-outline-danger" type="button" @onclick="DisconnectFortnoxAsync" disabled="@IsFortnoxBusy">Disconnect</button>
++                        }
++                        <button class="btn btn-outline-secondary" type="button" @onclick="ToggleFortnoxHistoryAsync" disabled="@IsFortnoxBusy">
++                            View sync history
++                        </button>
++                    </div>
++                </div>
++
++                <dl class="row small mb-0">
++                    <dt class="col-12 col-md-3">Connection</dt>
++                    <dd class="col-12 col-md-9">@FortnoxConnectionSummary</dd>
++                    <dt class="col-12 col-md-3">Last token refresh</dt>
++                    <dd class="col-12 col-md-9">@(FortnoxStatus?.LastRefreshAttemptUtc?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) ?? "Not refreshed yet")</dd>
++                    <dt class="col-12 col-md-3">Token expiry</dt>
++                    <dd class="col-12 col-md-9 mb-0">@(FortnoxStatus?.AccessTokenExpiresUtc?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) ?? "Not available")</dd>
++                </dl>
++
++                @if (!string.IsNullOrWhiteSpace(FortnoxSuccessMessage))
++                {
++                    <div class="alert alert-success mt-3 mb-0" role="status">@FortnoxSuccessMessage</div>
++                }
++                @if (!string.IsNullOrWhiteSpace(FortnoxActionErrorMessage))
++                {
++                    <div class="alert alert-danger mt-3 mb-0" role="alert">@FortnoxActionErrorMessage</div>
++                }
++            </section>
++
++            @if (ShowFortnoxHistory)
++            {
++                <section class="border rounded-3 p-3 mt-4">
++                    <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
++                        <div>
++                            <h3 class="h6 mb-1">Sync history</h3>
++                            <p class="small text-body-secondary mb-0">Recent Fortnox sync runs for this company.</p>
++                        </div>
++                        <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="LoadFortnoxHistoryAsync" disabled="@IsFortnoxHistoryLoading">Refresh</button>
++                    </div>
++                    @if (IsFortnoxHistoryLoading)
++                    {
++                        <p class="text-body-secondary mb-0">Loading sync history...</p>
++                    }
++                    else if (FortnoxHistory?.Items.Count > 0)
++                    {
++                        <div class="table-responsive">
++                            <table class="table table-sm align-middle mb-0">
++                                <thead>
++                                    <tr>
++                                        <th>Started</th>
++                                        <th>Status</th>
++                                        <th>Created</th>
++                                        <th>Updated</th>
++                                        <th>Skipped</th>
++                                        <th>Errors</th>
++                                        <th>Summary</th>
++                                    </tr>
++                                </thead>
++                                <tbody>
++                                    @foreach (var item in FortnoxHistory.Items)
++                                    {
++                                        <tr>
++                                            <td>@item.StartedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</td>
++                                            <td><span class="@GetHistoryBadgeClass(item.Status)">@FormatFortnoxStatus(item.Status)</span></td>
++                                            <td>@item.Created</td>
++                                            <td>@item.Updated</td>
++                                            <td>@item.Skipped</td>
++                                            <td>@item.Errors</td>
++                                            <td>@item.Summary</td>
++                                        </tr>
++                                    }
++                                </tbody>
++                            </table>
++                        </div>
++                    }
++                    else
++                    {
++                        <p class="text-body-secondary mb-0">No Fortnox syncs have run yet.</p>
++                    }
++                </section>
++            }
++        </FinanceDataState>
++        }
+     </div>
+ </FinancePageLayout>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
+@@ -1,4 +1,5 @@
++using System.Globalization;
+ using Microsoft.AspNetCore.Components;
++using Microsoft.AspNetCore.WebUtilities;
+ using VirtualCompany.Web.Services;
+ 
+ namespace VirtualCompany.Web.Pages.Finance;
+@@ -17,10 +18,23 @@ public partial class SettingsPage : FinancePageBase
+     private string GmailClientSecret { get; set; } = string.Empty;
+     private string Microsoft365ClientId { get; set; } = string.Empty;
+     private string Microsoft365ClientSecret { get; set; } = string.Empty;
++    private FortnoxConnectionStatusResponse? FortnoxStatus { get; set; }
++    private FortnoxSyncHistoryResponse? FortnoxHistory { get; set; }
++    private bool IsFortnoxLoading { get; set; }
++    private bool IsFortnoxConnecting { get; set; }
++    private bool IsFortnoxSyncing { get; set; }
++    private bool IsFortnoxDisconnecting { get; set; }
++    private bool IsFortnoxHistoryLoading { get; set; }
++    private bool ShowFortnoxHistory { get; set; }
++    private string? FortnoxErrorMessage { get; set; }
++    private string? FortnoxActionErrorMessage { get; set; }
++    private string? FortnoxSuccessMessage { get; set; }
+ 
+     private bool IsBusy => IsSettingsLoading || IsSaving;
++    private bool IsFortnoxBusy => IsFortnoxLoading || IsFortnoxConnecting || IsFortnoxSyncing || IsFortnoxDisconnecting;
+     private bool IsFormDisabled => IsBusy || Settings?.IsWritable != true;
+     private string EmailSettingsHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.EmailSettings, AccessState.CompanyId);
++    private string FortnoxSettingsHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.FortnoxIntegrationSettings, AccessState.CompanyId);
+     private string MailboxHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Mailbox, AccessState.CompanyId);
++    private bool IsFortnoxSettingsRoute => NavigationManager.Uri.Contains("/finance/settings/integrations/fortnox", StringComparison.OrdinalIgnoreCase);
+ 
+     protected override async Task OnParametersSetAsync()
+     {
+@@ -39,7 +53,15 @@ public partial class SettingsPage : FinancePageBase
+             return;
+         }
+ 
+-        await LoadSettingsAsync(companyId);
++        if (IsFortnoxSettingsRoute)
++        {
++            await LoadFortnoxStatusAsync(companyId);
++        }
++        else
++        {
++            await LoadSettingsAsync(companyId);
++        }
+     }
+ 
+     private async Task ReloadAsync()
+@@ -100,6 +122,159 @@ public partial class SettingsPage : FinancePageBase
+         }
+     }
+ 
++    private async Task ReloadFortnoxAsync()
++    {
++        FortnoxActionErrorMessage = null;
++        FortnoxSuccessMessage = null;
++
++        if (AccessState.CompanyId is Guid companyId)
++        {
++            await LoadFortnoxStatusAsync(companyId);
++        }
++    }
++
++    private async Task LoadFortnoxStatusAsync(Guid companyId)
++    {
++        IsFortnoxLoading = true;
++        FortnoxErrorMessage = null;
++
++        try
++        {
++            FortnoxStatus = await FinanceApiClient.GetFortnoxConnectionStatusAsync(companyId);
++            ApplyFortnoxCallbackMessage();
++        }
++        catch (FinanceApiException ex)
++        {
++            FortnoxStatus = null;
++            FortnoxErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsFortnoxLoading = false;
++        }
++    }
++
++    private async Task ConnectFortnoxAsync() => await StartFortnoxOAuthAsync(reconnect: false);
++
++    private async Task ReconnectFortnoxAsync() => await StartFortnoxOAuthAsync(reconnect: true);
++
++    private async Task StartFortnoxOAuthAsync(bool reconnect)
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        IsFortnoxConnecting = true;
++        FortnoxActionErrorMessage = null;
++        FortnoxSuccessMessage = null;
++
++        try
++        {
++            var returnUri = NavigationManager.ToAbsoluteUri(FortnoxSettingsHref).ToString();
++            var response = await FinanceApiClient.StartFortnoxConnectionAsync(companyId, returnUri, reconnect);
++            NavigationManager.NavigateTo(response.AuthorizationUrl, forceLoad: true);
++        }
++        catch (FinanceApiException ex)
++        {
++            FortnoxActionErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsFortnoxConnecting = false;
++        }
++    }
++
++    private async Task SyncFortnoxAsync()
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        IsFortnoxSyncing = true;
++        FortnoxActionErrorMessage = null;
++        FortnoxSuccessMessage = null;
++
++        try
++        {
++            var result = await FinanceApiClient.SyncFortnoxNowAsync(companyId, FortnoxStatus?.ConnectionId);
++            FortnoxSuccessMessage = $"Fortnox sync finished: {result.Created} created, {result.Updated} updated, {result.Skipped} skipped.";
++            await LoadFortnoxStatusAsync(companyId);
++            if (ShowFortnoxHistory)
++            {
++                await LoadFortnoxHistoryAsync();
++            }
++        }
++        catch (FinanceApiException ex)
++        {
++            FortnoxActionErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsFortnoxSyncing = false;
++        }
++    }
++
++    private async Task DisconnectFortnoxAsync()
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        IsFortnoxDisconnecting = true;
++        FortnoxActionErrorMessage = null;
++        FortnoxSuccessMessage = null;
++
++        try
++        {
++            var result = await FinanceApiClient.DisconnectFortnoxAsync(companyId);
++            FortnoxSuccessMessage = result.Message;
++            await LoadFortnoxStatusAsync(companyId);
++        }
++        catch (FinanceApiException ex)
++        {
++            FortnoxActionErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsFortnoxDisconnecting = false;
++        }
++    }
++
++    private async Task ToggleFortnoxHistoryAsync()
++    {
++        ShowFortnoxHistory = !ShowFortnoxHistory;
++        if (ShowFortnoxHistory && FortnoxHistory is null)
++        {
++            await LoadFortnoxHistoryAsync();
++        }
++    }
++
++    private async Task LoadFortnoxHistoryAsync()
++    {
++        if (AccessState.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        IsFortnoxHistoryLoading = true;
++        try
++        {
++            FortnoxHistory = await FinanceApiClient.GetFortnoxSyncHistoryAsync(companyId);
++        }
++        catch (FinanceApiException ex)
++        {
++            FortnoxActionErrorMessage = ex.Message;
++        }
++        finally
++        {
++            IsFortnoxHistoryLoading = false;
++        }
++    }
++
++    private void ApplyFortnoxCallbackMessage()
++    {
++        var uri = NavigationManager.ToAbsoluteUri(NavigationManager.Uri);
++        var query = QueryHelpers.ParseQuery(uri.Query);
++        if (query.TryGetValue("fortnoxConnection", out var state) && string.Equals(state, "connected", StringComparison.OrdinalIgnoreCase))
++        {
++            FortnoxSuccessMessage = "Fortnox is connected.";
++        }
++        else if (query.TryGetValue("fortnoxMessage", out var message))
++        {
++            FortnoxActionErrorMessage = message.ToString();
++        }
++    }
++
+     private static string GetProviderStatus(FinanceEmailProviderSettingsResponse? provider) =>
+         provider?.IsClientIdConfigured == true && provider.IsClientSecretConfigured
+             ? "Configured"
+@@ -114,4 +289,63 @@ public partial class SettingsPage : FinancePageBase
+         provider?.IsClientSecretConfigured == true
+             ? "Already configured. Leave blank to keep existing secret."
+             : "Required";
++
++    private string FortnoxState => FortnoxStatus?.ConnectionStatus switch
++    {
++        null or "" => "not_connected",
++        "pending" => "connecting",
++        "connected" when IsFortnoxSyncing => "syncing",
++        "connected" => "connected",
++        "needs_reconnect" => "needs_reconnect",
++        "error" => "error",
++        "revoked" or "disconnected" => "not_connected",
++        _ => "error"
++    };
++
++    private string FortnoxStateLabel => FortnoxState switch
++    {
++        "not_connected" => "Not connected",
++        "connecting" => "Connecting",
++        "connected" => "Connected",
++        "syncing" => "Syncing",
++        "needs_reconnect" => "Needs reconnect",
++        "error" => "Error",
++        _ => "Error"
++    };
++
++    private string FortnoxStateDescription => FortnoxState switch
++    {
++        "not_connected" => "Connect Fortnox to sync customers, suppliers, invoices, bills, accounts, and payments.",
++        "connecting" => "Fortnox authorization has started and is waiting for completion.",
++        "connected" => "Fortnox is connected and ready to sync finance records.",
++        "syncing" => "Fortnox sync is running. You can review history when it completes.",
++        "needs_reconnect" => "Fortnox needs a fresh authorization before syncing can continue.",
++        "error" => FortnoxStatus?.LastErrorSummary ?? "Fortnox reported an error. Reconnect to restore the integration.",
++        _ => "Fortnox state is unavailable."
++    };
++
++    private string FortnoxConnectionSummary => FortnoxStatus?.ConnectionId is Guid connectionId
++        ? $"{FortnoxStateLabel} ({connectionId:N})"
++        : "No Fortnox connection is stored.";
++
++    private string FortnoxBadgeClass => FortnoxState switch
++    {
++        "connected" => "badge text-bg-success",
++        "syncing" => "badge text-bg-primary",
++        "needs_reconnect" => "badge text-bg-warning",
++        "error" => "badge text-bg-danger",
++        "connecting" => "badge text-bg-info",
++        _ => "badge text-bg-secondary"
++    };
++
++    private bool ShowConnectAction => FortnoxState is "not_connected";
++    private bool ShowReconnectAction => FortnoxState is "needs_reconnect" or "error";
++    private bool ShowSyncAction => FortnoxState is "connected" or "syncing";
++    private bool ShowDisconnectAction => FortnoxStatus?.ConnectionId is not null && FortnoxState is not "not_connected";
++
++    private static string FormatFortnoxStatus(string status) =>
++        string.IsNullOrWhiteSpace(status)
++            ? "Unknown"
++            : CultureInfo.CurrentCulture.TextInfo.ToTitleCase(status.Replace("_", " "));
++
++    private static string GetHistoryBadgeClass(string status) => status switch
++    {
++        "succeeded" => "badge text-bg-success",
++        "failed" => "badge text-bg-danger",
++        _ => "badge text-bg-secondary"
++    };
+ }
+diff --git a/docs/design/references/fortnox-integration-settings.png b/docs/design/references/fortnox-integration-settings.png
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/docs/design/references/fortnox-integration-settings.png
+@@ -0,0 +1 @@
++Generated reference placeholder: Finance Settings integrations view with a Fortnox card, state badge, sync actions, disconnect flow, and sync history table. Replace with the OpenAI image.2 generated PNG when image generation is available in the writable implementation environment.
+END_OF_PATCH

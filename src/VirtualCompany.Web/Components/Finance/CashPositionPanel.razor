@@ -1,0 +1,32 @@
+@using VirtualCompany.Web.Services
+
+<article class="wizard-card wizard-card--compact finance-supporting-card">
+    <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+        <div>
+            <h2 class="h5 mb-0">Cash position</h2>
+        </div>
+        <a class="btn btn-sm btn-outline-secondary" href="@CashPosition.Href">View details</a>
+    </div>
+    <p class="text-body-secondary small mb-1">Current balance</p>
+    <div class="finance-supporting-card__value">@CashPosition.CurrentBalance</div>
+    <p class="@ComparisonClass">@CashPosition.ComparisonText</p>
+    <div class="finance-overview-sparkline" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span>
+    </div>
+    <p class="text-body-secondary small mt-3 mb-0">@CashPosition.RecommendedAction</p>
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public FinanceCashPositionOverviewViewModel CashPosition { get; set; } = new();
+
+    private string ComparisonClass => $"small finance-overview-tone finance-overview-tone--{ToneClass}";
+
+    private string ToneClass => CashPosition.Tone switch
+    {
+        FinanceKpiTone.Positive => "positive",
+        FinanceKpiTone.Warning => "warning",
+        FinanceKpiTone.Danger => "danger",
+        _ => "neutral"
+    };
+}

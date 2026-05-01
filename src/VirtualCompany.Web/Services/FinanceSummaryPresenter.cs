@@ -14,23 +14,49 @@ public static class FinanceSummaryPresenter
             return null;
         }
 
+        var formattedAvailableBalance = FormatCurrency(response.AvailableBalance, response.Currency);
+        var formattedAverageMonthlyBurn = FormatCurrency(response.AverageMonthlyBurn, response.Currency);
+        var estimatedRunway = response.EstimatedRunwayDays is int runwayDays ? $"{runwayDays:N0} days" : "n/a";
+        var health = BuildCashPositionHealth(response, formattedAvailableBalance, formattedAverageMonthlyBurn, estimatedRunway);
+
         return new CashPositionSummaryViewModel(
             response.CompanyId,
             FormatDate(response.AsOfUtc),
-            FormatCurrency(response.AvailableBalance, response.Currency),
-            FormatCurrency(response.AverageMonthlyBurn, response.Currency),
-            response.EstimatedRunwayDays is int runwayDays ? $"{runwayDays} days" : "n/a",
+            formattedAvailableBalance,
+            formattedAverageMonthlyBurn,
+            estimatedRunway,
             NormalizeLabel(response.RiskLevel),
             NormalizeCssToken(response.RiskLevel),
             response.RecommendedAction,
             response.Rationale,
             response.Classification,
             $"{response.Confidence:P0}",
+            response.Confidence > 0m ? $"Confidence: {response.Confidence:P0}" : string.Empty,
             response.Thresholds.WarningCashAmount is decimal warningCash ? FormatCurrency(warningCash, response.Thresholds.Currency) : "n/a",
             response.Thresholds.CriticalCashAmount is decimal criticalCash ? FormatCurrency(criticalCash, response.Thresholds.Currency) : "n/a",
-            $"{response.Thresholds.WarningRunwayDays} days",
-            $"{response.Thresholds.CriticalRunwayDays} days",
-            BuildAlertStatus(response.AlertState));
+            $"{response.Thresholds.WarningRunwayDays:N0} days",
+            $"{response.Thresholds.CriticalRunwayDays:N0} days",
+            BuildAlertStatus(response.AlertState),
+            "Monthly spending",
+            "This is what you spend on average each month.",
+            response.EstimatedRunwayDays is int
+                ? $"Your cash can last about {estimatedRunway}."
+                : "We need more spending data to estimate how long your cash will last.",
+            "Cash health",
+            health.FriendlyHealthLabel,
+            health.FriendlyHealthTone,
+            health.CashHealthMessage,
+            "Cash guide",
+            "Pay attention level",
+            "Act now level",
+            "Low cash warning",
+            "Urgent cash level",
+            "We use these levels to let you know when to take action.",
+            "What this means",
+            health.MeaningTitle,
+            health.MeaningParagraphs,
+            health.MeaningStatus,
+            health.ActionGuidance);
     }
 
     public static BalancesSummaryViewModel? ToBalancesViewModel(Guid companyId, DateTime referenceUtc, IReadOnlyList<FinanceAccountBalanceResponse>? accounts)
@@ -126,6 +152,101 @@ public static class FinanceSummaryPresenter
         return alertState.IsLowCash ? "Low cash detected" : "No active alert";
     }
 
+    private static CashPositionHealthPresentation BuildCashPositionHealth(
+        FinanceCashPositionResponse response,
+        string formattedAvailableBalance,
+        string formattedAverageMonthlyBurn,
+        string estimatedRunway)
+    {
+        var tone = ResolveCashHealthTone(response.RiskLevel, response.AlertState.RiskLevel, response.AlertState.IsLowCash);
+        return tone switch
+        {
+            "success" => new CashPositionHealthPresentation(
+                "Good",
+                "success",
+                "Your cash levels look healthy.",
+                "All good",
+                [
+                    "No alerts right now.",
+                    $"You have {formattedAvailableBalance} available. You spend about {formattedAverageMonthlyBurn} each month, so your cash can last about {estimatedRunway}.",
+                    "We will let you know if anything changes."
+                ],
+                "Healthy",
+                "Keep monitoring your cash position."),
+            "warning" => new CashPositionHealthPresentation(
+                "Needs attention",
+                "warning",
+                "Your cash is available, but it is worth reviewing soon.",
+                "Needs attention",
+                [
+                    "Your cash is still available, but it is getting close to a level where you should review spending.",
+                    BuildRunwayContext(response, formattedAvailableBalance, formattedAverageMonthlyBurn, estimatedRunway),
+                    "Review upcoming bills and payments."
+                ],
+                "Needs attention",
+                "Review upcoming bills and payments."),
+            "danger" => new CashPositionHealthPresentation(
+                "Urgent",
+                "danger",
+                "Your cash is below the safe level.",
+                "Act now",
+                [
+                    "Your cash is below the safe level.",
+                    BuildRunwayContext(response, formattedAvailableBalance, formattedAverageMonthlyBurn, estimatedRunway),
+                    "Review payments, bills, and expected incoming cash today."
+                ],
+                "Critical",
+                "Review payments, bills, and expected incoming cash today."),
+            _ => new CashPositionHealthPresentation(
+                "Unknown",
+                "neutral",
+                "We need more finance activity before we can assess your cash position.",
+                "Not enough data yet",
+                ["We need more finance activity before we can assess your cash position."],
+                "Not available",
+                "Add or import finance activity to improve this view.")
+        };
+    }
+
+    private static string ResolveCashHealthTone(string? riskLevel, string? alertRiskLevel, bool isLowCash)
+    {
+        var value = $"{riskLevel} {alertRiskLevel}".ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "neutral";
+        }
+
+        if (value.Contains("critical", StringComparison.Ordinal) ||
+            value.Contains("high", StringComparison.Ordinal) ||
+            value.Contains("urgent", StringComparison.Ordinal))
+        {
+            return "danger";
+        }
+
+        if (value.Contains("medium", StringComparison.Ordinal) ||
+            value.Contains("warning", StringComparison.Ordinal) ||
+            value.Contains("attention", StringComparison.Ordinal))
+        {
+            return "warning";
+        }
+
+        if (!isLowCash && (value.Contains("low", StringComparison.Ordinal) || value.Contains("healthy", StringComparison.Ordinal)))
+        {
+            return "success";
+        }
+
+        return isLowCash ? "warning" : "neutral";
+    }
+
+    private static string BuildRunwayContext(
+        FinanceCashPositionResponse response,
+        string formattedAvailableBalance,
+        string formattedAverageMonthlyBurn,
+        string estimatedRunway) =>
+        response.EstimatedRunwayDays is int
+            ? $"You have {formattedAvailableBalance} available and spend about {formattedAverageMonthlyBurn} each month. Your cash can last about {estimatedRunway}."
+            : $"You have {formattedAvailableBalance} available. We need more spending data to estimate how long your cash will last.";
+
     private static string ResolveCurrency(string? currency, string fallbackCurrency) =>
         string.IsNullOrWhiteSpace(currency) ? fallbackCurrency : currency;
 
@@ -180,11 +301,39 @@ public sealed record CashPositionSummaryViewModel(
     string Rationale,
     string Classification,
     string Confidence,
+    string ConfidenceText,
     string WarningThreshold,
     string CriticalThreshold,
     string WarningRunway,
     string CriticalRunway,
-    string AlertStatus);
+    string AlertStatus,
+    string MonthlySpendingTitle,
+    string MonthlySpendingDescription,
+    string RunwayDescription,
+    string CashHealthTitle,
+    string FriendlyHealthLabel,
+    string FriendlyHealthTone,
+    string CashHealthMessage,
+    string CashGuideTitle,
+    string WarningCashLabel,
+    string CriticalCashLabel,
+    string WarningRunwayLabel,
+    string CriticalRunwayLabel,
+    string CashGuideHelperText,
+    string MeaningCardTitle,
+    string MeaningTitle,
+    IReadOnlyList<string> MeaningParagraphs,
+    string MeaningStatus,
+    string ActionGuidance);
+
+internal sealed record CashPositionHealthPresentation(
+    string FriendlyHealthLabel,
+    string FriendlyHealthTone,
+    string CashHealthMessage,
+    string MeaningTitle,
+    IReadOnlyList<string> MeaningParagraphs,
+    string MeaningStatus,
+    string ActionGuidance);
 
 public sealed record BalancesSummaryViewModel(Guid CompanyId, string AsOf, string TotalBalance, IReadOnlyList<BalanceAccountViewModel> Accounts);
 public sealed record BalanceAccountViewModel(Guid AccountId, string AccountCode, string AccountName, string AccountType, string Amount, string AsOf);

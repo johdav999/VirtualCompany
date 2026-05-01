@@ -1,7 +1,9 @@
 @page "/finance/settings"
 @page "/finance/settings/email-settings"
+@page "/finance/settings/integrations/fortnox"
 @rendermode InteractiveServer
 @inherits FinancePageBase
+@using System.Globalization
 
 <PageTitle>Finance settings</PageTitle>
 
@@ -13,12 +15,16 @@
     Description="Configure app-level finance integrations for the active company."
     LoadingMessage="Loading finance settings...">
     <div class="wizard-card wizard-card--compact">
-        <ul class="nav nav-pills mb-4" aria-label="Finance settings sections">
-            <li class="nav-item">
-                <NavLink class="nav-link" href="@EmailSettingsHref" Match="NavLinkMatch.Prefix">Email settings</NavLink>
+        <ul class="finance-settings-tabs" aria-label="Finance settings sections">
+            <li>
+                <NavLink class="finance-settings-tab" href="@EmailSettingsHref" Match="NavLinkMatch.Prefix">Email settings</NavLink>
+            </li>
+            <li>
+                <NavLink class="finance-settings-tab" href="@FortnoxSettingsHref" Match="NavLinkMatch.Prefix">Integrations</NavLink>
             </li>
         </ul>
-
+        @if (!IsFortnoxSettingsRoute)
+        {
         <FinanceDataState
             IsLoading="@IsSettingsLoading"
             IsEmpty="false"
@@ -27,6 +33,22 @@
             LoadingMessage="Reading mailbox provider configuration state."
             ErrorTitle="Email settings are unavailable"
             OnRetry="@ReloadAsync">
+            <section class="finance-settings-integration-callout mb-4">
+                <div class="fortnox-integration-card__identity">
+                    <div class="fortnox-integration-card__mark" aria-hidden="true">Fx</div>
+                    <div>
+                        <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+                            <h2 class="h5 mb-0">Fortnox</h2>
+                            <span class="fortnox-source-badge">Accounting integration</span>
+                        </div>
+                        <p class="text-body-secondary mb-0">
+                            Connect Fortnox to sync customers, suppliers, invoices, bills, accounts, payments, and activity into Finance.
+                        </p>
+                    </div>
+                </div>
+                <NavLink class="btn btn-primary" href="@FortnoxSettingsHref">Open Fortnox integration</NavLink>
+            </section>
+
             <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
                 <div>
                     <h2 class="h5 mb-1">Email integration settings</h2>
@@ -123,5 +145,149 @@
                 <div class="alert alert-danger mt-3 mb-0" role="alert">@SaveErrorMessage</div>
             }
         </FinanceDataState>
+        }
+        else
+        {
+        <FinanceDataState
+            IsLoading="@IsFortnoxLoading"
+            IsEmpty="false"
+            ErrorMessage="@FortnoxErrorMessage"
+            LoadingTitle="Loading Fortnox"
+            LoadingMessage="Reading the current Fortnox connection state."
+            ErrorTitle="Fortnox settings are unavailable"
+            OnRetry="@ReloadFortnoxAsync">
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+                <div>
+                    <h2 class="h5 mb-1">Integrations</h2>
+                    <p class="text-body-secondary mb-0">Connect Fortnox, run finance syncs, and review recent sync history.</p>
+                </div>
+                <button class="btn btn-outline-secondary" type="button" @onclick="ReloadFortnoxAsync" disabled="@IsFortnoxBusy">Refresh</button>
+            </div>
+
+            <section class="@($"fortnox-integration-card fortnox-integration-card--{FortnoxState}")">
+                <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+                    <div class="fortnox-integration-card__identity">
+                        <div class="fortnox-integration-card__mark" aria-hidden="true">Fx</div>
+                        <div>
+                            <div class="d-flex align-items-center gap-2 mb-1">
+                                <h3 class="h5 mb-0">Fortnox</h3>
+                                <span class="@FortnoxBadgeClass">@FortnoxStateLabel</span>
+                            </div>
+                            <p class="text-body-secondary mb-0">@FortnoxStateDescription</p>
+                        </div>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2">
+                        @if (ShowConnectAction)
+                        {
+                            <button class="btn btn-primary" type="button" @onclick="ConnectFortnoxAsync" disabled="@IsFortnoxBusy">
+                                @(IsFortnoxConnecting ? "Connecting..." : "Connect Fortnox")
+                            </button>
+                        }
+                        @if (ShowReconnectAction)
+                        {
+                            <button class="btn btn-primary" type="button" @onclick="ReconnectFortnoxAsync" disabled="@IsFortnoxBusy">
+                                @(IsFortnoxConnecting ? "Reconnecting..." : "Reconnect")
+                            </button>
+                        }
+                        @if (ShowSyncAction)
+                        {
+                            <button class="btn btn-outline-primary" type="button" @onclick="SyncFortnoxAsync" disabled="@IsFortnoxBusy || IsFortnoxSyncing">
+                                @(IsFortnoxSyncing ? "Syncing..." : "Sync now")
+                            </button>
+                        }
+                        @if (ShowDisconnectAction)
+                        {
+                            <button class="btn btn-outline-danger" type="button" @onclick="DisconnectFortnoxAsync" disabled="@IsFortnoxBusy">Disconnect</button>
+                        }
+                        <button class="btn btn-outline-secondary" type="button" @onclick="ToggleFortnoxHistoryAsync" disabled="@IsFortnoxBusy">
+                            View sync history
+                        </button>
+                    </div>
+                </div>
+
+                <div class="fortnox-integration-card__metrics">
+                    <div>
+                        <span>Connection</span>
+                        <strong>@FortnoxConnectionSummary</strong>
+                    </div>
+                    <div>
+                        <span>Last token refresh</span>
+                        <strong>@(FortnoxStatus?.LastRefreshAttemptUtc?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) ?? "Not refreshed yet")</strong>
+                    </div>
+                    <div>
+                        <span>Token expiry</span>
+                        <strong>@(FortnoxStatus?.AccessTokenExpiresUtc?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) ?? "Not available")</strong>
+                    </div>
+                </div>
+
+                <div class="fortnox-integration-card__notice" role="status">
+                    <strong>Approval-gated writes</strong>
+                    <span>Outbound Fortnox changes create an approval with company, summary, and payload hash before any Fortnox API call runs.</span>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(FortnoxSuccessMessage))
+                {
+                    <div class="alert alert-success mt-3 mb-0" role="status">@FortnoxSuccessMessage</div>
+                }
+                @if (!string.IsNullOrWhiteSpace(FortnoxActionErrorMessage))
+                {
+                    <div class="alert alert-danger mt-3 mb-0" role="alert">@FortnoxActionErrorMessage</div>
+                }
+            </section>
+
+            @if (ShowFortnoxHistory)
+            {
+                <section class="fortnox-history-card mt-4">
+                    <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+                        <div>
+                            <h3 class="h6 mb-1">Sync history</h3>
+                            <p class="small text-body-secondary mb-0">Recent Fortnox sync runs for this company.</p>
+                        </div>
+                        <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="LoadFortnoxHistoryAsync" disabled="@IsFortnoxHistoryLoading">Refresh</button>
+                    </div>
+                    @if (IsFortnoxHistoryLoading)
+                    {
+                        <p class="text-body-secondary mb-0">Loading sync history...</p>
+                    }
+                    else if (FortnoxHistory?.Items.Count > 0)
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Started</th>
+                                        <th>Status</th>
+                                        <th>Created</th>
+                                        <th>Updated</th>
+                                        <th>Skipped</th>
+                                        <th>Errors</th>
+                                        <th>Summary</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var item in FortnoxHistory.Items)
+                                    {
+                                        <tr>
+                                            <td>@item.StartedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</td>
+                                            <td><span class="@GetHistoryBadgeClass(item.Status)">@FormatFortnoxStatus(item.Status)</span></td>
+                                            <td>@item.Created</td>
+                                            <td>@item.Updated</td>
+                                            <td>@item.Skipped</td>
+                                            <td>@item.Errors</td>
+                                            <td>@item.Summary</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="text-body-secondary mb-0">No Fortnox syncs have run yet.</p>
+                    }
+                </section>
+            }
+        </FinanceDataState>
+        }
     </div>
 </FinancePageLayout>

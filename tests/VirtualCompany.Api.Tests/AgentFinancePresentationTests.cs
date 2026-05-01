@@ -49,7 +49,7 @@ public sealed class AgentFinancePresentationTests
         var cards = AgentFinancePresentation.BuildWorkflowCards(companyId);
         Assert.Equal(7, cards.Count);
         Assert.Contains(cards, card => card.Href == FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId));
-        Assert.Contains(cards, card => card.Href == FinanceRoutes.WithCompanyContext(FinanceRoutes.Transactions, companyId));
+        Assert.Contains(cards, card => card.Href == FinanceRoutes.WithCompanyContext(FinanceRoutes.Activity, companyId));
         Assert.Contains(cards, card => card.Href == FinanceRoutes.WithCompanyContext(FinanceRoutes.Invoices, companyId));
         Assert.Contains(cards, card => card.Href == FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId));
         Assert.Contains(cards, card => card.Href == FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, companyId));

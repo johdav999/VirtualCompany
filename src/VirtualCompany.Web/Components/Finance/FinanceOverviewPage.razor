@@ -1,0 +1,21 @@
+@using VirtualCompany.Web.Services
+
+<section class="finance-summary-stack" aria-labelledby="finance-overview-heading">
+    <FinanceOverviewHeader CompanyId="@CompanyId" />
+    <FinanceKpiRow Kpis="@Overview.Kpis" />
+    <FinanceManagerInsightPanel Insight="@Overview.ManagerInsight" />
+    <FinanceAttentionQueue Items="@Overview.AttentionItems" />
+    <FinanceSupportingPanels
+        CashPosition="@Overview.CashPosition"
+        MonthlySummary="@Overview.MonthlySummary"
+        RecentActivity="@Overview.RecentActivity"
+        CompanyId="@CompanyId" />
+</section>
+
+@code {
+    [Parameter, EditorRequired]
+    public FinanceOverviewViewModel Overview { get; set; } = default!;
+
+    [Parameter]
+    public Guid? CompanyId { get; set; }
+}

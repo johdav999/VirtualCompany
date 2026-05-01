@@ -1,0 +1,20 @@
+@using VirtualCompany.Web.Services
+
+<div class="finance-overview-header">
+    <div>
+        <span class="finance-overview-kicker">Finance module</span>
+        <h1 id="finance-overview-heading" class="finance-overview-title">Finance overview</h1>
+        <p class="finance-overview-subtitle">Cash, receivables, payables, and the next finance actions for the active company.</p>
+    </div>
+    <div class="finance-overview-header__actions">
+        <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)">Finance home</a>
+        <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">Company dashboard</a>
+    </div>
+</div>
+
+@code {
+    [Parameter]
+    public Guid? CompanyId { get; set; }
+
+    private string DashboardHref => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId:D}" : "/dashboard";
+}

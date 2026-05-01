@@ -1,0 +1,60 @@
+@if (!string.IsNullOrWhiteSpace(AgentName))
+{
+    <aside class="contextual-agent-sidebar-card" data-module="@ModuleKey" aria-label="@($"{AgentName}, {AgentRole}")">
+        <div class="contextual-agent-sidebar-card__header">
+            @if (!string.IsNullOrWhiteSpace(AvatarUrl))
+            {
+                <img class="contextual-agent-sidebar-card__avatar" src="@AvatarUrl" alt="" />
+            }
+            else
+            {
+                <span class="contextual-agent-sidebar-card__avatar contextual-agent-sidebar-card__avatar--initials" aria-hidden="true">
+                    @Initials
+                </span>
+            }
+
+            <div class="contextual-agent-sidebar-card__identity">
+                <div class="contextual-agent-sidebar-card__name">@AgentName</div>
+                <div class="contextual-agent-sidebar-card__role">@AgentRole</div>
+            </div>
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(Message))
+        {
+            <p class="contextual-agent-sidebar-card__message">@Message</p>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(ButtonRoute))
+        {
+            <a class="contextual-agent-sidebar-card__button" href="@ButtonRoute">@ButtonText</a>
+        }
+        else
+        {
+            <button class="contextual-agent-sidebar-card__button" type="button" disabled>@ButtonText</button>
+        }
+    </aside>
+}
+
+@code {
+    [Parameter] public string AgentName { get; set; } = string.Empty;
+    [Parameter] public string AgentRole { get; set; } = string.Empty;
+    [Parameter] public string? AvatarUrl { get; set; }
+    [Parameter] public string Message { get; set; } = string.Empty;
+    [Parameter] public string ButtonText { get; set; } = "Message";
+    [Parameter] public string? ButtonRoute { get; set; }
+    [Parameter] public string? ModuleKey { get; set; }
+
+    private string Initials
+    {
+        get
+        {
+            var parts = AgentName
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Take(2)
+                .Select(part => char.ToUpperInvariant(part[0]))
+                .ToArray();
+
+            return parts.Length == 0 ? "A" : new string(parts);
+        }
+    }
+}

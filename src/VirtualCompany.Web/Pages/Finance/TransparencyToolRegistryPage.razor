@@ -1,20 +1,21 @@
-@page "/finance/admin/transparency/tools"
+@page "/system/admin/tool-registry"
 @inherits FinanceTransparencyPageBase
 
-<PageTitle>Finance Tool Registry</PageTitle>
+<PageTitle>Tool registry</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Finance tool registry"
+    Title="Tool registry"
     Description="Inspect finance tool manifests, schema summaries, and provider adapter metadata."
-    LoadingMessage="Loading finance tool registry...">
+    LoadingMessage="Loading tool registry..."
+    Area="SystemAdmin">
     @if (!HasTransparencyAccess)
     {
         <ForbiddenState
-            Title="Finance transparency access required"
-            Message="Finance transparency pages are limited to company admins and testers."
+            Title="System access required"
+            Message="System administration pages are limited to company admins and testers."
             ReturnHref="@BuildFinanceHomeHref()"
             ReturnText="Back to finance" />
     }
@@ -23,7 +24,7 @@
         <div class="wizard-card wizard-card--compact">
             <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
                 <div>
-                    <h2 class="h5 mb-1">Finance tool manifest registry</h2>
+                            <h2 class="h5 mb-1">Tool manifest registry</h2>
                     <p class="text-body-secondary mb-0">@(string.IsNullOrWhiteSpace(Summary) ? "Registered finance manifests are projected from the current runtime registry for the active company context." : Summary)</p>
                 </div>
                 <span class="badge text-bg-light">@Items.Count item@(Items.Count == 1 ? string.Empty : "s")</span>

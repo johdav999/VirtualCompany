@@ -32,7 +32,7 @@ public sealed class FinanceSummaryUiContractIntegrationTests : IClassFixture<Tes
         Assert.Equal($"USD {cashPosition.AvailableBalance.ToString("N2", CultureInfo.InvariantCulture)}", cashViewModel.AvailableBalance);
         Assert.Equal(FormatCurrency(cashPosition.AverageMonthlyBurn, cashPosition.Currency), cashViewModel.AverageMonthlyBurn);
         Assert.Equal(FormatCurrency(cashPosition.Thresholds.WarningCashAmount!.Value, cashPosition.Thresholds.Currency), cashViewModel.WarningThreshold);
-        Assert.Equal(cashPosition.EstimatedRunwayDays is int runwayDays ? $"{runwayDays} days" : "n/a", cashViewModel.EstimatedRunway);
+        Assert.Equal(cashPosition.EstimatedRunwayDays is int runwayDays ? $"{runwayDays:N0} days" : "n/a", cashViewModel.EstimatedRunway);
 
         var balances = await financeClient.GetBalancesAsync(seed.CompanyAId, seed.CompanyAReferenceUtc);
         var balancesViewModel = FinanceSummaryPresenter.ToBalancesViewModel(seed.CompanyAId, seed.CompanyAReferenceUtc, balances);

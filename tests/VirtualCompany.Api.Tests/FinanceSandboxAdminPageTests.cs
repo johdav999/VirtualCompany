@@ -19,14 +19,14 @@ public sealed class FinanceSandboxAdminPageTests
         var sandboxService = new StubFinanceSandboxAdminService();
 
         using var harness = CreateHarness(companyId, "manager", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/simulation-lab?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId));
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Contains("Finance sandbox admin access required", cut.Markup);
+            Assert.Contains("Simulation Lab access required", cut.Markup);
             Assert.Contains("limited to company admins and testers", cut.Markup);
         });
 
@@ -40,18 +40,18 @@ public sealed class FinanceSandboxAdminPageTests
         var sandboxService = new StubFinanceSandboxAdminService();
 
         using var harness = CreateHarness(companyId, "tester", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/simulation-lab?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId));
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Contains("Finance sandbox admin", cut.Markup);
+            Assert.Contains("Simulation Lab", cut.Markup);
             Assert.Contains("Dataset generation is not configured", cut.Markup);
         });
 
-        Assert.Equal(7, sandboxService.TotalCalls);
+        Assert.Equal(4, sandboxService.TotalCalls);
     }
 
     [Fact]
@@ -116,7 +116,7 @@ public sealed class FinanceSandboxAdminPageTests
         };
 
         using var harness = CreateHarness(companyId, "admin", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/simulation-lab?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId));
@@ -124,11 +124,9 @@ public sealed class FinanceSandboxAdminPageTests
         cut.WaitForAssertion(() =>
         {
             Assert.Contains("Loading dataset generation", cut.Markup);
-            Assert.Contains("Loading anomaly injection", cut.Markup);
-            Assert.Contains("Loading simulation controls", cut.Markup);
-            Assert.Contains("Loading finance tool manifests", cut.Markup);
-            Assert.Contains("Loading finance tool executions", cut.Markup);
-            Assert.Contains("Loading finance domain events", cut.Markup);
+            Assert.Contains("Loading anomaly scenarios", cut.Markup);
+            Assert.Contains("Loading progression controls", cut.Markup);
+            Assert.Contains("Loading simulation status", cut.Markup);
         });
 
         datasetSource.SetResult(new FinanceSandboxDatasetGenerationViewModel
@@ -146,20 +144,17 @@ public sealed class FinanceSandboxAdminPageTests
         cut.WaitForAssertion(() =>
         {
             Assert.Contains("Seed dataset refresh", cut.Markup);
-            Assert.Contains("No anomaly injection scenarios are configured.", cut.Markup);
-            Assert.Contains("No finance tool manifests are currently registered.", cut.Markup);
-            Assert.Contains("Finance execution history is unavailable.", cut.Markup);
-            Assert.Contains("No finance domain events are available for the active company.", cut.Markup);
-            Assert.Contains("Loading simulation controls", cut.Markup);
+            Assert.Contains("No anomaly scenarios are configured.", cut.Markup);
+            Assert.Contains("Loading progression controls", cut.Markup);
         });
 
         Assert.Equal(1, sandboxService.DatasetGenerationCalls);
         Assert.Equal(1, sandboxService.AnomalyInjectionCalls);
         Assert.Equal(1, sandboxService.SimulationControlsCalls);
         Assert.Equal(1, sandboxService.SimulationDiagnosticsCalls);
-        Assert.Equal(1, sandboxService.TransparencyToolManifestCalls);
-        Assert.Equal(1, sandboxService.TransparencyToolExecutionCalls);
-        Assert.Equal(1, sandboxService.TransparencyEventCalls);
+        Assert.Equal(0, sandboxService.TransparencyToolManifestCalls);
+        Assert.Equal(0, sandboxService.TransparencyToolExecutionCalls);
+        Assert.Equal(0, sandboxService.TransparencyEventCalls);
     }
 
     [Fact]
@@ -232,10 +227,10 @@ public sealed class FinanceSandboxAdminPageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Contains("Simulation history and error state", cut.Markup);
-            Assert.Contains("Current or last error state", cut.Markup);
+            Assert.Contains("Simulation status and history", cut.Markup);
+            Assert.Contains("Current or last issue state", cut.Markup);
             Assert.Contains("Simulation backend execution is disabled for the sandbox.", cut.Markup);
-            Assert.Contains("duplicate_vendor_charge", cut.Markup);
+            Assert.Contains("Duplicate vendor charge", cut.Markup);
             Assert.Contains("Manual review recommended.", cut.Markup);
             Assert.Contains("Safe generation failure summary.", cut.Markup);
             Assert.Contains("Simulation started.", cut.Markup);
@@ -254,86 +249,13 @@ public sealed class FinanceSandboxAdminPageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.DoesNotContain("Simulation history and error state", cut.Markup);
-            Assert.DoesNotContain("Simulation controls", cut.Markup);
+            Assert.DoesNotContain("Simulation status and history", cut.Markup);
+            Assert.DoesNotContain("Progression controls", cut.Markup);
             Assert.DoesNotContain("Advance simulation time", cut.Markup);
         });
 
         Assert.Equal(0, sandboxService.SimulationDiagnosticsCalls);
         Assert.Equal(0, sandboxService.SimulationControlsCalls);
-    }
-
-    [Fact]
-    public void Sandbox_admin_page_renders_transparency_lists_and_loads_selected_detail_views()
-    {
-        var companyId = Guid.Parse("a1f0be7d-2821-4f25-9a2c-a36d8ca87ec5");
-        var eventId = Guid.Parse("8da18d57-5425-4f14-b6fc-c7298d2d98f4");
-        var executionId = Guid.Parse("77d8f4c4-df7b-49a7-a7de-f0fbbd36f14f");
-        var sandboxService = new StubFinanceSandboxAdminService
-        {
-            OnGetTransparencyToolManifestsAsync = (_, _) => Task.FromResult<FinanceTransparencyToolManifestListViewModel?>(new FinanceTransparencyToolManifestListViewModel
-            {
-                Summary = "Registered manifests.",
-                Items = [new FinanceTransparencyToolManifestItemViewModel { ToolName = "approve_invoice", Version = "1.0.0", ContractSummary = "Input requires invoiceId; output declares status.", ProviderAdapterIdentity = "InternalFinanceToolProvider" }]
-            }),
-            OnGetTransparencyToolExecutionsAsync = (_, _) => Task.FromResult<FinanceTransparencyExecutionHistoryViewModel?>(new FinanceTransparencyExecutionHistoryViewModel
-            {
-                Summary = "Recent executions.",
-                Items = [new FinanceTransparencyToolExecutionListItemViewModel { ExecutionId = executionId, ToolName = "approve_invoice", ToolVersion = "1.0.0", LifecycleState = "awaiting_approval", RequestSummary = "invoiceId=123", ResponseSummary = "Awaiting approval.", ExecutionTimestampUtc = new DateTime(2026, 4, 16, 10, 0, 0, DateTimeKind.Utc), CorrelationId = "corr-1" }]
-            }),
-            OnGetTransparencyToolExecutionDetailAsync = (_, _, _) => Task.FromResult<FinanceTransparencyToolExecutionDetailViewModel?>(new FinanceTransparencyToolExecutionDetailViewModel
-            {
-                ExecutionId = executionId,
-                ToolName = "approve_invoice",
-                ToolVersion = "1.0.0",
-                LifecycleState = "awaiting_approval",
-                RequestSummary = "invoiceId=123",
-                ResponseSummary = "Awaiting approval.",
-                ExecutionTimestampUtc = new DateTime(2026, 4, 16, 10, 0, 0, DateTimeKind.Utc),
-                CorrelationId = "corr-1",
-                ApprovalRequestId = Guid.Parse("11223344-5566-7788-99aa-bbccddeeff00"),
-                OriginatingEntityType = "finance_invoice",
-                OriginatingEntityId = Guid.Parse("22334455-6677-8899-aabb-ccddeeff0011"),
-                OriginatingEntityReference = "Finance invoice 22334455-6677-8899-aabb-ccddeeff0011"
-            }),
-            OnGetTransparencyEventsAsync = (_, _) => Task.FromResult<FinanceTransparencyEventStreamViewModel?>(new FinanceTransparencyEventStreamViewModel
-            {
-                Summary = "Recent finance events.",
-                Items = [new FinanceTransparencyEventListItemViewModel { Id = eventId, EventType = "finance.invoice.approval.requested", OccurredAtUtc = new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc), CorrelationId = "corr-1", EntityReference = "Finance invoice 22334455-6677-8899-aabb-ccddeeff0011" }]
-            }),
-            OnGetTransparencyEventDetailAsync = (_, _, _) => Task.FromResult<FinanceTransparencyEventDetailViewModel?>(new FinanceTransparencyEventDetailViewModel
-            {
-                Id = eventId,
-                EventType = "finance.invoice.approval.requested",
-                OccurredAtUtc = new DateTime(2026, 4, 16, 9, 0, 0, DateTimeKind.Utc),
-                CorrelationId = "corr-1",
-                EntityType = "finance_invoice",
-                EntityId = "22334455-6677-8899-aabb-ccddeeff0011",
-                EntityReference = "Finance invoice 22334455-6677-8899-aabb-ccddeeff0011",
-                PayloadSummary = "Invoice approval is awaiting approval.",
-                TriggerConsumptionTrace = [new FinanceTransparencyTriggerTraceItemViewModel { SourceType = "workflow_trigger", DisplayName = "Threshold trigger", Reference = "Invoice amount exceeded threshold" }]
-            })
-        };
-
-        using var harness = CreateHarness(companyId, "admin", sandboxService);
-        var cut = RenderSandboxAdmin(harness, companyId);
-
-        cut.WaitForAssertion(() =>
-        {
-            Assert.Contains("approve_invoice", cut.Markup);
-            Assert.Contains("finance.invoice.approval.requested", cut.Markup);
-        });
-
-        cut.Find($"#transparency-execution-{executionId:D}").Click();
-        cut.Find($"#transparency-event-{eventId:D}").Click();
-
-        cut.WaitForAssertion(() =>
-        {
-            Assert.Contains("Open approval inbox", cut.Markup);
-            Assert.Contains("Originating finance record", cut.Markup, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("Invoice approval is awaiting approval.", cut.Markup);
-            Assert.Contains("Threshold trigger", cut.Markup);
-        });
     }
 
     [Fact]
@@ -343,7 +265,7 @@ public sealed class FinanceSandboxAdminPageTests
         var sandboxService = new StubFinanceSandboxAdminService();
 
         using var harness = CreateHarness(companyId, "admin", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/simulation-lab?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId));
@@ -353,8 +275,8 @@ public sealed class FinanceSandboxAdminPageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Contains("Enter a positive seed value.", cut.Markup);
-            Assert.DoesNotContain("Generating dataset...", cut.Markup);
+            Assert.Contains("Enter a positive reproducibility value.", cut.Markup);
+            Assert.DoesNotContain("Regenerating data...", cut.Markup);
         });
 
         Assert.Equal(0, sandboxService.GenerateSeedDatasetCalls);
@@ -376,7 +298,7 @@ public sealed class FinanceSandboxAdminPageTests
         };
 
         using var harness = CreateHarness(companyId, "admin", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/simulation-lab?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId));
@@ -389,7 +311,7 @@ public sealed class FinanceSandboxAdminPageTests
         cut.WaitForAssertion(() =>
         {
             Assert.True(cut.Find("#seed-generate-submit").HasAttribute("disabled"));
-            Assert.Contains("Generating dataset...", cut.Markup);
+            Assert.Contains("Regenerating data...", cut.Markup);
         });
 
         cut.Find("form").Submit();
@@ -421,7 +343,7 @@ public sealed class FinanceSandboxAdminPageTests
         };
 
         using var harness = CreateHarness(companyId, "admin", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/simulation-lab?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId));
@@ -460,7 +382,7 @@ public sealed class FinanceSandboxAdminPageTests
         };
 
         using var harness = CreateHarness(companyId, "admin", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/simulation-lab?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId));
@@ -495,7 +417,7 @@ public sealed class FinanceSandboxAdminPageTests
         };
 
         using var harness = CreateHarness(companyId, "admin", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/simulation-lab?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId));
@@ -521,7 +443,7 @@ public sealed class FinanceSandboxAdminPageTests
         };
 
         using var harness = CreateHarness(companyId, "admin", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/simulation-lab?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId));
@@ -532,7 +454,7 @@ public sealed class FinanceSandboxAdminPageTests
         {
             Assert.Contains("The web app could not reach the finance backend. Start the API project and retry the request.", cut.Markup);
             Assert.False(cut.Find("#seed-generate-submit").HasAttribute("disabled"));
-            Assert.DoesNotContain("Generating dataset...", cut.Markup);
+            Assert.DoesNotContain("Regenerating data...", cut.Markup);
         });
     }
 
@@ -561,12 +483,12 @@ public sealed class FinanceSandboxAdminPageTests
         };
 
         using var harness = CreateHarness(companyId, "admin", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/simulation-lab?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId));
 
-        cut.WaitForAssertion(() => Assert.Contains("Scenario profile", cut.Markup));
+        cut.WaitForAssertion(() => Assert.Contains("Scenario", cut.Markup));
         cut.Find("#anomaly-injection-form").Submit();
 
         cut.WaitForAssertion(() =>
@@ -688,7 +610,7 @@ public sealed class FinanceSandboxAdminPageTests
         };
 
         using var harness = CreateHarness(companyId, "admin", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/simulation-lab?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId)
@@ -701,12 +623,12 @@ public sealed class FinanceSandboxAdminPageTests
         {
             Assert.Contains("Progression run started for 24 hour(s). Status updates will refresh automatically.", cut.Markup);
             Assert.Contains("Status refresh is active while the latest progression run is still in progress.", cut.Markup);
-            Assert.Contains("sandbox.progression.running", cut.Markup);
+            Assert.Contains("Sandbox progression running", cut.Markup);
         });
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Contains("sandbox.progression.completed", cut.Markup);
+            Assert.Contains("Sandbox progression completed", cut.Markup);
             Assert.Contains("generated 12 finance record(s)", cut.Markup);
             Assert.Contains(">12<", cut.Markup);
             Assert.DoesNotContain("Status refresh is active while the latest progression run is still in progress.", cut.Markup);
@@ -790,7 +712,7 @@ public sealed class FinanceSandboxAdminPageTests
         };
 
         using var harness = CreateHarness(companyId, "admin", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/admin/transparency/events/{eventId:D}?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/system/admin/transparency-events/{eventId:D}?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<TransparencyEventsPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId)
@@ -833,7 +755,7 @@ public sealed class FinanceSandboxAdminPageTests
         };
 
         using var harness = CreateHarness(companyId, "admin", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/admin/transparency/tools?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/system/admin/tool-registry?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<TransparencyToolRegistryPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId));
@@ -881,7 +803,7 @@ public sealed class FinanceSandboxAdminPageTests
         };
 
         using var harness = CreateHarness(companyId, "admin", sandboxService);
-        harness.Navigation.NavigateTo($"http://localhost/finance/admin/transparency/tool-executions/{executionId:D}?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/system/admin/tool-executions/{executionId:D}?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<TransparencyToolExecutionsPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId)
@@ -900,7 +822,7 @@ public sealed class FinanceSandboxAdminPageTests
 
     private static IRenderedComponent<SandboxAdminPage> RenderSandboxAdmin(SandboxAdminHarness harness, Guid companyId)
     {
-        harness.Navigation.NavigateTo($"http://localhost/finance/sandbox-admin?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/simulation-lab?companyId={companyId:D}");
 
         return harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId));
@@ -1004,6 +926,12 @@ public sealed class FinanceSandboxAdminPageTests
         public Func<FinanceSandboxSeedGenerationCommand, CancellationToken, Task<FinanceSandboxSeedGenerationViewModel>>? OnGenerateSeedDatasetAsync { get; init; }
         public Func<FinanceSandboxSimulationAdvanceCommand, CancellationToken, Task<FinanceSandboxProgressionRunViewModel>>? OnAdvanceSimulationAsync { get; init; }
         public Func<FinanceSandboxSimulationAdvanceCommand, CancellationToken, Task<FinanceSandboxProgressionRunViewModel>>? OnStartProgressionRunAsync { get; init; }
+        public Func<FinanceSandboxCompanySimulationStartCommand, CancellationToken, Task<FinanceSandboxSimulationDiagnosticsViewModel>>? OnStartCompanySimulationAsync { get; init; }
+        public Func<Guid, CancellationToken, Task<FinanceSandboxSimulationDiagnosticsViewModel>>? OnPauseCompanySimulationAsync { get; init; }
+        public Func<Guid, CancellationToken, Task<FinanceSandboxSimulationDiagnosticsViewModel>>? OnResumeCompanySimulationAsync { get; init; }
+        public Func<Guid, CancellationToken, Task<FinanceSandboxSimulationDiagnosticsViewModel>>? OnStepForwardCompanySimulationAsync { get; init; }
+        public Func<Guid, CancellationToken, Task<FinanceSandboxSimulationDiagnosticsViewModel>>? OnStopCompanySimulationAsync { get; init; }
+        public Func<Guid, bool, CancellationToken, Task<FinanceSandboxSimulationDiagnosticsViewModel>>? OnUpdateCompanySimulationGenerationAsync { get; init; }
         public Func<Guid, CancellationToken, Task<FinanceTransparencyToolManifestListViewModel?>>? OnGetTransparencyToolManifestsAsync { get; init; }
         public Func<Guid, CancellationToken, Task<FinanceTransparencyExecutionHistoryViewModel?>>? OnGetTransparencyToolExecutionsAsync { get; init; }
         public Func<Guid, Guid, CancellationToken, Task<FinanceTransparencyToolExecutionDetailViewModel?>>? OnGetTransparencyToolExecutionDetailAsync { get; init; }
@@ -1026,6 +954,7 @@ public sealed class FinanceSandboxAdminPageTests
         public int GenerateSeedDatasetCalls { get; private set; }
         public int StartProgressionRunCalls { get; private set; }
         public int AdvanceSimulationCalls { get; private set; }
+        public int CompanySimulationMutationCalls { get; private set; }
         public int TotalCalls =>
             DatasetGenerationCalls +
             AnomalyInjectionCalls +
@@ -1096,6 +1025,54 @@ public sealed class FinanceSandboxAdminPageTests
             return OnStartProgressionRunAsync is not null
                 ? OnStartProgressionRunAsync(command, cancellationToken)
                 : Task.FromResult(new FinanceSandboxProgressionRunViewModel());
+        }
+
+        public Task<FinanceSandboxSimulationDiagnosticsViewModel> StartCompanySimulationAsync(FinanceSandboxCompanySimulationStartCommand command, CancellationToken cancellationToken = default)
+        {
+            CompanySimulationMutationCalls++;
+            return OnStartCompanySimulationAsync is not null
+                ? OnStartCompanySimulationAsync(command, cancellationToken)
+                : Task.FromResult(new FinanceSandboxSimulationDiagnosticsViewModel());
+        }
+
+        public Task<FinanceSandboxSimulationDiagnosticsViewModel> PauseCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default)
+        {
+            CompanySimulationMutationCalls++;
+            return OnPauseCompanySimulationAsync is not null
+                ? OnPauseCompanySimulationAsync(companyId, cancellationToken)
+                : Task.FromResult(new FinanceSandboxSimulationDiagnosticsViewModel());
+        }
+
+        public Task<FinanceSandboxSimulationDiagnosticsViewModel> ResumeCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default)
+        {
+            CompanySimulationMutationCalls++;
+            return OnResumeCompanySimulationAsync is not null
+                ? OnResumeCompanySimulationAsync(companyId, cancellationToken)
+                : Task.FromResult(new FinanceSandboxSimulationDiagnosticsViewModel());
+        }
+
+        public Task<FinanceSandboxSimulationDiagnosticsViewModel> StepForwardCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default)
+        {
+            CompanySimulationMutationCalls++;
+            return OnStepForwardCompanySimulationAsync is not null
+                ? OnStepForwardCompanySimulationAsync(companyId, cancellationToken)
+                : Task.FromResult(new FinanceSandboxSimulationDiagnosticsViewModel());
+        }
+
+        public Task<FinanceSandboxSimulationDiagnosticsViewModel> StopCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default)
+        {
+            CompanySimulationMutationCalls++;
+            return OnStopCompanySimulationAsync is not null
+                ? OnStopCompanySimulationAsync(companyId, cancellationToken)
+                : Task.FromResult(new FinanceSandboxSimulationDiagnosticsViewModel());
+        }
+
+        public Task<FinanceSandboxSimulationDiagnosticsViewModel> UpdateCompanySimulationGenerationAsync(Guid companyId, bool generationEnabled, CancellationToken cancellationToken = default)
+        {
+            CompanySimulationMutationCalls++;
+            return OnUpdateCompanySimulationGenerationAsync is not null
+                ? OnUpdateCompanySimulationGenerationAsync(companyId, generationEnabled, cancellationToken)
+                : Task.FromResult(new FinanceSandboxSimulationDiagnosticsViewModel());
         }
 
         public Task<FinanceTransparencyToolManifestListViewModel?> GetTransparencyToolManifestsAsync(Guid companyId, CancellationToken cancellationToken = default)

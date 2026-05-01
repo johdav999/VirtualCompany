@@ -1,20 +1,26 @@
 @page "/finance/bill-inbox"
+@page "/finance/supplier-bills/review"
 @inherits FinancePageBase
 
-<PageTitle>Finance Bill Inbox</PageTitle>
+<PageTitle>Supplier bill review</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Bill inbox"
-    Description="Review detected supplier bills, warnings, confidence, and bounded approval proposals."
-    LoadingMessage="Loading bill inbox...">
+    Title="Supplier bills"
+    Description="Review detected supplier bills, warnings, confidence, and approval proposals."
+    LoadingMessage="Loading supplier bill review...">
+    <div class="finance-subtab-nav mb-3" aria-label="Supplier bill sections">
+        <a class="finance-subtab-nav__link" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBills, AccessState.CompanyId)">Bills</a>
+        <a class="finance-subtab-nav__link active" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBillsReview, AccessState.CompanyId)">Review</a>
+    </div>
+
     <div class="wizard-card wizard-card--compact">
         <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
             <div>
-                <h2 class="h5 mb-1">Inbox</h2>
-                <p class="text-body-secondary mb-0">Only review-flow bill statuses are shown.</p>
+                <h2 class="h5 mb-1">Review</h2>
+                <p class="text-body-secondary mb-0">Detected supplier bills that need review appear here.</p>
             </div>
             <span class="badge text-bg-light">@Items.Count item@(Items.Count == 1 ? string.Empty : "s")</span>
         </div>
@@ -23,9 +29,9 @@
             IsLoading="@IsListLoading"
             IsEmpty="@IsListEmpty"
             ErrorMessage="@ListErrorMessage"
-            LoadingTitle="Loading inbox"
-            LoadingMessage="Fetching tenant-scoped finance bill inbox items."
-            EmptyTitle="No bill inbox items"
+            LoadingTitle="Loading review items"
+            LoadingMessage="Fetching supplier bills that need review."
+            EmptyTitle="No bills need review"
             EmptyMessage="Detected bills that require review will appear here."
             OnRetry="@ReloadAsync">
             <div class="table-responsive">

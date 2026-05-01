@@ -65,8 +65,8 @@ public static class AgentFinancePresentation
 
     public static IReadOnlyList<AgentFinanceWorkflowCard> BuildWorkflowCards(Guid? companyId) =>
     [
-        new("Finance workspace", "Open the tenant-scoped finance workspace and summary routes.", FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)),
-        new("Transactions", "Open transaction detail and category editing for the active company.", FinanceRoutes.WithCompanyContext(FinanceRoutes.Transactions, companyId)),
+        new("Finance workspace", "Open the finance workspace and summary routes.", FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)),
+        new("Activity", "Open money movement detail and category editing for the active company.", FinanceRoutes.WithCompanyContext(FinanceRoutes.Activity, companyId)),
         new("Invoices", "Open invoice review and approval status workflows.", FinanceRoutes.WithCompanyContext(FinanceRoutes.Invoices, companyId)),
         new("Approvals", "Open approval requests linked to finance review workflows.", companyId is Guid resolvedCompanyId ? $"/approvals?companyId={resolvedCompanyId:D}" : "/approvals"),
         new("Audit trail", "Review audit and reconciliation evidence tied to finance actions.", companyId is Guid auditCompanyId ? $"/audit?companyId={auditCompanyId:D}" : "/audit"),

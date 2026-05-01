@@ -34,7 +34,7 @@ public sealed class FinanceCounterpartiesPageTests
         };
 
         using var harness = CreateHarness(companyId, [customer], []);
-        harness.Navigation.NavigateTo($"http://localhost/finance/admin/counterparties?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/finance/counterparties?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<CounterpartiesPage>(parameters => parameters.Add(x => x.CompanyId, companyId));
 
@@ -91,7 +91,7 @@ public sealed class FinanceCounterpartiesPageTests
                 return created;
             });
 
-        harness.Navigation.NavigateTo($"http://localhost/finance/admin/counterparties?companyId={companyId:D}");
+        harness.Navigation.NavigateTo($"http://localhost/finance/counterparties?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<CounterpartiesPage>(parameters => parameters.Add(x => x.CompanyId, companyId));
 

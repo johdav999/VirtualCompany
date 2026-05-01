@@ -1,21 +1,22 @@
 @page "/finance/anomalies"
+@page "/finance/issues"
 @inherits FinancePageBase
 @using VirtualCompany.Web.Services
 
-<PageTitle>Finance Anomaly Workbench</PageTitle>
+<PageTitle>Finance issues</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Finance anomaly workbench"
-    Description="Browse tenant-scoped finance anomalies with preserved filter state, paging, and drill-down links."
-    LoadingMessage="Loading finance anomaly workbench...">
+    Title="Issues"
+    Description="Review finance items that need attention."
+    LoadingMessage="Loading finance issues...">
     <form class="agent-filter-bar mb-4" @onsubmit="HandleApplyFiltersAsync" @onsubmit:preventDefault="true">
         <div>
-            <label class="form-label" for="finance-anomaly-type">Anomaly type</label>
+            <label class="form-label" for="finance-anomaly-type">Issue type</label>
             <select id="finance-anomaly-type" class="form-select" @bind="Filters.AnomalyType" @bind:after="HandleFiltersChangedAsync">
-                <option value="">All anomaly types</option>
+                <option value="">All issue types</option>
                 @foreach (var option in AnomalyTypeOptions)
                 {
                     <option value="@option">@FinanceAnomalyPresentation.FormatLabel(option)</option>
@@ -69,9 +70,9 @@
 
     <section class="finance-summary-grid mb-4">
         <article class="wizard-card finance-metric-card finance-metric-card--hero">
-            <span class="dashboard-kicker">Matching anomalies</span>
+            <span class="dashboard-kicker">Matching issues</span>
             <h2 class="finance-metric-card__value">@(Workbench?.TotalCount ?? 0)</h2>
-            <p class="text-body-secondary mb-0">Filter and paging state stays in the URL so drill-down navigation can return to the same workbench view.</p>
+            <p class="text-body-secondary mb-0">Use filters to find finance items that need attention.</p>
         </article>
         <article class="wizard-card finance-metric-card">
             <span class="dashboard-kicker">Current page</span>
@@ -84,11 +85,11 @@
         IsLoading="@IsListLoading"
         IsEmpty="@IsListEmpty"
         ErrorMessage="@ListErrorMessage"
-        LoadingTitle="Loading anomaly workbench"
-        LoadingMessage="Fetching tenant-scoped anomalies, follow-up status, and related finance records."
-        EmptyTitle="No anomalies"
-        EmptyMessage="No finance anomalies match the current workbench filters."
-        RetryText="Reload workbench"
+        LoadingTitle="Loading issues"
+        LoadingMessage="Fetching issues, follow-up status, and related finance records."
+        EmptyTitle="No issues"
+        EmptyMessage="No finance issues match the current filters."
+        RetryText="Reload issues"
         OnRetry="@ReloadAsync">
         @if (Workbench is not null && Workbench.Items.Count > 0)
         {

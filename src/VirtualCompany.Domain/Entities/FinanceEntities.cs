@@ -38,6 +38,17 @@ public sealed class FinanceAccount : ICompanyOwnedEntity
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
     }
 
+    public void ApplySyncedSnapshot(string code, string name, string accountType, string currency, decimal openingBalance, DateTime openedUtc, DateTime updatedUtc)
+    {
+        Code = NormalizeRequired(code, nameof(code), 32);
+        Name = NormalizeRequired(name, nameof(name), 160);
+        AccountType = NormalizeRequired(accountType, nameof(accountType), 64);
+        Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
+        OpeningBalance = openingBalance;
+        OpenedUtc = EntityTimestampNormalizer.NormalizeUtc(openedUtc, nameof(openedUtc));
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
+    }
+
     public Guid Id { get; private set; }
     public Guid CompanyId { get; private set; }
     public string Code { get; private set; } = null!;
@@ -435,6 +446,25 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
     public ICollection<PaymentAllocation> Allocations { get; } = new List<PaymentAllocation>();
     public CompanyKnowledgeDocument? Document { get; private set; }
 
+    public void ApplySyncedSnapshot(
+        Guid counterpartyId,
+        DateTime issuedUtc,
+        DateTime dueUtc,
+        decimal amount,
+        string currency,
+        string status,
+        string settlementStatus)
+    {
+        CounterpartyId = counterpartyId == Guid.Empty ? throw new ArgumentException("CounterpartyId is required.", nameof(counterpartyId)) : counterpartyId;
+        IssuedUtc = EntityTimestampNormalizer.NormalizeUtc(issuedUtc, nameof(issuedUtc));
+        DueUtc = EntityTimestampNormalizer.NormalizeUtc(dueUtc, nameof(dueUtc));
+        Amount = amount;
+        Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
+        Status = NormalizeRequired(status, nameof(status), 32);
+        SettlementStatus = NormalizeSettlementStatus(settlementStatus);
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
     public void ChangeApprovalStatus(string status)
     {
         var normalized = NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
@@ -587,6 +617,25 @@ public sealed class FinanceBill : ICompanyOwnedEntity
     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
     public ICollection<PaymentAllocation> Allocations { get; } = new List<PaymentAllocation>();
     public CompanyKnowledgeDocument? Document { get; private set; }
+
+    public void ApplySyncedSnapshot(
+        Guid counterpartyId,
+        DateTime receivedUtc,
+        DateTime dueUtc,
+        decimal amount,
+        string currency,
+        string status,
+        string settlementStatus)
+    {
+        CounterpartyId = counterpartyId == Guid.Empty ? throw new ArgumentException("CounterpartyId is required.", nameof(counterpartyId)) : counterpartyId;
+        ReceivedUtc = EntityTimestampNormalizer.NormalizeUtc(receivedUtc, nameof(receivedUtc));
+        DueUtc = EntityTimestampNormalizer.NormalizeUtc(dueUtc, nameof(dueUtc));
+        Amount = amount;
+        Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
+        Status = NormalizeRequired(status, nameof(status), 32);
+        SettlementStatus = NormalizeSettlementStatus(settlementStatus);
+        UpdatedUtc = DateTime.UtcNow;
+    }
 
     private static string NormalizeRequired(string value, string name, int maxLength)
     {

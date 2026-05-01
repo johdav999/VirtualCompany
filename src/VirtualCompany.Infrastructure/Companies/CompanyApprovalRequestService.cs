@@ -458,6 +458,9 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             ApprovalTargetEntityType.Action => await _dbContext.ToolExecutionAttempts
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.FortnoxWrite => await _dbContext.FortnoxWriteCommands
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             _ => false
         };
 
@@ -1105,6 +1108,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             var value when string.Equals(value, ApprovalTargetEntityType.Task.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Task",
             var value when string.Equals(value, ApprovalTargetEntityType.Workflow.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Workflow",
             var value when string.Equals(value, ApprovalTargetEntityType.Action.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Action",
+            var value when string.Equals(value, ApprovalTargetEntityType.FortnoxWrite.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Fortnox write",
             _ => entityType
         };
 

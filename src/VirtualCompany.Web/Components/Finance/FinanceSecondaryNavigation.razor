@@ -1,0 +1,34 @@
+@using VirtualCompany.Web.Services
+
+<article class="wizard-card wizard-card--compact">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
+        <div>
+            <span class="dashboard-kicker">Finance pages</span>
+            <h2 class="h6 mt-2 mb-0">Operational navigation</h2>
+        </div>
+    </div>
+    <div class="dashboard-actions">
+        @foreach (var item in Links)
+        {
+            <a class="btn btn-sm btn-outline-secondary" href="@FinanceRoutes.WithCompanyContext(item.Href, CompanyId)">@item.Label</a>
+        }
+    </div>
+</article>
+
+@code {
+    [Parameter]
+    public Guid? CompanyId { get; set; }
+
+    private static IReadOnlyList<FinanceSecondaryLink> Links { get; } =
+    [
+        new("Overview", FinanceRoutes.Home),
+        new("Invoices", FinanceRoutes.Invoices),
+        new("Supplier bills", FinanceRoutes.SupplierBills),
+        new("Payments", FinanceRoutes.Payments),
+        new("Activity", FinanceRoutes.Activity),
+        new("Issues", FinanceRoutes.Issues),
+        new("Settings", FinanceRoutes.Settings)
+    ];
+
+    private sealed record FinanceSecondaryLink(string Label, string Href);
+}

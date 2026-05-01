@@ -57,7 +57,7 @@ public partial class TransactionsPage : FinancePageBase
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
         .ToArray();
-    private string ClearFiltersHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Transactions, AccessState.CompanyId);
+    private string ClearFiltersHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Activity, AccessState.CompanyId);
 
     protected override async Task OnParametersSetAsync()
     {
@@ -134,7 +134,7 @@ public partial class TransactionsPage : FinancePageBase
             SelectedTransaction = await FinanceApiClient.GetTransactionDetailAsync(companyId, transactionId);
             if (SelectedTransaction is null)
             {
-                DetailErrorMessage = "The selected transaction could not be found in the active company context.";
+                DetailErrorMessage = "The selected activity item could not be found for this company.";
                 EditableCategory = string.Empty;
             }
         }

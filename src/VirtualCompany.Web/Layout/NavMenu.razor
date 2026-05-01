@@ -1,10 +1,12 @@
 @inject OnboardingApiClient ApiClient
 @inject FinanceAccessResolver FinanceAccessResolver
+@inject AgentApiClient AgentApiClient
 @inject NavigationManager Navigation
 @implements IDisposable
 
 @using Microsoft.AspNetCore.Components.Routing
 @using Microsoft.AspNetCore.WebUtilities
+@using VirtualCompany.Shared
 
 <div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
@@ -16,7 +18,8 @@
 </div>
 
 <div class="@NavMenuCssClass nav-scrollable" @onclick="ToggleNavMenu">
-    <nav class="nav flex-column">
+    <div class="nav-menu-shell">
+        <nav class="nav flex-column nav-menu-primary">
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
                 <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Home
@@ -39,6 +42,22 @@
                     <span class="bi bi-cash-stack" aria-hidden="true"></span> Finance
                 </NavLink>
             </div>
+            @if (!string.IsNullOrWhiteSpace(simulationLabHref))
+            {
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="@simulationLabHref">
+                        <span class="bi bi-sliders" aria-hidden="true"></span> Simulation Lab
+                    </NavLink>
+                </div>
+            }
+            @if (!string.IsNullOrWhiteSpace(systemAdminHref))
+            {
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="@systemAdminHref">
+                        <span class="bi bi-tools" aria-hidden="true"></span> System / Admin
+                    </NavLink>
+                </div>
+            }
         }
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@agentsHref">
@@ -75,12 +94,34 @@
                 <span class="bi bi-bell" aria-hidden="true"></span> Briefing delivery
             </NavLink>
         </div>
-    </nav>
+        </nav>
+
+        <div class="nav-menu-bottom">
+            <ContextualAgentSidebarCard
+                AgentName="@sidebarAgent.AgentName"
+                AgentRole="@sidebarAgent.AgentRole"
+                AvatarUrl="@sidebarAgent.AvatarUrl"
+                Message="@sidebarAgent.Message"
+                ButtonText="@sidebarAgent.ButtonText"
+                ButtonRoute="@sidebarAgent.ButtonRoute"
+                ModuleKey="@sidebarAgent.ModuleKey" />
+
+            <nav class="nav flex-column nav-menu-settings" aria-label="Settings">
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="@settingsHref">
+                        <span class="bi bi-gear" aria-hidden="true"></span> Settings
+                    </NavLink>
+                </div>
+            </nav>
+        </div>
+    </div>
 </div>
 
 @code {
     private bool collapseNavMenu = true;
     private string? financeHref;
+    private string? simulationLabHref;
+    private string? systemAdminHref;
     private Guid? currentCompanyId;
     private CurrentUserContextViewModel? currentUser;
     private string dashboardHref = "/dashboard";
@@ -91,6 +132,9 @@
     private string approvalsHref = "/approvals";
     private string auditHref = "/audit";
     private string briefingHref = "/briefing-preferences";
+    private string settingsHref = "/onboarding";
+    private SidebarAgentContext sidebarAgent = SidebarAgentContext.Default("/agents");
+    private int sidebarAgentRefreshVersion;
 
     private string? NavMenuCssClass => collapseNavMenu ? "collapse" : null;
 
@@ -102,10 +146,14 @@
         {
             currentUser = await ApiClient.GetCurrentUserContextAsync();
             RefreshFinanceHref();
+            await RefreshContextualAgentAsync();
         }
         catch (OnboardingApiException)
         {
             financeHref = null;
+            simulationLabHref = null;
+            systemAdminHref = null;
+            sidebarAgent = SidebarAgentContext.Default("/agents");
         }
     }
 
@@ -117,6 +165,7 @@
     private void HandleLocationChanged(object? sender, LocationChangedEventArgs e)
     {
         RefreshFinanceHref();
+        _ = RefreshContextualAgentAsync();
         _ = InvokeAsync(StateHasChanged);
     }
 
@@ -124,6 +173,8 @@
     {
         currentCompanyId = TryGetCompanyIdFromUri(Navigation.Uri) ?? currentUser?.ActiveCompany?.CompanyId;
         financeHref = FinanceAccessResolver.BuildNavigationHref(currentUser, currentCompanyId);
+        simulationLabHref = BuildRestrictedAreaHref(FinanceRoutes.SandboxAdmin);
+        systemAdminHref = BuildRestrictedAreaHref(FinanceRoutes.TransparencyToolRegistry);
         dashboardHref = DashboardRoutes.EnsureCompanyContext("/dashboard", currentCompanyId, "/dashboard");
         agentsHref = DashboardRoutes.EnsureCompanyContext("/agents", currentCompanyId, "/agents");
         workflowsHref = DashboardRoutes.EnsureCompanyContext("/workflows", currentCompanyId, "/workflows");
@@ -132,6 +183,167 @@
         approvalsHref = DashboardRoutes.BuildApprovalsPath(currentCompanyId);
         auditHref = currentCompanyId is Guid auditCompanyId ? $"/audit?companyId={auditCompanyId:D}" : "/audit";
         briefingHref = currentCompanyId is Guid briefingCompanyId ? $"/briefing-preferences?companyId={briefingCompanyId:D}" : "/briefing-preferences";
+        settingsHref = currentCompanyId is Guid settingsCompanyId ? FinanceRoutes.WithCompanyContext(FinanceRoutes.Settings, settingsCompanyId) : "/onboarding";
+    }
+
+    private async Task RefreshContextualAgentAsync()
+    {
+        var refreshVersion = ++sidebarAgentRefreshVersion;
+        var moduleKey = ResolveModuleKey();
+        var fallback = BuildFallbackSidebarAgent(moduleKey);
+        sidebarAgent = fallback;
+
+        if (currentCompanyId is not Guid companyId)
+        {
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        try
+        {
+            var roster = await AgentApiClient.GetRosterAsync(companyId);
+            var agent = FindContextualAgent(roster, moduleKey);
+            if (agent is null || refreshVersion != sidebarAgentRefreshVersion)
+            {
+                return;
+            }
+
+            sidebarAgent = fallback with
+            {
+                AgentRole = IsFixedDisplayName(moduleKey) || string.IsNullOrWhiteSpace(agent.RoleName) ? fallback.AgentRole : agent.RoleName,
+                AvatarUrl = ResolveSidebarAvatarUrl(agent.AvatarUrl, fallback.AvatarUrl),
+                ButtonRoute = IsDirectChatEligible(agent.Status) ? BuildChatUri(companyId, agent.Id) : agentsHref
+            };
+
+            if (!IsFixedDisplayName(moduleKey) && !string.IsNullOrWhiteSpace(agent.DisplayName))
+            {
+                sidebarAgent = sidebarAgent with
+                {
+                    AgentName = agent.DisplayName,
+                    ButtonText = $"Message {agent.DisplayName}"
+                };
+            }
+        }
+        catch (OnboardingApiException)
+        {
+            sidebarAgent = fallback;
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private SidebarAgentContext BuildFallbackSidebarAgent(string moduleKey)
+    {
+        var route = agentsHref;
+        return moduleKey switch
+        {
+            "finance" => new SidebarAgentContext(
+                "finance",
+                "Laura",
+                "Finance Manager",
+                "/images/laura.png",
+                "I'm here to watch your finances and let you know what needs attention.",
+                "Message Laura",
+                route),
+            "sales" => new SidebarAgentContext(
+                "sales",
+                "Sales agent",
+                "Sales Manager",
+                null,
+                "I'm watching your pipeline and surfacing the follow-ups that need attention.",
+                "Message sales",
+                route),
+            "support" => new SidebarAgentContext(
+                "support",
+                "Support agent",
+                "Customer Support Manager",
+                null,
+                "I'm tracking customer conversations and highlighting issues that need a response.",
+                "Message support",
+                route),
+            _ => SidebarAgentContext.Default(route)
+        };
+    }
+
+    private static CompanyAgentSummaryViewModel? FindContextualAgent(IEnumerable<CompanyAgentSummaryViewModel> roster, string moduleKey)
+    {
+        var expectedDepartment = moduleKey switch
+        {
+            "finance" => "Finance",
+            "sales" => "Sales",
+            "support" => "Support",
+            _ => "Executive"
+        };
+
+        return roster
+            .Where(agent => !string.Equals(agent.Status, "archived", StringComparison.OrdinalIgnoreCase))
+            .FirstOrDefault(agent => string.Equals(agent.Department, expectedDepartment, StringComparison.OrdinalIgnoreCase))
+            ?? roster.FirstOrDefault(agent => string.Equals(agent.TemplateId, moduleKey, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string ResolveModuleKey()
+    {
+        var relativePath = Navigation.ToBaseRelativePath(Navigation.Uri);
+        var path = relativePath.Split('?', '#')[0].Trim('/').ToLowerInvariant();
+
+        if (string.IsNullOrWhiteSpace(path) || path.StartsWith("dashboard", StringComparison.Ordinal))
+        {
+            return "dashboard";
+        }
+
+        if (path.StartsWith("finance", StringComparison.Ordinal))
+        {
+            return "finance";
+        }
+
+        if (path.StartsWith("sales", StringComparison.Ordinal))
+        {
+            return "sales";
+        }
+
+        if (path.StartsWith("support", StringComparison.Ordinal))
+        {
+            return "support";
+        }
+
+        return "dashboard";
+    }
+
+    private static bool IsFixedDisplayName(string moduleKey) =>
+        string.Equals(moduleKey, "finance", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsDirectChatEligible(string? status) =>
+        !string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(status, "archived", StringComparison.OrdinalIgnoreCase);
+
+    private static string? ResolveSidebarAvatarUrl(string? avatarUrl, string? fallbackAvatarUrl)
+    {
+        if (string.IsNullOrWhiteSpace(avatarUrl))
+        {
+            return fallbackAvatarUrl;
+        }
+
+        return avatarUrl.Trim() switch
+        {
+            "/avatars/agents/finance-manager.png" => "/images/laura.png",
+            var value => value
+        };
+    }
+
+    private static string BuildChatUri(Guid companyId, Guid agentId) =>
+        $"/agents/{agentId}/chat?companyId={companyId:D}";
+
+    private string? BuildRestrictedAreaHref(string path)
+    {
+        if (financeHref is null || currentCompanyId is not Guid companyId)
+        {
+            return null;
+        }
+
+        var state = FinanceAccessResolver.Resolve(currentUser, companyId);
+        return state.IsAllowed && FinanceAccess.CanAccessSandboxAdmin(state.MembershipRole)
+            ? FinanceRoutes.WithCompanyContext(path, companyId)
+            : null;
     }
 
     private static Guid? TryGetCompanyIdFromUri(string uri)
@@ -148,5 +360,25 @@
     public void Dispose()
     {
         Navigation.LocationChanged -= HandleLocationChanged;
+    }
+
+    private sealed record SidebarAgentContext(
+        string ModuleKey,
+        string AgentName,
+        string AgentRole,
+        string? AvatarUrl,
+        string Message,
+        string ButtonText,
+        string? ButtonRoute)
+    {
+        public static SidebarAgentContext Default(string? buttonRoute) =>
+            new(
+                "dashboard",
+                "Company Assistant",
+                "Primary Agent",
+                null,
+                "I'm keeping an eye on company activity and surfacing what needs attention.",
+                "Message assistant",
+                buttonRoute);
     }
 }

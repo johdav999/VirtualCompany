@@ -1,3 +1,5 @@
+using Azure.Extensions.AspNetCore.Configuration.Secrets;
+using Azure.Identity;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Data.Common;
@@ -20,6 +22,20 @@ using VirtualCompany.Domain.Enums;
 
 var builder = WebApplication.CreateBuilder(args);
 const string DevelopmentCorsPolicy = "DevelopmentWebClient";
+
+var keyVaultUriValue =
+    builder.Configuration["AzureKeyVault:Uri"]
+    ?? builder.Configuration["KeyVault:Uri"];
+
+if (!string.IsNullOrWhiteSpace(keyVaultUriValue))
+{
+    if (!Uri.TryCreate(keyVaultUriValue, UriKind.Absolute, out var keyVaultUri))
+    {
+        throw new InvalidOperationException("Azure Key Vault URI configuration value is invalid.");
+    }
+
+    builder.Configuration.AddAzureKeyVault(keyVaultUri, new DefaultAzureCredential());
+}
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();

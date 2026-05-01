@@ -1,0 +1,43 @@
+@using VirtualCompany.Web.Services
+
+<article class="wizard-card wizard-card--compact finance-manager-insight-panel">
+    <aside class="finance-manager-insight-panel__profile" aria-label="Finance manager">
+        @if (!string.IsNullOrWhiteSpace(Insight.AvatarUrl))
+        {
+            <img class="agent-avatar finance-manager-insight-panel__avatar" src="@Insight.AvatarUrl" alt="Laura avatar" />
+        }
+        <div>
+            <h2 class="h5 mb-1">@Insight.Name</h2>
+            <p class="text-body-secondary mb-2">@Insight.Role</p>
+            <span class="badge text-bg-light">
+                <span class="finance-overview-status-dot" aria-hidden="true"></span>
+                @Insight.Status
+            </span>
+        </div>
+    </aside>
+
+    <section class="finance-manager-insight-panel__list" aria-label="Laura's insights">
+        <div class="mb-3">
+            <h3 class="h5 mt-1 mb-0">Laura's insights</h3>
+        </div>
+
+        @if (Insight.Insights.Count == 0)
+        {
+            <p class="text-body-secondary mb-0">No urgent finance risks detected.</p>
+        }
+        else
+        {
+            <div class="list-group list-group-flush finance-overview-list">
+                @foreach (var item in Insight.Insights)
+                {
+                    <FinanceInsightItem Item="@item" />
+                }
+            </div>
+        }
+    </section>
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public FinanceManagerInsightViewModel Insight { get; set; } = new();
+}

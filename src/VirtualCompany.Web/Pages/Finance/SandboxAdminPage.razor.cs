@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.Extensions.Options;
@@ -17,9 +18,8 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
     private readonly SeedGenerationFormModel _seedGenerationForm = new();
     private readonly IReadOnlyList<GenerationModeOption> _generationModeOptions =
     [
-        new(FinanceSandboxSeedGenerationModes.Refresh, "Replace existing dataset", "Generate a clean sandbox dataset for the active company."),
-        new(FinanceSandboxSeedGenerationModes.Refresh, "Replace existing dataset", "Generate a clean sandbox dataset for the active company."),
-        new(FinanceSandboxSeedGenerationModes.RefreshWithAnomalies, "Replace and inject anomalies", "Generate the dataset and add anomaly scenarios for validation coverage.")
+        new(FinanceSandboxSeedGenerationModes.Refresh, "Replace existing dataset", "Generate a clean demo dataset for the active company."),
+        new(FinanceSandboxSeedGenerationModes.RefreshWithAnomalies, "Replace existing dataset and add anomalies", "Generate the dataset and add anomaly scenarios for validation coverage.")
     ];
     private EditContext _seedGenerationEditContext = default!;
     private EditContext _anomalyInjectionEditContext = default!;
@@ -37,24 +37,19 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
     private bool _isLoadingSelectedAnomaly;
     private string? _selectedAnomalyErrorMessage;
     private readonly SimulationControlsFormModel _simulationControlsForm = new();
-    private Guid? _selectedTransparencyEventId;
-    private FinanceTransparencyEventDetailViewModel? _selectedTransparencyEventDetail;
-    private bool _isLoadingSelectedTransparencyEvent;
-    private string? _selectedTransparencyEventErrorMessage;
-    private Guid? _selectedTransparencyExecutionId;
-    private FinanceTransparencyToolExecutionDetailViewModel? _selectedTransparencyExecutionDetail;
     private string? _simulationActionErrorMessage;
     private string? _simulationActionSuccessMessage;
     private bool _isAdvancingSimulation;
     private bool _isStartingProgressionRun;
+    private bool _isChangingSimulationLifecycle;
+    private string? _simulationLifecycleErrorMessage;
+    private string? _simulationLifecycleSuccessMessage;
     private FinanceSandboxProgressionRunViewModel? _latestProgressionRun;
     private FinanceSandboxSimulationControlsViewModel? _latestSimulationControls;
     private readonly List<CompanyOption> _companyOptions = [];
     private bool _isSubmittingSeedGeneration;
     private bool _isRefreshingSimulationControls;
     private bool _isPollingSimulationControls;
-    private bool _isLoadingSelectedTransparencyExecution;
-    private string? _selectedTransparencyExecutionErrorMessage;
     private string? _simulationRefreshErrorMessage;
     private DateTime? _lastSimulationRefreshUtc;
     private Guid? _simulationPollingCompanyId;
@@ -62,7 +57,6 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
     private int _datasetGenerationSectionVersion;
     private int _anomalyInjectionSectionVersion;
     private int _simulationDiagnosticsSectionVersion;
-    private int _simulationControlsSectionVersion;
 
     [Parameter]
     public int SimulationPollingIntervalMilliseconds { get; set; } = DefaultSimulationPollingIntervalMilliseconds;
@@ -80,14 +74,14 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
 
     private string SelectedGenerationModeDescription =>
         _generationModeOptions.FirstOrDefault(option => string.Equals(option.Value, _seedGenerationForm.GenerationMode, StringComparison.OrdinalIgnoreCase))?.Description
-        ?? "Select how the sandbox dataset should be generated.";
+        ?? "Select how the demo dataset should be generated.";
 
     private string CompanySelectionDescription =>
         _companyOptions.Count > 1
-            ? "Changing company updates the tenant-scoped route before you submit the generation request."
-            : "The active finance company context is applied automatically for seed generation.";
+            ? "Changing company updates the route before you submit the generation request."
+            : "The active company is applied automatically.";
 
-    private bool IsSimulationBusy => _isAdvancingSimulation || _isStartingProgressionRun;
+    private bool IsSimulationBusy => _isAdvancingSimulation || _isStartingProgressionRun || _isChangingSimulationLifecycle;
 
     protected override void OnInitialized()
     {
@@ -132,12 +126,13 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
                 _selectedAnomalyDetail = null;
                 _simulationActionErrorMessage = null;
                 _simulationActionSuccessMessage = null;
+                _simulationLifecycleErrorMessage = null;
+                _simulationLifecycleSuccessMessage = null;
                 _simulationRefreshErrorMessage = null;
                 _latestProgressionRun = null;
                 _latestSimulationControls = null;
                 _lastSimulationRefreshUtc = null;
                 ClearSeedGenerationValidation();
-                ResetTransparencySelectionState();
                 StopSimulationPolling();
             }
         }
@@ -174,12 +169,13 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         _selectedAnomalyDetail = null;
         _simulationActionErrorMessage = null;
         _simulationActionSuccessMessage = null;
+        _simulationLifecycleErrorMessage = null;
+        _simulationLifecycleSuccessMessage = null;
         _simulationRefreshErrorMessage = null;
         _latestProgressionRun = null;
         _latestSimulationControls = null;
         _lastSimulationRefreshUtc = null;
         ClearSeedGenerationValidation();
-        ResetTransparencySelectionState();
         StopSimulationPolling();
 
         Navigation.NavigateTo(FinanceRoutes.WithCompanyContext(FinanceRoutes.SandboxAdmin, companyId));
@@ -225,13 +221,14 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
             if (result.Succeeded)
             {
                 _datasetGenerationSectionVersion++;
+                _simulationDiagnosticsSectionVersion++;
             }
         }
         catch (FinanceApiValidationException ex)
         {
             ApplySeedGenerationValidation(ex.Errors);
             _seedGenerationErrorMessage = string.IsNullOrWhiteSpace(ex.Message)
-                ? "The finance API rejected the seed dataset request. Update the highlighted fields and try again."
+                ? "The finance API rejected the dataset request. Update the highlighted fields and try again."
                 : ex.Message;
         }
         catch (FinanceApiException ex)
@@ -450,7 +447,102 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
 
     private string SelectedScenarioProfileDescription(FinanceSandboxAnomalyInjectionViewModel injection) =>
         injection.AvailableScenarioProfiles.FirstOrDefault(profile => string.Equals(profile.Code, _anomalyInjectionForm.ScenarioProfileCode, StringComparison.OrdinalIgnoreCase))?.Description
-        ?? "Choose the scenario profile to register in the anomaly sandbox.";
+        ?? "Choose the scenario to add to the lab.";
+
+    private async Task HandleStartOrResumeSimulationAsync(FinanceSandboxSimulationDiagnosticsViewModel diagnostics)
+    {
+        if (AccessState.CompanyId is not Guid companyId || _isChangingSimulationLifecycle)
+        {
+            return;
+        }
+
+        if (string.Equals(diagnostics.Status, FinanceCompanySimulationStatusValues.Paused, StringComparison.OrdinalIgnoreCase))
+        {
+            await ExecuteCompanySimulationLifecycleActionAsync(
+                () => SandboxAdminService.ResumeCompanySimulationAsync(companyId),
+                "Simulation resumed.");
+            return;
+        }
+
+        await ExecuteCompanySimulationLifecycleActionAsync(
+            () => SandboxAdminService.StartCompanySimulationAsync(new FinanceSandboxCompanySimulationStartCommand
+            {
+                CompanyId = companyId,
+                StartSimulatedDateTime = NormalizeAnchorDate(_seedGenerationForm.AnchorDateUtc == default ? DateTime.UtcNow.Date : _seedGenerationForm.AnchorDateUtc),
+                GenerationEnabled = diagnostics.GenerationEnabled ?? true,
+                Seed = _seedGenerationForm.SeedValue
+            }),
+            "Simulation started.");
+    }
+
+    private Task HandlePauseSimulationAsync() =>
+        AccessState.CompanyId is Guid companyId
+            ? ExecuteCompanySimulationLifecycleActionAsync(
+                () => SandboxAdminService.PauseCompanySimulationAsync(companyId),
+                "Simulation paused.")
+            : Task.CompletedTask;
+
+    private Task HandleStopSimulationAsync() =>
+        AccessState.CompanyId is Guid companyId
+            ? ExecuteCompanySimulationLifecycleActionAsync(
+                () => SandboxAdminService.StopCompanySimulationAsync(companyId),
+                "Simulation stopped.")
+            : Task.CompletedTask;
+
+    private Task HandleStepForwardOneDayAsync() =>
+        AccessState.CompanyId is Guid companyId
+            ? ExecuteCompanySimulationLifecycleActionAsync(
+                () => SandboxAdminService.StepForwardCompanySimulationAsync(companyId),
+                "Simulation advanced by one day.")
+            : Task.CompletedTask;
+
+    private Task HandleToggleGenerationAsync(FinanceSandboxSimulationDiagnosticsViewModel diagnostics)
+    {
+        if (AccessState.CompanyId is not Guid companyId || !diagnostics.GenerationEnabled.HasValue)
+        {
+            return Task.CompletedTask;
+        }
+
+        var nextValue = !diagnostics.GenerationEnabled.Value;
+        return ExecuteCompanySimulationLifecycleActionAsync(
+            () => SandboxAdminService.UpdateCompanySimulationGenerationAsync(companyId, nextValue),
+            nextValue ? "Finance data generation enabled." : "Finance data generation disabled.");
+    }
+
+    private async Task ExecuteCompanySimulationLifecycleActionAsync(
+        Func<Task<FinanceSandboxSimulationDiagnosticsViewModel>> action,
+        string successMessage)
+    {
+        if (_isChangingSimulationLifecycle)
+        {
+            return;
+        }
+
+        _simulationLifecycleErrorMessage = null;
+        _simulationLifecycleSuccessMessage = null;
+        _isChangingSimulationLifecycle = true;
+
+        try
+        {
+            _ = await action();
+            _simulationLifecycleSuccessMessage = successMessage;
+            _simulationDiagnosticsSectionVersion++;
+            _anomalyInjectionSectionVersion++;
+
+            if (AccessState.CompanyId is Guid companyId)
+            {
+                await RefreshSimulationControlsAsync(companyId, CancellationToken.None);
+            }
+        }
+        catch (FinanceApiException ex)
+        {
+            _simulationLifecycleErrorMessage = ex.Message;
+        }
+        finally
+        {
+            _isChangingSimulationLifecycle = false;
+        }
+    }
 
     private string ResolveBackendMessageAlertClass(string? severity) =>
         severity?.Trim().ToLowerInvariant() switch
@@ -478,6 +570,33 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
             _ => "Not started"
         };
 
+    private static bool IsPausedSimulation(string? status) =>
+        string.Equals(status, FinanceCompanySimulationStatusValues.Paused, StringComparison.OrdinalIgnoreCase);
+
+    private static string FormatPlainLabel(string? value)
+    {
+        var formatted = FinanceAnomalyPresentation.FormatLabel(value);
+        return string.IsNullOrWhiteSpace(formatted)
+            ? "None"
+            : formatted;
+    }
+
+    private static string FormatProfileName(string? value) =>
+        FormatPlainLabel(value);
+
+    private static string FormatAnomalyList(IReadOnlyList<string> values) =>
+        values.Count == 0
+            ? "None"
+            : string.Join(", ", values.Select(FormatPlainLabel));
+
+    private static string FormatMessageList(IReadOnlyList<string> values) =>
+        values.Count == 0
+            ? "None"
+            : string.Join(" | ", values.Select(FormatPlainLabel));
+
+    private static string FormatUtc(DateTime? value, string fallback = "Unavailable") =>
+        value?.ToString("u", CultureInfo.InvariantCulture) ?? fallback;
+
     private static string FormatSimulationSnapshotMessage(
         IReadOnlyList<string> anomalies,
         IReadOnlyList<string> warnings,
@@ -486,17 +605,17 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         var segments = new List<string>();
         if (anomalies.Count > 0)
         {
-            segments.Add($"Anomalies: {string.Join(", ", anomalies)}");
+            segments.Add($"Anomalies: {FormatAnomalyList(anomalies)}");
         }
 
         if (warnings.Count > 0)
         {
-            segments.Add($"Warnings: {string.Join(" | ", warnings)}");
+            segments.Add($"Warnings: {FormatMessageList(warnings)}");
         }
 
         if (errors.Count > 0)
         {
-            segments.Add($"Errors: {string.Join(" | ", errors)}");
+            segments.Add($"Errors: {FormatMessageList(errors)}");
         }
 
         return segments.Count == 0
@@ -683,127 +802,11 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         _companyOptions.FirstOrDefault(option => option.CompanyId == companyId)?.CompanyName
         ?? AccessState.CompanyName ?? "Active company";
 
-    private Task<FinanceTransparencyToolManifestListViewModel?> LoadTransparencyToolManifestsAsync(Guid companyId, CancellationToken cancellationToken) =>
-        SandboxAdminService.GetTransparencyToolManifestsAsync(companyId, cancellationToken);
-
-    private Task<FinanceTransparencyExecutionHistoryViewModel?> LoadTransparencyToolExecutionsAsync(Guid companyId, CancellationToken cancellationToken) =>
-        SandboxAdminService.GetTransparencyToolExecutionsAsync(companyId, cancellationToken);
-
-    private Task<FinanceTransparencyEventStreamViewModel?> LoadTransparencyEventsAsync(Guid companyId, CancellationToken cancellationToken) =>
-        SandboxAdminService.GetTransparencyEventsAsync(companyId, cancellationToken);
-
     private Task<FinanceSandboxToolExecutionVisibilityViewModel?> LoadToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken) =>
         SandboxAdminService.GetToolExecutionVisibilityAsync(companyId, cancellationToken);
 
     private Task<FinanceSandboxDomainEventsViewModel?> LoadDomainEventsAsync(Guid companyId, CancellationToken cancellationToken) =>
         SandboxAdminService.GetDomainEventsAsync(companyId, cancellationToken);
-
-    private async Task HandleTransparencyEventSelectionAsync(Guid eventId)
-    {
-        if (AccessState.CompanyId is not Guid companyId || eventId == Guid.Empty)
-        {
-            return;
-        }
-
-        _selectedTransparencyEventId = eventId;
-        _selectedTransparencyEventDetail = null;
-        _selectedTransparencyEventErrorMessage = null;
-        _isLoadingSelectedTransparencyEvent = true;
-
-        try
-        {
-            _selectedTransparencyEventDetail = await SandboxAdminService.GetTransparencyEventDetailAsync(companyId, eventId);
-            if (_selectedTransparencyEventDetail is null)
-            {
-                _selectedTransparencyEventErrorMessage = "The selected finance event detail is no longer available.";
-            }
-        }
-        catch (FinanceApiException ex)
-        {
-            _selectedTransparencyEventErrorMessage = ex.Message;
-        }
-        finally
-        {
-            _isLoadingSelectedTransparencyEvent = false;
-        }
-    }
-
-    private async Task HandleTransparencyExecutionSelectionAsync(Guid executionId)
-    {
-        if (AccessState.CompanyId is not Guid companyId || executionId == Guid.Empty)
-        {
-            return;
-        }
-
-        _selectedTransparencyExecutionId = executionId;
-        _selectedTransparencyExecutionDetail = null;
-        _selectedTransparencyExecutionErrorMessage = null;
-        _isLoadingSelectedTransparencyExecution = true;
-
-        try
-        {
-            _selectedTransparencyExecutionDetail = await SandboxAdminService.GetTransparencyToolExecutionDetailAsync(companyId, executionId);
-            if (_selectedTransparencyExecutionDetail is null)
-            {
-                _selectedTransparencyExecutionErrorMessage = "The selected tool execution detail is no longer available.";
-            }
-        }
-        catch (FinanceApiException ex)
-        {
-            _selectedTransparencyExecutionErrorMessage = ex.Message;
-        }
-        finally
-        {
-            _isLoadingSelectedTransparencyExecution = false;
-        }
-    }
-
-    private string BuildApprovalInboxHref() =>
-        AccessState.CompanyId is Guid companyId
-            ? $"/approvals?companyId={companyId:D}"
-            : "/approvals";
-
-    private string BuildTasksHref() =>
-        AccessState.CompanyId is Guid companyId
-            ? $"/tasks?companyId={companyId:D}"
-            : "/tasks";
-
-    private string BuildWorkflowsHref() =>
-        AccessState.CompanyId is Guid companyId
-            ? $"/workflows?companyId={companyId:D}"
-            : "/workflows";
-
-    private string? BuildOriginatingEntityHref(FinanceTransparencyToolExecutionDetailViewModel detail)
-    {
-        if (AccessState.CompanyId is not Guid companyId || detail.OriginatingEntityId is not Guid entityId)
-        {
-            return null;
-        }
-
-        return detail.OriginatingEntityType.Trim().ToLowerInvariant() switch
-        {
-            "finance_transaction" or "transaction" => FinanceRoutes.BuildTransactionDetailPath(entityId, companyId),
-            "finance_invoice" or "invoice" => FinanceRoutes.BuildInvoiceDetailPath(entityId, companyId),
-            _ => null
-        };
-    }
-
-    private static string NormalizeTransparencyToken(string? value) =>
-        string.IsNullOrWhiteSpace(value)
-            ? "unknown"
-            : value.Replace("_", " ", StringComparison.Ordinal);
-
-    private void ResetTransparencySelectionState()
-    {
-        _selectedTransparencyEventId = null;
-        _selectedTransparencyEventDetail = null;
-        _selectedTransparencyEventErrorMessage = null;
-        _isLoadingSelectedTransparencyEvent = false;
-        _selectedTransparencyExecutionId = null;
-        _selectedTransparencyExecutionDetail = null;
-        _selectedTransparencyExecutionErrorMessage = null;
-        _isLoadingSelectedTransparencyExecution = false;
-    }
 
     private void ApplySeedGenerationValidation(IReadOnlyDictionary<string, string[]> errors)
     {
@@ -859,7 +862,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         public Guid CompanyId { get; set; }
         public string CompanyName { get; set; } = string.Empty;
 
-        [Range(1, int.MaxValue, ErrorMessage = "Enter a positive seed value.")]
+        [Range(1, int.MaxValue, ErrorMessage = "Enter a positive reproducibility value.")]
         public int SeedValue { get; set; } = 302;
 
         [Required(ErrorMessage = "Select an anchor date.")]
@@ -872,7 +875,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         {
             if (CompanyId == Guid.Empty)
             {
-                yield return new ValidationResult("Select a company before generating a seed dataset.", [nameof(CompanyId)]);
+                yield return new ValidationResult("Select a company before regenerating finance data.", [nameof(CompanyId)]);
             }
 
             if (AnchorDateUtc == default)
